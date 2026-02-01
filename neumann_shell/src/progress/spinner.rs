@@ -185,6 +185,20 @@ mod tests {
     }
 
     #[test]
+    fn test_spinner_finish_error() {
+        let theme = Theme::plain();
+        let spinner = Spinner::new("Testing", theme);
+        spinner.finish_error("Failed");
+    }
+
+    #[test]
+    fn test_spinner_drop_unfinished() {
+        let theme = Theme::plain();
+        let _spinner = Spinner::new("Testing", theme);
+        // Drop without finishing - should call finish_and_clear
+    }
+
+    #[test]
     fn test_progress_indicator() {
         let theme = Theme::plain();
         let progress = ProgressIndicator::new(100, "Processing", theme);
@@ -195,9 +209,115 @@ mod tests {
     }
 
     #[test]
-    fn test_operation_spinner() {
+    fn test_progress_indicator_set_message() {
+        let theme = Theme::plain();
+        let progress = ProgressIndicator::new(100, "Start", theme);
+        progress.set_message("Updated");
+        progress.finish_success("Done");
+    }
+
+    #[test]
+    fn test_progress_indicator_finish_error() {
+        let theme = Theme::plain();
+        let progress = ProgressIndicator::new(100, "Processing", theme);
+        progress.finish_error("Error occurred");
+    }
+
+    #[test]
+    fn test_progress_indicator_drop_unfinished() {
+        let theme = Theme::plain();
+        let _progress = ProgressIndicator::new(100, "Processing", theme);
+        // Drop without finishing
+    }
+
+    #[test]
+    fn test_operation_spinner_load() {
         let theme = Theme::plain();
         let spinner = operation_spinner("LOAD", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_save() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("SAVE", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_save_compressed() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("SAVE COMPRESSED", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_cluster_connect() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("CLUSTER CONNECT", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_embed_build_index() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("EMBED BUILD INDEX", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_blob_put() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("BLOB PUT", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_blob_gc() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("BLOB GC", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_pagerank() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("GRAPH ALGORITHM PAGERANK", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_betweenness() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("GRAPH ALGORITHM BETWEENNESS", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_closeness() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("GRAPH ALGORITHM CLOSENESS", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_louvain() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("GRAPH ALGORITHM LOUVAIN", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_chain_verify() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("CHAIN VERIFY", &theme);
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn test_operation_spinner_unknown() {
+        let theme = Theme::plain();
+        let spinner = operation_spinner("UNKNOWN OPERATION", &theme);
         spinner.finish_and_clear();
     }
 
@@ -207,8 +327,10 @@ mod tests {
         assert!(needs_spinner("SAVE 'backup.bin'"));
         assert!(needs_spinner("CLUSTER CONNECT 'node@addr'"));
         assert!(needs_spinner("EMBED BUILD INDEX"));
+        assert!(needs_spinner("BLOB PUT file.bin"));
         assert!(needs_spinner("BLOB GC"));
         assert!(needs_spinner("GRAPH ALGORITHM PAGERANK"));
+        assert!(needs_spinner("CHAIN VERIFY"));
         assert!(!needs_spinner("SELECT * FROM users"));
         assert!(!needs_spinner("NODE CREATE person {}"));
     }

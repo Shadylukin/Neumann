@@ -189,6 +189,13 @@ mod tests {
     }
 
     #[test]
+    fn test_format_count_zero() {
+        let theme = Theme::plain();
+        let result = format_count(0, &theme);
+        assert!(result.contains("0 rows affected"));
+    }
+
+    #[test]
     fn test_format_ids_empty() {
         let theme = Theme::plain();
         let result = format_ids(&[], &theme);
@@ -247,8 +254,114 @@ mod tests {
     }
 
     #[test]
+    fn test_format_timestamp_hours() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let result = format_timestamp(now - 7200);
+        assert!(result.contains("h ago"));
+    }
+
+    #[test]
+    fn test_format_timestamp_days() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let result = format_timestamp(now - 172800);
+        assert!(result.contains("d ago"));
+    }
+
+    #[test]
     fn test_format_timestamp_unknown() {
         let result = format_timestamp(0);
         assert_eq!(result, "unknown");
+    }
+
+    #[test]
+    fn test_format_result_empty() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Empty, &theme, &icons);
+        assert!(result.contains("OK"));
+    }
+
+    #[test]
+    fn test_format_result_value() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Value("test value".to_string()), &theme, &icons);
+        assert_eq!(result, "test value");
+    }
+
+    #[test]
+    fn test_format_result_count() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Count(5), &theme, &icons);
+        assert!(result.contains("5 rows affected"));
+    }
+
+    #[test]
+    fn test_format_result_ids() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Ids(vec![1, 2, 3]), &theme, &icons);
+        assert!(result.contains("IDs:"));
+    }
+
+    #[test]
+    fn test_format_result_table_list() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::TableList(vec!["users".to_string()]),
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("users"));
+    }
+
+    #[test]
+    fn test_format_checkpoint_list_empty() {
+        let theme = Theme::plain();
+        let result = format_checkpoint_list(&[], &theme);
+        assert!(result.contains("No checkpoints"));
+    }
+
+    #[test]
+    fn test_format_checkpoint_list_with_data() {
+        let theme = Theme::plain();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let checkpoints = vec![CheckpointInfo {
+            id: "abc123".to_string(),
+            name: "test_checkpoint".to_string(),
+            created_at: now - 60,
+            is_auto: false,
+        }];
+        let result = format_checkpoint_list(&checkpoints, &theme);
+        assert!(result.contains("Checkpoints"));
+        assert!(result.contains("test_checkpoint"));
+    }
+
+    #[test]
+    fn test_format_checkpoint_list_auto() {
+        let theme = Theme::plain();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let checkpoints = vec![CheckpointInfo {
+            id: "abc123".to_string(),
+            name: "auto_checkpoint".to_string(),
+            created_at: now,
+            is_auto: true,
+        }];
+        let result = format_checkpoint_list(&checkpoints, &theme);
+        assert!(result.contains("auto"));
     }
 }

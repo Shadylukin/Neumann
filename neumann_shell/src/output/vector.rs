@@ -87,6 +87,7 @@ pub fn format_unified(unified: &query_router::UnifiedResult, theme: &Theme) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tensor_unified::UnifiedItem;
 
     #[test]
     fn test_format_similar_empty() {
@@ -117,6 +118,18 @@ mod tests {
     }
 
     #[test]
+    fn test_format_similar_single() {
+        let theme = Theme::plain();
+        let results = vec![query_router::SimilarResult {
+            key: "single_doc".to_string(),
+            score: 0.99,
+        }];
+        let result = format_similar(&results, &theme);
+        assert!(result.contains("single_doc"));
+        assert!(result.contains("0.99"));
+    }
+
+    #[test]
     fn test_format_unified_empty() {
         let theme = Theme::plain();
         let unified = query_router::UnifiedResult {
@@ -127,7 +140,108 @@ mod tests {
         assert!(result.contains("no items"));
     }
 
-    // Note: test_format_unified_with_items is omitted because UnifiedItem
-    // is not publicly exported from query_router. The empty case is tested above.
-    // Full testing is done via integration tests.
+    #[test]
+    fn test_format_unified_with_items() {
+        let theme = Theme::plain();
+        let unified = query_router::UnifiedResult {
+            description: "Test Results".to_string(),
+            items: vec![UnifiedItem {
+                id: "item1".to_string(),
+                source: "relational".to_string(),
+                data: std::collections::HashMap::new(),
+                score: None,
+                embedding: None,
+            }],
+        };
+        let result = format_unified(&unified, &theme);
+        assert!(result.contains("Test Results"));
+        assert!(result.contains("item1"));
+        assert!(result.contains("relational"));
+        assert!(result.contains("1 items"));
+    }
+
+    #[test]
+    fn test_format_unified_with_score() {
+        let theme = Theme::plain();
+        let unified = query_router::UnifiedResult {
+            description: "Scored Results".to_string(),
+            items: vec![UnifiedItem {
+                id: "item1".to_string(),
+                source: "vector".to_string(),
+                data: std::collections::HashMap::new(),
+                score: Some(0.95),
+                embedding: None,
+            }],
+        };
+        let result = format_unified(&unified, &theme);
+        assert!(result.contains("score"));
+        assert!(result.contains("0.95"));
+    }
+
+    #[test]
+    fn test_format_unified_with_embedding() {
+        let theme = Theme::plain();
+        let unified = query_router::UnifiedResult {
+            description: "Embedded Results".to_string(),
+            items: vec![UnifiedItem {
+                id: "item1".to_string(),
+                source: "vector".to_string(),
+                data: std::collections::HashMap::new(),
+                score: None,
+                embedding: Some(vec![0.1, 0.2, 0.3, 0.4]),
+            }],
+        };
+        let result = format_unified(&unified, &theme);
+        assert!(result.contains("embedding"));
+        assert!(result.contains("4D"));
+    }
+
+    #[test]
+    fn test_format_unified_with_data() {
+        let theme = Theme::plain();
+        let mut data = std::collections::HashMap::new();
+        data.insert("name".to_string(), "Alice".to_string());
+        data.insert("age".to_string(), "30".to_string());
+        let unified = query_router::UnifiedResult {
+            description: "Data Results".to_string(),
+            items: vec![UnifiedItem {
+                id: "item1".to_string(),
+                source: "relational".to_string(),
+                data,
+                score: None,
+                embedding: None,
+            }],
+        };
+        let result = format_unified(&unified, &theme);
+        assert!(result.contains("name"));
+        assert!(result.contains("Alice"));
+    }
+
+    #[test]
+    fn test_format_unified_multiple_items() {
+        let theme = Theme::plain();
+        let unified = query_router::UnifiedResult {
+            description: "Multiple Results".to_string(),
+            items: vec![
+                UnifiedItem {
+                    id: "item1".to_string(),
+                    source: "relational".to_string(),
+                    data: std::collections::HashMap::new(),
+                    score: None,
+                    embedding: None,
+                },
+                UnifiedItem {
+                    id: "item2".to_string(),
+                    source: "graph".to_string(),
+                    data: std::collections::HashMap::new(),
+                    score: Some(0.8),
+                    embedding: None,
+                },
+            ],
+        };
+        let result = format_unified(&unified, &theme);
+        assert!(result.contains("item1"));
+        assert!(result.contains("item2"));
+        assert!(result.contains("2 items"));
+    }
 }

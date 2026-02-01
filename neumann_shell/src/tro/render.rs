@@ -547,6 +547,27 @@ mod tests {
     }
 
     #[test]
+    fn test_rendered_cell_copy() {
+        let a = RenderedCell {
+            ch: 'X',
+            fg: (255, 0, 0),
+        };
+        let b = a; // Copy
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_rendered_cell_debug() {
+        let cell = RenderedCell {
+            ch: 'X',
+            fg: (255, 0, 0),
+        };
+        let debug_str = format!("{cell:?}");
+        assert!(debug_str.contains("ch"));
+        assert!(debug_str.contains("fg"));
+    }
+
+    #[test]
     fn test_compute_border_cells() {
         // 80x24: 80 + 80 + 22 + 22 = 204
         let cells = TroRenderer::compute_border_cells(80, 24);
@@ -566,11 +587,29 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_border_cells_zero_width() {
+        let cells = TroRenderer::compute_border_cells(0, 24);
+        assert_eq!(cells, 0);
+    }
+
+    #[test]
+    fn test_compute_border_cells_zero_height() {
+        let cells = TroRenderer::compute_border_cells(80, 0);
+        assert_eq!(cells, 0);
+    }
+
+    #[test]
     fn test_renderer_new() {
         let renderer = TroRenderer::new(true);
         assert!(renderer.crt_effects);
         assert_eq!(renderer.frame, 0);
         assert!(!renderer.initialized);
+    }
+
+    #[test]
+    fn test_renderer_new_no_crt() {
+        let renderer = TroRenderer::new(false);
+        assert!(!renderer.crt_effects);
     }
 
     #[test]
@@ -584,6 +623,18 @@ mod tests {
     fn test_renderer_frame() {
         let renderer = TroRenderer::new(false);
         assert_eq!(renderer.frame(), 0);
+    }
+
+    #[test]
+    fn test_renderer_set_crt_effects() {
+        let mut renderer = TroRenderer::new(false);
+        assert!(!renderer.crt_effects_enabled());
+
+        renderer.set_crt_effects(true);
+        assert!(renderer.crt_effects_enabled());
+
+        renderer.set_crt_effects(false);
+        assert!(!renderer.crt_effects_enabled());
     }
 
     #[test]
@@ -607,6 +658,30 @@ mod tests {
     }
 
     #[test]
+    fn test_index_to_coord_bottom() {
+        let mut renderer = TroRenderer::new(false);
+        renderer.width = 80;
+        renderer.height = 24;
+
+        // Top: 80, Right: 22, Bottom starts at index 102
+        // Bottom edge goes right to left
+        assert_eq!(renderer.index_to_coord(102), (79, 23));
+        assert_eq!(renderer.index_to_coord(103), (78, 23));
+    }
+
+    #[test]
+    fn test_index_to_coord_left() {
+        let mut renderer = TroRenderer::new(false);
+        renderer.width = 80;
+        renderer.height = 24;
+
+        // Top: 80, Right: 22, Bottom: 80, Left starts at index 182
+        // Left edge goes bottom to top
+        assert_eq!(renderer.index_to_coord(182), (0, 22));
+        assert_eq!(renderer.index_to_coord(183), (0, 21));
+    }
+
+    #[test]
     fn test_index_to_coord_invalid_dimensions() {
         let mut renderer = TroRenderer::new(false);
         renderer.width = 1;
@@ -616,9 +691,42 @@ mod tests {
     }
 
     #[test]
+    fn test_index_to_coord_static_top() {
+        let (x, y) = TroRenderer::index_to_coord_static(80, 24, 0);
+        assert_eq!((x, y), (0, 0));
+
+        let (x, y) = TroRenderer::index_to_coord_static(80, 24, 79);
+        assert_eq!((x, y), (79, 0));
+    }
+
+    #[test]
+    fn test_index_to_coord_static_right() {
+        let (x, y) = TroRenderer::index_to_coord_static(80, 24, 80);
+        assert_eq!((x, y), (79, 1));
+    }
+
+    #[test]
+    fn test_index_to_coord_static_invalid() {
+        let (x, y) = TroRenderer::index_to_coord_static(1, 1, 0);
+        assert_eq!((x, y), (0, 0));
+    }
+
+    #[test]
     fn test_select_char_for_resolution_standard() {
         let ch = TroRenderer::select_char_for_resolution(0.5, ResolutionMode::Standard);
         // Should return an organic char
+        assert!(ORGANIC_CHARS.contains(&ch));
+    }
+
+    #[test]
+    fn test_select_char_for_resolution_standard_low_intensity() {
+        let ch = TroRenderer::select_char_for_resolution(0.0, ResolutionMode::Standard);
+        assert!(ORGANIC_CHARS.contains(&ch));
+    }
+
+    #[test]
+    fn test_select_char_for_resolution_standard_high_intensity() {
+        let ch = TroRenderer::select_char_for_resolution(1.0, ResolutionMode::Standard);
         assert!(ORGANIC_CHARS.contains(&ch));
     }
 
@@ -648,6 +756,16 @@ mod tests {
     }
 
     #[test]
+    fn test_select_char_for_resolution_braille_edge_cases() {
+        // Test various intensity values
+        for intensity in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let ch = TroRenderer::select_char_for_resolution(intensity, ResolutionMode::Braille);
+            let code = ch as u32;
+            assert!((0x2800..=0x28FF).contains(&code));
+        }
+    }
+
+    #[test]
     fn test_interpolate_color_empty_palette() {
         let color = TroRenderer::interpolate_color(0.5, 0.0, &[]);
         assert_eq!(color, (0, 51, 0));
@@ -666,5 +784,104 @@ mod tests {
         let color = TroRenderer::interpolate_color(0.5, 0.5, &palette);
         // With heat, red should increase and green decrease slightly
         assert!(color.0 > 0);
+    }
+
+    #[test]
+    fn test_interpolate_color_clamped() {
+        let palette = [(100, 100, 100)];
+        // Test out of range intensity values
+        let color_low = TroRenderer::interpolate_color(-0.5, 0.0, &palette);
+        let color_high = TroRenderer::interpolate_color(1.5, 0.0, &palette);
+        assert_eq!(color_low, (100, 100, 100));
+        assert_eq!(color_high, (100, 100, 100));
+    }
+
+    #[test]
+    fn test_interpolate_color_low_heat() {
+        let palette = [(0, 100, 0)];
+        // Heat below threshold (0.1)
+        let color = TroRenderer::interpolate_color(0.5, 0.05, &palette);
+        assert_eq!(color, (0, 100, 0));
+    }
+
+    #[test]
+    fn test_interpolate_color_high_heat() {
+        let palette = [(0, 200, 0)];
+        // High heat
+        let color = TroRenderer::interpolate_color(0.5, 1.0, &palette);
+        // Red should be increased, green decreased
+        assert!(color.0 > 0);
+        assert!(color.1 < 200);
+    }
+
+    #[test]
+    fn test_interpolate_color_single_palette() {
+        let palette = [(50, 100, 150)];
+        let color = TroRenderer::interpolate_color(0.0, 0.0, &palette);
+        assert_eq!(color, (50, 100, 150));
+
+        let color = TroRenderer::interpolate_color(1.0, 0.0, &palette);
+        assert_eq!(color, (50, 100, 150));
+    }
+
+    #[test]
+    fn test_interpolate_color_multiple_palette() {
+        let palette = [(0, 0, 0), (128, 128, 128), (255, 255, 255)];
+
+        let color = TroRenderer::interpolate_color(0.0, 0.0, &palette);
+        assert_eq!(color, (0, 0, 0));
+
+        let color = TroRenderer::interpolate_color(0.5, 0.0, &palette);
+        assert_eq!(color, (128, 128, 128));
+
+        let color = TroRenderer::interpolate_color(1.0, 0.0, &palette);
+        assert_eq!(color, (255, 255, 255));
+    }
+
+    #[test]
+    fn test_to_u16_normal() {
+        assert_eq!(to_u16(0), 0);
+        assert_eq!(to_u16(100), 100);
+        assert_eq!(to_u16(65535), 65535);
+    }
+
+    #[test]
+    fn test_to_u16_overflow() {
+        assert_eq!(to_u16(65536), 65535);
+        assert_eq!(to_u16(100000), 65535);
+        assert_eq!(to_u16(usize::MAX), 65535);
+    }
+
+    #[test]
+    fn test_renderer_resize() {
+        let mut renderer = TroRenderer::new(false);
+        renderer.width = 80;
+        renderer.height = 24;
+        let initial_len = renderer.front.len();
+
+        renderer.resize(100, 30);
+        assert_eq!(renderer.width, 100);
+        assert_eq!(renderer.height, 30);
+        assert!(renderer.front.len() != initial_len);
+    }
+
+    #[test]
+    fn test_renderer_resize_smaller() {
+        let mut renderer = TroRenderer::new(false);
+        renderer.width = 80;
+        renderer.height = 24;
+
+        renderer.resize(40, 12);
+        assert_eq!(renderer.width, 40);
+        assert_eq!(renderer.height, 12);
+    }
+
+    #[test]
+    fn test_renderer_resize_to_minimum() {
+        let mut renderer = TroRenderer::new(false);
+        renderer.resize(2, 2);
+        assert_eq!(renderer.width, 2);
+        assert_eq!(renderer.height, 2);
+        assert_eq!(renderer.front.len(), 4);
     }
 }

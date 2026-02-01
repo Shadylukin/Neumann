@@ -1724,6 +1724,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "urlencoding",
  "uuid",
  "vector_engine",
@@ -1755,6 +1756,7 @@ dependencies = [
  "tensor_checkpoint",
  "tensor_compress",
  "tensor_store",
+ "tensor_unified",
 ]
 
 [[package]]

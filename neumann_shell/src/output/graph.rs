@@ -340,6 +340,10 @@ pub fn format_pattern_match(pm: &PatternMatchResultValue, theme: &Theme) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use query_router::{
+        BindingValue, CentralityItem, CentralityType, PageRankItem, PatternMatchBinding,
+        PatternMatchStatsValue,
+    };
 
     #[test]
     fn test_format_nodes_empty() {
@@ -350,11 +354,87 @@ mod tests {
     }
 
     #[test]
+    fn test_format_nodes_single() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), "Alice".to_string());
+        let nodes = vec![query_router::NodeResult {
+            id: 1,
+            label: "person".to_string(),
+            properties: props,
+        }];
+        let result = format_nodes(&nodes, &theme, &icons);
+        assert!(result.contains("1 node"));
+        assert!(result.contains("person"));
+        assert!(result.contains("Alice"));
+    }
+
+    #[test]
+    fn test_format_nodes_multiple() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let nodes = vec![
+            query_router::NodeResult {
+                id: 1,
+                label: "person".to_string(),
+                properties: HashMap::new(),
+            },
+            query_router::NodeResult {
+                id: 2,
+                label: "company".to_string(),
+                properties: HashMap::new(),
+            },
+        ];
+        let result = format_nodes(&nodes, &theme, &icons);
+        assert!(result.contains("2 nodes"));
+    }
+
+    #[test]
     fn test_format_edges_empty() {
         let theme = Theme::plain();
         let icons = Icons::ASCII;
         let result = format_edges(&[], &theme, &icons);
         assert!(result.contains("0 edges"));
+    }
+
+    #[test]
+    fn test_format_edges_single() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let edges = vec![query_router::EdgeResult {
+            id: 1,
+            from: 10,
+            to: 20,
+            label: "knows".to_string(),
+        }];
+        let result = format_edges(&edges, &theme, &icons);
+        assert!(result.contains("1 edge"));
+        assert!(result.contains("knows"));
+        assert!(result.contains("10"));
+        assert!(result.contains("20"));
+    }
+
+    #[test]
+    fn test_format_edges_multiple() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let edges = vec![
+            query_router::EdgeResult {
+                id: 1,
+                from: 10,
+                to: 20,
+                label: "knows".to_string(),
+            },
+            query_router::EdgeResult {
+                id: 2,
+                from: 20,
+                to: 30,
+                label: "works_at".to_string(),
+            },
+        ];
+        let result = format_edges(&edges, &theme, &icons);
+        assert!(result.contains("2 edges"));
     }
 
     #[test]
@@ -377,6 +457,15 @@ mod tests {
     }
 
     #[test]
+    fn test_format_path_single_node() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_path(&[42], &theme, &icons);
+        assert!(result.contains("42"));
+        assert!(result.contains("Path"));
+    }
+
+    #[test]
     fn test_format_properties_empty() {
         let theme = Theme::plain();
         let result = format_properties(&HashMap::new(), &theme);
@@ -394,11 +483,54 @@ mod tests {
     }
 
     #[test]
+    fn test_format_properties_multiple() {
+        let theme = Theme::plain();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), "Alice".to_string());
+        props.insert("age".to_string(), "30".to_string());
+        let result = format_properties(&props, &theme);
+        assert!(result.contains("name"));
+        assert!(result.contains("age"));
+    }
+
+    #[test]
     fn test_format_aggregate_count() {
         let theme = Theme::plain();
         let result = format_aggregate(&AggregateResultValue::Count(42), &theme);
         assert!(result.contains("Count"));
         assert!(result.contains("42"));
+    }
+
+    #[test]
+    fn test_format_aggregate_sum() {
+        let theme = Theme::plain();
+        let result = format_aggregate(&AggregateResultValue::Sum(123.5), &theme);
+        assert!(result.contains("Sum"));
+        assert!(result.contains("123.5"));
+    }
+
+    #[test]
+    fn test_format_aggregate_avg() {
+        let theme = Theme::plain();
+        let result = format_aggregate(&AggregateResultValue::Avg(45.67), &theme);
+        assert!(result.contains("Avg"));
+        assert!(result.contains("45.67"));
+    }
+
+    #[test]
+    fn test_format_aggregate_min() {
+        let theme = Theme::plain();
+        let result = format_aggregate(&AggregateResultValue::Min(1.0), &theme);
+        assert!(result.contains("Min"));
+        assert!(result.contains("1"));
+    }
+
+    #[test]
+    fn test_format_aggregate_max() {
+        let theme = Theme::plain();
+        let result = format_aggregate(&AggregateResultValue::Max(999.0), &theme);
+        assert!(result.contains("Max"));
+        assert!(result.contains("999"));
     }
 
     #[test]
@@ -409,9 +541,391 @@ mod tests {
     }
 
     #[test]
+    fn test_format_constraints_with_data() {
+        let theme = Theme::plain();
+        let constraints = vec![ConstraintInfo {
+            name: "unique_email".to_string(),
+            target: "user".to_string(),
+            property: "email".to_string(),
+            constraint_type: "unique".to_string(),
+        }];
+        let result = format_constraints(&constraints, &theme);
+        assert!(result.contains("Constraints"));
+        assert!(result.contains("unique_email"));
+        assert!(result.contains("user"));
+        assert!(result.contains("email"));
+    }
+
+    #[test]
+    fn test_format_constraints_multiple() {
+        let theme = Theme::plain();
+        let constraints = vec![
+            ConstraintInfo {
+                name: "unique_email".to_string(),
+                target: "user".to_string(),
+                property: "email".to_string(),
+                constraint_type: "unique".to_string(),
+            },
+            ConstraintInfo {
+                name: "not_null_name".to_string(),
+                target: "user".to_string(),
+                property: "name".to_string(),
+                constraint_type: "not_null".to_string(),
+            },
+        ];
+        let result = format_constraints(&constraints, &theme);
+        assert!(result.contains("unique_email"));
+        assert!(result.contains("not_null_name"));
+    }
+
+    #[test]
     fn test_format_graph_indexes_empty() {
         let theme = Theme::plain();
         let result = format_graph_indexes(&[], &theme);
         assert!(result.contains("No indexes"));
+    }
+
+    #[test]
+    fn test_format_graph_indexes_with_data() {
+        let theme = Theme::plain();
+        let indexes = vec![
+            "idx_user_email".to_string(),
+            "idx_order_date".to_string(),
+        ];
+        let result = format_graph_indexes(&indexes, &theme);
+        assert!(result.contains("Graph Indexes"));
+        assert!(result.contains("idx_user_email"));
+        assert!(result.contains("idx_order_date"));
+    }
+
+    #[test]
+    fn test_format_pagerank_empty() {
+        let theme = Theme::plain();
+        let result = PageRankResult {
+            items: vec![],
+            iterations: 0,
+            convergence: 0.0,
+            converged: false,
+        };
+        let output = format_pagerank(&result, &theme);
+        assert!(output.contains("No PageRank results"));
+    }
+
+    #[test]
+    fn test_format_pagerank_with_data() {
+        let theme = Theme::plain();
+        let result = PageRankResult {
+            items: vec![
+                PageRankItem {
+                    node_id: 1,
+                    score: 0.5,
+                },
+                PageRankItem {
+                    node_id: 2,
+                    score: 0.3,
+                },
+                PageRankItem {
+                    node_id: 3,
+                    score: 0.2,
+                },
+            ],
+            iterations: 10,
+            convergence: 0.001,
+            converged: true,
+        };
+        let output = format_pagerank(&result, &theme);
+        assert!(output.contains("PageRank Results"));
+        assert!(output.contains("Iterations: 10"));
+        assert!(output.contains("Converged: true"));
+    }
+
+    #[test]
+    fn test_format_centrality_empty() {
+        let theme = Theme::plain();
+        let result = CentralityResult {
+            centrality_type: CentralityType::Betweenness,
+            items: vec![],
+            iterations: None,
+            converged: None,
+            sample_count: None,
+        };
+        let output = format_centrality(&result, &theme);
+        assert!(output.contains("No centrality results"));
+    }
+
+    #[test]
+    fn test_format_centrality_with_data() {
+        let theme = Theme::plain();
+        let result = CentralityResult {
+            centrality_type: CentralityType::Betweenness,
+            items: vec![
+                CentralityItem {
+                    node_id: 1,
+                    score: 0.8,
+                },
+                CentralityItem {
+                    node_id: 2,
+                    score: 0.5,
+                },
+            ],
+            iterations: Some(10),
+            converged: Some(true),
+            sample_count: None,
+        };
+        let output = format_centrality(&result, &theme);
+        assert!(output.contains("Betweenness"));
+    }
+
+    #[test]
+    fn test_format_communities_empty() {
+        let theme = Theme::plain();
+        let result = CommunityResult {
+            items: vec![],
+            members: HashMap::new(),
+            community_count: 0,
+            modularity: None,
+            passes: None,
+            iterations: None,
+        };
+        let output = format_communities(&result, &theme);
+        assert!(output.contains("No communities"));
+    }
+
+    #[test]
+    fn test_format_communities_with_data() {
+        let theme = Theme::plain();
+        let mut members = HashMap::new();
+        members.insert(0, vec![1, 2, 3]);
+        members.insert(1, vec![4, 5]);
+        let result = CommunityResult {
+            items: vec![],
+            members,
+            community_count: 2,
+            modularity: Some(0.75),
+            passes: None,
+            iterations: None,
+        };
+        let output = format_communities(&result, &theme);
+        assert!(output.contains("Communities"));
+        assert!(output.contains("Community 0"));
+        assert!(output.contains("Community 1"));
+        assert!(output.contains("Modularity: 0.75"));
+    }
+
+    #[test]
+    fn test_format_communities_no_modularity() {
+        let theme = Theme::plain();
+        let mut members = HashMap::new();
+        members.insert(0, vec![1, 2]);
+        let result = CommunityResult {
+            items: vec![],
+            members,
+            community_count: 1,
+            modularity: None,
+            passes: None,
+            iterations: None,
+        };
+        let output = format_communities(&result, &theme);
+        assert!(output.contains("Communities"));
+        assert!(!output.contains("Modularity"));
+    }
+
+    #[test]
+    fn test_format_batch_result() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let batch = BatchOperationResult {
+            operation: "CREATE".to_string(),
+            affected_count: 5,
+            created_ids: None,
+        };
+        let output = format_batch_result(&batch, &theme, &icons);
+        assert!(output.contains("CREATE"));
+        assert!(output.contains("5 affected"));
+    }
+
+    #[test]
+    fn test_format_batch_result_with_ids() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let batch = BatchOperationResult {
+            operation: "CREATE".to_string(),
+            affected_count: 3,
+            created_ids: Some(vec![10, 11, 12]),
+        };
+        let output = format_batch_result(&batch, &theme, &icons);
+        assert!(output.contains("CREATE"));
+        assert!(output.contains("3 affected"));
+        assert!(output.contains("IDs"));
+        assert!(output.contains("10"));
+        assert!(output.contains("11"));
+        assert!(output.contains("12"));
+    }
+
+    #[test]
+    fn test_format_batch_result_empty_ids() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let batch = BatchOperationResult {
+            operation: "DELETE".to_string(),
+            affected_count: 0,
+            created_ids: Some(vec![]),
+        };
+        let output = format_batch_result(&batch, &theme, &icons);
+        assert!(output.contains("DELETE"));
+        assert!(!output.contains("IDs"));
+    }
+
+    #[test]
+    fn test_format_pattern_match_empty() {
+        let theme = Theme::plain();
+        let pm = PatternMatchResultValue {
+            matches: vec![],
+            stats: PatternMatchStatsValue {
+                matches_found: 0,
+                nodes_evaluated: 0,
+                edges_evaluated: 0,
+                truncated: false,
+            },
+        };
+        let output = format_pattern_match(&pm, &theme);
+        assert!(output.contains("No pattern matches"));
+    }
+
+    #[test]
+    fn test_format_pattern_match_with_node() {
+        let theme = Theme::plain();
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "n".to_string(),
+            BindingValue::Node {
+                id: 1,
+                label: "person".to_string(),
+            },
+        );
+        let pm = PatternMatchResultValue {
+            matches: vec![PatternMatchBinding { bindings }],
+            stats: PatternMatchStatsValue {
+                matches_found: 1,
+                nodes_evaluated: 10,
+                edges_evaluated: 5,
+                truncated: false,
+            },
+        };
+        let output = format_pattern_match(&pm, &theme);
+        assert!(output.contains("Pattern Matches"));
+        assert!(output.contains("Match 1"));
+        assert!(output.contains("Node"));
+        assert!(output.contains("person"));
+    }
+
+    #[test]
+    fn test_format_pattern_match_with_edge() {
+        let theme = Theme::plain();
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "e".to_string(),
+            BindingValue::Edge {
+                id: 1,
+                edge_type: "knows".to_string(),
+                from: 10,
+                to: 20,
+            },
+        );
+        let pm = PatternMatchResultValue {
+            matches: vec![PatternMatchBinding { bindings }],
+            stats: PatternMatchStatsValue {
+                matches_found: 1,
+                nodes_evaluated: 10,
+                edges_evaluated: 5,
+                truncated: false,
+            },
+        };
+        let output = format_pattern_match(&pm, &theme);
+        assert!(output.contains("Edge"));
+        assert!(output.contains("knows"));
+        assert!(output.contains("10"));
+        assert!(output.contains("20"));
+    }
+
+    #[test]
+    fn test_format_pattern_match_with_path() {
+        let theme = Theme::plain();
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "p".to_string(),
+            BindingValue::Path {
+                nodes: vec![1, 2, 3],
+                edges: vec![10, 11],
+                length: 2,
+            },
+        );
+        let pm = PatternMatchResultValue {
+            matches: vec![PatternMatchBinding { bindings }],
+            stats: PatternMatchStatsValue {
+                matches_found: 1,
+                nodes_evaluated: 10,
+                edges_evaluated: 5,
+                truncated: false,
+            },
+        };
+        let output = format_pattern_match(&pm, &theme);
+        assert!(output.contains("Path"));
+        assert!(output.contains("length 2"));
+        assert!(output.contains("3 nodes"));
+    }
+
+    #[test]
+    fn test_format_pattern_match_truncated() {
+        let theme = Theme::plain();
+        let pm = PatternMatchResultValue {
+            matches: vec![PatternMatchBinding {
+                bindings: HashMap::new(),
+            }],
+            stats: PatternMatchStatsValue {
+                matches_found: 100,
+                nodes_evaluated: 1000,
+                edges_evaluated: 500,
+                truncated: true,
+            },
+        };
+        let output = format_pattern_match(&pm, &theme);
+        assert!(output.contains("truncated"));
+    }
+
+    #[test]
+    fn test_format_pattern_match_multiple() {
+        let theme = Theme::plain();
+        let mut bindings1 = HashMap::new();
+        bindings1.insert(
+            "n".to_string(),
+            BindingValue::Node {
+                id: 1,
+                label: "person".to_string(),
+            },
+        );
+        let mut bindings2 = HashMap::new();
+        bindings2.insert(
+            "n".to_string(),
+            BindingValue::Node {
+                id: 2,
+                label: "company".to_string(),
+            },
+        );
+        let pm = PatternMatchResultValue {
+            matches: vec![
+                PatternMatchBinding { bindings: bindings1 },
+                PatternMatchBinding { bindings: bindings2 },
+            ],
+            stats: PatternMatchStatsValue {
+                matches_found: 2,
+                nodes_evaluated: 20,
+                edges_evaluated: 10,
+                truncated: false,
+            },
+        };
+        let output = format_pattern_match(&pm, &theme);
+        assert!(output.contains("Match 1"));
+        assert!(output.contains("Match 2"));
     }
 }

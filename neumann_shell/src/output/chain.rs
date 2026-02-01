@@ -265,6 +265,21 @@ mod tests {
     }
 
     #[test]
+    fn test_format_chain_similar_with_results() {
+        let theme = Theme::plain();
+        let results = vec![ChainSimilarResult {
+            height: 10,
+            block_hash: "hash123".to_string(),
+            similarity: 0.95,
+        }];
+        let result = format_chain_similar(&results, &theme);
+        assert!(result.contains("Similar Blocks"));
+        assert!(result.contains("10"));
+        assert!(result.contains("hash123"));
+        assert!(result.contains("0.95"));
+    }
+
+    #[test]
     fn test_format_chain_drift() {
         let theme = Theme::plain();
         let drift = ChainDriftResult {
@@ -308,6 +323,22 @@ mod tests {
         assert!(result.contains("global"));
         assert!(result.contains("256"));
         assert!(result.contains("128"));
+        assert!(result.contains("embeddings"));
+    }
+
+    #[test]
+    fn test_format_chain_codebook_no_domain() {
+        let theme = Theme::plain();
+        let info = ChainCodebookInfo {
+            scope: "local".to_string(),
+            entry_count: 64,
+            dimension: 32,
+            domain: None,
+        };
+        let result = format_chain_codebook(&info, &theme);
+        assert!(result.contains("local"));
+        assert!(result.contains("64"));
+        assert!(!result.contains("Domain"));
     }
 
     #[test]
@@ -322,5 +353,184 @@ mod tests {
         let result = format_chain_transitions(&analysis, &theme);
         assert!(result.contains("100"));
         assert!(result.contains("95"));
+    }
+
+    #[test]
+    fn test_format_chain_result_transaction_begun() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(
+            &ChainResult::TransactionBegun {
+                tx_id: "tx123".to_string(),
+            },
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("tx123"));
+        assert!(result.contains("transaction started"));
+    }
+
+    #[test]
+    fn test_format_chain_result_committed() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(
+            &ChainResult::Committed {
+                block_hash: "hash456".to_string(),
+                height: 100,
+            },
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("Committed"));
+        assert!(result.contains("hash456"));
+        assert!(result.contains("100"));
+    }
+
+    #[test]
+    fn test_format_chain_result_rolled_back() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(
+            &ChainResult::RolledBack { to_height: 50 },
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("rolled back"));
+        assert!(result.contains("50"));
+    }
+
+    #[test]
+    fn test_format_chain_result_height() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(&ChainResult::Height(42), &theme, &icons);
+        assert!(result.contains("height"));
+        assert!(result.contains("42"));
+    }
+
+    #[test]
+    fn test_format_chain_result_tip() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(
+            &ChainResult::Tip {
+                hash: "tiphash".to_string(),
+                height: 99,
+            },
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("tip"));
+        assert!(result.contains("tiphash"));
+        assert!(result.contains("99"));
+    }
+
+    #[test]
+    fn test_format_chain_result_verified_ok() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(
+            &ChainResult::Verified {
+                ok: true,
+                errors: vec![],
+            },
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("verified"));
+        assert!(result.contains("OK"));
+    }
+
+    #[test]
+    fn test_format_chain_result_verified_failed() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(
+            &ChainResult::Verified {
+                ok: false,
+                errors: vec!["error1".to_string(), "error2".to_string()],
+            },
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("verification failed"));
+        assert!(result.contains("error1"));
+        assert!(result.contains("error2"));
+    }
+
+    #[test]
+    fn test_format_chain_result_history() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(&ChainResult::History(vec![]), &theme, &icons);
+        assert!(result.contains("No history"));
+    }
+
+    #[test]
+    fn test_format_chain_result_similar() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_chain_result(&ChainResult::Similar(vec![]), &theme, &icons);
+        assert!(result.contains("No similar"));
+    }
+
+    #[test]
+    fn test_format_chain_result_drift() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let drift = ChainDriftResult {
+            from_height: 1,
+            to_height: 10,
+            total_drift: 0.5,
+            avg_drift_per_block: 0.05,
+            max_drift: 0.1,
+        };
+        let result = format_chain_result(&ChainResult::Drift(drift), &theme, &icons);
+        assert!(result.contains("Drift Analysis"));
+    }
+
+    #[test]
+    fn test_format_chain_result_block() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let info = ChainBlockInfo {
+            height: 42,
+            hash: "abc123".to_string(),
+            prev_hash: "def456".to_string(),
+            timestamp: 1704067200,
+            transaction_count: 5,
+            proposer: "node1".to_string(),
+        };
+        let result = format_chain_result(&ChainResult::Block(info), &theme, &icons);
+        assert!(result.contains("Block Info"));
+    }
+
+    #[test]
+    fn test_format_chain_result_codebook() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let info = ChainCodebookInfo {
+            scope: "global".to_string(),
+            entry_count: 256,
+            dimension: 128,
+            domain: None,
+        };
+        let result = format_chain_result(&ChainResult::Codebook(info), &theme, &icons);
+        assert!(result.contains("Codebook Info"));
+    }
+
+    #[test]
+    fn test_format_chain_result_transitions() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let analysis = ChainTransitionAnalysis {
+            total_transitions: 100,
+            valid_transitions: 95,
+            invalid_transitions: 5,
+            avg_validity_score: 0.95,
+        };
+        let result = format_chain_result(&ChainResult::TransitionAnalysis(analysis), &theme, &icons);
+        assert!(result.contains("Transition Analysis"));
     }
 }

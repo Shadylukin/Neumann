@@ -214,6 +214,35 @@ mod tests {
     }
 
     #[test]
+    fn test_format_blob_large_text() {
+        let theme = Theme::plain();
+        // Create text larger than BLOB_TEXT_DISPLAY_LIMIT (4096)
+        let large_text: String = "a".repeat(5000);
+        let result = format_blob(large_text.as_bytes(), &theme);
+        assert!(result.contains("..."));
+        assert!(result.contains("more bytes"));
+        assert!(result.contains("total"));
+    }
+
+    #[test]
+    fn test_format_blob_text_with_newlines() {
+        let theme = Theme::plain();
+        let result = format_blob(b"line1\nline2\tline3\r\n", &theme);
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+    }
+
+    #[test]
+    fn test_format_blob_large_binary() {
+        let theme = Theme::plain();
+        // Create binary data larger than BLOB_HEX_PREVIEW_BYTES (64)
+        let large_binary: Vec<u8> = (0..100).collect();
+        let result = format_blob(&large_binary, &theme);
+        assert!(result.contains("binary data"));
+        assert!(result.contains("more bytes"));
+    }
+
+    #[test]
     fn test_format_hex_dump() {
         let theme = Theme::plain();
         let result = format_hex_dump(&[0xDE, 0xAD, 0xBE, 0xEF], 16, &theme);
@@ -221,6 +250,35 @@ mod tests {
         assert!(result.contains("ad"));
         assert!(result.contains("be"));
         assert!(result.contains("ef"));
+    }
+
+    #[test]
+    fn test_format_hex_dump_full_line() {
+        let theme = Theme::plain();
+        // 16 bytes for a full line
+        let data: Vec<u8> = (0..16).collect();
+        let result = format_hex_dump(&data, 32, &theme);
+        assert!(result.contains("00000000"));
+        assert!(result.contains("|"));
+    }
+
+    #[test]
+    fn test_format_hex_dump_multiple_lines() {
+        let theme = Theme::plain();
+        // 32 bytes for two lines
+        let data: Vec<u8> = (0..32).collect();
+        let result = format_hex_dump(&data, 64, &theme);
+        assert!(result.contains("00000000"));
+        assert!(result.contains("00000010"));
+    }
+
+    #[test]
+    fn test_format_hex_dump_ascii_representation() {
+        let theme = Theme::plain();
+        // Mix of printable and non-printable chars
+        let data = b"Hello\x00World";
+        let result = format_hex_dump(data, 16, &theme);
+        assert!(result.contains("Hello.World"));
     }
 
     #[test]
@@ -253,5 +311,101 @@ mod tests {
         assert!(result.contains("10"));
         assert!(result.contains("100"));
         assert!(result.contains("50.0%"));
+    }
+
+    #[test]
+    fn test_format_artifact_info_basic() {
+        let theme = Theme::plain();
+        let info = query_router::ArtifactInfoResult {
+            id: "art123".to_string(),
+            filename: "test.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            size: 1024,
+            checksum: "abc123".to_string(),
+            chunk_count: 5,
+            created: 1704067200,
+            modified: 1704153600,
+            created_by: "user1".to_string(),
+            tags: vec![],
+            linked_to: vec![],
+            custom: std::collections::HashMap::new(),
+        };
+        let result = format_artifact_info(&info, &theme);
+        assert!(result.contains("art123"));
+        assert!(result.contains("test.txt"));
+        assert!(result.contains("text/plain"));
+        assert!(result.contains("1024"));
+    }
+
+    #[test]
+    fn test_format_artifact_info_with_tags() {
+        let theme = Theme::plain();
+        let info = query_router::ArtifactInfoResult {
+            id: "art123".to_string(),
+            filename: "test.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            size: 1024,
+            checksum: "abc123".to_string(),
+            chunk_count: 5,
+            created: 1704067200,
+            modified: 1704153600,
+            created_by: "user1".to_string(),
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
+            linked_to: vec![],
+            custom: std::collections::HashMap::new(),
+        };
+        let result = format_artifact_info(&info, &theme);
+        assert!(result.contains("Tags:"));
+        assert!(result.contains("tag1"));
+        assert!(result.contains("tag2"));
+    }
+
+    #[test]
+    fn test_format_artifact_info_with_links() {
+        let theme = Theme::plain();
+        let info = query_router::ArtifactInfoResult {
+            id: "art123".to_string(),
+            filename: "test.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            size: 1024,
+            checksum: "abc123".to_string(),
+            chunk_count: 5,
+            created: 1704067200,
+            modified: 1704153600,
+            created_by: "user1".to_string(),
+            tags: vec![],
+            linked_to: vec!["link1".to_string(), "link2".to_string()],
+            custom: std::collections::HashMap::new(),
+        };
+        let result = format_artifact_info(&info, &theme);
+        assert!(result.contains("Links:"));
+        assert!(result.contains("link1"));
+        assert!(result.contains("link2"));
+    }
+
+    #[test]
+    fn test_format_artifact_info_with_custom_metadata() {
+        let theme = Theme::plain();
+        let mut custom = std::collections::HashMap::new();
+        custom.insert("key1".to_string(), "value1".to_string());
+        custom.insert("key2".to_string(), "value2".to_string());
+        let info = query_router::ArtifactInfoResult {
+            id: "art123".to_string(),
+            filename: "test.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            size: 1024,
+            checksum: "abc123".to_string(),
+            chunk_count: 5,
+            created: 1704067200,
+            modified: 1704153600,
+            created_by: "user1".to_string(),
+            tags: vec![],
+            linked_to: vec![],
+            custom,
+        };
+        let result = format_artifact_info(&info, &theme);
+        assert!(result.contains("Metadata"));
+        assert!(result.contains("key1"));
+        assert!(result.contains("value1"));
     }
 }

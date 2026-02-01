@@ -124,4 +124,106 @@ mod tests {
         let mut helper = NeumannHelper::new(Theme::plain());
         helper.set_tables(vec!["users".to_string(), "orders".to_string()]);
     }
+
+    #[test]
+    fn test_helper_completer_trait() {
+        let helper = NeumannHelper::new(Theme::plain());
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let result = helper.complete("SELECT ", 7, &ctx);
+        assert!(result.is_ok());
+        let (start, completions) = result.unwrap();
+        assert_eq!(start, 7);
+        assert!(!completions.is_empty());
+    }
+
+    #[test]
+    fn test_helper_highlighter_trait() {
+        let helper = NeumannHelper::new(Theme::plain());
+
+        // Test highlight
+        let highlighted = helper.highlight("SELECT * FROM users", 0);
+        assert!(!highlighted.is_empty());
+
+        // Test highlight_char
+        let needs_highlight = helper.highlight_char("SELECT", 0, CmdKind::MoveCursor);
+        // Result depends on implementation
+        let _ = needs_highlight;
+
+        // Test highlight_prompt
+        let prompt = helper.highlight_prompt("neumann> ", false);
+        assert!(!prompt.is_empty());
+
+        // Test highlight_hint
+        let hint = helper.highlight_hint("users");
+        assert!(!hint.is_empty());
+
+        // Test highlight_candidate
+        let candidate = helper.highlight_candidate("SELECT", rustyline::CompletionType::List);
+        assert!(!candidate.is_empty());
+    }
+
+    #[test]
+    fn test_helper_hinter_trait() {
+        let helper = NeumannHelper::new(Theme::plain());
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let hint = helper.hint("SELECT", 6, &ctx);
+        assert!(hint.is_none()); // Hints are disabled
+    }
+
+    #[test]
+    fn test_helper_with_different_themes() {
+        let themes = [
+            Theme::plain(),
+            Theme::dark(),
+            Theme::light(),
+            Theme::auto(),
+        ];
+        for theme in themes {
+            let helper = NeumannHelper::new(theme);
+            let highlighted = helper.highlight("SELECT", 0);
+            assert!(!highlighted.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_helper_complete_partial() {
+        let helper = NeumannHelper::new(Theme::plain());
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+
+        // Complete partial command
+        let result = helper.complete("SEL", 3, &ctx);
+        assert!(result.is_ok());
+        let (start, completions) = result.unwrap();
+        assert_eq!(start, 0);
+        assert!(completions.iter().any(|p| p.display == "SELECT"));
+    }
+
+    #[test]
+    fn test_helper_complete_with_tables() {
+        let mut helper = NeumannHelper::new(Theme::plain());
+        helper.set_tables(vec!["users".to_string(), "orders".to_string()]);
+
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let result = helper.complete("SELECT * FROM ", 14, &ctx);
+        assert!(result.is_ok());
+        let (_, completions) = result.unwrap();
+        assert!(completions.iter().any(|p| p.display == "users"));
+        assert!(completions.iter().any(|p| p.display == "orders"));
+    }
+
+    #[test]
+    fn test_helper_highlight_keywords() {
+        let helper = NeumannHelper::new(Theme::plain());
+
+        // Various SQL keywords
+        let _h1 = helper.highlight("INSERT INTO users VALUES (1)", 0);
+        let _h2 = helper.highlight("UPDATE users SET name = 'x'", 0);
+        let _h3 = helper.highlight("DELETE FROM users WHERE id = 1", 0);
+        let _h4 = helper.highlight("CREATE TABLE test (id INT)", 0);
+        let _h5 = helper.highlight("DROP TABLE test", 0);
+    }
 }

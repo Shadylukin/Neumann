@@ -173,10 +173,22 @@ mod tests {
     #[test]
     fn test_dark_theme_has_colors() {
         let theme = Theme::dark();
-        // Just verify we can create and access theme colors
+        // Verify all fields are accessible
         let _ = theme.success;
         let _ = theme.error;
+        let _ = theme.warning;
+        let _ = theme.info;
         let _ = theme.header;
+        let _ = theme.border;
+        let _ = theme.muted;
+        let _ = theme.keyword;
+        let _ = theme.string;
+        let _ = theme.number;
+        let _ = theme.id;
+        let _ = theme.label;
+        let _ = theme.null;
+        let _ = theme.highlight;
+        let _ = theme.link;
     }
 
     #[test]
@@ -184,6 +196,19 @@ mod tests {
         let theme = Theme::light();
         let _ = theme.success;
         let _ = theme.error;
+        let _ = theme.warning;
+        let _ = theme.info;
+        let _ = theme.header;
+        let _ = theme.border;
+        let _ = theme.muted;
+        let _ = theme.keyword;
+        let _ = theme.string;
+        let _ = theme.number;
+        let _ = theme.id;
+        let _ = theme.label;
+        let _ = theme.null;
+        let _ = theme.highlight;
+        let _ = theme.link;
     }
 
     #[test]
@@ -191,6 +216,39 @@ mod tests {
         let theme = Theme::plain();
         let _ = theme.success;
         let _ = theme.error;
+        let _ = theme.warning;
+        let _ = theme.info;
+        let _ = theme.header;
+        let _ = theme.border;
+        let _ = theme.muted;
+        let _ = theme.keyword;
+        let _ = theme.string;
+        let _ = theme.number;
+        let _ = theme.id;
+        let _ = theme.label;
+        let _ = theme.null;
+        let _ = theme.highlight;
+        let _ = theme.link;
+    }
+
+    #[test]
+    fn test_phosphor_theme_has_colors() {
+        let theme = Theme::phosphor();
+        let _ = theme.success;
+        let _ = theme.error;
+        let _ = theme.warning;
+        let _ = theme.info;
+        let _ = theme.header;
+        let _ = theme.border;
+        let _ = theme.muted;
+        let _ = theme.keyword;
+        let _ = theme.string;
+        let _ = theme.number;
+        let _ = theme.id;
+        let _ = theme.label;
+        let _ = theme.null;
+        let _ = theme.highlight;
+        let _ = theme.link;
     }
 
     #[test]
@@ -201,7 +259,33 @@ mod tests {
     }
 
     #[test]
+    fn test_styled_with_number() {
+        let style = Style::new().yellow();
+        let result = styled(42, style);
+        assert!(result.contains("42"));
+    }
+
+    #[test]
     fn test_default_theme() {
         let _theme = Theme::default();
+    }
+
+    #[test]
+    fn test_theme_clone() {
+        let theme = Theme::dark();
+        let cloned = theme.clone();
+        let _ = cloned.success;
+    }
+
+    #[test]
+    fn test_theme_debug() {
+        let theme = Theme::dark();
+        let debug = format!("{:?}", theme);
+        assert!(debug.contains("Theme"));
+    }
+
+    #[test]
+    fn test_auto_theme() {
+        let _theme = Theme::auto();
     }
 }

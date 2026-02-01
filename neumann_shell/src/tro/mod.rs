@@ -519,4 +519,254 @@ mod tests {
         assert_eq!(config.border_depth, 1);
         assert_eq!(config.resolution, ResolutionMode::Standard);
     }
+
+    #[test]
+    fn test_tro_controller_new() {
+        let config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let controller = TroController::new(config);
+        assert!(controller.is_enabled());
+    }
+
+    #[test]
+    fn test_tro_controller_activity_sensor() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        let sensor = controller.activity_sensor();
+        // Sensor should work
+        sensor.record(OpType::Get, "test");
+    }
+
+    #[test]
+    fn test_tro_controller_pause_resume() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.pause();
+        controller.resume();
+    }
+
+    #[test]
+    fn test_tro_controller_pulse() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.pulse(0, 0.5);
+        controller.pulse(10, 1.0);
+    }
+
+    #[test]
+    fn test_tro_controller_glitch() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.glitch(100);
+        controller.glitch(0);
+    }
+
+    #[test]
+    fn test_tro_controller_is_running() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        // Not running by default since render thread is disabled
+        assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn test_tro_controller_palette() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        let palette = controller.palette();
+        assert_eq!(palette, Palette::PhosphorGreen);
+    }
+
+    #[test]
+    fn test_tro_controller_set_palette() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.set_palette(Palette::PhosphorAmber);
+        // Note: set_palette sends command but render thread is disabled
+    }
+
+    #[test]
+    fn test_tro_controller_set_crt_effects() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.set_crt_effects(true);
+        controller.set_crt_effects(false);
+    }
+
+    #[test]
+    fn test_tro_controller_charset_mode() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        let mode = controller.charset_mode();
+        // Mode is detected from environment
+        assert!(matches!(mode, CharsetMode::Unicode | CharsetMode::Ascii));
+    }
+
+    #[test]
+    fn test_tro_controller_set_charset_mode() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.set_charset_mode(CharsetMode::Ascii);
+        controller.set_charset_mode(CharsetMode::Unicode);
+    }
+
+    #[test]
+    fn test_tro_controller_set_resolution() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.set_resolution(ResolutionMode::Standard);
+        controller.set_resolution(ResolutionMode::HalfBlock);
+        controller.set_resolution(ResolutionMode::Quadrant);
+        controller.set_resolution(ResolutionMode::Braille);
+    }
+
+    #[test]
+    fn test_tro_controller_set_border_depth() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.set_border_depth(1);
+        controller.set_border_depth(3);
+        controller.set_border_depth(5);
+    }
+
+    #[test]
+    fn test_tro_controller_config() {
+        let config = TroConfig {
+            fps: 30,
+            ..TroConfig::default()
+        };
+        let controller = TroController::new(config);
+        assert_eq!(controller.config().fps, 30);
+    }
+
+    #[test]
+    fn test_tro_controller_run_boot_sequence_disabled() {
+        let config = TroConfig::disabled();
+        let controller = TroController::new(config);
+        // Should not panic when disabled
+        controller.run_boot_sequence("0.1.0");
+    }
+
+    #[test]
+    fn test_tro_controller_shutdown() {
+        let config = TroConfig::default();
+        let mut controller = TroController::new(config);
+        controller.shutdown();
+        assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn test_tro_controller_drop() {
+        let config = TroConfig::default();
+        {
+            let _controller = TroController::new(config);
+            // Controller will be dropped here
+        }
+        // Should not panic
+    }
+
+    #[test]
+    fn test_tro_controller_send() {
+        let config = TroConfig::default();
+        let controller = TroController::new(config);
+        controller.send(TroCommand::Pause);
+        controller.send(TroCommand::Resume);
+        controller.send(TroCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_tro_command_clone() {
+        let cmd = TroCommand::Pulse {
+            position: 5,
+            intensity: 0.5,
+        };
+        let cloned = cmd.clone();
+        if let TroCommand::Pulse { position, intensity } = cloned {
+            assert_eq!(position, 5);
+            assert!((intensity - 0.5).abs() < f32::EPSILON);
+        } else {
+            panic!("Expected Pulse");
+        }
+    }
+
+    #[test]
+    fn test_tro_command_debug() {
+        let cmd = TroCommand::Pause;
+        let debug_str = format!("{cmd:?}");
+        assert!(debug_str.contains("Pause"));
+    }
+
+    #[test]
+    fn test_tro_config_clone() {
+        let config = TroConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.fps, config.fps);
+        assert_eq!(cloned.agent_count, config.agent_count);
+    }
+
+    #[test]
+    fn test_tro_config_debug() {
+        let config = TroConfig::default();
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("fps"));
+        assert!(debug_str.contains("agent_count"));
+    }
+
+    #[test]
+    fn test_tro_config_all_fields() {
+        let config = TroConfig {
+            enabled: true,
+            fps: 30,
+            agent_count: 1000,
+            palette: Palette::PhosphorAmber,
+            crt_effects: false,
+            boot_style: BootStyle::Compact,
+            border_width: 2,
+            reaction_frequency: 2,
+            charset_mode: CharsetMode::Ascii,
+            border_depth: 3,
+            resolution: ResolutionMode::Braille,
+            tendril_config: TendrilConfig::default(),
+        };
+        assert_eq!(config.fps, 30);
+        assert_eq!(config.agent_count, 1000);
+        assert_eq!(config.palette, Palette::PhosphorAmber);
+        assert!(!config.crt_effects);
+        assert_eq!(config.boot_style, BootStyle::Compact);
+        assert_eq!(config.border_width, 2);
+        assert_eq!(config.border_depth, 3);
+        assert_eq!(config.resolution, ResolutionMode::Braille);
+    }
+
+    #[test]
+    fn test_tro_command_set_palette() {
+        let cmd = TroCommand::SetPalette(Palette::PhosphorBlue);
+        if let TroCommand::SetPalette(p) = cmd {
+            assert_eq!(p, Palette::PhosphorBlue);
+        } else {
+            panic!("Expected SetPalette");
+        }
+    }
+
+    #[test]
+    fn test_tro_command_set_crt_effects() {
+        let cmd = TroCommand::SetCrtEffects(true);
+        if let TroCommand::SetCrtEffects(enabled) = cmd {
+            assert!(enabled);
+        } else {
+            panic!("Expected SetCrtEffects");
+        }
+    }
+
+    #[test]
+    fn test_tro_command_set_charset_mode() {
+        let cmd = TroCommand::SetCharsetMode(CharsetMode::Ascii);
+        if let TroCommand::SetCharsetMode(mode) = cmd {
+            assert_eq!(mode, CharsetMode::Ascii);
+        } else {
+            panic!("Expected SetCharsetMode");
+        }
+    }
 }

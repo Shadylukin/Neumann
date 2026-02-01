@@ -1387,10 +1387,55 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_with_tro_config() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        assert!(shell.tro.is_none());
+    }
+
+    #[test]
+    fn test_shell_with_tro_config_enabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let shell = Shell::with_tro_config(config, tro_config);
+        assert!(shell.tro.is_some());
+    }
+
+    #[test]
     fn test_execute_line() {
         let mut shell = Shell::new();
         let result = shell.execute_line("SELECT 1");
         assert!(result.is_ok() || result.is_err()); // Just verify it runs
+    }
+
+    #[test]
+    fn test_execute_line_help() {
+        let mut shell = Shell::new();
+        let result = shell.execute_line("help");
+        assert!(result.is_ok());
+        if let Ok(text) = result {
+            assert!(text.contains("Commands"));
+        }
+    }
+
+    #[test]
+    fn test_execute_line_exit() {
+        let mut shell = Shell::new();
+        let result = shell.execute_line("exit");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_execute_line_empty() {
+        let mut shell = Shell::new();
+        let result = shell.execute_line("");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
     }
 
     #[test]
@@ -1431,9 +1476,26 @@ mod tests {
     }
 
     #[test]
+    fn test_help_question_mark() {
+        let mut shell = Shell::new();
+        let result = shell.execute("\\?");
+        assert!(matches!(result, CommandResult::Help(_)));
+    }
+
+    #[test]
     fn test_clear_command() {
         let mut shell = Shell::new();
         let result = shell.execute("clear");
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(text) = result {
+            assert!(text.contains("\x1B[2J"));
+        }
+    }
+
+    #[test]
+    fn test_clear_backslash() {
+        let mut shell = Shell::new();
+        let result = shell.execute("\\c");
         assert!(matches!(result, CommandResult::Output(_)));
     }
 
@@ -1442,6 +1504,15 @@ mod tests {
         let mut shell = Shell::new();
         let result = shell.execute("tables");
         // Should work even with no tables
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
+    }
+
+    #[test]
+    fn test_tables_backslash() {
+        let mut shell = Shell::new();
+        let result = shell.execute("\\dt");
         assert!(
             matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
         );
@@ -1466,6 +1537,20 @@ mod tests {
     }
 
     #[test]
+    fn test_wal_status_command() {
+        let mut shell = Shell::new();
+        let result = shell.execute("wal status");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_wal_truncate_command() {
+        let mut shell = Shell::new();
+        let result = shell.execute("wal truncate");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
     fn test_is_write_command() {
         assert!(Shell::is_write_command("INSERT INTO users VALUES (1)"));
         assert!(Shell::is_write_command("UPDATE users SET name = 'x'"));
@@ -1479,8 +1564,92 @@ mod tests {
     }
 
     #[test]
+    fn test_is_write_command_checkpoint() {
+        assert!(Shell::is_write_command("CHECKPOINT"));
+        assert!(Shell::is_write_command("ROLLBACK"));
+    }
+
+    #[test]
+    fn test_is_write_command_edge() {
+        assert!(Shell::is_write_command("EDGE CREATE knows 1 2"));
+        assert!(!Shell::is_write_command("EDGE GET 1"));
+    }
+
+    #[test]
+    fn test_is_write_command_embed() {
+        assert!(Shell::is_write_command("EMBED STORE 'key' [1,2,3]"));
+        assert!(Shell::is_write_command("EMBED DELETE 'key'"));
+        assert!(!Shell::is_write_command("EMBED GET 'key'"));
+    }
+
+    #[test]
+    fn test_is_write_command_vault() {
+        assert!(Shell::is_write_command("VAULT SET 'key' 'value'"));
+        assert!(Shell::is_write_command("VAULT DELETE 'key'"));
+        assert!(Shell::is_write_command("VAULT ROTATE 'key'"));
+        assert!(Shell::is_write_command("VAULT GRANT read 'key' TO 'user'"));
+        assert!(Shell::is_write_command("VAULT REVOKE read 'key' FROM 'user'"));
+        assert!(!Shell::is_write_command("VAULT GET 'key'"));
+    }
+
+    #[test]
+    fn test_is_write_command_cache() {
+        assert!(Shell::is_write_command("CACHE CLEAR"));
+        assert!(!Shell::is_write_command("CACHE GET 'key'"));
+    }
+
+    #[test]
+    fn test_is_write_command_blob() {
+        assert!(Shell::is_write_command("BLOB PUT 'file.txt' content"));
+        assert!(Shell::is_write_command("BLOB DELETE 'hash'"));
+        assert!(Shell::is_write_command("BLOB LINK 'hash' 'artifact'"));
+        assert!(Shell::is_write_command("BLOB UNLINK 'hash' 'artifact'"));
+        assert!(Shell::is_write_command("BLOB TAG 'hash' 'tag'"));
+        assert!(Shell::is_write_command("BLOB UNTAG 'hash' 'tag'"));
+        assert!(Shell::is_write_command("BLOB GC"));
+        assert!(Shell::is_write_command("BLOB REPAIR"));
+        assert!(Shell::is_write_command("BLOB META SET 'hash' 'key' 'val'"));
+        assert!(!Shell::is_write_command("BLOB GET 'hash'"));
+    }
+
+    #[test]
+    fn test_is_write_command_entity() {
+        assert!(Shell::is_write_command("ENTITY CREATE type {}"));
+        assert!(!Shell::is_write_command("ENTITY GET 1"));
+    }
+
+    #[test]
+    fn test_is_write_command_graph() {
+        assert!(Shell::is_write_command("GRAPH BATCH CREATE"));
+        assert!(Shell::is_write_command("GRAPH CONSTRAINT CREATE unique"));
+        assert!(Shell::is_write_command("GRAPH CONSTRAINT DROP unique"));
+        assert!(Shell::is_write_command("GRAPH INDEX CREATE idx"));
+        assert!(Shell::is_write_command("GRAPH INDEX DROP idx"));
+        assert!(!Shell::is_write_command("GRAPH ALGORITHM PAGERANK"));
+    }
+
+    #[test]
+    fn test_is_write_command_chain() {
+        assert!(Shell::is_write_command("BEGIN CHAIN tx1"));
+        assert!(Shell::is_write_command("COMMIT CHAIN"));
+        assert!(!Shell::is_write_command("CHAIN HEIGHT"));
+    }
+
+    #[test]
+    fn test_is_write_command_other() {
+        assert!(!Shell::is_write_command("SIMILAR [1,2,3] LIMIT 5"));
+        assert!(!Shell::is_write_command("FIND pattern"));
+    }
+
+    #[test]
     fn test_extract_path_quoted() {
         let path = Shell::extract_path("save 'test.bin'", "save");
+        assert_eq!(path, Some("test.bin".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_double_quoted() {
+        let path = Shell::extract_path("save \"test.bin\"", "save");
         assert_eq!(path, Some("test.bin".to_string()));
     }
 
@@ -1488,6 +1657,18 @@ mod tests {
     fn test_extract_path_unquoted() {
         let path = Shell::extract_path("save test.bin", "save");
         assert_eq!(path, Some("test.bin".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_empty() {
+        let path = Shell::extract_path("save", "save");
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn test_extract_path_empty_quotes() {
+        let path = Shell::extract_path("save ''", "save");
+        assert_eq!(path, None);
     }
 
     #[test]
@@ -1509,6 +1690,42 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_load_path_lowercase() {
+        let result = Shell::extract_load_path_and_mode("load data.bin");
+        assert_eq!(
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Strict))
+        );
+    }
+
+    #[test]
+    fn test_extract_load_path_lowercase_recover() {
+        let result = Shell::extract_load_path_and_mode("load 'data.bin' recover");
+        assert_eq!(
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Recover))
+        );
+    }
+
+    #[test]
+    fn test_extract_load_path_empty() {
+        let result = Shell::extract_load_path_and_mode("LOAD");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_load_path_only_recover() {
+        let result = Shell::extract_load_path_and_mode("LOAD RECOVER");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_load_path_empty_after_recover() {
+        let result = Shell::extract_load_path_and_mode("LOAD '' RECOVER");
+        assert_eq!(result, None);
+    }
+
+    #[test]
     fn test_parse_node_address_valid() {
         let result = Shell::parse_node_address("node1@127.0.0.1:8080");
         assert!(result.is_ok());
@@ -1521,6 +1738,21 @@ mod tests {
     fn test_parse_node_address_invalid() {
         let result = Shell::parse_node_address("invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_node_address_invalid_port() {
+        let result = Shell::parse_node_address("node1@127.0.0.1:invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_node_address_ipv6() {
+        let result = Shell::parse_node_address("node1@[::1]:8080");
+        assert!(result.is_ok());
+        let (id, addr) = result.unwrap();
+        assert_eq!(id, "node1");
+        assert_eq!(addr.port(), 8080);
     }
 
     #[test]
@@ -1550,10 +1782,40 @@ mod tests {
     }
 
     #[test]
+    fn test_loop_action_output() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Output("test".to_string())),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
+    fn test_loop_action_error() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Error("error".to_string())),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
+    fn test_loop_action_help() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Help("help".to_string())),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
     fn test_shell_error_display() {
         let err = ShellError::Init("test error".to_string());
         let display = format!("{err}");
         assert!(display.contains("test error"));
+    }
+
+    #[test]
+    fn test_shell_error_is_error() {
+        let err = ShellError::Init("test".to_string());
+        assert!(std::error::Error::source(&err).is_none());
     }
 
     #[test]
@@ -1599,5 +1861,571 @@ mod tests {
         let shell = Shell::new();
         let _router = shell.router();
         let _router_arc = shell.router_arc();
+    }
+
+    #[test]
+    fn test_router_mut_access() {
+        let shell = Shell::new();
+        let _router = shell.router_mut();
+    }
+
+    #[test]
+    fn test_help_text() {
+        let help = Shell::help_text();
+        assert!(help.contains("Commands"));
+    }
+
+    #[test]
+    fn test_default_shell() {
+        let shell = Shell::default();
+        assert!(!shell.config.prompt.is_empty());
+    }
+
+    #[test]
+    fn test_tro_access() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        assert!(shell.tro().is_none());
+    }
+
+    #[test]
+    fn test_record_activity_no_tro() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        // Should not panic even without TRO
+        shell.record_activity(OpType::Get, "test");
+    }
+
+    #[test]
+    fn test_record_activity_with_tro() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let shell = Shell::with_tro_config(config, tro_config);
+        shell.record_activity(OpType::Put, "test_key");
+        shell.record_activity(OpType::Get, "test_key");
+        shell.record_activity(OpType::Delete, "test_key");
+        shell.record_activity(OpType::VectorSearch, "query");
+        shell.record_activity(OpType::Scan, "pattern");
+    }
+
+    #[test]
+    fn test_vault_init_no_env() {
+        let shell = Shell::new();
+        // Clear the env var if set
+        std::env::remove_var("NEUMANN_VAULT_KEY");
+        let result = shell.handle_vault_init();
+        assert!(matches!(result, CommandResult::Error(_)));
+        if let CommandResult::Error(msg) = result {
+            assert!(msg.contains("NEUMANN_VAULT_KEY"));
+        }
+    }
+
+    #[test]
+    fn test_vault_init_invalid_base64() {
+        let shell = Shell::new();
+        std::env::set_var("NEUMANN_VAULT_KEY", "not-valid-base64!!!");
+        let result = shell.handle_vault_init();
+        std::env::remove_var("NEUMANN_VAULT_KEY");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_vault_identity_get() {
+        let shell = Shell::new();
+        let result = shell.handle_vault_identity("vault identity");
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("identity"));
+        }
+    }
+
+    #[test]
+    fn test_vault_identity_set() {
+        let shell = Shell::new();
+        let result = shell.handle_vault_identity("vault identity alice");
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("alice"));
+        }
+    }
+
+    #[test]
+    fn test_vault_identity_set_quoted() {
+        let shell = Shell::new();
+        let result = shell.handle_vault_identity("vault identity 'bob'");
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("bob"));
+        }
+    }
+
+    #[test]
+    fn test_cache_init() {
+        let shell = Shell::new();
+        let result = shell.handle_cache_init();
+        // May succeed or fail depending on internal state
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
+    }
+
+    #[test]
+    fn test_cluster_connect_no_args() {
+        let shell = Shell::new();
+        let result = shell.handle_cluster_connect("cluster connect");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_cluster_connect_invalid_address() {
+        let shell = Shell::new();
+        let result = shell.handle_cluster_connect("cluster connect 'invalid'");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_cluster_disconnect_not_connected() {
+        let shell = Shell::new();
+        let result = shell.handle_cluster_disconnect();
+        assert!(matches!(result, CommandResult::Error(_)));
+        if let CommandResult::Error(msg) = result {
+            assert!(msg.contains("Not connected"));
+        }
+    }
+
+    #[test]
+    fn test_tro_command_status_disabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro");
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("disabled"));
+        }
+    }
+
+    #[test]
+    fn test_tro_command_status_explicit() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro status");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_tro_command_pause_disabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro pause");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_tro_command_resume_disabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro resume");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_tro_command_theme_disabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro theme phosphor");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_tro_command_crt_disabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro crt on");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_tro_command_ascii_disabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro ascii on");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_tro_command_themes_list() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro themes");
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("Available themes"));
+        }
+    }
+
+    #[test]
+    fn test_tro_command_unknown() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig::disabled();
+        let shell = Shell::with_tro_config(config, tro_config);
+        let result = shell.handle_tro_command("tro unknown");
+        assert!(matches!(result, CommandResult::Error(_)));
+        if let CommandResult::Error(msg) = result {
+            assert!(msg.contains("Unknown TRO command"));
+        }
+    }
+
+    #[test]
+    fn test_tro_command_with_enabled() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let shell = Shell::with_tro_config(config, tro_config);
+
+        // Test status
+        let result = shell.handle_tro_status();
+        assert!(matches!(result, CommandResult::Output(_)));
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("TRO Border Status"));
+        }
+
+        // Test pause
+        let result = shell.handle_tro_pause();
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test resume
+        let result = shell.handle_tro_resume();
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test theme with valid name
+        let result = shell.handle_tro_theme("green");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test invalid theme
+        let result = shell.handle_tro_theme("invalid_theme");
+        assert!(matches!(result, CommandResult::Error(_)));
+
+        // Test CRT on
+        let result = shell.handle_tro_crt("on");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test CRT off
+        let result = shell.handle_tro_crt("off");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test CRT invalid
+        let result = shell.handle_tro_crt("maybe");
+        assert!(matches!(result, CommandResult::Error(_)));
+
+        // Test ASCII on
+        let result = shell.handle_tro_ascii("on");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test ASCII off
+        let result = shell.handle_tro_ascii("off");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test ASCII invalid
+        let result = shell.handle_tro_ascii("maybe");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_tro_crt_variants() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let shell = Shell::with_tro_config(config, tro_config);
+
+        // Test all boolean variants
+        for val in ["true", "1", "yes"] {
+            let result = shell.handle_tro_crt(val);
+            assert!(matches!(result, CommandResult::Output(_)));
+        }
+        for val in ["false", "0", "no"] {
+            let result = shell.handle_tro_crt(val);
+            assert!(matches!(result, CommandResult::Output(_)));
+        }
+    }
+
+    #[test]
+    fn test_tro_ascii_variants() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let shell = Shell::with_tro_config(config, tro_config);
+
+        // Test all boolean variants
+        for val in ["true", "1", "yes"] {
+            let result = shell.handle_tro_ascii(val);
+            assert!(matches!(result, CommandResult::Output(_)));
+        }
+        for val in ["false", "0", "no"] {
+            let result = shell.handle_tro_ascii(val);
+            assert!(matches!(result, CommandResult::Output(_)));
+        }
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_empty() {
+        let result = WalReplayResult {
+            replayed: 0,
+            errors: vec![],
+        };
+        let formatted = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
+        assert!(formatted.is_empty());
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_with_replayed() {
+        let result = WalReplayResult {
+            replayed: 5,
+            errors: vec![],
+        };
+        let formatted = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
+        assert!(formatted.contains("Replayed 5 commands"));
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_with_errors() {
+        let result = WalReplayResult {
+            replayed: 3,
+            errors: vec![
+                WalReplayError::new(1, "cmd1", "error1".to_string()),
+                WalReplayError::new(2, "cmd2", "error2".to_string()),
+            ],
+        };
+        let formatted = Shell::format_wal_replay_result(&result, WalRecoveryMode::Recover);
+        assert!(formatted.contains("Replayed 3 commands"));
+        assert!(formatted.contains("Skipped 2"));
+        assert!(formatted.contains("Line 1"));
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_many_errors() {
+        let mut errors = Vec::new();
+        for i in 1..=10 {
+            errors.push(WalReplayError::new(i, &format!("cmd{i}"), "error".to_string()));
+        }
+        let result = WalReplayResult {
+            replayed: 0,
+            errors,
+        };
+        let formatted = Shell::format_wal_replay_result(&result, WalRecoveryMode::Recover);
+        assert!(formatted.contains("and 5 more"));
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_strict_mode_ignores_errors() {
+        let result = WalReplayResult {
+            replayed: 3,
+            errors: vec![WalReplayError::new(1, "cmd1", "error1".to_string())],
+        };
+        let formatted = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
+        assert!(!formatted.contains("Skipped"));
+    }
+
+    #[test]
+    fn test_detect_embedding_dimension_empty_store() {
+        let store = TensorStore::new();
+        let dim = Shell::detect_embedding_dimension(&store);
+        assert_eq!(dim, tensor_compress::CompressionDefaults::STANDARD);
+    }
+
+    #[test]
+    fn test_detect_embedding_dimension_with_vector() {
+        let store = TensorStore::new();
+        let mut data = tensor_store::TensorData::new();
+        data.set(
+            "embedding",
+            tensor_store::TensorValue::Vector(vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        store.put("test_key", data).unwrap();
+
+        let dim = Shell::detect_embedding_dimension(&store);
+        assert_eq!(dim, 4);
+    }
+
+    #[test]
+    fn test_detect_embedding_dimension_with_sparse() {
+        let store = TensorStore::new();
+        let mut data = tensor_store::TensorData::new();
+        let sparse = tensor_store::SparseVector::new(100);
+        data.set("embedding", tensor_store::TensorValue::Sparse(sparse));
+        store.put("test_key", data).unwrap();
+
+        let dim = Shell::detect_embedding_dimension(&store);
+        assert_eq!(dim, 100);
+    }
+
+    #[test]
+    fn test_save_invalid_path() {
+        let shell = Shell::new();
+        let result = shell.handle_save("save");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_save_compressed_invalid_path() {
+        let shell = Shell::new();
+        let result = shell.handle_save_compressed("save compressed");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_load_invalid_path() {
+        let shell = Shell::new();
+        let result = shell.handle_load("load");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_execute_via_command() {
+        let mut shell = Shell::new();
+
+        // Test vault init command
+        let result = shell.execute("vault init");
+        assert!(matches!(result, CommandResult::Error(_)));
+
+        // Test vault identity command
+        let result = shell.execute("vault identity test_user");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test cache init command
+        let result = shell.execute("cache init");
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
+
+        // Test cluster connect command
+        let result = shell.execute("cluster connect");
+        assert!(matches!(result, CommandResult::Error(_)));
+
+        // Test cluster disconnect command
+        let result = shell.execute("cluster disconnect");
+        assert!(matches!(result, CommandResult::Error(_)));
+
+        // Test tro command
+        let result = shell.execute("tro");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_dirs_home() {
+        // This tests the dirs_home function indirectly via ShellConfig
+        let original = std::env::var_os("HOME");
+
+        std::env::set_var("HOME", "/test/home");
+        let result = dirs_home();
+        assert_eq!(result, Some(PathBuf::from("/test/home")));
+
+        std::env::remove_var("HOME");
+        let result = dirs_home();
+        assert!(result.is_none());
+
+        // Restore original
+        if let Some(home) = original {
+            std::env::set_var("HOME", home);
+        }
+    }
+
+    #[test]
+    fn test_router_executor() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let executor = RouterExecutor(router);
+
+        // Test execute
+        let result = executor.execute("SHOW TABLES");
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_shell_config_quiet() {
+        let config = ShellConfig {
+            quiet: true,
+            ..Default::default()
+        };
+        assert!(config.quiet);
+    }
+
+    #[test]
+    fn test_shell_config_no_boot() {
+        let config = ShellConfig {
+            no_boot: true,
+            ..Default::default()
+        };
+        let shell = Shell::with_config(config);
+        // TRO should be disabled when no_boot is true
+        assert!(shell.tro.is_none());
+    }
+
+    #[test]
+    fn test_command_result_equality() {
+        assert_eq!(CommandResult::Empty, CommandResult::Empty);
+        assert_eq!(CommandResult::Exit, CommandResult::Exit);
+        assert_eq!(
+            CommandResult::Output("test".to_string()),
+            CommandResult::Output("test".to_string())
+        );
+        assert_ne!(
+            CommandResult::Output("a".to_string()),
+            CommandResult::Output("b".to_string())
+        );
+    }
+
+    #[test]
+    fn test_record_tro_activity_error() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let mut shell = Shell::with_tro_config(config, tro_config);
+
+        // Execute an invalid command to trigger error recording
+        let result = shell.execute("INVALID COMMAND SYNTAX @#$%");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_record_tro_activity_op_types() {
+        let config = ShellConfig::default();
+        let tro_config = TroConfig {
+            enabled: true,
+            ..TroConfig::default()
+        };
+        let shell = Shell::with_tro_config(config, tro_config);
+
+        // Test various command patterns
+        shell.record_tro_activity("INSERT INTO test VALUES (1)", false);
+        shell.record_tro_activity("PUT key value", false);
+        shell.record_tro_activity("CREATE TABLE test (id INT)", false);
+        shell.record_tro_activity("EMBED STORE key [1,2,3]", false);
+        shell.record_tro_activity("UPDATE test SET x = 1", false);
+        shell.record_tro_activity("DELETE FROM test", false);
+        shell.record_tro_activity("DROP TABLE test", false);
+        shell.record_tro_activity("SIMILAR [1,2,3] LIMIT 5", false);
+        shell.record_tro_activity("FIND pattern", false);
+        shell.record_tro_activity("SELECT * FROM test", false);
+        shell.record_tro_activity("NODE GET 1", false);
     }
 }

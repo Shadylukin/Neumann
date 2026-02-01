@@ -276,9 +276,55 @@ mod tests {
     }
 
     #[test]
+    fn test_boot_style_eq() {
+        assert_eq!(BootStyle::Full, BootStyle::Full);
+        assert_eq!(BootStyle::Compact, BootStyle::Compact);
+        assert_eq!(BootStyle::None, BootStyle::None);
+        assert_ne!(BootStyle::Full, BootStyle::Compact);
+    }
+
+    #[test]
+    fn test_boot_style_clone() {
+        let style = BootStyle::Full;
+        let cloned = style.clone();
+        assert_eq!(style, cloned);
+    }
+
+    #[test]
+    fn test_boot_style_copy() {
+        let style = BootStyle::Compact;
+        let copied = style;
+        assert_eq!(style, copied);
+    }
+
+    #[test]
+    fn test_boot_style_debug() {
+        let debug_str = format!("{:?}", BootStyle::Full);
+        assert!(debug_str.contains("Full"));
+
+        let debug_str = format!("{:?}", BootStyle::Compact);
+        assert!(debug_str.contains("Compact"));
+
+        let debug_str = format!("{:?}", BootStyle::None);
+        assert!(debug_str.contains("None"));
+    }
+
+    #[test]
     fn test_boot_sequence_new() {
         let seq = BootSequence::new(BootStyle::Full, Palette::PhosphorGreen);
         assert_eq!(seq.style, BootStyle::Full);
+    }
+
+    #[test]
+    fn test_boot_sequence_new_compact() {
+        let seq = BootSequence::new(BootStyle::Compact, Palette::PhosphorAmber);
+        assert_eq!(seq.style, BootStyle::Compact);
+    }
+
+    #[test]
+    fn test_boot_sequence_new_none() {
+        let seq = BootSequence::new(BootStyle::None, Palette::PhosphorBlue);
+        assert_eq!(seq.style, BootStyle::None);
     }
 
     #[test]
@@ -287,6 +333,47 @@ mod tests {
         seq.run("0.1.0"); // Should complete instantly
     }
 
+    #[test]
+    fn test_boot_sequence_with_different_palettes() {
+        let palettes = [
+            Palette::PhosphorGreen,
+            Palette::PhosphorAmber,
+            Palette::PhosphorBlue,
+            Palette::HeatDamage,
+            Palette::GlitchEntropy,
+        ];
+
+        for palette in palettes {
+            let seq = BootSequence::new(BootStyle::None, palette);
+            seq.run("0.1.0");
+        }
+    }
+
+    #[test]
+    fn test_boot_sequence_with_various_versions() {
+        let seq = BootSequence::new(BootStyle::None, Palette::PhosphorGreen);
+
+        seq.run("0.1.0");
+        seq.run("1.0.0");
+        seq.run("2.5.3-beta");
+        seq.run("");
+        seq.run("very-long-version-string-for-testing");
+    }
+
     // Note: Full and compact sequences write to stdout and include delays,
     // so we don't test them in unit tests. They're tested manually.
+    // However, we can test the type_text delay calculation logic:
+
+    #[test]
+    fn test_boot_sequence_palette_access() {
+        let seq = BootSequence::new(BootStyle::Full, Palette::PhosphorGreen);
+        // palette is accessible
+        assert_eq!(seq.palette, Palette::PhosphorGreen);
+    }
+
+    #[test]
+    fn test_boot_sequence_style_access() {
+        let seq = BootSequence::new(BootStyle::Compact, Palette::PhosphorAmber);
+        assert_eq!(seq.style, BootStyle::Compact);
+    }
 }

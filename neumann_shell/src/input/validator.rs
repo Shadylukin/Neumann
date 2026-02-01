@@ -123,6 +123,13 @@ mod tests {
     }
 
     #[test]
+    fn test_whitespace_only_valid() {
+        let validator = NeumannValidator::new();
+        let result = validator.validate_input("   ");
+        assert!(matches!(result, ValidationResult::Valid(_)));
+    }
+
+    #[test]
     fn test_complete_query_valid() {
         let validator = NeumannValidator::new();
         let result = validator.validate_input("SELECT * FROM users");
@@ -186,11 +193,49 @@ mod tests {
     }
 
     #[test]
+    fn test_trailing_or() {
+        let validator = NeumannValidator::new();
+        let result = validator.validate_input("SELECT * FROM users WHERE id = 1 OR");
+        assert!(matches!(result, ValidationResult::Incomplete));
+    }
+
+    #[test]
+    fn test_trailing_arrow() {
+        let validator = NeumannValidator::new();
+        let result = validator.validate_input("EDGE CREATE knows 1 ->");
+        assert!(matches!(result, ValidationResult::Incomplete));
+    }
+
+    #[test]
+    fn test_trailing_colon() {
+        let validator = NeumannValidator::new();
+        let result = validator.validate_input("NODE CREATE person {name:");
+        assert!(matches!(result, ValidationResult::Incomplete));
+    }
+
+    #[test]
     fn test_has_unclosed_string() {
         assert!(has_unclosed_string("'hello"));
         assert!(has_unclosed_string("\"hello"));
         assert!(!has_unclosed_string("'hello'"));
         assert!(!has_unclosed_string("\"hello\""));
+    }
+
+    #[test]
+    fn test_has_unclosed_string_escaped() {
+        // Escaped quotes should not close the string
+        assert!(has_unclosed_string("'hello\\'"));
+        assert!(has_unclosed_string("\"hello\\\""));
+        // But properly closed should be fine
+        assert!(!has_unclosed_string("'hello\\''"));
+    }
+
+    #[test]
+    fn test_has_unclosed_string_mixed() {
+        // Double quote inside single quotes is fine
+        assert!(!has_unclosed_string("'hello \"world\"'"));
+        // Single quote inside double quotes is fine
+        assert!(!has_unclosed_string("\"hello 'world'\""));
     }
 
     #[test]
@@ -204,10 +249,75 @@ mod tests {
     }
 
     #[test]
+    fn test_has_unclosed_brackets_nested() {
+        assert!(has_unclosed_brackets("(("));
+        assert!(has_unclosed_brackets("[["));
+        assert!(has_unclosed_brackets("{{"));
+        assert!(!has_unclosed_brackets("(())"));
+        assert!(!has_unclosed_brackets("[[]]"));
+        assert!(!has_unclosed_brackets("{{}}"));
+    }
+
+    #[test]
+    fn test_has_unclosed_brackets_mixed() {
+        assert!(has_unclosed_brackets("({["));
+        assert!(!has_unclosed_brackets("({[]})"));
+        // Brackets inside strings are ignored
+        assert!(!has_unclosed_brackets("'(({{'"));
+    }
+
+    #[test]
     fn test_needs_continuation() {
         assert!(needs_continuation("SELECT *,"));
         assert!(needs_continuation("WHERE x AND"));
         assert!(needs_continuation("EDGE CREATE 1 ->"));
         assert!(!needs_continuation("SELECT * FROM users"));
+    }
+
+    #[test]
+    fn test_needs_continuation_with_trailing_whitespace() {
+        // trailing whitespace is trimmed
+        assert!(needs_continuation("SELECT *,  "));
+        assert!(needs_continuation("WHERE x AND  "));
+    }
+
+    #[test]
+    fn test_validator_default() {
+        let validator = NeumannValidator::default();
+        let result = validator.validate_input("SELECT 1");
+        assert!(matches!(result, ValidationResult::Valid(_)));
+    }
+
+    #[test]
+    fn test_validator_debug() {
+        let validator = NeumannValidator::new();
+        let debug_str = format!("{validator:?}");
+        assert!(debug_str.contains("NeumannValidator"));
+    }
+
+    #[test]
+    fn test_complex_valid_queries() {
+        let validator = NeumannValidator::new();
+
+        let queries = [
+            "SELECT * FROM users WHERE id = 1",
+            "INSERT INTO users VALUES (1, 'Alice', 30)",
+            "UPDATE users SET name = 'Bob' WHERE id = 1",
+            "DELETE FROM users WHERE id > 10",
+            "CREATE TABLE users (id INT, name TEXT)",
+            "DROP TABLE users",
+            "NODE CREATE person {name: 'Alice', age: 30}",
+            "EDGE CREATE knows 1 2 {since: '2024'}",
+            "EMBED STORE 'key' [0.1, 0.2, 0.3]",
+            "SIMILAR 'key' 5 COSINE",
+        ];
+
+        for query in queries {
+            let result = validator.validate_input(query);
+            assert!(
+                matches!(result, ValidationResult::Valid(_)),
+                "Query should be valid: {query}"
+            );
+        }
     }
 }
