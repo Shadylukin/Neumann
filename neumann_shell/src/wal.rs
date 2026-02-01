@@ -224,4 +224,107 @@ mod tests {
         let mode = WalRecoveryMode::default();
         assert_eq!(mode, WalRecoveryMode::Strict);
     }
+
+    #[test]
+    fn test_wal_replay_result_debug() {
+        let result = WalReplayResult {
+            replayed: 5,
+            errors: vec![],
+        };
+        let debug_str = format!("{result:?}");
+        assert!(debug_str.contains("WalReplayResult"));
+    }
+
+    #[test]
+    fn test_wal_replay_result_clone() {
+        let result = WalReplayResult {
+            replayed: 10,
+            errors: vec![WalReplayError::new(1, "cmd", "err".to_string())],
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.replayed, 10);
+        assert_eq!(cloned.errors.len(), 1);
+    }
+
+    #[test]
+    fn test_wal_replay_error_debug() {
+        let error = WalReplayError::new(3, "test", "msg".to_string());
+        let debug_str = format!("{error:?}");
+        assert!(debug_str.contains("WalReplayError"));
+    }
+
+    #[test]
+    fn test_wal_replay_error_clone() {
+        let error = WalReplayError::new(7, "cmd", "error".to_string());
+        let cloned = error.clone();
+        assert_eq!(cloned.line, 7);
+        assert_eq!(cloned.command, "cmd");
+    }
+
+    #[test]
+    fn test_wal_recovery_mode_eq() {
+        assert_eq!(WalRecoveryMode::Strict, WalRecoveryMode::Strict);
+        assert_eq!(WalRecoveryMode::Recover, WalRecoveryMode::Recover);
+        assert_ne!(WalRecoveryMode::Strict, WalRecoveryMode::Recover);
+    }
+
+    #[test]
+    fn test_wal_recovery_mode_debug() {
+        let strict = format!("{:?}", WalRecoveryMode::Strict);
+        assert!(strict.contains("Strict"));
+        let recover = format!("{:?}", WalRecoveryMode::Recover);
+        assert!(recover.contains("Recover"));
+    }
+
+    #[test]
+    fn test_wal_recovery_mode_copy() {
+        let mode = WalRecoveryMode::Recover;
+        let copied: WalRecoveryMode = mode;
+        assert_eq!(copied, WalRecoveryMode::Recover);
+    }
+
+    #[test]
+    fn test_read_commands_empty_lines() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_wal_empty_lines.wal");
+
+        // Clean up any existing file
+        let _ = std::fs::remove_file(&path);
+
+        // Write commands with empty lines
+        {
+            let mut file = File::create(&path).unwrap();
+            writeln!(file, "cmd1").unwrap();
+            writeln!(file).unwrap(); // empty line
+            writeln!(file, "   ").unwrap(); // whitespace only
+            writeln!(file, "cmd2").unwrap();
+        }
+
+        // Read commands - empty lines should be skipped
+        let commands = Wal::read_commands(&path).unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0], "cmd1");
+        assert_eq!(commands[1], "cmd2");
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_wal_replay_error_exact_80_chars() {
+        // Test with exactly 80 characters - should NOT truncate
+        let cmd = "x".repeat(80);
+        let error = WalReplayError::new(1, &cmd, "err".to_string());
+        assert_eq!(error.command.len(), 80);
+        assert!(!error.command.ends_with("..."));
+    }
+
+    #[test]
+    fn test_wal_replay_error_81_chars() {
+        // Test with 81 characters - should truncate
+        let cmd = "x".repeat(81);
+        let error = WalReplayError::new(1, &cmd, "err".to_string());
+        assert!(error.command.ends_with("..."));
+        assert_eq!(error.command.len(), 80); // 77 chars + "..."
+    }
 }

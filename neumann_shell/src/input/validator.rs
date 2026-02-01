@@ -320,4 +320,81 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_has_unclosed_brackets_in_strings() {
+        // Brackets inside strings should be ignored
+        assert!(!has_unclosed_brackets("SELECT * FROM 'table(name'"));
+        assert!(!has_unclosed_brackets("INSERT INTO 't' VALUES ('{')"));
+    }
+
+    #[test]
+    fn test_has_unclosed_string_at_start() {
+        assert!(has_unclosed_string("'"));
+        assert!(has_unclosed_string("\""));
+    }
+
+    #[test]
+    fn test_needs_continuation_variants() {
+        assert!(needs_continuation("SELECT *:"));
+        assert!(!needs_continuation("SELECT * FROM users;"));
+    }
+
+    #[test]
+    fn test_unclosed_bracket_close_without_open() {
+        // More closing brackets than opening is not incomplete
+        assert!(!has_unclosed_brackets("())"));
+        assert!(!has_unclosed_brackets("[]]"));
+        assert!(!has_unclosed_brackets("{}}"));
+    }
+
+    #[test]
+    fn test_validator_all_incomplete_cases() {
+        let validator = NeumannValidator::new();
+
+        // Test all ways a query can be incomplete
+        let incomplete_queries = [
+            "SELECT 'unclosed",
+            "SELECT \"unclosed",
+            "CREATE TABLE (id INT",
+            "EMBED [1, 2, 3",
+            "NODE {name: 'test'",
+            "SELECT *,",
+            "WHERE id = 1 AND",
+            "WHERE id = 1 OR",
+            "EDGE 1 ->",
+            "{name:",
+        ];
+
+        for query in incomplete_queries {
+            let result = validator.validate_input(query);
+            assert!(
+                matches!(result, ValidationResult::Incomplete),
+                "Query should be incomplete: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deeply_nested_brackets() {
+        assert!(has_unclosed_brackets("(((("));
+        assert!(!has_unclosed_brackets("(((())))"));
+        assert!(has_unclosed_brackets("({[({["));
+        assert!(!has_unclosed_brackets("({[({[]})()]})"));
+    }
+
+    #[test]
+    fn test_tab_and_newline_whitespace() {
+        let validator = NeumannValidator::new();
+        let result = validator.validate_input("\t\n  ");
+        assert!(matches!(result, ValidationResult::Valid(_)));
+    }
+
+    #[test]
+    fn test_string_with_escape_sequences() {
+        // String with escaped quote inside
+        assert!(!has_unclosed_string("'test\\'s value'"));
+        // The escape mechanism is simple - any char after \ is treated specially
+        assert!(has_unclosed_string("'test\\'"));
+    }
 }

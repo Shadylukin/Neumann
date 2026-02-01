@@ -132,4 +132,54 @@ mod tests {
     fn test_banner_ascii_art() {
         assert!(BANNER.contains("Neumann") || BANNER.contains("|"));
     }
+
+    #[test]
+    fn test_supports_full_banner() {
+        // Just verify it returns a boolean without panicking
+        let _ = supports_full_banner();
+    }
+
+    #[test]
+    fn test_welcome_banner_not_empty() {
+        let theme = Theme::plain();
+        let banner = welcome_banner("1.0.0", &theme);
+        assert!(!banner.is_empty());
+    }
+
+    #[test]
+    fn test_compact_banner_short() {
+        let theme = Theme::plain();
+        let banner = compact_banner("0.1.0", &theme);
+        // Compact banner should be shorter than welcome banner
+        let welcome = welcome_banner("0.1.0", &theme);
+        assert!(banner.len() < welcome.len());
+    }
+
+    #[test]
+    fn test_goodbye_message_contains_terminated() {
+        let theme = Theme::plain();
+        let msg = goodbye_message(&theme);
+        assert!(msg.contains("terminated"));
+    }
+
+    #[test]
+    fn test_banner_with_different_versions() {
+        let theme = Theme::plain();
+
+        let banner1 = welcome_banner("0.0.1", &theme);
+        assert!(banner1.contains("0.0.1"));
+
+        let banner2 = welcome_banner("10.20.30", &theme);
+        assert!(banner2.contains("10.20.30"));
+
+        let banner3 = welcome_banner("1.0.0-beta", &theme);
+        assert!(banner3.contains("1.0.0-beta"));
+    }
+
+    #[test]
+    fn test_banner_contains_unified_queries() {
+        let theme = Theme::plain();
+        let banner = welcome_banner("0.1.0", &theme);
+        assert!(banner.contains("Unified"));
+    }
 }

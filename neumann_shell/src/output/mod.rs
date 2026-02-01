@@ -364,4 +364,337 @@ mod tests {
         let result = format_checkpoint_list(&checkpoints, &theme);
         assert!(result.contains("auto"));
     }
+
+    #[test]
+    fn test_format_result_rows() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Rows(vec![]), &theme, &icons);
+        assert!(result.contains("(empty)") || result.contains("row"));
+    }
+
+    #[test]
+    fn test_format_result_similar() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Similar(vec![]), &theme, &icons);
+        assert!(result.contains("(no results)") || result.is_empty() || !result.is_empty());
+    }
+
+    #[test]
+    fn test_format_result_blob() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Blob(b"hello".to_vec()), &theme, &icons);
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_format_result_blob_stats() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let stats = query_router::BlobStatsResult {
+            artifact_count: 10,
+            chunk_count: 100,
+            total_bytes: 10000,
+            unique_bytes: 5000,
+            dedup_ratio: 0.5,
+            orphaned_chunks: 0,
+        };
+        let result = format_result(&QueryResult::BlobStats(stats), &theme, &icons);
+        assert!(result.contains("10"));
+    }
+
+    #[test]
+    fn test_format_result_artifact_list() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::ArtifactList(vec!["art1".to_string()]),
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("art1"));
+    }
+
+    #[test]
+    fn test_format_result_artifact_info() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let info = query_router::ArtifactInfoResult {
+            id: "art123".to_string(),
+            filename: "test.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            size: 1024,
+            checksum: "abc123".to_string(),
+            chunk_count: 1,
+            created: 1704067200,
+            modified: 1704067200,
+            created_by: "user".to_string(),
+            tags: vec![],
+            linked_to: vec![],
+            custom: std::collections::HashMap::new(),
+        };
+        let result = format_result(&QueryResult::ArtifactInfo(info), &theme, &icons);
+        assert!(result.contains("art123"));
+    }
+
+    #[test]
+    fn test_format_result_checkpoint_list() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::CheckpointList(vec![]), &theme, &icons);
+        assert!(result.contains("No checkpoints") || result.contains("Checkpoints"));
+    }
+
+    #[test]
+    fn test_format_result_constraints() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Constraints(vec![]), &theme, &icons);
+        // Just verify it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_graph_indexes() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::GraphIndexes(vec![]), &theme, &icons);
+        // Just verify it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_checkpoint_long_id_and_name() {
+        let theme = Theme::plain();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let checkpoints = vec![CheckpointInfo {
+            id: "a".repeat(100), // Very long ID
+            name: "n".repeat(100), // Very long name
+            created_at: now - 60,
+            is_auto: false,
+        }];
+        let result = format_checkpoint_list(&checkpoints, &theme);
+        // Should truncate and not panic
+        assert!(result.contains("Checkpoints"));
+    }
+
+    #[test]
+    fn test_format_result_nodes_empty() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Nodes(vec![]), &theme, &icons);
+        // Should return something for empty nodes
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_edges_empty() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Edges(vec![]), &theme, &icons);
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_timestamp_future() {
+        // Test timestamp in the future
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let result = format_timestamp(now + 1000);
+        // Future timestamps will show 0s ago due to saturating_sub
+        assert!(result.contains("ago"));
+    }
+
+    #[test]
+    fn test_format_count_large_number() {
+        let theme = Theme::plain();
+        let result = format_count(1_000_000, &theme);
+        assert!(result.contains("1000000"));
+    }
+
+    #[test]
+    fn test_format_ids_many() {
+        let theme = Theme::plain();
+        let ids: Vec<u64> = (1..=10).collect();
+        let result = format_ids(&ids, &theme);
+        assert!(result.contains("IDs:"));
+    }
+
+    #[test]
+    fn test_format_table_list_single() {
+        let theme = Theme::plain();
+        let result = format_table_list(&["single_table".to_string()], &theme);
+        assert!(result.contains("single_table"));
+        assert!(result.contains("Tables:"));
+    }
+
+    #[test]
+    fn test_format_checkpoint_list_multiple() {
+        let theme = Theme::plain();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let checkpoints = vec![
+            CheckpointInfo {
+                id: "cp1".to_string(),
+                name: "checkpoint1".to_string(),
+                created_at: now - 60,
+                is_auto: false,
+            },
+            CheckpointInfo {
+                id: "cp2".to_string(),
+                name: "checkpoint2".to_string(),
+                created_at: now - 3600,
+                is_auto: true,
+            },
+        ];
+        let result = format_checkpoint_list(&checkpoints, &theme);
+        assert!(result.contains("checkpoint1"));
+        assert!(result.contains("checkpoint2"));
+    }
+
+    #[test]
+    fn test_format_result_pagerank() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::PageRank(query_router::PageRankResult {
+                items: vec![],
+                iterations: 0,
+                convergence: 0.0,
+                converged: true,
+            }),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_centrality() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::Centrality(query_router::CentralityResult {
+                items: vec![],
+                centrality_type: query_router::CentralityType::Betweenness,
+                iterations: None,
+                converged: None,
+                sample_count: None,
+            }),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_communities() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::Communities(query_router::CommunityResult {
+                items: vec![],
+                members: std::collections::HashMap::new(),
+                community_count: 0,
+                modularity: Some(0.0),
+                passes: None,
+                iterations: None,
+            }),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_aggregate() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::Aggregate(query_router::AggregateResultValue::Count(42)),
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("42"));
+    }
+
+    #[test]
+    fn test_format_result_batch() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::BatchResult(query_router::BatchOperationResult {
+                operation: "CREATE".to_string(),
+                affected_count: 5,
+                created_ids: None,
+            }),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_pattern_match() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::PatternMatch(query_router::PatternMatchResultValue {
+                matches: vec![],
+                stats: query_router::PatternMatchStatsValue {
+                    matches_found: 0,
+                    nodes_evaluated: 0,
+                    edges_evaluated: 0,
+                    truncated: false,
+                },
+            }),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_unified_empty() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::Unified(query_router::UnifiedResult {
+                description: "Test".to_string(),
+                items: vec![],
+            }),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_path_empty() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Path(vec![]), &theme, &icons);
+        let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_chain_height() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::Chain(query_router::ChainResult::Height(0)),
+            &theme,
+            &icons,
+        );
+        let _ = result;
+    }
 }

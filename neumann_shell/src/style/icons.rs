@@ -109,4 +109,68 @@ mod tests {
         let icons = Icons::auto();
         assert!(!icons.success.is_empty());
     }
+
+    #[test]
+    fn test_plain_returns_ascii_icons() {
+        let icons = Icons::plain();
+        assert!(!icons.success.is_empty());
+        // Plain should return ASCII icons
+        assert_eq!(icons.success, Icons::ASCII.success);
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let icons: &Icons = Default::default();
+        assert!(!icons.success.is_empty());
+    }
+
+    #[test]
+    fn test_all_unicode_icons_fields() {
+        let icons = &Icons::UNICODE;
+        assert!(!icons.warning.is_empty());
+        assert!(!icons.info.is_empty());
+        assert!(!icons.table.is_empty());
+        assert!(!icons.edge.is_empty());
+        assert!(!icons.vector.is_empty());
+        assert!(!icons.blob.is_empty());
+        assert!(!icons.key.is_empty());
+        assert!(!icons.chain.is_empty());
+        assert!(!icons.bullet.is_empty());
+        assert!(!icons.arrow.is_empty());
+        assert!(!icons.check.is_empty());
+        assert!(!icons.cross.is_empty());
+        assert!(!icons.spinner.is_empty());
+    }
+
+    #[test]
+    fn test_all_ascii_icons_fields() {
+        let icons = &Icons::ASCII;
+        assert!(!icons.warning.is_empty());
+        assert!(!icons.info.is_empty());
+        assert!(!icons.table.is_empty());
+        assert!(!icons.edge.is_empty());
+        assert!(!icons.vector.is_empty());
+        assert!(!icons.blob.is_empty());
+        assert!(!icons.key.is_empty());
+        assert!(!icons.chain.is_empty());
+        assert!(!icons.bullet.is_empty());
+        assert!(!icons.arrow.is_empty());
+        assert!(!icons.check.is_empty());
+        assert!(!icons.cross.is_empty());
+        assert!(!icons.spinner.is_empty());
+    }
+
+    #[test]
+    fn test_icons_debug() {
+        let icons = Icons::ASCII;
+        let debug_str = format!("{:?}", icons);
+        assert!(debug_str.contains("Icons"));
+    }
+
+    #[test]
+    fn test_icons_clone() {
+        let icons = Icons::ASCII;
+        let cloned = icons;
+        assert_eq!(icons.success, cloned.success);
+    }
 }

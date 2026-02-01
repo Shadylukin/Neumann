@@ -128,4 +128,113 @@ mod tests {
         );
         assert!(result.contains("32 bytes"));
     }
+
+    #[test]
+    fn test_format_value_null_explicit() {
+        let theme = Theme::plain();
+        let result = format_value(Some(&relational_engine::Value::Null), &theme);
+        assert!(result.contains("NULL"));
+    }
+
+    #[test]
+    fn test_format_value_float() {
+        let theme = Theme::plain();
+        let result = format_value(Some(&relational_engine::Value::Float(3.14159)), &theme);
+        assert!(result.contains("3.14"));
+    }
+
+    #[test]
+    fn test_format_value_bytes_exact_16() {
+        let theme = Theme::plain();
+        let result = format_value(
+            Some(&relational_engine::Value::Bytes(vec![0xAB; 16])),
+            &theme,
+        );
+        // 16 bytes should still show hex
+        assert!(result.contains("0x") || result.contains("ab"));
+    }
+
+    #[test]
+    fn test_format_value_bytes_17() {
+        let theme = Theme::plain();
+        let result = format_value(
+            Some(&relational_engine::Value::Bytes(vec![0xAB; 17])),
+            &theme,
+        );
+        // 17 bytes should show "<17 bytes>"
+        assert!(result.contains("17 bytes"));
+    }
+
+    #[test]
+    fn test_format_rows_with_single_row() {
+        let theme = Theme::plain();
+        let row = Row {
+            id: 1,
+            values: vec![
+                ("id".to_string(), relational_engine::Value::Int(1)),
+                (
+                    "name".to_string(),
+                    relational_engine::Value::String("Alice".to_string()),
+                ),
+            ],
+        };
+        let rows = vec![row];
+        let result = format_rows(&rows, &theme);
+        assert!(result.contains("id"));
+        assert!(result.contains("name"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("1 row"));
+    }
+
+    #[test]
+    fn test_format_rows_with_multiple_rows() {
+        let theme = Theme::plain();
+        let row1 = Row {
+            id: 1,
+            values: vec![("id".to_string(), relational_engine::Value::Int(1))],
+        };
+        let row2 = Row {
+            id: 2,
+            values: vec![("id".to_string(), relational_engine::Value::Int(2))],
+        };
+        let rows = vec![row1, row2];
+        let result = format_rows(&rows, &theme);
+        assert!(result.contains("2 rows"));
+    }
+
+    #[test]
+    fn test_format_rows_with_missing_column() {
+        let theme = Theme::plain();
+        let row1 = Row {
+            id: 1,
+            values: vec![
+                ("id".to_string(), relational_engine::Value::Int(1)),
+                (
+                    "name".to_string(),
+                    relational_engine::Value::String("Alice".to_string()),
+                ),
+            ],
+        };
+        // Row2 only has id, missing name
+        let row2 = Row {
+            id: 2,
+            values: vec![("id".to_string(), relational_engine::Value::Int(2))],
+        };
+        let rows = vec![row1, row2];
+        let result = format_rows(&rows, &theme);
+        // Should still render without panic
+        assert!(result.contains("id"));
+    }
+
+    #[test]
+    fn test_format_rows_empty_columns() {
+        let theme = Theme::plain();
+        let row = Row {
+            id: 1,
+            values: vec![],
+        };
+        let rows = vec![row];
+        let result = format_rows(&rows, &theme);
+        assert!(result.contains("0 rows"));
+    }
 }
