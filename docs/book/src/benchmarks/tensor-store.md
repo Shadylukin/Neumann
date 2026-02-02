@@ -95,30 +95,31 @@ Each item is a TensorData with 3 fields: id (i64), name (String), embedding
 ## Write-Ahead Log (WAL)
 
 WAL provides crash-consistent durability with minimal performance overhead.
+Benchmarks use same payload as in-memory tests (128-dim embeddings).
 
 ### WAL Writes
 
 | Records | Time | Throughput |
 | --- | --- | --- |
-| 100 | 107 us | 938K ops/s |
-| 1,000 | 444 us | 2.25M ops/s |
-| 10,000 | 3.96 ms | 2.53M ops/s |
+| 100 | 152 us | 657K ops/s |
+| 1,000 | 753 us | 1.33M ops/s |
+| 10,000 | 6.95 ms | 1.44M ops/s |
 
 ### WAL Recovery
 
 | Records | Time | Throughput |
 | --- | --- | --- |
-| 100 | 187 us | 536K elem/s |
-| 1,000 | 192 us | 5.2M elem/s |
-| 10,000 | 195 us | 49.5M elem/s |
+| 100 | 382 us | 261K elem/s |
+| 1,000 | 394 us | 2.5M elem/s |
+| 10,000 | 391 us | 25.6M elem/s |
 
 ### WAL Analysis
 
 - **Near constant recovery time**: Recovery is dominated by file open overhead
-  (~195us), not record count
-- **Sequential I/O**: WAL replay reads sequentially, hitting ~50M records/sec
-- **Durable vs in-memory**: WAL writes at 2.5M ops/sec vs 3.2M ops/sec in-memory
-  (78% of in-memory speed)
+  (~400us), not record count
+- **Sequential I/O**: WAL replay reads sequentially, hitting 25M records/sec
+- **Durable vs in-memory**: WAL writes at 1.4M ops/sec vs 2.0M ops/sec in-memory
+  (72% of in-memory speed)
 - **Use case**: Production deployments requiring crash consistency
 
 All engines support WAL via `open_durable()`:
