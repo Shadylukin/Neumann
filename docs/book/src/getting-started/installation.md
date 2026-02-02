@@ -11,10 +11,12 @@ curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh 
 ```
 
 This script will:
+
 - Detect your platform (Linux x86_64, macOS x86_64, macOS ARM64)
 - Download a pre-built binary if available
 - Fall back to building from source if needed
 - Install to `/usr/local/bin` or `~/.local/bin`
+- Install shell completions and man pages
 
 ### Environment Variables
 
@@ -23,6 +25,7 @@ This script will:
 | `NEUMANN_INSTALL_DIR` | Custom installation directory |
 | `NEUMANN_VERSION` | Install a specific version (e.g., `v0.1.0`) |
 | `NEUMANN_NO_MODIFY_PATH` | Set to `1` to skip PATH modification |
+| `NEUMANN_SKIP_EXTRAS` | Set to `1` to skip completions and man page installation |
 
 ## Homebrew (macOS/Linux)
 
@@ -37,6 +40,12 @@ If you have Rust installed:
 
 ```bash
 cargo install neumann_shell
+```
+
+To install the gRPC server:
+
+```bash
+cargo install neumann_server
 ```
 
 ## Docker
@@ -96,6 +105,32 @@ cargo install --path neumann_shell
 cargo test
 ```
 
+## SDK Installation
+
+### Python
+
+```bash
+pip install neumann-db
+```
+
+For embedded mode (in-process database):
+
+```bash
+pip install neumann-db[native]
+```
+
+### TypeScript / JavaScript
+
+```bash
+npm install neumann-db
+```
+
+Or with yarn:
+
+```bash
+yarn add neumann-db
+```
+
 ## Verify Installation
 
 ```bash
@@ -142,10 +177,21 @@ sudo dnf install protobuf-compiler
 
 ### Permission denied during install
 
-The installer tries `/usr/local/bin` first (requires sudo) then falls back to `~/.local/bin`. You can specify a custom directory:
+The installer tries `/usr/local/bin` first (requires sudo) then falls back
+to `~/.local/bin`. You can specify a custom directory:
 
 ```bash
-NEUMANN_INSTALL_DIR=~/bin curl -sSfL .../install.sh | bash
+NEUMANN_INSTALL_DIR=~/bin \
+  curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+```
+
+### Python SDK native module errors
+
+If you get errors about the native module, ensure you have a Rust toolchain:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+pip install neumann-db[native]
 ```
 
 ## Updating
@@ -170,6 +216,18 @@ brew upgrade neumann
 cargo install neumann_shell --force
 ```
 
+### Python SDK
+
+```bash
+pip install --upgrade neumann-db
+```
+
+### TypeScript SDK
+
+```bash
+npm update neumann-db
+```
+
 ## Uninstalling
 
 ### Quick Install / Cargo
@@ -189,6 +247,18 @@ brew uninstall neumann
 ```bash
 docker rmi shadylukinack/neumann:latest shadylukinack/neumann:server
 docker volume rm neumann-data
+```
+
+### Python SDK
+
+```bash
+pip uninstall neumann-db
+```
+
+### TypeScript SDK
+
+```bash
+npm uninstall neumann-db
 ```
 
 ## Next Steps
