@@ -137,6 +137,23 @@ pub enum WalEntry {
     },
 }
 
+/// Fsync strategy for WAL writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SyncMode {
+    /// Fsync after every write. Safest, slowest (~300 ops/sec).
+    #[default]
+    Immediate,
+    /// Buffer writes, fsync when batch size or timeout reached.
+    /// Good balance of safety and performance (~10K-50K ops/sec).
+    Batched {
+        /// Maximum entries before forced fsync.
+        max_entries: usize,
+    },
+    /// Never fsync automatically. Caller must call `sync()` explicitly.
+    /// Fastest but caller is responsible for durability.
+    Manual,
+}
+
 /// WAL configuration.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -153,6 +170,8 @@ pub struct WalConfig {
     pub auto_rotate: bool,
     /// Maximum number of rotated files to keep.
     pub max_rotated_files: usize,
+    /// Fsync strategy.
+    pub sync_mode: SyncMode,
 }
 
 impl Default for WalConfig {
@@ -164,6 +183,7 @@ impl Default for WalConfig {
             max_size_bytes: 512 * 1024 * 1024, // 512MB
             auto_rotate: true,
             max_rotated_files: 2,
+            sync_mode: SyncMode::Immediate,
         }
     }
 }
@@ -179,6 +199,7 @@ impl WalConfig {
             max_size_bytes: 512 * 1024 * 1024,
             auto_rotate: true,
             max_rotated_files: 2,
+            sync_mode: SyncMode::Immediate,
         }
     }
 
@@ -192,6 +213,21 @@ impl WalConfig {
             max_size_bytes: 1024, // 1KB for testing rotation
             auto_rotate: true,
             max_rotated_files: 2,
+            sync_mode: SyncMode::Immediate,
+        }
+    }
+
+    /// Create a config optimized for throughput with batched fsync.
+    #[must_use]
+    pub const fn batched(max_entries: usize) -> Self {
+        Self {
+            enabled: true,
+            enable_checksums: true,
+            verify_on_replay: true,
+            max_size_bytes: 512 * 1024 * 1024,
+            auto_rotate: true,
+            max_rotated_files: 2,
+            sync_mode: SyncMode::Batched { max_entries },
         }
     }
 }
@@ -216,6 +252,8 @@ pub struct TensorWal {
     config: WalConfig,
     entry_count: usize,
     current_size: u64,
+    /// Number of entries written since last fsync (for batched mode).
+    pending_sync_count: usize,
 }
 
 impl TensorWal {
@@ -242,6 +280,7 @@ impl TensorWal {
             config,
             entry_count: 0,
             current_size,
+            pending_sync_count: 0,
         })
     }
 
@@ -274,13 +313,8 @@ impl TensorWal {
         }
     }
 
-    /// Append an entry to the WAL.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serialization fails, the entry is too large,
-    /// the size limit is exceeded (and auto-rotate is disabled), or I/O fails.
-    pub fn append(&mut self, entry: &WalEntry) -> WalResult<()> {
+    /// Write a single entry to the WAL file without fsync.
+    fn write_entry_no_sync(&mut self, entry: &WalEntry) -> WalResult<()> {
         let bytes = bitcode::serialize(entry)?;
 
         // Check entry size fits in u32
@@ -312,18 +346,91 @@ impl TensorWal {
         self.file.write_all(&len_u32.to_le_bytes())?;
         self.file.write_all(&checksum.to_le_bytes())?;
         self.file.write_all(&bytes)?;
-        self.file.flush()?;
-
-        // Fsync for durability
-        self.file.get_ref().sync_all()?;
 
         self.current_size += write_size;
         self.entry_count += 1;
+        self.pending_sync_count += 1;
 
         Ok(())
     }
 
-    /// Flush buffered writes.
+    /// Append an entry to the WAL.
+    ///
+    /// Fsync behavior depends on `WalConfig::sync_mode`:
+    /// - `Immediate`: fsync after every entry (default, safest)
+    /// - `Batched { max_entries }`: fsync when batch size reached
+    /// - `Manual`: never fsync automatically, caller must call `sync()`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails, the entry is too large,
+    /// the size limit is exceeded (and auto-rotate is disabled), or I/O fails.
+    pub fn append(&mut self, entry: &WalEntry) -> WalResult<()> {
+        self.write_entry_no_sync(entry)?;
+        self.maybe_sync()?;
+        Ok(())
+    }
+
+    /// Append multiple entries with a single fsync (group commit).
+    ///
+    /// This is much faster than calling `append` multiple times when
+    /// using `SyncMode::Immediate`, as it amortizes the fsync cost.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any entry fails to serialize or write.
+    pub fn append_batch(&mut self, entries: &[WalEntry]) -> WalResult<()> {
+        for entry in entries {
+            self.write_entry_no_sync(entry)?;
+        }
+        self.file.flush()?;
+        self.file.get_ref().sync_all()?;
+        self.pending_sync_count = 0;
+        Ok(())
+    }
+
+    /// Conditionally fsync based on sync mode.
+    fn maybe_sync(&mut self) -> WalResult<()> {
+        let should_sync = match self.config.sync_mode {
+            SyncMode::Immediate => true,
+            SyncMode::Batched { max_entries } => self.pending_sync_count >= max_entries,
+            SyncMode::Manual => false,
+        };
+
+        if should_sync {
+            self.file.flush()?;
+            self.file.get_ref().sync_all()?;
+            self.pending_sync_count = 0;
+        }
+
+        Ok(())
+    }
+
+    /// Force sync all pending writes to disk.
+    ///
+    /// Call this to ensure durability when using `SyncMode::Batched` or
+    /// `SyncMode::Manual`. Returns the number of entries that were synced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing or syncing fails.
+    pub fn sync(&mut self) -> io::Result<usize> {
+        let synced = self.pending_sync_count;
+        if synced > 0 {
+            self.file.flush()?;
+            self.file.get_ref().sync_all()?;
+            self.pending_sync_count = 0;
+        }
+        Ok(synced)
+    }
+
+    /// Get the number of entries written since last fsync.
+    #[must_use]
+    pub const fn pending_sync_count(&self) -> usize {
+        self.pending_sync_count
+    }
+
+    /// Flush buffered writes (does not fsync).
     ///
     /// # Errors
     ///
@@ -332,14 +439,16 @@ impl TensorWal {
         self.file.flush()
     }
 
-    /// Fsync to ensure durability.
+    /// Fsync to ensure durability (legacy method, prefer `sync()`).
     ///
     /// # Errors
     ///
     /// Returns an error if flushing or syncing fails.
     pub fn fsync(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        self.file.get_ref().sync_all()
+        self.file.get_ref().sync_all()?;
+        self.pending_sync_count = 0;
+        Ok(())
     }
 
     /// Replay all entries from the WAL.
@@ -1555,5 +1664,129 @@ mod tests {
         let config = WalConfig::default();
         let debug = format!("{config:?}");
         assert!(debug.contains("WalConfig"));
+    }
+
+    #[test]
+    fn test_fsync_throughput() {
+        use std::time::Instant;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("perf.wal");
+        let mut wal = TensorWal::open(&path, WalConfig::default()).unwrap();
+
+        let count = 100;
+        let start = Instant::now();
+
+        for i in 0..count {
+            wal.append(&WalEntry::MetadataSet {
+                key: format!("key_{i}"),
+                data: crate::TensorData::new(),
+            })
+            .unwrap();
+        }
+
+        let elapsed = start.elapsed();
+        let ops_per_sec = count as f64 / elapsed.as_secs_f64();
+        let ms_per_op = elapsed.as_millis() as f64 / count as f64;
+
+        eprintln!("\n=== WAL FSYNC PERFORMANCE ===");
+        eprintln!("{count} appends (each with fsync) in {elapsed:?}");
+        eprintln!("{ops_per_sec:.0} ops/sec");
+        eprintln!("{ms_per_op:.2} ms per op");
+        eprintln!("==============================\n");
+
+        // Sanity check: fsync should take at least 10us typically
+        assert!(elapsed.as_micros() > 100, "suspiciously fast - fsync may not be working");
+    }
+
+    // Batched sync mode tests
+
+    #[test]
+    fn test_sync_mode_immediate_default() {
+        let config = WalConfig::default();
+        assert!(matches!(config.sync_mode, SyncMode::Immediate));
+    }
+
+    #[test]
+    fn test_sync_mode_batched_constructor() {
+        let config = WalConfig::batched(100);
+        assert!(matches!(config.sync_mode, SyncMode::Batched { max_entries: 100 }));
+    }
+
+    #[test]
+    fn test_batched_mode_defers_sync() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("batch.wal");
+
+        let config = WalConfig::batched(10);
+        let mut wal = TensorWal::open(&path, config).unwrap();
+
+        // Write 5 entries - should not sync yet (batch size is 10)
+        for i in 0..5 {
+            wal.append(&WalEntry::MetadataDelete {
+                key: format!("key_{i}"),
+            })
+            .unwrap();
+        }
+        assert_eq!(wal.pending_sync_count(), 5);
+
+        // Write 5 more - should trigger sync (total = 10)
+        for i in 5..10 {
+            wal.append(&WalEntry::MetadataDelete {
+                key: format!("key_{i}"),
+            })
+            .unwrap();
+        }
+        assert_eq!(wal.pending_sync_count(), 0);
+    }
+
+    #[test]
+    fn test_manual_sync() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("manual.wal");
+
+        let config = WalConfig {
+            sync_mode: SyncMode::Manual,
+            ..WalConfig::default()
+        };
+        let mut wal = TensorWal::open(&path, config).unwrap();
+
+        // Write entries - should never auto-sync
+        for i in 0..100 {
+            wal.append(&WalEntry::MetadataDelete {
+                key: format!("key_{i}"),
+            })
+            .unwrap();
+        }
+        assert_eq!(wal.pending_sync_count(), 100);
+
+        // Manual sync
+        let synced = wal.sync().unwrap();
+        assert_eq!(synced, 100);
+        assert_eq!(wal.pending_sync_count(), 0);
+    }
+
+    #[test]
+    fn test_sync_returns_count() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sync_count.wal");
+
+        let config = WalConfig::batched(1000); // Large batch so nothing auto-syncs
+        let mut wal = TensorWal::open(&path, config).unwrap();
+
+        // Write 50 entries
+        for i in 0..50 {
+            wal.append(&WalEntry::MetadataDelete {
+                key: format!("key_{i}"),
+            })
+            .unwrap();
+        }
+
+        let synced = wal.sync().unwrap();
+        assert_eq!(synced, 50);
+
+        // Second sync returns 0
+        let synced = wal.sync().unwrap();
+        assert_eq!(synced, 0);
     }
 }

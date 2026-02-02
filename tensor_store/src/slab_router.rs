@@ -484,25 +484,22 @@ impl SlabRouter {
         if let Some(wal_mutex) = &self.wal {
             let mut wal = wal_mutex.lock();
 
-            // Log embedding separately if present
+            // Log embedding if present
             if let Some(TensorValue::Vector(embedding)) = value.get("_embedding") {
                 let entity_id = self.index.get_or_create(key);
-                let entry = WalEntry::EmbeddingSet {
+                wal.append(&WalEntry::EmbeddingSet {
                     entity_id,
                     embedding: embedding.clone(),
-                };
-                wal.append(&entry).map_err(|e| {
-                    SlabRouterError::WalError(format!("Failed to log embedding: {e}"))
-                })?;
+                })
+                .map_err(|e| SlabRouterError::WalError(format!("Failed to log embedding: {e}")))?;
             }
 
-            // Log metadata set
-            let entry = WalEntry::MetadataSet {
+            // Log metadata set (sync behavior depends on WalConfig::sync_mode)
+            wal.append(&WalEntry::MetadataSet {
                 key: key.to_string(),
                 data: value.clone(),
-            };
-            wal.append(&entry)
-                .map_err(|e| SlabRouterError::WalError(format!("Failed to log put: {e}")))?;
+            })
+            .map_err(|e| SlabRouterError::WalError(format!("Failed to log put: {e}")))?;
         }
 
         // Apply to in-memory state
@@ -528,25 +525,23 @@ impl SlabRouter {
 
             // Log embedding delete if key is in entity index
             if let Some(entity_id) = self.index.get(key) {
-                let entry = WalEntry::EmbeddingDelete { entity_id };
-                wal.append(&entry).map_err(|e| {
-                    SlabRouterError::WalError(format!("Failed to log embedding delete: {e}"))
-                })?;
-
-                let entry = WalEntry::EntityRemove {
+                wal.append(&WalEntry::EmbeddingDelete { entity_id })
+                    .map_err(|e| {
+                        SlabRouterError::WalError(format!("Failed to log embedding delete: {e}"))
+                    })?;
+                wal.append(&WalEntry::EntityRemove {
                     key: key.to_string(),
-                };
-                wal.append(&entry).map_err(|e| {
+                })
+                .map_err(|e| {
                     SlabRouterError::WalError(format!("Failed to log entity remove: {e}"))
                 })?;
             }
 
-            // Log metadata delete
-            let entry = WalEntry::MetadataDelete {
+            // Log metadata delete (sync behavior depends on WalConfig::sync_mode)
+            wal.append(&WalEntry::MetadataDelete {
                 key: key.to_string(),
-            };
-            wal.append(&entry)
-                .map_err(|e| SlabRouterError::WalError(format!("Failed to log delete: {e}")))?;
+            })
+            .map_err(|e| SlabRouterError::WalError(format!("Failed to log delete: {e}")))?;
         }
 
         // Apply to in-memory state

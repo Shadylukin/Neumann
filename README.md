@@ -57,29 +57,32 @@ One runtime. One query language. One consistency model.
 
 ## Performance
 
-Benchmarked on Apple M-series silicon:
+Benchmarked on Apple M-series silicon (128-dim embeddings, 10K entities):
 
-### In-Memory Operations
+| Operation              | Throughput    | Notes                                    |
+| ---------------------- | ------------- | ---------------------------------------- |
+| **In-memory PUT**      | 2.0M ops/sec  | No durability guarantee                  |
+| **In-memory GET**      | 3.8M ops/sec  | From hot cache                           |
+| **Durable PUT (immediate)** | 260 ops/sec | fsync per write, ACID guarantees    |
+| **Durable PUT (batched)**  | 22K ops/sec | Group commit, fsync every 100 writes |
+| **WAL recovery**       | 52M records/sec | ~190us to replay 10K records          |
+| **Concurrent writes**  | 7.5M ops/sec  | 8 threads, in-memory, CV <7%             |
+| **Vector similarity**  | 150us         | HNSW index, 13x faster than brute force  |
+| **Conflict detection** | 52M pairs/sec | 99% sparse deltas                        |
+| **Query parsing**      | 1.9M queries/sec | Hand-written recursive descent        |
 
-| Operation              | Performance               | Notes                         |
-| ---------------------- | ------------------------- | ----------------------------- |
-| **Storage throughput** | 3.2M PUT, 5M GET ops/sec  | BTreeMap-based, no stalls     |
-| **Concurrent writes**  | 7.5M ops/sec @ 1M entries | 8 threads, CV <7%             |
-| **Vector similarity**  | 150us @ 10K vectors       | HNSW index, 13x vs brute      |
-| **Conflict detection** | 52M pairs/sec             | 99% sparse deltas             |
-| **Query parsing**      | 1.9M queries/sec          | Hand-written recursive descent|
+### Durability Modes
 
-### Durable Storage (WAL)
+All engines support optional durability via `open_durable()`:
 
-| Operation              | Performance               | Notes                         |
-| ---------------------- | ------------------------- | ----------------------------- |
-| **Durable writes**     | 2.5M ops/sec              | Full crash consistency        |
-| **WAL recovery**       | 50M records/sec           | Sequential read, ~195us fixed |
+- **Immediate** (default): fsync after every write. ~260 ops/sec but guaranteed
+  crash-safe. Use for critical data.
+- **Batched**: fsync every N writes (group commit). ~22K ops/sec with tunable
+  durability window. Use `WalConfig::batched(100)`.
+- **Manual**: Application controls when to sync. Maximum throughput, you manage
+  the durability window.
 
-All engines support optional WAL via `open_durable()`. Recovery is nearly
-constant-time regardless of dataset size.
-
-Sub-microsecond operations for most workloads. Linear scaling with cores.
+Recovery is nearly constant time regardless of dataset size.
 
 ## Distributed Consensus
 

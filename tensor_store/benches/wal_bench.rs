@@ -12,11 +12,41 @@ fn create_test_data(id: i64) -> TensorData {
         "name",
         TensorValue::Scalar(ScalarValue::String(format!("entity_{}", id))),
     );
+    data.set(
+        "embedding",
+        TensorValue::Vector(vec![id as f32; 128]), // 128-dim embedding (same as tensor_store_bench)
+    );
     data
 }
 
-fn bench_wal_write(c: &mut Criterion) {
-    let mut group = c.benchmark_group("wal_write");
+fn bench_wal_write_immediate(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wal_immediate");
+
+    // Only test 100 for immediate mode (it's slow)
+    let size = 100;
+    group.throughput(Throughput::Elements(size as u64));
+    group.bench_function("write_100", |b| {
+        b.iter_with_setup(
+            || {
+                let dir = tempdir().unwrap();
+                let wal_path = dir.path().join("bench.wal");
+                let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+                (dir, store)
+            },
+            |(_dir, store)| {
+                for i in 0..size {
+                    store
+                        .put_durable(format!("key_{}", i), create_test_data(i))
+                        .unwrap();
+                }
+            },
+        );
+    });
+    group.finish();
+}
+
+fn bench_wal_write_batched(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wal_batched");
 
     for size in [100, 1000, 10000] {
         group.throughput(Throughput::Elements(size as u64));
@@ -25,15 +55,19 @@ fn bench_wal_write(c: &mut Criterion) {
                 || {
                     let dir = tempdir().unwrap();
                     let wal_path = dir.path().join("bench.wal");
-                    let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+                    // Batched mode: fsync every 100 entries
+                    let config = WalConfig::batched(100);
+                    let store = TensorStore::open_durable(&wal_path, config).unwrap();
                     (dir, store)
                 },
                 |(_dir, store)| {
                     for i in 0..size {
                         store
-                            .put(format!("key_{}", i), create_test_data(i))
+                            .put_durable(format!("key_{}", i), create_test_data(i))
                             .unwrap();
                     }
+                    // Final sync for any remaining entries
+                    store.sync().unwrap();
                 },
             );
         });
@@ -72,5 +106,10 @@ fn bench_wal_recovery(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(wal_benches, bench_wal_write, bench_wal_recovery);
+criterion_group!(
+    wal_benches,
+    bench_wal_write_immediate,
+    bench_wal_write_batched,
+    bench_wal_recovery
+);
 criterion_main!(wal_benches);

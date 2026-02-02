@@ -154,7 +154,9 @@ pub use snapshot::{
 pub use sparse_vector::{SparseVector, SparseVectorError, MAX_DIMENSION as SPARSE_MAX_DIMENSION};
 pub use tiered::{TieredConfig, TieredError, TieredStats, TieredStore};
 pub use voronoi::{VoronoiPartitioner, VoronoiPartitionerConfig, VoronoiRegion};
-pub use wal::{TensorWal, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalStatus};
+pub use wal::{
+    SyncMode, TensorWal, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalStatus,
+};
 
 /// Reserved field prefixes for unified entity storage.
 ///
@@ -1508,6 +1510,17 @@ impl TensorStore {
     ///
     /// Returns an error if WAL fsync fails.
     pub fn wal_sync(&self) -> std::result::Result<(), SlabRouterError> {
+        self.router.wal_sync()
+    }
+
+    /// Sync all pending WAL writes to disk.
+    ///
+    /// This is an alias for `wal_sync()` for convenience with batched sync mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL fsync fails.
+    pub fn sync(&self) -> std::result::Result<(), SlabRouterError> {
         self.router.wal_sync()
     }
 }
