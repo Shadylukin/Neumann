@@ -79,9 +79,9 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
                 # Match: /some/path/crate_name/src/file.rs (contains crate in path)
                 $1 ~ "/"crate"/src/" { lines += $8; missed += $9; next }
 
-                # Match: file.rs (standalone filename - no slash, ends in .rs)
-                # These are main crate files when cargo-llvm-cov omits the path
-                $1 ~ /^[a-z_]+\.rs$/ { lines += $8; missed += $9; next }
+                # Match: file.rs or subdir/file.rs (with optional subdirectory path)
+                # These are main crate files when cargo-llvm-cov omits the crate path
+                $1 ~ /^[a-z_]+(\/[a-z_]+)*\.rs$/ { lines += $8; missed += $9; next }
 
                 END { print (lines ? lines : 0), (missed ? missed : 0) }
             ')

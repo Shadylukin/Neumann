@@ -122,10 +122,10 @@ jobs:
           echo "$OUTPUT"
 
           # Extract coverage from the crate's own source files
-          # Files appear as "file.rs" (without path prefix for main crate files)
+          # Files appear as "file.rs" or "subdir/file.rs" (without crate path prefix)
           CRATE="${{ matrix.crate }}"
           TOTAL_LINES=$(echo "$OUTPUT" | awk -v crate="$CRATE" '
-            /^[a-z_]+\.rs[[:space:]]/ { lines += $8; missed += $9 }
+            /^[a-z_]+(\/[a-z_]+)*\.rs[[:space:]]/ { lines += $8; missed += $9 }
             $0 ~ "^"crate"/" { lines += $8; missed += $9 }
             $0 ~ "/"crate"/src/" { lines += $8; missed += $9 }
             END { print lines, missed }
