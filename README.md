@@ -44,11 +44,11 @@ cargo install neumann_shell
 
 ```bash
 # Interactive CLI
-docker run -it shadylukin/neumann:latest
+docker run -it shadylukinack/neumann:latest
 
 # Server mode with persistent storage
 docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann \
-  shadylukin/neumann:server
+  shadylukinack/neumann:server
 ```
 
 ### Docker Compose

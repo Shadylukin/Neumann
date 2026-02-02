@@ -44,13 +44,13 @@ cargo install neumann_shell
 ### Interactive CLI
 
 ```bash
-docker run -it shadylukin/neumann:latest
+docker run -it shadylukinack/neumann:latest
 ```
 
 ### Server Mode
 
 ```bash
-docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukin/neumann:server
+docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukinack/neumann:server
 ```
 
 ### Docker Compose
@@ -187,7 +187,7 @@ brew uninstall neumann
 ### Docker
 
 ```bash
-docker rmi shadylukin/neumann:latest shadylukin/neumann:server
+docker rmi shadylukinack/neumann:latest shadylukinack/neumann:server
 docker volume rm neumann-data
 ```
 
