@@ -34,10 +34,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
   fuzz:
     name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -87,18 +95,19 @@ jobs:
           - delta_apply
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # nightly
         with:
+          toolchain: nightly
           components: llvm-tools-preview
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
 
       - name: Cache corpus
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: fuzz/corpus
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
@@ -123,18 +132,29 @@ jobs:
           cargo +nightly fuzz run ${{ matrix.target }} \
             --sanitizer none \
             -- -max_total_time=${{ steps.duration.outputs.seconds }}
-        continue-on-error: true
+
+      - name: Check for crashes
+        if: always()
+        run: |
+          if [ -d "fuzz/artifacts/${{ matrix.target }}" ]; then
+            CRASHES=$(find fuzz/artifacts/${{ matrix.target }} -type f 2>/dev/null | wc -l)
+            if [ "$CRASHES" -gt 0 ]; then
+              echo "::error::Found $CRASHES crash artifacts"
+              ls -la fuzz/artifacts/${{ matrix.target }}/
+              exit 1
+            fi
+          fi
 
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: crashes-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
           if-no-files-found: ignore
 
       - name: Upload corpus
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: corpus-${{ matrix.target }}
           path: fuzz/corpus/${{ matrix.target }}/
@@ -143,11 +163,15 @@ jobs:
   fuzz-summary:
     name: Fuzz Summary
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: fuzz
     if: always()
 
     steps:
       - name: Check fuzz results
         run: |
-          echo "Fuzzing completed for all targets"
-          echo "Check individual job logs for any crashes found"
+          if [[ "${{ needs.fuzz.result }}" != "success" ]]; then
+            echo "::error::Fuzzing failed - check individual job logs for crashes"
+            exit 1
+          fi
+          echo "Fuzzing completed successfully for all targets"
