@@ -168,6 +168,8 @@ pub struct ServerConfig {
     pub rest_addr: Option<SocketAddr>,
     /// Web admin UI bind address (optional, None disables Web UI).
     pub web_addr: Option<SocketAddr>,
+    /// Enhanced streaming configuration (optional).
+    pub streaming: Option<StreamingConfig>,
 }
 
 impl Default for ServerConfig {
@@ -197,6 +199,7 @@ impl Default for ServerConfig {
             memory_budget: None,
             rest_addr: None,
             web_addr: None,
+            streaming: None,
         }
     }
 }
@@ -495,6 +498,13 @@ impl ServerConfig {
         self
     }
 
+    /// Set streaming configuration.
+    #[must_use]
+    pub fn with_streaming(mut self, config: StreamingConfig) -> Self {
+        self.streaming = Some(config);
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<()> {
         if self.max_message_size == 0 {
@@ -524,6 +534,56 @@ impl ServerConfig {
         }
 
         Ok(())
+    }
+}
+
+/// Enhanced streaming configuration for large result sets.
+#[derive(Debug, Clone)]
+pub struct StreamingConfig {
+    /// Channel capacity for streaming responses (backpressure control).
+    pub channel_capacity: usize,
+    /// Maximum items to stream before requiring cursor continuation.
+    pub max_stream_items: usize,
+    /// Timeout for slow consumers before dropping connection.
+    pub slow_consumer_timeout: Duration,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            channel_capacity: 32,
+            max_stream_items: 10_000,
+            slow_consumer_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl StreamingConfig {
+    /// Create a new streaming configuration with default values.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set channel capacity.
+    #[must_use]
+    pub const fn with_channel_capacity(mut self, capacity: usize) -> Self {
+        self.channel_capacity = capacity;
+        self
+    }
+
+    /// Set maximum stream items.
+    #[must_use]
+    pub const fn with_max_stream_items(mut self, max: usize) -> Self {
+        self.max_stream_items = max;
+        self
+    }
+
+    /// Set slow consumer timeout.
+    #[must_use]
+    pub const fn with_slow_consumer_timeout(mut self, timeout: Duration) -> Self {
+        self.slow_consumer_timeout = timeout;
+        self
     }
 }
 

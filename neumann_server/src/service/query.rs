@@ -4,25 +4,27 @@
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use query_router::{QueryResult, QueryRouter};
+use query_router::{PaginationOptions, QueryResult, QueryRouter};
 
 use crate::audit::{AuditEvent, AuditLogger};
 use crate::auth;
 use crate::config::AuthConfig;
 use crate::convert::{
-    edge_to_proto, node_to_proto, query_result_to_proto, row_to_proto, similar_to_proto,
+    edge_to_proto, node_to_proto, paged_query_result_to_proto, query_result_to_proto, row_to_proto,
+    similar_to_proto,
 };
 use crate::metrics::ServerMetrics;
 use crate::proto::{
-    self, query_service_server::QueryService, BatchQueryRequest, BatchQueryResponse, QueryRequest,
-    QueryResponse, QueryResponseChunk,
+    self, query_service_server::QueryService, BatchQueryRequest, BatchQueryResponse,
+    CloseCursorRequest, CloseCursorResponse, PaginatedQueryRequest, PaginatedQueryResponse,
+    QueryRequest, QueryResponse, QueryResponseChunk,
 };
 use crate::rate_limit::{Operation, RateLimiter};
 use crate::service::health::HealthState;
@@ -361,6 +363,7 @@ impl QueryService for QueryServiceImpl {
                                 row: Some(row_to_proto(row)),
                             })),
                             is_final: false,
+                            sequence_number: None,
                         };
                         if tx.send(Ok(chunk)).await.is_err() {
                             return;
@@ -377,6 +380,7 @@ impl QueryService for QueryServiceImpl {
                                 },
                             )),
                             is_final: false,
+                            sequence_number: None,
                         };
                         if tx.send(Ok(chunk)).await.is_err() {
                             return;
@@ -393,6 +397,7 @@ impl QueryService for QueryServiceImpl {
                                 },
                             )),
                             is_final: false,
+                            sequence_number: None,
                         };
                         if tx.send(Ok(chunk)).await.is_err() {
                             return;
@@ -409,6 +414,7 @@ impl QueryService for QueryServiceImpl {
                                 },
                             )),
                             is_final: false,
+                            sequence_number: None,
                         };
                         if tx.send(Ok(chunk)).await.is_err() {
                             return;
@@ -424,6 +430,7 @@ impl QueryService for QueryServiceImpl {
                                 chunk_data.to_vec(),
                             )),
                             is_final: false,
+                            sequence_number: None,
                         };
                         if tx.send(Ok(chunk)).await.is_err() {
                             return;
@@ -442,6 +449,7 @@ impl QueryService for QueryServiceImpl {
                             },
                         )),
                         is_final: true,
+                        sequence_number: None,
                     };
                     let _ = tx.send(Ok(chunk)).await;
                     false
@@ -453,6 +461,7 @@ impl QueryService for QueryServiceImpl {
                 let final_chunk = QueryResponseChunk {
                     chunk: None,
                     is_final: true,
+                    sequence_number: None,
                 };
                 let _ = tx.send(Ok(final_chunk)).await;
             }
@@ -558,6 +567,171 @@ impl QueryService for QueryServiceImpl {
         }
 
         Ok(Response::new(BatchQueryResponse { results }))
+    }
+
+    async fn execute_paginated(
+        &self,
+        request: Request<PaginatedQueryRequest>,
+    ) -> Result<Response<PaginatedQueryResponse>, Status> {
+        let start = Instant::now();
+
+        // Validate authentication with rate limiting and audit
+        let identity = match auth::validate_request_with_audit(
+            &request,
+            &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("query", "execute_paginated", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
+
+        // Check query-specific rate limit
+        if let Some(ref limiter) = self.rate_limiter {
+            if let Some(ref id) = identity {
+                if let Err(msg) = limiter.check_and_record(id, Operation::Query) {
+                    if let Some(ref logger) = self.audit_logger {
+                        logger.record(
+                            AuditEvent::RateLimited {
+                                identity: id.clone(),
+                                operation: "query".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    if let Some(ref m) = self.metrics {
+                        m.record_rate_limited(id, "query");
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("query", "execute_paginated", false, latency_ms);
+                    }
+                    return Err(Status::resource_exhausted(msg));
+                }
+            }
+        }
+
+        let req = request.get_ref();
+        let query = &req.query;
+        tracing::debug!("Executing paginated query: {}", query);
+
+        // Build pagination options
+        let options = PaginationOptions {
+            cursor: req.cursor.clone(),
+            page_size: req.page_size.map(|s| s as usize),
+            count_total: req.count_total.unwrap_or(false),
+            cursor_ttl: req.cursor_ttl_secs.map(|s| Duration::from_secs(u64::from(s))),
+        };
+
+        // Audit the query execution
+        if let Some(ref logger) = self.audit_logger {
+            if logger.config().log_queries {
+                logger.record(
+                    AuditEvent::QueryExecuted {
+                        identity: identity.clone(),
+                        query: query.clone(),
+                    },
+                    None,
+                );
+            }
+        }
+
+        let result = {
+            let mut router = self.router.write();
+
+            // Set identity for vault access if provided
+            if let Some(id) = identity.as_deref() {
+                router.set_identity(id);
+            }
+
+            router.execute_paginated(query, options)
+        };
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("query", "execute_paginated", result.is_ok(), latency_ms);
+        }
+
+        match result {
+            Ok(paged_result) => {
+                self.record_success();
+                Ok(Response::new(paged_query_result_to_proto(paged_result)))
+            },
+            Err(e) => {
+                self.record_failure();
+                tracing::error!("Paginated query execution error: {}", e);
+                Err(Status::internal(e.to_string()))
+            },
+        }
+    }
+
+    async fn close_cursor(
+        &self,
+        request: Request<CloseCursorRequest>,
+    ) -> Result<Response<CloseCursorResponse>, Status> {
+        let start = Instant::now();
+
+        // Validate authentication
+        let identity = match auth::validate_request_with_audit(
+            &request,
+            &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("query", "close_cursor", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
+
+        let cursor = &request.get_ref().cursor;
+        tracing::debug!("Closing cursor: {}...", &cursor[..cursor.len().min(20)]);
+
+        let result = {
+            let router = self.router.read();
+            router.close_cursor(cursor)
+        };
+
+        // Audit the cursor close
+        if let Some(ref logger) = self.audit_logger {
+            logger.record(
+                AuditEvent::QueryExecuted {
+                    identity,
+                    query: format!("CLOSE CURSOR {}...", &cursor[..cursor.len().min(20)]),
+                },
+                None,
+            );
+        }
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("query", "close_cursor", result.is_ok(), latency_ms);
+        }
+
+        match result {
+            Ok(success) => Ok(Response::new(CloseCursorResponse { success })),
+            Err(e) => {
+                tracing::warn!("Cursor close error: {}", e);
+                // Return success=false rather than an error for invalid cursor
+                Ok(Response::new(CloseCursorResponse { success: false }))
+            },
+        }
     }
 }
 

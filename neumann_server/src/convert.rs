@@ -7,7 +7,7 @@ use query_router::{
     CentralityType, ChainBlockInfo, ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry,
     ChainResult, ChainSimilarResult, ChainTransitionAnalysis,
     CheckpointInfo as RouterCheckpointInfo, CommunityItem, CommunityResult, ConstraintInfo,
-    EdgeResult, NodeResult, PageRankItem, PageRankResult,
+    EdgeResult, NodeResult, PageRankItem, PageRankResult, PagedQueryResult,
     PatternMatchBinding as RouterPatternMatchBinding, PatternMatchResultValue,
     PatternMatchStatsValue, QueryResult, SimilarResult as RouterSimilarResult, UnifiedResult,
 };
@@ -125,6 +125,19 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
     proto::QueryResponse {
         result: Some(result_oneof),
         error: None,
+    }
+}
+
+/// Convert a `PagedQueryResult` to a protobuf `PaginatedQueryResponse`.
+#[must_use]
+pub fn paged_query_result_to_proto(result: PagedQueryResult) -> proto::PaginatedQueryResponse {
+    proto::PaginatedQueryResponse {
+        result: Some(query_result_to_proto(result.result)),
+        next_cursor: result.next_cursor,
+        prev_cursor: result.prev_cursor,
+        total_count: result.total_count.map(|c| c as u64),
+        has_more: result.has_more,
+        page_size: u32::try_from(result.page_size).unwrap_or(u32::MAX),
     }
 }
 

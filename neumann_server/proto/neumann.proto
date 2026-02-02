@@ -9,6 +9,10 @@ service QueryService {
   rpc ExecuteStream(QueryRequest) returns (stream QueryResponseChunk);
   // Execute multiple queries in a batch.
   rpc ExecuteBatch(BatchQueryRequest) returns (BatchQueryResponse);
+  // Execute a paginated query with cursor-based navigation.
+  rpc ExecutePaginated(PaginatedQueryRequest) returns (PaginatedQueryResponse);
+  // Close a cursor to free server resources.
+  rpc CloseCursor(CloseCursorRequest) returns (CloseCursorResponse);
 }
 
 // Blob service for artifact storage.
@@ -76,8 +80,21 @@ message QueryResponseChunk {
     SimilarChunk similar_item = 4;
     bytes blob_data = 5;
     ErrorInfo error = 10;
+    StreamCursorInfo cursor_info = 11;
   }
   bool is_final = 15;
+  // Sequence number for ordering (for cursor checkpoint).
+  optional uint64 sequence_number = 16;
+}
+
+// Cursor checkpoint info sent during streaming.
+message StreamCursorInfo {
+  // Cursor token for resuming the stream.
+  string cursor = 1;
+  // Number of items sent so far.
+  uint64 items_sent = 2;
+  // Total count of items (if known).
+  optional uint64 total_count = 3;
 }
 
 message BatchQueryRequest {
@@ -86,6 +103,50 @@ message BatchQueryRequest {
 
 message BatchQueryResponse {
   repeated QueryResponse results = 1;
+}
+
+// Paginated query request with cursor support.
+message PaginatedQueryRequest {
+  // The query to execute.
+  string query = 1;
+  // Optional identity for vault access control.
+  optional string identity = 2;
+  // Cursor token to resume from (omit for first page).
+  optional string cursor = 3;
+  // Number of items per page (default: 100).
+  optional uint32 page_size = 4;
+  // Whether to count total results (may be expensive).
+  optional bool count_total = 5;
+  // Custom TTL for the cursor in seconds (default: 300).
+  optional uint32 cursor_ttl_secs = 6;
+}
+
+// Paginated query response with cursor tokens.
+message PaginatedQueryResponse {
+  // The query result for the current page.
+  QueryResponse result = 1;
+  // Cursor token for the next page (absent if last page).
+  optional string next_cursor = 2;
+  // Cursor token for the previous page (absent if first page).
+  optional string prev_cursor = 3;
+  // Total count of results (if requested and available).
+  optional uint64 total_count = 4;
+  // Whether there are more results after this page.
+  bool has_more = 5;
+  // Number of items in this page.
+  uint32 page_size = 6;
+}
+
+// Request to close a cursor.
+message CloseCursorRequest {
+  // The cursor token to close.
+  string cursor = 1;
+}
+
+// Response to closing a cursor.
+message CloseCursorResponse {
+  // True if cursor was found and closed.
+  bool success = 1;
 }
 
 // === Result Types ===

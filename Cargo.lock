@@ -2295,8 +2295,10 @@ dependencies = [
 name = "query_router"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bitcode",
  "criterion",
+ "dashmap 6.1.0",
  "futures",
  "graph_engine",
  "hex",
@@ -2314,6 +2316,7 @@ dependencies = [
  "tensor_vault",
  "tokio",
  "tracing",
+ "uuid",
  "vector_engine",
 ]
 
