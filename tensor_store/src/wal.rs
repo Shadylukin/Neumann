@@ -1696,7 +1696,10 @@ mod tests {
         eprintln!("==============================\n");
 
         // Sanity check: fsync should take at least 10us typically
-        assert!(elapsed.as_micros() > 100, "suspiciously fast - fsync may not be working");
+        assert!(
+            elapsed.as_micros() > 100,
+            "suspiciously fast - fsync may not be working"
+        );
     }
 
     // Batched sync mode tests
@@ -1710,7 +1713,10 @@ mod tests {
     #[test]
     fn test_sync_mode_batched_constructor() {
         let config = WalConfig::batched(100);
-        assert!(matches!(config.sync_mode, SyncMode::Batched { max_entries: 100 }));
+        assert!(matches!(
+            config.sync_mode,
+            SyncMode::Batched { max_entries: 100 }
+        ));
     }
 
     #[test]
