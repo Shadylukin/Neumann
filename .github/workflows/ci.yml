@@ -201,10 +201,10 @@ jobs:
         run: cargo miri setup
       - name: Run Miri on mmap module
         working-directory: tensor_store
-        run: cargo miri test mmap:: --lib
+        run: "cargo miri test mmap:: --lib"
       - name: Run Miri on embedding_slab module
         working-directory: tensor_store
-        run: cargo miri test embedding_slab:: --lib
+        run: "cargo miri test embedding_slab:: --lib"
 
   # TypeScript SDK tests
   typescript-sdk:
