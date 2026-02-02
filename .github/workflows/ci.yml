@@ -104,7 +104,7 @@ jobs:
         run: |
           # Per-crate thresholds
           case "${{ matrix.crate }}" in
-            neumann_shell) MIN_COV=88 ;;  # Has untestable REPL code and binary entry point
+            neumann_shell) MIN_COV=95 ;;  # Has untestable REPL code and binary entry point
             neumann_parser) MIN_COV=91 ;;  # Complex parser with many edge cases
             tensor_blob) MIN_COV=91 ;;  # Async blob storage with complex I/O paths
             query_router) MIN_COV=88 ;;  # Large module with cross-engine integration

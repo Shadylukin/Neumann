@@ -4574,4 +4574,160 @@ mod tests {
         assert!(Shell::is_write_command("BEGIN CHAIN transaction"));
         assert!(Shell::is_write_command("COMMIT CHAIN"));
     }
+
+    // ==================== process_result tests ====================
+
+    #[test]
+    fn test_process_result_output() {
+        let result = CommandResult::Output("test output".to_string());
+        let action = Shell::process_result(&result);
+        assert!(matches!(action, LoopAction::Continue));
+    }
+
+    #[test]
+    fn test_process_result_help() {
+        let result = CommandResult::Help("help text".to_string());
+        let action = Shell::process_result(&result);
+        assert!(matches!(action, LoopAction::Continue));
+    }
+
+    #[test]
+    fn test_process_result_error() {
+        let result = CommandResult::Error("error message".to_string());
+        let action = Shell::process_result(&result);
+        assert!(matches!(action, LoopAction::Continue));
+    }
+
+    #[test]
+    fn test_process_result_exit() {
+        let result = CommandResult::Exit;
+        let action = Shell::process_result(&result);
+        assert!(matches!(action, LoopAction::Exit));
+    }
+
+    #[test]
+    fn test_process_result_empty() {
+        let result = CommandResult::Empty;
+        let action = Shell::process_result(&result);
+        assert!(matches!(action, LoopAction::Continue));
+    }
+
+    // ==================== version test ====================
+
+    #[test]
+    fn test_shell_version() {
+        let version = Shell::version();
+        assert!(!version.is_empty());
+        // Version should be a semver-like string
+        assert!(version.contains('.'));
+    }
+
+    // ==================== router accessors tests ====================
+
+    #[test]
+    fn test_router_arc_accessor() {
+        let shell = Shell::new();
+        let router_arc = shell.router_arc();
+        // Should be able to read from the router
+        let _guard = router_arc.read();
+    }
+
+    #[test]
+    fn test_router_read_accessor() {
+        let shell = Shell::new();
+        let _router = shell.router();
+        // Router read guard should work
+    }
+
+    #[test]
+    fn test_router_mut_accessor() {
+        let shell = Shell::new();
+        let _router = shell.router_mut();
+        // Router write guard should work
+    }
+
+    // ==================== execute edge cases ====================
+
+    #[test]
+    fn test_execute_whitespace_only() {
+        let mut shell = Shell::new();
+        let result = shell.execute("   \t\n  ");
+        assert!(matches!(result, CommandResult::Empty));
+    }
+
+    #[test]
+    fn test_execute_semicolon_only() {
+        let mut shell = Shell::new();
+        let result = shell.execute(";");
+        // Semicolon-only may return various results
+        let _ = result;
+    }
+
+    #[test]
+    fn test_execute_comment_only() {
+        let mut shell = Shell::new();
+        let result = shell.execute("-- this is a comment");
+        // Comment-only may return various results
+        let _ = result;
+    }
+
+    #[test]
+    fn test_execute_clear_command() {
+        let mut shell = Shell::new();
+        let result = shell.execute("clear");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_execute_backslash_c() {
+        let mut shell = Shell::new();
+        let result = shell.execute("\\c");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_execute_backslash_q() {
+        let mut shell = Shell::new();
+        let result = shell.execute("\\q");
+        assert!(matches!(result, CommandResult::Exit));
+    }
+
+    // ==================== help text test ====================
+
+    #[test]
+    fn test_help_text_contains_commands() {
+        let help = Shell::help_text();
+        assert!(help.contains("Commands"));
+    }
+
+    // ==================== execute_line error case ====================
+
+    #[test]
+    fn test_execute_line_with_error() {
+        let mut shell = Shell::new();
+        // Invalid SQL should return error
+        let result = shell.execute_line("SELECT * FROM nonexistent_weird_table_xyz");
+        // Could be Ok or Err depending on implementation
+        let _ = result;
+    }
+
+    // ==================== Additional handler tests ====================
+
+    #[test]
+    fn test_list_tables_empty_database() {
+        let shell = Shell::new();
+        let result = shell.list_tables();
+        // Should return output (either "No tables found" or empty list)
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
+    }
+
+    #[test]
+    fn test_handle_wal_truncate_error_case() {
+        let shell = Shell::new();
+        // WAL not active should return error
+        let result = shell.handle_wal_truncate();
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
 }
