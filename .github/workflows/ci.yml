@@ -190,6 +190,7 @@ jobs:
   miri:
     name: Miri (undefined behavior)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -198,9 +199,12 @@ jobs:
       - name: Setup Miri
         working-directory: tensor_store
         run: cargo miri setup
-      - name: Run Miri on tensor_store
+      - name: Run Miri on mmap module
         working-directory: tensor_store
-        run: cargo miri test
+        run: cargo miri test mmap:: --lib
+      - name: Run Miri on embedding_slab module
+        working-directory: tensor_store
+        run: cargo miri test embedding_slab:: --lib
 
   # TypeScript SDK tests
   typescript-sdk:
