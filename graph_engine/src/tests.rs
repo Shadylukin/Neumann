@@ -17306,3 +17306,39 @@ fn test_biconnected_with_edge_type() {
     // Chain should have articulation points
     assert!(!result.articulation_points.is_empty());
 }
+
+#[test]
+fn test_open_durable() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = dir.path().join("graph.wal");
+
+    let engine = GraphEngine::open_durable(&wal_path, WalConfig::default()).unwrap();
+    assert!(engine.is_durable());
+
+    // Create some data to verify the engine works
+    let node_id = engine.create_node("Test", HashMap::new()).unwrap();
+    assert!(engine.get_node(node_id).is_ok());
+}
+
+#[test]
+fn test_recover_durable() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = dir.path().join("graph.wal");
+
+    // First create a durable engine
+    {
+        let _engine = GraphEngine::open_durable(&wal_path, WalConfig::default()).unwrap();
+        // Engine drops, WAL is closed
+    }
+
+    // Recover
+    let recovered = GraphEngine::recover(&wal_path, &WalConfig::default(), None);
+    assert!(recovered.is_ok());
+    assert!(recovered.unwrap().is_durable());
+}
+
+#[test]
+fn test_is_durable_false_for_in_memory() {
+    let engine = GraphEngine::new();
+    assert!(!engine.is_durable());
+}

@@ -588,10 +588,7 @@ mod tests {
     #[test]
     fn test_format_graph_indexes_with_data() {
         let theme = Theme::plain();
-        let indexes = vec![
-            "idx_user_email".to_string(),
-            "idx_order_date".to_string(),
-        ];
+        let indexes = vec!["idx_user_email".to_string(), "idx_order_date".to_string()];
         let result = format_graph_indexes(&indexes, &theme);
         assert!(result.contains("Graph Indexes"));
         assert!(result.contains("idx_user_email"));
@@ -914,8 +911,12 @@ mod tests {
         );
         let pm = PatternMatchResultValue {
             matches: vec![
-                PatternMatchBinding { bindings: bindings1 },
-                PatternMatchBinding { bindings: bindings2 },
+                PatternMatchBinding {
+                    bindings: bindings1,
+                },
+                PatternMatchBinding {
+                    bindings: bindings2,
+                },
             ],
             stats: PatternMatchStatsValue {
                 matches_found: 2,

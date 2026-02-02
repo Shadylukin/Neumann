@@ -1275,7 +1275,9 @@ mod tests {
         assert!(Shell::is_write_command("VAULT DELETE 'key'"));
         assert!(Shell::is_write_command("VAULT ROTATE 'key'"));
         assert!(Shell::is_write_command("VAULT GRANT read 'key' TO 'user'"));
-        assert!(Shell::is_write_command("VAULT REVOKE read 'key' FROM 'user'"));
+        assert!(Shell::is_write_command(
+            "VAULT REVOKE read 'key' FROM 'user'"
+        ));
         assert!(!Shell::is_write_command("VAULT GET 'key'"));
     }
 
@@ -1692,7 +1694,11 @@ mod tests {
     fn test_format_wal_replay_result_many_errors() {
         let mut errors = Vec::new();
         for i in 1..=10 {
-            errors.push(WalReplayError::new(i, &format!("cmd{i}"), "error".to_string()));
+            errors.push(WalReplayError::new(
+                i,
+                &format!("cmd{i}"),
+                "error".to_string(),
+            ));
         }
         let result = WalReplayResult {
             replayed: 0,
@@ -1870,8 +1876,7 @@ mod tests {
     #[test]
     fn test_cluster_connect_double_quoted() {
         let shell = Shell::new();
-        let result =
-            shell.handle_cluster_connect("cluster connect \"node1@127.0.0.1:8080\"");
+        let result = shell.handle_cluster_connect("cluster connect \"node1@127.0.0.1:8080\"");
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
@@ -2005,10 +2010,7 @@ mod tests {
     fn test_vault_init_valid_key() {
         let shell = Shell::new();
         // Set a valid base64 encoded 32-byte key
-        let key = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &[0u8; 32],
-        );
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 32]);
         std::env::set_var("NEUMANN_VAULT_KEY", &key);
         let result = shell.handle_vault_init();
         std::env::remove_var("NEUMANN_VAULT_KEY");
@@ -2220,7 +2222,9 @@ mod tests {
         let shell = Shell::new();
         let result = shell.list_tables();
         // Should work with no tables
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2295,7 +2299,12 @@ mod tests {
     fn test_detect_embedding_dimension_no_vectors() {
         let store = TensorStore::new();
         let mut data = tensor_store::TensorData::new();
-        data.set("name", tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String("test".to_string())));
+        data.set(
+            "name",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(
+                "test".to_string(),
+            )),
+        );
         store.put("test_key", data).unwrap();
 
         // Should return default when no vectors found
@@ -2324,7 +2333,9 @@ mod tests {
         // SIMILAR command should trigger spinner
         let result = shell.execute("SIMILAR [0.1, 0.2, 0.3] LIMIT 5");
         // May succeed or fail depending on store state
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2334,7 +2345,9 @@ mod tests {
         let path = temp_dir.join("test_shell_save_temp.bin");
         let result = shell.handle_save(&format!("save '{}'", path.display()));
         // Should succeed writing to temp
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
         // Clean up
         let _ = std::fs::remove_file(&path);
     }
@@ -2345,7 +2358,9 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("test_shell_save_compressed_temp.bin");
         let result = shell.handle_save_compressed(&format!("save compressed '{}'", path.display()));
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
         // Clean up
         let _ = std::fs::remove_file(&path);
     }
@@ -2437,7 +2452,8 @@ mod tests {
     fn test_cluster_connect_with_unquoted_comma_separated() {
         let shell = Shell::new();
         // Comma separated without quotes
-        let result = shell.handle_cluster_connect("cluster connect node1@127.0.0.1:8080,node2@127.0.0.1:8081");
+        let result = shell
+            .handle_cluster_connect("cluster connect node1@127.0.0.1:8080,node2@127.0.0.1:8081");
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
@@ -2543,7 +2559,9 @@ mod tests {
 
         // Execute write command
         let result = shell.execute("CREATE TABLE wal_write_test (id INT)");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
 
         // Clean up
         let _ = std::fs::remove_file(&path);
@@ -2629,7 +2647,10 @@ mod tests {
     #[test]
     fn test_replay_wal_file_not_found() {
         let shell = Shell::new();
-        let result = shell.replay_wal(Path::new("/nonexistent/path/wal.log"), WalRecoveryMode::Strict);
+        let result = shell.replay_wal(
+            Path::new("/nonexistent/path/wal.log"),
+            WalRecoveryMode::Strict,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to open WAL"));
     }
@@ -2746,7 +2767,9 @@ mod tests {
 
         // Truncate WAL
         let result = shell.execute("WAL TRUNCATE");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
 
         // Clean up
         let _ = std::fs::remove_file(&path);
@@ -2818,7 +2841,9 @@ mod tests {
 
         // Save compressed should truncate WAL
         let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path_str));
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
 
         // Clean up
         let _ = std::fs::remove_file(&path);
@@ -2849,7 +2874,9 @@ mod tests {
 
         // Execute UPDATE
         let result = shell.execute("UPDATE update_test SET name = 'Alicia' WHERE id = 1");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2863,7 +2890,9 @@ mod tests {
 
         // Execute DELETE
         let result = shell.execute("DELETE FROM delete_test WHERE id = 1");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2876,11 +2905,15 @@ mod tests {
 
         // Create edge
         let result = shell.execute("EDGE CREATE knows 1 2 {since: '2024'}");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
 
         // List edges
         let result = shell.execute("EDGE LIST knows");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2893,7 +2926,9 @@ mod tests {
 
         // SIMILAR should use spinner
         let result = shell.execute("SIMILAR [0.1, 0.2, 0.3, 0.4] LIMIT 5");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2902,15 +2937,25 @@ mod tests {
 
         // FIND should use spinner
         let result = shell.execute("FIND test_pattern LIMIT 10");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
     fn test_detect_embedding_dimension_scalar_only() {
         let store = TensorStore::new();
         let mut data = tensor_store::TensorData::new();
-        data.set("int_field", tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(42)));
-        data.set("string_field", tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String("test".to_string())));
+        data.set(
+            "int_field",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(42)),
+        );
+        data.set(
+            "string_field",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(
+                "test".to_string(),
+            )),
+        );
         store.put("key1", data).unwrap();
 
         // Should return default when only scalars
@@ -2947,7 +2992,9 @@ mod tests {
 
         // Find path
         let result = shell.execute("PATH 1 3");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2963,7 +3010,9 @@ mod tests {
 
         // Get neighbors
         let result = shell.execute("NEIGHBORS 1");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -2984,7 +3033,8 @@ mod tests {
         let shell = Shell::new();
 
         // Valid local, invalid peer
-        let result = shell.handle_cluster_connect("cluster connect 'node1@127.0.0.1:8080' 'invalid_peer'");
+        let result =
+            shell.handle_cluster_connect("cluster connect 'node1@127.0.0.1:8080' 'invalid_peer'");
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
@@ -3033,7 +3083,9 @@ mod tests {
 
         // Execute PageRank
         let result = shell.execute("GRAPH ALGORITHM PAGERANK");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3049,7 +3101,9 @@ mod tests {
 
         // Execute centrality (degree or betweenness)
         let result = shell.execute("GRAPH ALGORITHM DEGREE");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3064,7 +3118,9 @@ mod tests {
 
         // Try community detection
         let result = shell.execute("GRAPH ALGORITHM COMMUNITIES");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3080,7 +3136,9 @@ mod tests {
 
         // Try FIND with pattern matching
         let result = shell.execute("FIND 'entity' LIMIT 10");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3105,7 +3163,9 @@ mod tests {
 
         // Get by ID
         let result = shell.execute("NODE GET 1");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3145,7 +3205,9 @@ mod tests {
         // Create and drop table
         shell.execute("CREATE TABLE drop_me (id INT)");
         let result = shell.execute("DROP TABLE drop_me");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3160,7 +3222,9 @@ mod tests {
 
         // Try aggregate query
         let result = shell.execute("SELECT COUNT(*) FROM sales");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3170,7 +3234,9 @@ mod tests {
         // Store then delete
         shell.execute("EMBED STORE 'del_key' [0.1, 0.2, 0.3]");
         let result = shell.execute("EMBED DELETE 'del_key'");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3180,7 +3246,9 @@ mod tests {
         // Store then get
         shell.execute("EMBED STORE 'get_key' [0.5, 0.6, 0.7]");
         let result = shell.execute("EMBED GET 'get_key'");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3190,7 +3258,9 @@ mod tests {
         // Create and delete node
         shell.execute("NODE CREATE temp {name: 'deleteme'}");
         let result = shell.execute("NODE DELETE 1");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3202,7 +3272,9 @@ mod tests {
         shell.execute("NODE CREATE person {name: 'B'}");
         shell.execute("EDGE CREATE temp 1 2");
         let result = shell.execute("EDGE DELETE temp 1 2");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3212,7 +3284,9 @@ mod tests {
         // Create and update node
         shell.execute("NODE CREATE item {count: 0}");
         let result = shell.execute("NODE UPDATE 1 {count: 5}");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3241,13 +3315,21 @@ mod tests {
         // Add multiple entities, first few without vectors
         for i in 0..5 {
             let mut data = tensor_store::TensorData::new();
-            data.set("name", tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(format!("entity{i}"))));
+            data.set(
+                "name",
+                tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(format!(
+                    "entity{i}"
+                ))),
+            );
             store.put(&format!("scalar:{i}"), data).unwrap();
         }
 
         // Add one with vector
         let mut data = tensor_store::TensorData::new();
-        data.set("vec", tensor_store::TensorValue::Vector(vec![0.1, 0.2, 0.3, 0.4, 0.5]));
+        data.set(
+            "vec",
+            tensor_store::TensorValue::Vector(vec![0.1, 0.2, 0.3, 0.4, 0.5]),
+        );
         store.put("with_vec", data).unwrap();
 
         let dim = Shell::detect_embedding_dimension(&store);
@@ -3282,7 +3364,9 @@ mod tests {
 
         // Initialize cache via execute
         let result = shell.execute("CACHE INIT");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3353,7 +3437,9 @@ mod tests {
 
         // SIMILAR uses spinner
         let result = shell.execute("SIMILAR [0.1, 0.2, 0.3] LIMIT 10");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3376,7 +3462,9 @@ mod tests {
         // Path without quotes
         let result = shell.handle_save("save /tmp/test_file.bin");
         // Should work or fail but not panic
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3385,10 +3473,14 @@ mod tests {
 
         // Chain operations
         let result = shell.execute("CHAIN HEIGHT");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
 
         let result = shell.execute("CHAIN STATUS");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3506,7 +3598,9 @@ mod tests {
 
         // Execute another write command
         let result = shell.execute("INSERT INTO wal_log_test VALUES (1)");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
 
         // Clean up
         let _ = std::fs::remove_file(&path);
@@ -3523,7 +3617,9 @@ mod tests {
 
         // Create edge with properties
         let result = shell.execute("EDGE CREATE route 1 2 {distance: 450, mode: 'train'}");
-        assert!(matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_)));
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
@@ -3557,7 +3653,7 @@ mod tests {
 
         // Addresses separated by commas
         let result = shell.handle_cluster_connect(
-            "cluster connect 'node1@127.0.0.1:8080','node2@127.0.0.1:8081'"
+            "cluster connect 'node1@127.0.0.1:8080','node2@127.0.0.1:8081'",
         );
         assert!(matches!(result, CommandResult::Error(_)));
     }
@@ -3567,9 +3663,8 @@ mod tests {
         let shell = Shell::new();
 
         // Unquoted addresses with spaces
-        let result = shell.handle_cluster_connect(
-            "cluster connect node1@127.0.0.1:8080 node2@127.0.0.1:8081"
-        );
+        let result = shell
+            .handle_cluster_connect("cluster connect node1@127.0.0.1:8080 node2@127.0.0.1:8081");
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
@@ -3594,7 +3689,8 @@ mod tests {
         let mut shell = Shell::new();
 
         // Try sparse vector operations
-        let result = shell.execute("EMBED STORE 'sparse:1' SPARSE [1:0.5, 10:0.3, 100:0.2] DIM 1000");
+        let result =
+            shell.execute("EMBED STORE 'sparse:1' SPARSE [1:0.5, 10:0.3, 100:0.2] DIM 1000");
         let _ = result;
     }
 
@@ -3817,8 +3913,7 @@ mod tests {
         let result = shell.handle_cache_init();
         // May succeed or fail based on state, just check it doesn't panic
         assert!(
-            matches!(result, CommandResult::Output(_))
-                || matches!(result, CommandResult::Error(_))
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
         );
     }
 
@@ -3947,8 +4042,8 @@ mod tests {
     #[test]
     fn test_cluster_connect_invalid_peer() {
         let shell = Shell::new();
-        let result = shell
-            .handle_cluster_connect("cluster connect 'node1@127.0.0.1:8080' 'invalid-peer'");
+        let result =
+            shell.handle_cluster_connect("cluster connect 'node1@127.0.0.1:8080' 'invalid-peer'");
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
@@ -4325,8 +4420,7 @@ mod tests {
         // Save compressed
         let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path_str));
         assert!(
-            matches!(result, CommandResult::Output(_))
-                || matches!(result, CommandResult::Error(_))
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
         );
 
         // Clean up
@@ -4461,7 +4555,7 @@ mod tests {
 
         // Try connecting with multiple peers
         let result = shell.handle_cluster_connect(
-            "cluster connect 'node1@127.0.0.1:9000' 'node2@127.0.0.1:9001' 'node3@127.0.0.1:9002'"
+            "cluster connect 'node1@127.0.0.1:9000' 'node2@127.0.0.1:9001' 'node3@127.0.0.1:9002'",
         );
         // Will fail to actually connect but should parse addresses correctly
         assert!(matches!(result, CommandResult::Error(_)));

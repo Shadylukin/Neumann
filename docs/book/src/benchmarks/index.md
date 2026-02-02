@@ -27,6 +27,8 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 
 ## Performance Summary
 
+### In-Memory Operations
+
 | Component | Key Metric | Performance |
 | --- | --- | --- |
 | [tensor_store](tensor-store.md) | Concurrent writes | 7.5M/sec @ 1M entities |
@@ -39,6 +41,16 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 | [tensor_chain](tensor-chain.md) | Conflict detection | 52M pairs/sec @ 99% sparse |
 | [neumann_parser](neumann-parser.md) | Query parsing | 1.9M queries/sec |
 | [query_router](query-router.md) | Mixed workload | 455 queries/sec |
+
+### Durable Storage (WAL)
+
+| Operation | Key Metric | Performance |
+| --- | --- | --- |
+| WAL writes | Durable PUT | 2.5M ops/sec |
+| WAL recovery | Replay 10K records | 195us (~50M records/sec) |
+
+All engines (`RelationalEngine`, `GraphEngine`, `VectorEngine`) support
+optional durability via `open_durable()` with full crash consistency.
 
 ## Hardware Notes
 

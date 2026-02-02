@@ -939,16 +939,12 @@ textarea:focus-visible {
 
 /* Interactive terminal input */
 .terminal-input-line {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    display: block;
     font-family: var(--font-terminal);
 }
 
 .terminal-input-line::before {
-    content: '>';
-    color: var(--phosphor-green);
-    text-shadow: 0 0 5px var(--phosphor-green);
+    display: none;
 }
 
 .terminal-input-field {
@@ -960,6 +956,28 @@ textarea:focus-visible {
     font-size: inherit;
     outline: none;
     caret-color: var(--phosphor-green);
+}
+
+.terminal-textarea {
+    width: 100%;
+    min-height: 60px;
+    max-height: 200px;
+    resize: none;
+    line-height: 1.4;
+    padding: 0.5rem;
+    background: rgba(0, 50, 0, 0.3);
+    border: 1px solid var(--phosphor-green-dark);
+    border-radius: 4px;
+}
+
+.terminal-textarea:focus {
+    border-color: var(--phosphor-green);
+    box-shadow: 0 0 8px rgba(0, 255, 65, 0.3);
+}
+
+.terminal-textarea::placeholder {
+    color: var(--phosphor-green-dark);
+    opacity: 0.6;
 }
 
 /* Live terminal output */

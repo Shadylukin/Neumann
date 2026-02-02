@@ -42,6 +42,7 @@ pub use partitioning::{
     GraphPartitioner, PartitionAssignment, PartitionConfig, PartitionStats, PartitionStrategy,
     ShardId,
 };
+pub use tensor_store::WalConfig;
 
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -1898,6 +1899,123 @@ impl GraphEngine {
             batch_unique_lock: RwLock::new(()),
             config,
         }
+    }
+
+    /// Create a `GraphEngine` with an existing store and custom configuration.
+    #[must_use]
+    pub fn with_store_and_config(store: TensorStore, config: GraphEngineConfig) -> Self {
+        let mut max_node_id = 0u64;
+        let mut max_edge_id = 0u64;
+
+        for key in store.scan("node:") {
+            if key.contains(":out") || key.contains(":in") {
+                continue;
+            }
+            if let Some(id_str) = key.strip_prefix("node:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    max_node_id = max_node_id.max(id);
+                }
+            }
+        }
+
+        for key in store.scan("edge:") {
+            if let Some(id_str) = key.strip_prefix("edge:") {
+                let id_part = id_str.rsplit(':').next().unwrap_or(id_str);
+                if let Ok(id) = id_part.parse::<u64>() {
+                    max_edge_id = max_edge_id.max(id);
+                }
+            }
+        }
+
+        let btree_indexes = Self::rebuild_indexes_from_store(&store);
+        let label_index_exists =
+            btree_indexes.contains_key(&(IndexTarget::Node, "_label".to_string()));
+        let edge_type_index_exists =
+            btree_indexes.contains_key(&(IndexTarget::Edge, "_edge_type".to_string()));
+        let constraints = Self::load_constraints_from_store(&store);
+
+        Self {
+            store,
+            node_counter: AtomicU64::new(max_node_id),
+            edge_counter: AtomicU64::new(max_edge_id),
+            btree_indexes: RwLock::new(btree_indexes),
+            compound_indexes: RwLock::new(HashMap::new()),
+            fulltext_indexes: RwLock::new(HashMap::new()),
+            geo_indexes: RwLock::new(HashMap::new()),
+            index_locks: create_index_locks(config.index_lock_count),
+            label_index_initialized: AtomicBool::new(label_index_exists),
+            edge_type_index_initialized: AtomicBool::new(edge_type_index_exists),
+            constraints: RwLock::new(constraints),
+            batch_unique_lock: RwLock::new(()),
+            config,
+        }
+    }
+
+    /// Opens a durable graph engine with WAL at the given path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the WAL file cannot be opened.
+    pub fn open_durable<P: AsRef<std::path::Path>>(
+        wal_path: P,
+        wal_config: WalConfig,
+    ) -> Result<Self> {
+        Self::open_durable_with_config(wal_path, wal_config, GraphEngineConfig::default())
+    }
+
+    /// Opens a durable graph engine with WAL and custom config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the WAL file cannot be opened.
+    pub fn open_durable_with_config<P: AsRef<std::path::Path>>(
+        wal_path: P,
+        wal_config: WalConfig,
+        config: GraphEngineConfig,
+    ) -> Result<Self> {
+        let store = TensorStore::open_durable(wal_path, wal_config)
+            .map_err(|e| GraphError::StorageError(e.to_string()))?;
+        Ok(Self::with_store_and_config(store, config))
+    }
+
+    /// Recovers a graph engine from WAL and optional snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if recovery fails.
+    pub fn recover<P: AsRef<std::path::Path>>(
+        wal_path: P,
+        wal_config: &WalConfig,
+        snapshot_path: Option<&std::path::Path>,
+    ) -> Result<Self> {
+        Self::recover_with_config(
+            wal_path,
+            wal_config,
+            snapshot_path,
+            GraphEngineConfig::default(),
+        )
+    }
+
+    /// Recovers a graph engine from WAL with custom config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if recovery fails.
+    pub fn recover_with_config<P: AsRef<std::path::Path>>(
+        wal_path: P,
+        wal_config: &WalConfig,
+        snapshot_path: Option<&std::path::Path>,
+        config: GraphEngineConfig,
+    ) -> Result<Self> {
+        let store = TensorStore::recover(wal_path, wal_config, snapshot_path)
+            .map_err(|e| GraphError::StorageError(e.to_string()))?;
+        Ok(Self::with_store_and_config(store, config))
+    }
+
+    /// Returns whether this engine is using durable storage.
+    #[must_use]
+    pub fn is_durable(&self) -> bool {
+        self.store.has_wal()
     }
 
     fn load_constraints_from_store(store: &TensorStore) -> HashMap<String, Constraint> {

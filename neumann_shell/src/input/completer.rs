@@ -903,7 +903,11 @@ mod tests {
 
     #[test]
     fn test_filter_completions_from_strings_prefix() {
-        let tables = vec!["users".to_string(), "orders".to_string(), "user_logs".to_string()];
+        let tables = vec![
+            "users".to_string(),
+            "orders".to_string(),
+            "user_logs".to_string(),
+        ];
         let completions = NeumannCompleter::filter_completions_from_strings(&tables, "us");
         assert_eq!(completions.len(), 2);
         assert!(completions.iter().any(|p| p.display == "users"));
@@ -1034,7 +1038,8 @@ mod tests {
     #[test]
     fn test_insert_after_values() {
         let completer = NeumannCompleter::new();
-        let completions = completer.complete_insert(&["INSERT", "INTO", "users", "VALUES", "(1)"], "");
+        let completions =
+            completer.complete_insert(&["INSERT", "INTO", "users", "VALUES", "(1)"], "");
         assert!(completions.is_empty());
     }
 }

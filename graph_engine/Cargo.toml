@@ -25,6 +25,7 @@ opentelemetry_sdk = { version = "0.21", optional = true, features = ["metrics"] 
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
 
 [[bench]]
 name = "graph_engine_bench"

@@ -92,6 +92,8 @@ use tensor_store::{
 use tracing::instrument;
 // Re-export HNSW types from tensor_store for backward compatibility
 pub use tensor_store::{HNSWConfig, HNSWIndex, ScalarQuantizedVector};
+// Re-export WAL config for durable storage
+pub use tensor_store::WalConfig;
 
 // Re-export distance metrics from tensor_store for extended metric support (9 variants + composite)
 pub use tensor_store::{DistanceMetric as ExtendedDistanceMetric, GeometricConfig};
@@ -1186,6 +1188,82 @@ impl VectorEngine {
             collections: Arc::new(RwLock::new(HashMap::new())),
             delete_lock: RwLock::new(()),
         })
+    }
+
+    /// Opens a durable vector engine with WAL at the given path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the WAL file cannot be opened.
+    pub fn open_durable<P: AsRef<Path>>(wal_path: P, wal_config: WalConfig) -> Result<Self> {
+        Self::open_durable_with_config(wal_path, wal_config, VectorEngineConfig::default())
+    }
+
+    /// Opens a durable vector engine with WAL and custom config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the WAL file cannot be opened.
+    pub fn open_durable_with_config<P: AsRef<Path>>(
+        wal_path: P,
+        wal_config: WalConfig,
+        config: VectorEngineConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        let store = TensorStore::open_durable(wal_path, wal_config)
+            .map_err(|e| VectorError::StorageError(e.to_string()))?;
+        Ok(Self {
+            store,
+            config,
+            collections: Arc::new(RwLock::new(HashMap::new())),
+            delete_lock: RwLock::new(()),
+        })
+    }
+
+    /// Recovers a vector engine from WAL and optional snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if recovery fails.
+    pub fn recover<P: AsRef<Path>>(
+        wal_path: P,
+        wal_config: &WalConfig,
+        snapshot_path: Option<&Path>,
+    ) -> Result<Self> {
+        Self::recover_with_config(
+            wal_path,
+            wal_config,
+            snapshot_path,
+            VectorEngineConfig::default(),
+        )
+    }
+
+    /// Recovers a vector engine from WAL with custom config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if recovery fails.
+    pub fn recover_with_config<P: AsRef<Path>>(
+        wal_path: P,
+        wal_config: &WalConfig,
+        snapshot_path: Option<&Path>,
+        config: VectorEngineConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        let store = TensorStore::recover(wal_path, wal_config, snapshot_path)
+            .map_err(|e| VectorError::StorageError(e.to_string()))?;
+        Ok(Self {
+            store,
+            config,
+            collections: Arc::new(RwLock::new(HashMap::new())),
+            delete_lock: RwLock::new(()),
+        })
+    }
+
+    /// Returns whether this engine is using durable storage.
+    #[must_use]
+    pub fn is_durable(&self) -> bool {
+        self.store.has_wal()
     }
 
     /// Get a reference to the underlying TensorStore.
@@ -8235,5 +8313,43 @@ mod tests {
     fn hnsw_storage_strategy_default() {
         let strategy = HNSWStorageStrategy::default();
         assert_eq!(strategy, HNSWStorageStrategy::Dense);
+    }
+
+    #[test]
+    fn test_open_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("vector.wal");
+
+        let engine = VectorEngine::open_durable(&wal_path, WalConfig::default()).unwrap();
+        assert!(engine.is_durable());
+
+        // Create some data to verify the engine works
+        engine
+            .store_embedding("test_key", vec![1.0, 2.0, 3.0])
+            .unwrap();
+        assert!(engine.get_embedding("test_key").is_ok());
+    }
+
+    #[test]
+    fn test_recover_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("vector.wal");
+
+        // First create a durable engine
+        {
+            let _engine = VectorEngine::open_durable(&wal_path, WalConfig::default()).unwrap();
+            // Engine drops, WAL is closed
+        }
+
+        // Recover
+        let recovered = VectorEngine::recover(&wal_path, &WalConfig::default(), None);
+        assert!(recovered.is_ok());
+        assert!(recovered.unwrap().is_durable());
+    }
+
+    #[test]
+    fn test_is_durable_false_for_in_memory() {
+        let engine = VectorEngine::new();
+        assert!(!engine.is_durable());
     }
 }

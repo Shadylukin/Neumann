@@ -291,7 +291,11 @@ mod tests {
     fn test_format_result_value() {
         let theme = Theme::plain();
         let icons = Icons::ASCII;
-        let result = format_result(&QueryResult::Value("test value".to_string()), &theme, &icons);
+        let result = format_result(
+            &QueryResult::Value("test value".to_string()),
+            &theme,
+            &icons,
+        );
         assert_eq!(result, "test value");
     }
 
@@ -473,7 +477,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let checkpoints = vec![CheckpointInfo {
-            id: "a".repeat(100), // Very long ID
+            id: "a".repeat(100),   // Very long ID
             name: "n".repeat(100), // Very long name
             created_at: now - 60,
             is_auto: false,

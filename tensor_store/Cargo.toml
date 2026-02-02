@@ -34,3 +34,7 @@ harness = false
 [[bench]]
 name = "hnsw_concurrent_bench"
 harness = false
+
+[[bench]]
+name = "wal_bench"
+harness = false

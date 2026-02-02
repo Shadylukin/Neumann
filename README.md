@@ -59,6 +59,8 @@ One runtime. One query language. One consistency model.
 
 Benchmarked on Apple M-series silicon:
 
+### In-Memory Operations
+
 | Operation              | Performance               | Notes                         |
 | ---------------------- | ------------------------- | ----------------------------- |
 | **Storage throughput** | 3.2M PUT, 5M GET ops/sec  | BTreeMap-based, no stalls     |
@@ -66,6 +68,16 @@ Benchmarked on Apple M-series silicon:
 | **Vector similarity**  | 150us @ 10K vectors       | HNSW index, 13x vs brute      |
 | **Conflict detection** | 52M pairs/sec             | 99% sparse deltas             |
 | **Query parsing**      | 1.9M queries/sec          | Hand-written recursive descent|
+
+### Durable Storage (WAL)
+
+| Operation              | Performance               | Notes                         |
+| ---------------------- | ------------------------- | ----------------------------- |
+| **Durable writes**     | 2.5M ops/sec              | Full crash consistency        |
+| **WAL recovery**       | 50M records/sec           | Sequential read, ~195us fixed |
+
+All engines support optional WAL via `open_durable()`. Recovery is nearly
+constant-time regardless of dataset size.
 
 Sub-microsecond operations for most workloads. Linear scaling with cores.
 

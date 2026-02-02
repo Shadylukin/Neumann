@@ -391,11 +391,8 @@ mod tests {
     fn test_format_chain_result_rolled_back() {
         let theme = Theme::plain();
         let icons = Icons::ASCII;
-        let result = format_chain_result(
-            &ChainResult::RolledBack { to_height: 50 },
-            &theme,
-            &icons,
-        );
+        let result =
+            format_chain_result(&ChainResult::RolledBack { to_height: 50 }, &theme, &icons);
         assert!(result.contains("rolled back"));
         assert!(result.contains("50"));
     }
@@ -530,7 +527,8 @@ mod tests {
             invalid_transitions: 5,
             avg_validity_score: 0.95,
         };
-        let result = format_chain_result(&ChainResult::TransitionAnalysis(analysis), &theme, &icons);
+        let result =
+            format_chain_result(&ChainResult::TransitionAnalysis(analysis), &theme, &icons);
         assert!(result.contains("Transition Analysis"));
     }
 }

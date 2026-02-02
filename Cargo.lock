@@ -1158,6 +1158,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "tempfile",
  "tensor_store",
  "tracing",
 ]

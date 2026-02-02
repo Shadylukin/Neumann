@@ -438,14 +438,49 @@ mod tests {
     fn test_is_keyword_all() {
         // Test all major keywords
         let keywords = [
-            "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP",
-            "TABLE", "FROM", "WHERE", "INTO", "VALUES", "SET",
-            "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN",
-            "NODE", "EDGE", "GRAPH", "ALGORITHM", "PATTERN",
-            "EMBED", "STORE", "GET", "BUILD", "INDEX", "SIMILAR",
-            "ENTITY", "CONNECT", "BATCH", "FIND",
-            "BLOB", "VAULT", "CACHE", "CHECKPOINT", "CHAIN",
-            "CLUSTER", "DESCRIBE", "SHOW", "SAVE", "LOAD",
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "CREATE",
+            "DROP",
+            "TABLE",
+            "FROM",
+            "WHERE",
+            "INTO",
+            "VALUES",
+            "SET",
+            "AND",
+            "OR",
+            "NOT",
+            "IN",
+            "LIKE",
+            "BETWEEN",
+            "NODE",
+            "EDGE",
+            "GRAPH",
+            "ALGORITHM",
+            "PATTERN",
+            "EMBED",
+            "STORE",
+            "GET",
+            "BUILD",
+            "INDEX",
+            "SIMILAR",
+            "ENTITY",
+            "CONNECT",
+            "BATCH",
+            "FIND",
+            "BLOB",
+            "VAULT",
+            "CACHE",
+            "CHECKPOINT",
+            "CHAIN",
+            "CLUSTER",
+            "DESCRIBE",
+            "SHOW",
+            "SAVE",
+            "LOAD",
         ];
         for kw in keywords {
             assert!(is_keyword(kw), "Should be keyword: {kw}");
@@ -461,7 +496,9 @@ mod tests {
 
     #[test]
     fn test_is_type_all() {
-        let types = ["INT", "INTEGER", "TEXT", "STRING", "FLOAT", "BOOL", "BOOLEAN", "BYTES", "JSON"];
+        let types = [
+            "INT", "INTEGER", "TEXT", "STRING", "FLOAT", "BOOL", "BOOLEAN", "BYTES", "JSON",
+        ];
         for t in types {
             assert!(is_type(t), "Should be type: {t}");
         }
@@ -476,7 +513,9 @@ mod tests {
 
     #[test]
     fn test_is_operator_all() {
-        let operators = ["=", "!=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "->", ":"];
+        let operators = [
+            "=", "!=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "->", ":",
+        ];
         for op in operators {
             assert!(is_operator(op), "Should be operator: {op}");
         }
@@ -526,11 +565,7 @@ mod tests {
 
     #[test]
     fn test_highlight_with_different_themes() {
-        let themes = [
-            Theme::plain(),
-            Theme::dark(),
-            Theme::light(),
-        ];
+        let themes = [Theme::plain(), Theme::dark(), Theme::light()];
         for theme in themes {
             let highlighter = NeumannHighlighter::new(theme);
             let result = highlighter.highlight_line("SELECT * FROM users");
@@ -569,7 +604,8 @@ mod tests {
     #[test]
     fn test_highlight_mixed_content() {
         let highlighter = NeumannHighlighter::new(Theme::plain());
-        let result = highlighter.highlight_line("INSERT INTO users VALUES (1, 'Alice', TRUE, NULL)");
+        let result =
+            highlighter.highlight_line("INSERT INTO users VALUES (1, 'Alice', TRUE, NULL)");
         assert!(result.contains("INSERT"));
         assert!(result.contains("INTO"));
         assert!(result.contains("VALUES"));

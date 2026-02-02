@@ -249,44 +249,130 @@ source</li>
 <h2 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h2>
 <p>Full API documentation is available in the <a href="api-reference.html">rustdoc output</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
-<h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
+<p>Multiple installation methods are available depending on your needs.</p>
+<h2 id="quick-install-recommended"><a class="header" href="#quick-install-recommended">Quick Install (Recommended)</a></h2>
+<p>The easiest way to install Neumann is using the install script:</p>
+<pre><code class="language-bash">curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+</code></pre>
+<p>This script will:</p>
+<ul>
+<li>Detect your platform (Linux x86_64, macOS x86_64, macOS ARM64)</li>
+<li>Download a pre-built binary if available</li>
+<li>Fall back to building from source if needed</li>
+<li>Install to <code>/usr/local/bin</code> or <code>~/.local/bin</code></li>
+</ul>
+<h3 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>NEUMANN_INSTALL_DIR</code></td><td>Custom installation directory</td></tr>
+<tr><td><code>NEUMANN_VERSION</code></td><td>Install a specific version (e.g., <code>v0.1.0</code>)</td></tr>
+<tr><td><code>NEUMANN_NO_MODIFY_PATH</code></td><td>Set to <code>1</code> to skip PATH modification</td></tr>
+</tbody></table>
+</div>
+<h2 id="homebrew-macoslinux"><a class="header" href="#homebrew-macoslinux">Homebrew (macOS/Linux)</a></h2>
+<pre><code class="language-bash">brew tap Shadylukin/tap
+brew install neumann
+</code></pre>
+<h2 id="cargo-cratesio"><a class="header" href="#cargo-cratesio">Cargo (crates.io)</a></h2>
+<p>If you have Rust installed:</p>
+<pre><code class="language-bash">cargo install neumann_shell
+</code></pre>
+<h2 id="docker"><a class="header" href="#docker">Docker</a></h2>
+<h3 id="interactive-cli"><a class="header" href="#interactive-cli">Interactive CLI</a></h3>
+<pre><code class="language-bash">docker run -it shadylukin/neumann:latest
+</code></pre>
+<h3 id="server-mode"><a class="header" href="#server-mode">Server Mode</a></h3>
+<pre><code class="language-bash">docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukin/neumann:server
+</code></pre>
+<h3 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h3>
+<pre><code class="language-bash"># Clone the repository
+git clone https://github.com/Shadylukin/Neumann.git
+cd Neumann
+
+# Start the server
+docker compose up -d neumann-server
+
+# Run the CLI
+docker compose run --rm neumann-cli
+</code></pre>
+<h2 id="from-source"><a class="header" href="#from-source">From Source</a></h2>
+<h3 id="requirements"><a class="header" href="#requirements">Requirements</a></h3>
 <ul>
 <li>Rust 1.75 or later</li>
 <li>Cargo (included with Rust)</li>
 <li>Git</li>
+<li>protobuf compiler (for gRPC)</li>
 </ul>
-<h2 id="from-cratesio-coming-soon"><a class="header" href="#from-cratesio-coming-soon">From crates.io (Coming Soon)</a></h2>
-<pre><code class="language-bash">cargo install neumann
-</code></pre>
-<h2 id="from-source"><a class="header" href="#from-source">From Source</a></h2>
+<h3 id="build-steps"><a class="header" href="#build-steps">Build Steps</a></h3>
 <pre><code class="language-bash"># Clone the repository
 git clone https://github.com/Shadylukin/Neumann.git
 cd Neumann
 
 # Build in release mode
-cargo build --release
-
-# Run tests to verify
-cargo test
+cargo build --release --package neumann_shell
 
 # Install locally
 cargo install --path neumann_shell
 </code></pre>
+<h3 id="run-tests"><a class="header" href="#run-tests">Run Tests</a></h3>
+<pre><code class="language-bash">cargo test
+</code></pre>
 <h2 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h2>
 <pre><code class="language-bash">neumann --version
 </code></pre>
-<h2 id="docker-coming-soon"><a class="header" href="#docker-coming-soon">Docker (Coming Soon)</a></h2>
-<pre><code class="language-bash">docker pull neumann/neumann:latest
-docker run -it neumann/neumann
-</code></pre>
 <h2 id="platform-support"><a class="header" href="#platform-support">Platform Support</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Platform</th><th>Status</th></tr></thead><tbody>
-<tr><td>Linux x86_64</td><td>Supported</td></tr>
-<tr><td>macOS x86_64</td><td>Supported</td></tr>
-<tr><td>macOS ARM64</td><td>Supported</td></tr>
-<tr><td>Windows x86_64</td><td>Experimental</td></tr>
+<div class="table-wrapper"><table><thead><tr><th>Platform</th><th>Binary</th><th>Homebrew</th><th>Docker</th><th>Source</th></tr></thead><tbody>
+<tr><td>Linux x86_64</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>macOS x86_64</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>macOS ARM64 (Apple Silicon)</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Windows x86_64</td><td>No</td><td>No</td><td>Yes</td><td>Experimental</td></tr>
 </tbody></table>
 </div>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<h3 id="command-not-found-neumann"><a class="header" href="#command-not-found-neumann">“command not found: neumann”</a></h3>
+<p>The binary may not be in your PATH. Try:</p>
+<pre><code class="language-bash"># Check where it was installed
+which neumann || ls ~/.local/bin/neumann
+
+# Add to PATH if needed
+export PATH="$HOME/.local/bin:$PATH"
+</code></pre>
+<h3 id="build-fails-with-protobuf-errors"><a class="header" href="#build-fails-with-protobuf-errors">Build fails with protobuf errors</a></h3>
+<p>Install the protobuf compiler:</p>
+<pre><code class="language-bash"># macOS
+brew install protobuf
+
+# Ubuntu/Debian
+sudo apt-get install protobuf-compiler
+
+# Fedora
+sudo dnf install protobuf-compiler
+</code></pre>
+<h3 id="permission-denied-during-install"><a class="header" href="#permission-denied-during-install">Permission denied during install</a></h3>
+<p>The installer tries <code>/usr/local/bin</code> first (requires sudo) then falls back to <code>~/.local/bin</code>. You can specify a custom directory:</p>
+<pre><code class="language-bash">NEUMANN_INSTALL_DIR=~/bin curl -sSfL .../install.sh | bash
+</code></pre>
+<h2 id="updating"><a class="header" href="#updating">Updating</a></h2>
+<h3 id="quick-install"><a class="header" href="#quick-install">Quick Install</a></h3>
+<p>Re-run the install script to get the latest version:</p>
+<pre><code class="language-bash">curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+</code></pre>
+<h3 id="homebrew"><a class="header" href="#homebrew">Homebrew</a></h3>
+<pre><code class="language-bash">brew upgrade neumann
+</code></pre>
+<h3 id="cargo"><a class="header" href="#cargo">Cargo</a></h3>
+<pre><code class="language-bash">cargo install neumann_shell --force
+</code></pre>
+<h2 id="uninstalling"><a class="header" href="#uninstalling">Uninstalling</a></h2>
+<h3 id="quick-install--cargo"><a class="header" href="#quick-install--cargo">Quick Install / Cargo</a></h3>
+<pre><code class="language-bash">rm $(which neumann)
+</code></pre>
+<h3 id="homebrew-1"><a class="header" href="#homebrew-1">Homebrew</a></h3>
+<pre><code class="language-bash">brew uninstall neumann
+</code></pre>
+<h3 id="docker-1"><a class="header" href="#docker-1">Docker</a></h3>
+<pre><code class="language-bash">docker rmi shadylukin/neumann:latest shadylukin/neumann:server
+docker volume rm neumann-data
+</code></pre>
 <h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
 <ul>
 <li><a href="getting-started/quick-start.html">Quick Start</a> - Run your first queries</li>
@@ -1509,16 +1595,24 @@ operations for bulk inserts.</p>
 <h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>RelationalEngine</code></td><td>Main engine struct with TensorStore backend</td></tr>
-<tr><td><code>Schema</code></td><td>Table schema with column definitions</td></tr>
+<tr><td><code>RelationalConfig</code></td><td>Configuration for limits, timeouts, thresholds</td></tr>
+<tr><td><code>Schema</code></td><td>Table schema with column definitions and constraints</td></tr>
 <tr><td><code>Column</code></td><td>Column name, type, and nullability</td></tr>
-<tr><td><code>ColumnType</code></td><td><code>Int</code>, <code>Float</code>, <code>String</code>, <code>Bool</code></td></tr>
-<tr><td><code>Value</code></td><td>Typed value: <code>Null</code>, <code>Int(i64)</code>, <code>Float(f64)</code>, <code>String(String)</code>, <code>Bool(bool)</code></td></tr>
+<tr><td><code>ColumnType</code></td><td><code>Int</code>, <code>Float</code>, <code>String</code>, <code>Bool</code>, <code>Bytes</code>, <code>Json</code></td></tr>
+<tr><td><code>Value</code></td><td>Typed value: <code>Null</code>, <code>Int(i64)</code>, <code>Float(f64)</code>, <code>String(String)</code>, <code>Bool(bool)</code>, <code>Bytes(Vec&lt;u8&gt;)</code>, <code>Json(Value)</code></td></tr>
 <tr><td><code>Row</code></td><td>Row with ID and ordered column values</td></tr>
 <tr><td><code>Condition</code></td><td>Composable filter predicate tree</td></tr>
-<tr><td><code>RelationalError</code></td><td>Error variants for table/column/index operations</td></tr>
+<tr><td><code>Constraint</code></td><td>Table constraint: <code>PrimaryKey</code>, <code>Unique</code>, <code>ForeignKey</code>, <code>NotNull</code></td></tr>
+<tr><td><code>ForeignKeyConstraint</code></td><td>Foreign key definition with referential actions</td></tr>
+<tr><td><code>ReferentialAction</code></td><td><code>Restrict</code>, <code>Cascade</code>, <code>SetNull</code>, <code>SetDefault</code>, <code>NoAction</code></td></tr>
+<tr><td><code>RelationalError</code></td><td>Error variants for table/column/index/constraint operations</td></tr>
 <tr><td><code>ColumnData</code></td><td>Columnar storage for a single column with null bitmap</td></tr>
 <tr><td><code>SelectionVector</code></td><td>Bitmap-based row selection for SIMD operations</td></tr>
 <tr><td><code>OrderedKey</code></td><td>B-tree index key with total ordering semantics</td></tr>
+<tr><td><code>StreamingCursor</code></td><td>Iterator for batch-based query result streaming</td></tr>
+<tr><td><code>CursorBuilder</code></td><td>Builder for customizing streaming cursor options</td></tr>
+<tr><td><code>QueryMetrics</code></td><td>Query execution metrics for observability</td></tr>
+<tr><td><code>IndexTracker</code></td><td>Tracks index hits/misses to detect missing indexes</td></tr>
 </tbody></table>
 </div>
 <h3 id="column-types"><a class="header" href="#column-types">Column Types</a></h3>
@@ -1527,6 +1621,8 @@ operations for bulk inserts.</p>
 <tr><td><code>Float</code></td><td><code>f64</code></td><td>8-byte IEEE 754</td><td>64-bit floating point</td></tr>
 <tr><td><code>String</code></td><td><code>String</code></td><td>Dictionary-encoded</td><td>UTF-8 string with deduplication</td></tr>
 <tr><td><code>Bool</code></td><td><code>bool</code></td><td>Packed bitmap (64 values per u64)</td><td>Boolean</td></tr>
+<tr><td><code>Bytes</code></td><td><code>Vec&lt;u8&gt;</code></td><td>Raw bytes</td><td>Binary data</td></tr>
+<tr><td><code>Json</code></td><td><code>serde_json::Value</code></td><td>JSON string</td><td>JSON value</td></tr>
 </tbody></table>
 </div>
 <h3 id="conditions"><a class="header" href="#conditions">Conditions</a></h3>
@@ -1559,11 +1655,32 @@ let condition = Condition::Eq("status".into(), Value::String("active".into()))
 <tr><td><code>TableNotFound</code></td><td>Table does not exist</td></tr>
 <tr><td><code>TableAlreadyExists</code></td><td>Creating duplicate table</td></tr>
 <tr><td><code>ColumnNotFound</code></td><td>Update references unknown column</td></tr>
+<tr><td><code>ColumnAlreadyExists</code></td><td>Column already exists in table</td></tr>
 <tr><td><code>TypeMismatch</code></td><td>Value type does not match column type</td></tr>
 <tr><td><code>NullNotAllowed</code></td><td>NULL in non-nullable column</td></tr>
 <tr><td><code>IndexAlreadyExists</code></td><td>Creating duplicate index</td></tr>
 <tr><td><code>IndexNotFound</code></td><td>Dropping non-existent index</td></tr>
+<tr><td><code>IndexCorrupted</code></td><td>Index data is corrupted</td></tr>
 <tr><td><code>StorageError</code></td><td>Underlying Tensor Store error</td></tr>
+<tr><td><code>InvalidName</code></td><td>Invalid table or column name</td></tr>
+<tr><td><code>SchemaCorrupted</code></td><td>Schema metadata is corrupted</td></tr>
+<tr><td><code>TransactionNotFound</code></td><td>Transaction ID not found</td></tr>
+<tr><td><code>TransactionInactive</code></td><td>Transaction already committed/aborted</td></tr>
+<tr><td><code>LockConflict</code></td><td>Lock conflict with another transaction</td></tr>
+<tr><td><code>LockTimeout</code></td><td>Lock acquisition timed out</td></tr>
+<tr><td><code>RollbackFailed</code></td><td>Rollback operation failed</td></tr>
+<tr><td><code>ResultTooLarge</code></td><td>Result set exceeds maximum size</td></tr>
+<tr><td><code>TooManyTables</code></td><td>Maximum table count exceeded</td></tr>
+<tr><td><code>TooManyIndexes</code></td><td>Maximum index count exceeded</td></tr>
+<tr><td><code>QueryTimeout</code></td><td>Query execution timed out</td></tr>
+<tr><td><code>PrimaryKeyViolation</code></td><td>Primary key constraint violated</td></tr>
+<tr><td><code>UniqueViolation</code></td><td>Unique constraint violated</td></tr>
+<tr><td><code>ForeignKeyViolation</code></td><td>Foreign key constraint violated on insert/update</td></tr>
+<tr><td><code>ForeignKeyRestrict</code></td><td>Foreign key prevents delete/update</td></tr>
+<tr><td><code>ConstraintNotFound</code></td><td>Constraint does not exist</td></tr>
+<tr><td><code>ConstraintAlreadyExists</code></td><td>Constraint already exists</td></tr>
+<tr><td><code>ColumnHasConstraint</code></td><td>Column has constraint preventing operation</td></tr>
+<tr><td><code>CannotAddColumn</code></td><td>Cannot add column due to constraint</td></tr>
 </tbody></table>
 </div>
 <h2 id="storage-model"><a class="header" href="#storage-model">Storage Model</a></h2>
@@ -1661,6 +1778,75 @@ let count = engine.update(
 
 // DELETE
 let count = engine.delete_rows("users", Condition::Lt("age".into(), Value::Int(18)))?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="constraints"><a class="header" href="#constraints">Constraints</a></h3>
+<p>The engine supports four constraint types for data integrity:</p>
+<div class="table-wrapper"><table><thead><tr><th>Constraint</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>PrimaryKey</code></td><td>Unique + not null, identifies rows uniquely</td></tr>
+<tr><td><code>Unique</code></td><td>Values must be unique (NULLs allowed)</td></tr>
+<tr><td><code>ForeignKey</code></td><td>References rows in another table</td></tr>
+<tr><td><code>NotNull</code></td><td>Column cannot contain NULL values</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{Constraint, ForeignKeyConstraint, ReferentialAction};
+
+// Create table with constraints
+let schema = Schema::with_constraints(
+    vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("email", ColumnType::String),
+        Column::new("dept_id", ColumnType::Int).nullable(),
+    ],
+    vec![
+        Constraint::primary_key("pk_users", vec!["id".to_string()]),
+        Constraint::unique("uq_email", vec!["email".to_string()]),
+    ],
+);
+engine.create_table("users", schema)?;
+
+// Add constraint after table creation
+engine.add_constraint("users", Constraint::not_null("nn_email", "email"))?;
+
+// Add foreign key with referential actions
+let fk = ForeignKeyConstraint::new(
+    "fk_users_dept",
+    vec!["dept_id".to_string()],
+    "departments",
+    vec!["id".to_string()],
+)
+.on_delete(ReferentialAction::SetNull)
+.on_update(ReferentialAction::Cascade);
+engine.add_constraint("users", Constraint::foreign_key(fk))?;
+
+// Get constraints
+let constraints = engine.get_constraints("users")?;
+
+// Drop constraint
+engine.drop_constraint("users", "uq_email")?;
+<span class="boring">}</span></code></pre></pre>
+<h4 id="referential-actions"><a class="header" href="#referential-actions">Referential Actions</a></h4>
+<p>Foreign keys support these actions on delete/update of referenced rows:</p>
+<div class="table-wrapper"><table><thead><tr><th>Action</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Restrict</code> (default)</td><td>Prevent the operation</td></tr>
+<tr><td><code>Cascade</code></td><td>Cascade to referencing rows</td></tr>
+<tr><td><code>SetNull</code></td><td>Set referencing columns to NULL</td></tr>
+<tr><td><code>SetDefault</code></td><td>Set referencing columns to default</td></tr>
+<tr><td><code>NoAction</code></td><td>Same as Restrict, checked at commit</td></tr>
+</tbody></table>
+</div>
+<h3 id="alter-table-operations"><a class="header" href="#alter-table-operations">ALTER TABLE Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Add a new column (nullable or with default)
+engine.add_column("users", Column::new("phone", ColumnType::String).nullable())?;
+
+// Drop a column (fails if column has constraints)
+engine.drop_column("users", "phone")?;
+
+// Rename a column (updates constraints automatically)
+engine.rename_column("users", "email", "email_address")?;
 <span class="boring">}</span></code></pre></pre>
 <h3 id="joins"><a class="header" href="#joins">Joins</a></h3>
 <p>All six SQL join types are supported using hash join algorithm (O(n+m)):</p>
@@ -2166,12 +2352,144 @@ right table.</p>
 <li><code>sum</code>, <code>avg</code>, <code>min</code>, <code>max</code> (parallel reduction)</li>
 </ul>
 <h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
-<p>The Relational Engine uses the underlying TensorStore configuration. Key
-internal constants:</p>
+<h3 id="relationalconfig"><a class="header" href="#relationalconfig">RelationalConfig</a></h3>
+<p>The engine can be configured with <code>RelationalConfig</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = RelationalConfig {
+    max_tables: Some(1000),              // Maximum tables allowed
+    max_indexes_per_table: Some(10),     // Maximum indexes per table
+    max_btree_entries: 10_000_000,       // Maximum B-tree index entries
+    default_query_timeout_ms: Some(5000),// Default query timeout
+    max_query_timeout_ms: Some(300_000), // Maximum allowed timeout (5 min)
+    slow_query_threshold_ms: 100,        // Slow query warning threshold
+    max_query_result_rows: Some(10_000), // Maximum rows per query
+    transaction_timeout_secs: 60,        // Transaction timeout
+    lock_timeout_secs: 30,               // Lock acquisition timeout
+};
+let engine = RelationalEngine::with_config(config);
+<span class="boring">}</span></code></pre></pre>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>max_tables</code></td><td>None (unlimited)</td><td>Maximum number of tables</td></tr>
+<tr><td><code>max_indexes_per_table</code></td><td>None (unlimited)</td><td>Maximum indexes per table</td></tr>
+<tr><td><code>max_btree_entries</code></td><td>10,000,000</td><td>Maximum B-tree index entries total</td></tr>
+<tr><td><code>default_query_timeout_ms</code></td><td>None</td><td>Default timeout for queries</td></tr>
+<tr><td><code>max_query_timeout_ms</code></td><td>300,000 (5 min)</td><td>Maximum allowed query timeout</td></tr>
+<tr><td><code>slow_query_threshold_ms</code></td><td>100</td><td>Threshold for slow query warnings</td></tr>
+<tr><td><code>max_query_result_rows</code></td><td>None (unlimited)</td><td>Maximum rows returned per query</td></tr>
+<tr><td><code>transaction_timeout_secs</code></td><td>60</td><td>Transaction timeout</td></tr>
+<tr><td><code>lock_timeout_secs</code></td><td>30</td><td>Lock acquisition timeout</td></tr>
+</tbody></table>
+</div>
+<h3 id="internal-constants"><a class="header" href="#internal-constants">Internal Constants</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Constant</th><th>Value</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>PARALLEL_THRESHOLD</code></td><td>1000</td><td>Minimum rows for parallel operations</td></tr>
 <tr><td>Null bitmap sparse threshold</td><td>10%</td><td>Use sparse bitmap when nulls &lt; 10%</td></tr>
 <tr><td>SIMD vector width</td><td>4</td><td>i64x4/f64x4 operations</td></tr>
+</tbody></table>
+</div>
+<h2 id="observability"><a class="header" href="#observability">Observability</a></h2>
+<p>The <code>observability</code> module provides query metrics, slow query detection, and
+index usage tracking.</p>
+<h3 id="query-metrics"><a class="header" href="#query-metrics">Query Metrics</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::observability::{QueryMetrics, check_slow_query};
+use std::time::Duration;
+
+let metrics = QueryMetrics::new("users", "select")
+    .with_rows_scanned(10000)
+    .with_rows_returned(50)
+    .with_index("idx_user_id")
+    .with_duration(Duration::from_millis(25));
+
+// Log warning if query exceeds threshold
+check_slow_query(&amp;metrics, 100); // threshold in ms
+<span class="boring">}</span></code></pre></pre>
+<h3 id="index-tracking"><a class="header" href="#index-tracking">Index Tracking</a></h3>
+<p>Track index usage to identify missing indexes:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::observability::IndexTracker;
+
+let tracker = IndexTracker::new();
+
+// Record when index is used
+tracker.record_hit("users", "id");
+
+// Record when index could have been used but wasn't
+tracker.record_miss("users", "email");
+
+// Get reports of columns needing indexes
+let reports = tracker.report_misses();
+for report in reports {
+    println!(
+        "Table {}, column {}: {} misses, {} hits",
+        report.table, report.column, report.miss_count, report.hit_count
+    );
+}
+
+// Aggregate statistics
+let total_hits = tracker.total_hits();
+let total_misses = tracker.total_misses();
+<span class="boring">}</span></code></pre></pre>
+<h3 id="slow-query-warnings"><a class="header" href="#slow-query-warnings">Slow Query Warnings</a></h3>
+<p>The <code>check_slow_query</code> function logs a <code>tracing::warn!</code> when queries exceed
+the threshold:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::observability::{check_slow_query, warn_full_table_scan};
+
+// Warn if query took &gt; 100ms
+check_slow_query(&amp;metrics, 100);
+
+// Warn about full table scans on large tables (&gt; 1000 rows)
+warn_full_table_scan("users", "select", 5000);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="streaming-cursor-api"><a class="header" href="#streaming-cursor-api">Streaming Cursor API</a></h2>
+<p>For large result sets, use streaming cursors to avoid loading all rows into
+memory at once. The cursor fetches rows in configurable batches.</p>
+<h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{StreamingCursor, Condition};
+
+// Create streaming cursor with default batch size (1000)
+let cursor = engine.select_streaming("users", Condition::True);
+
+// Iterate over results
+for row_result in cursor {
+    let row = row_result?;
+    println!("User: {:?}", row);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="custom-options"><a class="header" href="#custom-options">Custom Options</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// With custom batch size
+let cursor = engine.select_streaming("users", Condition::True)
+    .with_batch_size(100)
+    .with_max_rows(5000);
+
+// Using the builder
+let cursor = engine.select_streaming_builder("users", Condition::True)
+    .batch_size(100)
+    .max_rows(5000)
+    .build();
+
+// Check cursor state
+let mut cursor = engine.select_streaming("users", Condition::True);
+while let Some(row) = cursor.next() {
+    println!("Yielded so far: {}", cursor.rows_yielded());
+}
+println!("Exhausted: {}", cursor.is_exhausted());
+<span class="boring">}</span></code></pre></pre>
+<h3 id="cursor-methods"><a class="header" href="#cursor-methods">Cursor Methods</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>with_batch_size(n)</code></td><td>Set rows fetched per batch (default: 1000)</td></tr>
+<tr><td><code>with_max_rows(n)</code></td><td>Limit total rows returned</td></tr>
+<tr><td><code>rows_yielded()</code></td><td>Number of rows returned so far</td></tr>
+<tr><td><code>is_exhausted()</code></td><td>Whether cursor has no more rows</td></tr>
 </tbody></table>
 </div>
 <h2 id="edge-cases-and-gotchas-1"><a class="header" href="#edge-cases-and-gotchas-1">Edge Cases and Gotchas</a></h2>
@@ -2311,13 +2629,17 @@ HAVING SUM(quantity) &gt; 100;
 <tr><td>Batch operations</td><td>59x faster bulk inserts</td></tr>
 <tr><td>Parallel operations</td><td>Rayon-based parallelism for large tables</td></tr>
 <tr><td>Dictionary encoding</td><td>String column compression</td></tr>
+<tr><td>Transactions</td><td>Row-level ACID with undo log - see <a href="architecture/relational-transactions.html">Transactions</a></td></tr>
+<tr><td>Constraints</td><td>PRIMARY KEY, UNIQUE, FOREIGN KEY, NOT NULL</td></tr>
+<tr><td>Foreign Keys</td><td>Full referential integrity with CASCADE/SET NULL/RESTRICT</td></tr>
+<tr><td>ALTER TABLE</td><td>add_column, drop_column, rename_column</td></tr>
+<tr><td>Streaming cursors</td><td>Memory-efficient iteration over large result sets</td></tr>
+<tr><td>Observability</td><td>Query metrics, slow query detection, index tracking</td></tr>
 </tbody></table>
 </div>
 <h3 id="future-considerations"><a class="header" href="#future-considerations">Future Considerations</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Status</th></tr></thead><tbody>
 <tr><td>Query Optimization</td><td>Not implemented</td></tr>
-<tr><td>Transactions</td><td>Row-level ACID with undo log - see <a href="architecture/relational-transactions.html">Transactions</a></td></tr>
-<tr><td>Foreign Keys</td><td>Not implemented</td></tr>
 <tr><td>Subqueries</td><td>Not implemented</td></tr>
 <tr><td>Window Functions</td><td>Not implemented</td></tr>
 <tr><td>Composite Indexes</td><td>Not implemented</td></tr>
@@ -6360,7 +6682,7 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 <tr><td><code>window</code></td><td><code>Duration</code></td><td>60s</td><td>Sliding window duration</td></tr>
 </tbody></table>
 </div>
-<h3 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h3>
+<h3 id="environment-variables-1"><a class="header" href="#environment-variables-1">Environment Variables</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>NEUMANN_VAULT_KEY</code></td><td>Base64-encoded 32-byte master key</td></tr>
 </tbody></table>
@@ -6836,7 +7158,7 @@ handle.shutdown().await;
 }
 <span class="boring">}</span></code></pre></pre>
 <h2 id="usage-examples-5"><a class="header" href="#usage-examples-5">Usage Examples</a></h2>
-<h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
+<h3 id="basic-usage-1"><a class="header" href="#basic-usage-1">Basic Usage</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_cache::{Cache, CacheConfig};
@@ -8705,7 +9027,7 @@ pub fn format_warning(op: &amp;DestructiveOp) -&gt; String;
 pub fn format_confirmation_prompt(op: &amp;DestructiveOp, preview: &amp;OperationPreview) -&gt; String;
 <span class="boring">}</span></code></pre></pre>
 <h2 id="usage-examples-7"><a class="header" href="#usage-examples-7">Usage Examples</a></h2>
-<h3 id="basic-usage-1"><a class="header" href="#basic-usage-1">Basic Usage</a></h3>
+<h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_checkpoint::{CheckpointManager, CheckpointConfig};
@@ -16897,7 +17219,7 @@ transactions</li>
 </tbody></table>
 </div>
 <h2 id="transaction-operations"><a class="header" href="#transaction-operations">Transaction Operations</a></h2>
-<h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
+<h3 id="basic-usage-3"><a class="header" href="#basic-usage-3">Basic Usage</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_chain::{TensorStore, TransactionWorkspace};
@@ -18520,7 +18842,7 @@ curl http://node1:9090/health
 # View membership
 neumann-admin cluster-status
 </code></pre>
-<h2 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h2>
+<h2 id="docker-compose-1"><a class="header" href="#docker-compose-1">Docker Compose</a></h2>
 <pre><code class="language-yaml">version: '3.8'
 services:
   node1:
@@ -18631,7 +18953,7 @@ compression = "lz4"
 enabled = true
 bind_address = "0.0.0.0:9090"
 </code></pre>
-<h2 id="environment-variables-1"><a class="header" href="#environment-variables-1">Environment Variables</a></h2>
+<h2 id="environment-variables-2"><a class="header" href="#environment-variables-2">Environment Variables</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Config Path</th><th>Example</th></tr></thead><tbody>
 <tr><td><code>NEUMANN_NODE_ID</code></td><td><code>node.id</code></td><td><code>node1</code></td></tr>
 <tr><td><code>NEUMANN_DATA_DIR</code></td><td><code>node.data_dir</code></td><td><code>/var/lib/neumann</code></td></tr>
@@ -18775,7 +19097,7 @@ bind_address = "0.0.0.0:9090"
 <pre><code class="language-bash">RUST_LOG=tensor_chain=debug neumann
 </code></pre>
 <p>Log levels: <code>error</code>, <code>warn</code>, <code>info</code>, <code>debug</code>, <code>trace</code></p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="troubleshooting-1"><a class="header" href="#troubleshooting-1">Troubleshooting</a></h1>
 <h2 id="common-issues"><a class="header" href="#common-issues">Common Issues</a></h2>
 <h3 id="node-wont-start"><a class="header" href="#node-wont-start">Node Won’t Start</a></h3>
 <p><strong>Symptom</strong>: Node exits immediately or fails to bind</p>
@@ -19233,7 +19555,7 @@ local_read_preference = true
 priority = 1
 </code></pre>
 <h2 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration Reference</a></h2>
-<h3 id="environment-variables-2"><a class="header" href="#environment-variables-2">Environment Variables</a></h3>
+<h3 id="environment-variables-3"><a class="header" href="#environment-variables-3">Environment Variables</a></h3>
 <p>All configuration values can be overridden with environment variables:</p>
 <pre><code class="language-bash">NEUMANN_NODE_ID=node1
 NEUMANN_CLUSTER_PORT=9100
@@ -19994,7 +20316,7 @@ echo "Lag: $((LEADER_COMMIT - MY_APPLIED)) entries"
 # Estimated time to catch up (entries/sec)
 watch -n5 'curl -s localhost:9090/metrics | grep tensor_chain_applied_index'
 </code></pre>
-<h2 id="troubleshooting-1"><a class="header" href="#troubleshooting-1">Troubleshooting</a></h2>
+<h2 id="troubleshooting-2"><a class="header" href="#troubleshooting-2">Troubleshooting</a></h2>
 <h3 id="recovery-stuck"><a class="header" href="#recovery-stuck">Recovery Stuck</a></h3>
 <p><strong>Symptom</strong>: Node not catching up, applied_index not increasing</p>
 <p><strong>Causes</strong>:</p>
@@ -20369,7 +20691,7 @@ tx.lock("users/*")?;
 tx.lock("users/123")?;
 tx.lock("users/456")?;
 <span class="boring">}</span></code></pre></pre>
-<h2 id="troubleshooting-2"><a class="header" href="#troubleshooting-2">Troubleshooting</a></h2>
+<h2 id="troubleshooting-3"><a class="header" href="#troubleshooting-3">Troubleshooting</a></h2>
 <h3 id="high-deadlock-rate"><a class="header" href="#high-deadlock-rate">High Deadlock Rate</a></h3>
 <p><strong>Cause</strong>: Hot keys with many concurrent transactions</p>
 <p><strong>Solution</strong>:</p>
@@ -21714,7 +22036,7 @@ STRESS_DURATION=30 cargo test --release -p stress_tests -- --ignored --nocapture
 <li>Relational engine adds ~12ms p50 overhead due to schema operations</li>
 </ul>
 <h2 id="configuration-23"><a class="header" href="#configuration-23">Configuration</a></h2>
-<h3 id="environment-variables-3"><a class="header" href="#environment-variables-3">Environment Variables</a></h3>
+<h3 id="environment-variables-4"><a class="header" href="#environment-variables-4">Environment Variables</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>STRESS_DURATION</code></td><td>30 (quick) / 600 (full)</td><td>Test duration in seconds</td></tr>
 <tr><td><code>STRESS_THREADS</code></td><td>16</td><td>Thread count for tests</td></tr>
@@ -23750,6 +24072,8 @@ RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc \
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="mermaid.min.js"></script>
+        <script src="mermaid-init.js"></script>
 
         <script>
         window.addEventListener('load', function() {

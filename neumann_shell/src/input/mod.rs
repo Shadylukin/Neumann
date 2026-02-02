@@ -174,12 +174,7 @@ mod tests {
 
     #[test]
     fn test_helper_with_different_themes() {
-        let themes = [
-            Theme::plain(),
-            Theme::dark(),
-            Theme::light(),
-            Theme::auto(),
-        ];
+        let themes = [Theme::plain(), Theme::dark(), Theme::light(), Theme::auto()];
         for theme in themes {
             let helper = NeumannHelper::new(theme);
             let highlighted = helper.highlight("SELECT", 0);

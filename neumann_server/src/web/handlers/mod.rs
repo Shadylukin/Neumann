@@ -174,22 +174,22 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
                 div id="terminal-output" class="terminal-output mb-3" {
                     div class="terminal-output-line success" { "> System initialized" }
                     div class="terminal-output-line success" { "> All engines operational" }
-                    div class="terminal-output-line" { "> Type a query and press Enter" }
+                    div class="terminal-output-line" { "> Type a query (Ctrl+Enter to execute)" }
                 }
-                // Input area
+                // Input area - multi-line textarea
                 form id="terminal-form" class="terminal-input-line" {
-                    input
-                        type="text"
+                    textarea
                         id="terminal-input"
-                        class="terminal-input-field"
+                        class="terminal-input-field terminal-textarea"
                         placeholder="SELECT * FROM documents LIMIT 5"
-                        autocomplete="off";
-                    span class="terminal-cursor" {}
+                        autocomplete="off"
+                        rows="3"
+                        spellcheck="false" {}
                 }
             }
             div class="panel-footer flex justify-between items-center" {
-                span { "Press Enter to execute | Esc to clear" }
-                span class="text-phosphor-dim" { "HTMX-powered" }
+                span { "Ctrl+Enter to execute | Esc to clear | Up/Down for history" }
+                span class="text-phosphor-dim" { "Multi-line supported" }
             }
         }
 
@@ -203,8 +203,15 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
             let history = [];
             let historyIndex = -1;
 
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
+            // Auto-resize textarea
+            function autoResize() {
+                input.style.height = 'auto';
+                input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+            }
+            input.addEventListener('input', autoResize);
+
+            // Execute query function
+            async function executeQuery() {
                 const query = input.value.trim();
                 if (!query) return;
 
@@ -212,8 +219,11 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
                 history.push(query);
                 historyIndex = history.length;
 
-                // Show command
-                addLine('> ' + query, 'command');
+                // Show command (handle multi-line)
+                const lines = query.split('\n');
+                lines.forEach((line, i) => {
+                    addLine((i === 0 ? '> ' : '  ') + line, 'command');
+                });
 
                 // Execute query
                 try {
@@ -227,13 +237,15 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
                         const result = await response.json();
                         if (result.error) {
                             addLine('ERROR: ' + result.error, 'error');
+                        } else if (result.message) {
+                            addLine('OK: ' + result.message, 'success');
                         } else if (result.rows) {
                             addLine('OK: ' + result.rows.length + ' row(s)', 'success');
-                            result.rows.slice(0, 5).forEach(row => {
+                            result.rows.slice(0, 10).forEach(row => {
                                 addLine('  ' + JSON.stringify(row), '');
                             });
-                            if (result.rows.length > 5) {
-                                addLine('  ... and ' + (result.rows.length - 5) + ' more', '');
+                            if (result.rows.length > 10) {
+                                addLine('  ... and ' + (result.rows.length - 10) + ' more', '');
                             }
                         } else {
                             addLine('OK', 'success');
@@ -246,17 +258,32 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
                 }
 
                 input.value = '';
+                autoResize();
+            }
+
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                executeQuery();
             });
 
-            // History navigation
+            // Keyboard handling
             input.addEventListener('keydown', (e) => {
-                if (e.key === 'ArrowUp') {
+                // Ctrl+Enter or Cmd+Enter to execute
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    executeQuery();
+                }
+                // Up arrow at start of input for history
+                else if (e.key === 'ArrowUp' && input.selectionStart === 0) {
                     e.preventDefault();
                     if (historyIndex > 0) {
                         historyIndex--;
                         input.value = history[historyIndex];
+                        autoResize();
                     }
-                } else if (e.key === 'ArrowDown') {
+                }
+                // Down arrow at end of input for history
+                else if (e.key === 'ArrowDown' && input.selectionStart === input.value.length) {
                     e.preventDefault();
                     if (historyIndex < history.length - 1) {
                         historyIndex++;
@@ -265,8 +292,12 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
                         historyIndex = history.length;
                         input.value = '';
                     }
-                } else if (e.key === 'Escape') {
+                    autoResize();
+                }
+                // Escape to clear
+                else if (e.key === 'Escape') {
                     input.value = '';
+                    autoResize();
                 }
             });
 
