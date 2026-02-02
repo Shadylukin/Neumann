@@ -110,7 +110,7 @@ jobs:
             query_router) MIN_COV=88 ;;  # Large module with cross-engine integration
             tensor_chain) MIN_COV=95 ;;  # Distributed consensus with async/networking code
             neumann_client) MIN_COV=78 ;;  # gRPC client with TLS, requires runtime
-            vector_engine) MIN_COV=92 ;;  # HNSW with complex search paths
+            vector_engine) MIN_COV=95 ;;  # HNSW with complex search paths
             tensor_unified) MIN_COV=93 ;;  # Cross-engine integration with async code
             graph_engine) MIN_COV=88 ;;  # Graph algorithms with traversal paths
             relational_engine) MIN_COV=92 ;;  # SIMD filtering with platform-specific code
@@ -178,6 +178,9 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2

@@ -6733,6 +6733,32 @@ mod tests {
     }
 
     #[test]
+    fn search_filtered_le() {
+        let engine = setup_filtered_search_engine();
+
+        // Less than or equal to 50 should match clothing (50) and food (25)
+        let filter = FilterCondition::Le("price".to_string(), FilterValue::Int(50));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2); // clothing (50) and food (25)
+    }
+
+    #[test]
+    fn search_filtered_ge() {
+        let engine = setup_filtered_search_engine();
+
+        // Greater than or equal to 50 should match electronics (100) and clothing (50)
+        let filter = FilterCondition::Ge("price".to_string(), FilterValue::Int(50));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2); // electronics (100) and clothing (50)
+    }
+
+    #[test]
     fn search_filtered_and() {
         let engine = setup_filtered_search_engine();
 
@@ -6836,6 +6862,28 @@ mod tests {
     }
 
     #[test]
+    fn search_filtered_contains_on_non_string() {
+        let engine = VectorEngine::new();
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "count".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(42)),
+        );
+        engine
+            .store_embedding_with_metadata("item", vec![1.0, 0.0], meta)
+            .unwrap();
+
+        // Contains on non-string field should not match
+        let filter = FilterCondition::Contains("count".to_string(), "4".to_string());
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
     fn search_filtered_starts_with() {
         let engine = VectorEngine::new();
 
@@ -6864,6 +6912,44 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn search_filtered_starts_with_on_non_string() {
+        let engine = VectorEngine::new();
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "count".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(123)),
+        );
+        engine
+            .store_embedding_with_metadata("item", vec![1.0, 0.0], meta)
+            .unwrap();
+
+        // StartsWith on non-string field should not match
+        let filter = FilterCondition::StartsWith("count".to_string(), "1".to_string());
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn search_filtered_missing_field() {
+        let engine = VectorEngine::new();
+
+        // Store without any metadata
+        engine.store_embedding("item", vec![1.0, 0.0]).unwrap();
+
+        // Filter on non-existent field should not match
+        let filter = FilterCondition::Eq("missing".to_string(), FilterValue::Int(42));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
     }
 
     #[test]
@@ -7131,6 +7217,163 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_filtered_int_vs_float_filter() {
+        let engine = VectorEngine::new();
+
+        // Store an int value
+        let mut meta = HashMap::new();
+        meta.insert(
+            "count".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(100)),
+        );
+        engine
+            .store_embedding_with_metadata("item", vec![1.0, 0.0], meta)
+            .unwrap();
+
+        // Compare int field with float filter value
+        let filter = FilterCondition::Gt("count".to_string(), FilterValue::Float(50.5));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+
+        // Test boundary: 100 should not be > 100.0
+        let filter = FilterCondition::Gt("count".to_string(), FilterValue::Float(100.0));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn search_filtered_null_comparison() {
+        let engine = VectorEngine::new();
+
+        // Store a null value
+        let mut meta = HashMap::new();
+        meta.insert(
+            "optional".to_string(),
+            TensorValue::Scalar(ScalarValue::Null),
+        );
+        engine
+            .store_embedding_with_metadata("with_null", vec![1.0, 0.0], meta)
+            .unwrap();
+
+        // Store without the field
+        engine
+            .store_embedding("without_field", vec![0.0, 1.0])
+            .unwrap();
+
+        // Filter for null should match the one with explicit null
+        let filter = FilterCondition::Eq("optional".to_string(), FilterValue::Null);
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "with_null");
+    }
+
+    #[test]
+    fn search_filtered_string_comparison() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "name".to_string(),
+            TensorValue::Scalar(ScalarValue::String("apple".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item1", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "name".to_string(),
+            TensorValue::Scalar(ScalarValue::String("banana".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item2", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        // String greater than comparison (lexicographic)
+        let filter =
+            FilterCondition::Gt("name".to_string(), FilterValue::String("app".to_string()));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        // Both "apple" and "banana" are > "app"
+        assert_eq!(results.len(), 2);
+
+        // Test Le: "apple" <= "apple" should match
+        let filter =
+            FilterCondition::Le("name".to_string(), FilterValue::String("apple".to_string()));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn search_filtered_bool_false() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "active".to_string(),
+            TensorValue::Scalar(ScalarValue::Bool(true)),
+        );
+        engine
+            .store_embedding_with_metadata("active_item", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "active".to_string(),
+            TensorValue::Scalar(ScalarValue::Bool(false)),
+        );
+        engine
+            .store_embedding_with_metadata("inactive_item", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        // Filter for false
+        let filter = FilterCondition::Eq("active".to_string(), FilterValue::Bool(false));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "inactive_item");
+    }
+
+    #[test]
+    fn search_filtered_incompatible_types() {
+        let engine = VectorEngine::new();
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "value".to_string(),
+            TensorValue::Scalar(ScalarValue::String("text".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item", vec![1.0, 0.0], meta)
+            .unwrap();
+
+        // Try to compare string field with int filter - should not match
+        let filter = FilterCondition::Eq("value".to_string(), FilterValue::Int(42));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
     }
 
     #[test]
@@ -8351,5 +8594,745 @@ mod tests {
     fn test_is_durable_false_for_in_memory() {
         let engine = VectorEngine::new();
         assert!(!engine.is_durable());
+    }
+
+    // ==================== IVFBuildOptions tests ====================
+
+    #[test]
+    fn ivf_build_options_default() {
+        let options = IVFBuildOptions::default();
+        assert_eq!(options.config.num_clusters, 100);
+    }
+
+    #[test]
+    fn ivf_build_options_new() {
+        let options = IVFBuildOptions::new();
+        assert_eq!(options.config.num_clusters, 100);
+    }
+
+    #[test]
+    fn ivf_build_options_flat() {
+        let options = IVFBuildOptions::flat(50);
+        assert_eq!(options.config.num_clusters, 50);
+        assert!(matches!(options.config.storage, IVFStorage::Flat));
+    }
+
+    #[test]
+    fn ivf_build_options_pq() {
+        let pq_config = PQConfig::default();
+        let options = IVFBuildOptions::pq(50, pq_config);
+        assert_eq!(options.config.num_clusters, 50);
+        assert!(matches!(options.config.storage, IVFStorage::PQ(_)));
+    }
+
+    #[test]
+    fn ivf_build_options_binary() {
+        let options = IVFBuildOptions::binary(50);
+        assert_eq!(options.config.num_clusters, 50);
+        assert!(matches!(options.config.storage, IVFStorage::Binary(_)));
+    }
+
+    #[test]
+    fn ivf_build_options_with_nprobe() {
+        let options = IVFBuildOptions::flat(50).with_nprobe(10);
+        assert_eq!(options.config.nprobe, 10);
+    }
+
+    #[test]
+    fn ivf_build_options_with_num_clusters() {
+        let options = IVFBuildOptions::new().with_num_clusters(200);
+        assert_eq!(options.config.num_clusters, 200);
+    }
+
+    #[test]
+    fn ivf_build_options_with_storage() {
+        let options = IVFBuildOptions::new().with_storage(IVFStorage::Flat);
+        assert!(matches!(options.config.storage, IVFStorage::Flat));
+    }
+
+    // ==================== VectorCollectionConfig tests ====================
+
+    #[test]
+    fn vector_collection_config_with_dimension() {
+        let config = VectorCollectionConfig::default().with_dimension(128);
+        assert_eq!(config.dimension, Some(128));
+    }
+
+    #[test]
+    fn vector_collection_config_with_metric() {
+        let config = VectorCollectionConfig::default().with_metric(DistanceMetric::Euclidean);
+        assert_eq!(config.distance_metric, DistanceMetric::Euclidean);
+    }
+
+    #[test]
+    fn vector_collection_config_with_auto_index() {
+        let config = VectorCollectionConfig::default().with_auto_index(500);
+        assert!(config.auto_index);
+        assert_eq!(config.auto_index_threshold, 500);
+    }
+
+    // ==================== MetadataValue tests ====================
+
+    #[test]
+    fn metadata_value_from_tensor_value_bytes() {
+        let bytes_val = TensorValue::Scalar(ScalarValue::Bytes(vec![1, 2, 3]));
+        let result = MetadataValue::from_tensor_value(&bytes_val);
+        assert!(result.is_none()); // Bytes are not supported
+    }
+
+    #[test]
+    fn metadata_value_from_tensor_value_vector() {
+        let vec_val = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        let result = MetadataValue::from_tensor_value(&vec_val);
+        assert!(result.is_none()); // Vector is not supported
+    }
+
+    // ==================== Extended metric conversion tests ====================
+
+    #[test]
+    fn distance_metric_to_extended_euclidean() {
+        let metric = DistanceMetric::Euclidean;
+        let extended: ExtendedDistanceMetric = metric.into();
+        assert!(matches!(extended, ExtendedDistanceMetric::Euclidean));
+    }
+
+    #[test]
+    fn distance_metric_to_extended_cosine() {
+        let metric = DistanceMetric::Cosine;
+        let extended: ExtendedDistanceMetric = metric.into();
+        assert!(matches!(extended, ExtendedDistanceMetric::Cosine));
+    }
+
+    #[test]
+    fn distance_metric_to_extended_dot_product() {
+        let metric = DistanceMetric::DotProduct;
+        let extended: ExtendedDistanceMetric = metric.into();
+        // DotProduct maps to Cosine as the closest equivalent
+        assert!(matches!(extended, ExtendedDistanceMetric::Cosine));
+    }
+
+    // ==================== VectorError Display tests ====================
+
+    #[test]
+    fn vector_error_display_collection_exists() {
+        let err = VectorError::CollectionExists("my_collection".to_string());
+        assert!(err.to_string().contains("my_collection"));
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn vector_error_display_collection_not_found() {
+        let err = VectorError::CollectionNotFound("missing_collection".to_string());
+        assert!(err.to_string().contains("missing_collection"));
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn vector_error_display_io_error() {
+        let err = VectorError::IoError("disk full".to_string());
+        assert!(err.to_string().contains("disk full"));
+        assert!(err.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn vector_error_display_serialization_error() {
+        let err = VectorError::SerializationError("invalid format".to_string());
+        assert!(err.to_string().contains("invalid format"));
+        assert!(err.to_string().contains("Serialization"));
+    }
+
+    // ==================== FilterValue From tests ====================
+
+    #[test]
+    fn filter_value_from_i64() {
+        let val: FilterValue = 42i64.into();
+        assert!(matches!(val, FilterValue::Int(42)));
+    }
+
+    #[test]
+    fn filter_value_from_f64() {
+        let val: FilterValue = 3.14f64.into();
+        assert!(matches!(val, FilterValue::Float(f) if (f - 3.14).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    fn filter_value_from_string() {
+        let val: FilterValue = String::from("hello").into();
+        assert!(matches!(val, FilterValue::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn filter_value_from_str() {
+        let val: FilterValue = "world".into();
+        assert!(matches!(val, FilterValue::String(s) if s == "world"));
+    }
+
+    #[test]
+    fn filter_value_from_bool() {
+        let val: FilterValue = true.into();
+        assert!(matches!(val, FilterValue::Bool(true)));
+    }
+
+    // ==================== Deadline tests ====================
+
+    #[test]
+    fn deadline_never_not_expired() {
+        let deadline = Deadline::never();
+        assert!(!deadline.is_expired());
+        assert_eq!(deadline.timeout_ms(), 0);
+    }
+
+    #[test]
+    fn deadline_from_duration_some() {
+        let deadline = Deadline::from_duration(Some(Duration::from_millis(100)));
+        assert!(!deadline.is_expired());
+        assert_eq!(deadline.timeout_ms(), 100);
+    }
+
+    #[test]
+    fn deadline_from_duration_none() {
+        let deadline = Deadline::from_duration(None);
+        assert!(!deadline.is_expired());
+        assert_eq!(deadline.timeout_ms(), 0);
+    }
+
+    // ==================== SearchResult tests ====================
+
+    #[test]
+    fn search_result_new() {
+        let result = SearchResult::new("test_key".to_string(), 0.95);
+        assert_eq!(result.key, "test_key");
+        assert!((result.score - 0.95).abs() < f32::EPSILON);
+    }
+
+    // ==================== EmbeddingInput tests ====================
+
+    #[test]
+    fn embedding_input_constructor() {
+        let input = EmbeddingInput::new("my_key", vec![1.0, 2.0, 3.0]);
+        assert_eq!(input.key, "my_key");
+        assert_eq!(input.vector, vec![1.0, 2.0, 3.0]);
+    }
+
+    // ==================== Batch operations tests ====================
+
+    #[test]
+    fn batch_delete_multiple_keys() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.0, 1.0]).unwrap();
+        engine.store_embedding("c", vec![1.0, 1.0]).unwrap();
+
+        let deleted = engine
+            .batch_delete_embeddings(vec!["a".to_string(), "b".to_string()])
+            .unwrap();
+
+        assert_eq!(deleted, 2);
+        assert!(!engine.exists("a"));
+        assert!(!engine.exists("b"));
+        assert!(engine.exists("c"));
+    }
+
+    #[test]
+    fn batch_delete_partial_exists() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+
+        // Try to delete one that exists and one that doesn't
+        let deleted = engine
+            .batch_delete_embeddings(vec!["a".to_string(), "nonexistent".to_string()])
+            .unwrap();
+
+        // Only one was actually deleted
+        assert_eq!(deleted, 1);
+    }
+
+    // ==================== Additional Pagination tests ====================
+
+    #[test]
+    fn pagination_constructor_variants() {
+        let p1 = Pagination::new(10, 20);
+        assert_eq!(p1.skip, 10);
+        assert_eq!(p1.limit, Some(20));
+        assert!(!p1.count_total);
+
+        let p2 = p1.with_total();
+        assert!(p2.count_total);
+
+        let p3 = Pagination::skip_only(5);
+        assert_eq!(p3.skip, 5);
+        assert!(p3.limit.is_none());
+    }
+
+    #[test]
+    fn list_keys_paginated_no_limit_variant() {
+        let engine = VectorEngine::new();
+
+        for i in 0..5 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32, 0.0])
+                .unwrap();
+        }
+
+        let pagination = Pagination::skip_only(2);
+        let result = engine.list_keys_paginated(pagination);
+
+        assert_eq!(result.items.len(), 3);
+    }
+
+    #[test]
+    fn search_entities_paginated_no_count_variant() {
+        let engine = VectorEngine::new();
+
+        for i in 0..5 {
+            engine
+                .set_entity_embedding(&format!("entity:{i}"), vec![i as f32, 0.0])
+                .unwrap();
+        }
+
+        let pagination = Pagination::new(0, 3);
+        let result = engine
+            .search_entities_paginated(&[2.0, 0.0], 5, pagination)
+            .unwrap();
+
+        assert_eq!(result.items.len(), 3);
+        assert!(result.total_count.is_none());
+        assert!(!result.has_more);
+    }
+
+    // ==================== Entity embedding tests ====================
+
+    #[test]
+    fn scan_entities_with_embeddings_test() {
+        let engine = VectorEngine::new();
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 0.0])
+            .unwrap();
+        engine
+            .set_entity_embedding("user:2", vec![0.0, 1.0])
+            .unwrap();
+
+        let entities = engine.scan_entities_with_embeddings();
+        assert_eq!(entities.len(), 2);
+    }
+
+    #[test]
+    fn count_entities_with_embeddings_test() {
+        let engine = VectorEngine::new();
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 0.0])
+            .unwrap();
+        engine
+            .set_entity_embedding("user:2", vec![0.0, 1.0])
+            .unwrap();
+
+        let count = engine.count_entities_with_embeddings();
+        assert_eq!(count, 2);
+    }
+
+    // ==================== IVF memory estimate tests ====================
+
+    #[test]
+    fn estimate_ivf_memory_populated() {
+        let engine = VectorEngine::new();
+
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![1.0, 2.0, 3.0, 4.0])
+                .unwrap();
+        }
+
+        let options = IVFBuildOptions::flat(5);
+        let memory = engine.estimate_ivf_memory(&options).unwrap();
+        assert!(memory > 0);
+    }
+
+    #[test]
+    fn estimate_ivf_memory_no_vectors() {
+        let engine = VectorEngine::new();
+        let options = IVFBuildOptions::flat(5);
+        let memory = engine.estimate_ivf_memory(&options).unwrap();
+        assert_eq!(memory, 0);
+    }
+
+    // ==================== Extended distance metric search tests ====================
+
+    #[test]
+    fn search_with_hnsw_angular_metric() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.0, 1.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![0.0, 0.0, 1.0]).unwrap();
+
+        let (index, keys) = engine.build_hnsw_index_default().unwrap();
+
+        let results = engine
+            .search_with_hnsw_and_metric(
+                &index,
+                &keys,
+                &[1.0, 0.0, 0.0],
+                3,
+                ExtendedDistanceMetric::Angular,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+    }
+
+    // ==================== Collection metadata tests ====================
+
+    #[test]
+    fn collection_get_metadata_test() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+        engine.create_collection("products", config).unwrap();
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "price".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(100)),
+        );
+
+        engine
+            .store_in_collection_with_metadata("products", "item1", vec![1.0, 2.0], meta)
+            .unwrap();
+
+        let retrieved = engine.get_collection_metadata("products", "item1").unwrap();
+        assert!(retrieved.contains_key("price"));
+    }
+
+    #[test]
+    fn collection_search_filtered_test() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+        engine.create_collection("items", config).unwrap();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("A".to_string())),
+        );
+        engine
+            .store_in_collection_with_metadata("items", "item1", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("B".to_string())),
+        );
+        engine
+            .store_in_collection_with_metadata("items", "item2", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        let filter =
+            FilterCondition::Eq("category".to_string(), FilterValue::String("A".to_string()));
+        let results = engine
+            .search_filtered_in_collection("items", &[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item1");
+    }
+
+    // ==================== Collection CRUD tests ====================
+
+    #[test]
+    fn collection_delete_from_basic() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+        engine.create_collection("test", config).unwrap();
+
+        engine
+            .store_in_collection("test", "key1", vec![1.0, 2.0])
+            .unwrap();
+        assert!(engine.exists_in_collection("test", "key1"));
+
+        engine.delete_from_collection("test", "key1").unwrap();
+        assert!(!engine.exists_in_collection("test", "key1"));
+    }
+
+    #[test]
+    fn collection_exists_in_false() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+        engine.create_collection("test", config).unwrap();
+
+        assert!(!engine.exists_in_collection("test", "nonexistent"));
+    }
+
+    #[test]
+    fn collection_list_keys_basic() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+        engine.create_collection("test", config).unwrap();
+
+        engine
+            .store_in_collection("test", "key1", vec![1.0, 2.0])
+            .unwrap();
+        engine
+            .store_in_collection("test", "key2", vec![2.0, 3.0])
+            .unwrap();
+
+        let keys = engine.list_collection_keys("test");
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn collection_list_keys_empty() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+        engine.create_collection("test", config).unwrap();
+
+        let keys = engine.list_collection_keys("test");
+        assert!(keys.is_empty());
+    }
+
+    // ==================== Entity embedding edge cases ====================
+
+    #[test]
+    fn entity_has_embedding_false() {
+        let engine = VectorEngine::new();
+        assert!(!engine.entity_has_embedding("nonexistent:key"));
+    }
+
+    #[test]
+    fn remove_entity_embedding_success() {
+        let engine = VectorEngine::new();
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 2.0])
+            .unwrap();
+        assert!(engine.entity_has_embedding("user:1"));
+
+        engine.remove_entity_embedding("user:1").unwrap();
+        assert!(!engine.entity_has_embedding("user:1"));
+    }
+
+    #[test]
+    fn remove_entity_embedding_not_found() {
+        let engine = VectorEngine::new();
+
+        let result = engine.remove_entity_embedding("nonexistent:key");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn get_entity_embedding_not_found() {
+        let engine = VectorEngine::new();
+
+        let result = engine.get_entity_embedding("nonexistent:key");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    // ==================== Search edge cases ====================
+
+    #[test]
+    fn search_similar_with_metric_euclidean() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![0.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![3.0, 4.0]).unwrap();
+
+        let results = engine
+            .search_similar_with_metric(&[0.0, 0.0], 3, DistanceMetric::Euclidean)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].key, "a");
+    }
+
+    #[test]
+    fn search_similar_with_metric_dot_product() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.0, 1.0]).unwrap();
+
+        let results = engine
+            .search_similar_with_metric(&[1.0, 0.0], 2, DistanceMetric::DotProduct)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+    }
+
+    // ==================== Compute similarity edge cases ====================
+
+    #[test]
+    fn compute_similarity_identical_vectors() {
+        let score = VectorEngine::compute_similarity(&[1.0, 0.0], &[1.0, 0.0]).unwrap();
+        assert!((score - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn compute_similarity_orthogonal_vectors() {
+        let score = VectorEngine::compute_similarity(&[1.0, 0.0], &[0.0, 1.0]).unwrap();
+        assert!(score.abs() < 0.001);
+    }
+
+    // ==================== List keys bounded ====================
+
+    #[test]
+    fn list_keys_bounded_with_limit() {
+        let config = VectorEngineConfig {
+            max_keys_per_scan: Some(100),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32])
+                .unwrap();
+        }
+
+        let keys = engine.list_keys_bounded();
+        assert_eq!(keys.len(), 10);
+    }
+
+    // ==================== Clear ====================
+
+    #[test]
+    fn clear_all_embeddings() {
+        let engine = VectorEngine::new();
+
+        for i in 0..5 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32])
+                .unwrap();
+        }
+
+        assert_eq!(engine.count(), 5);
+
+        let removed = engine.clear().unwrap();
+        assert_eq!(removed, 5);
+        assert_eq!(engine.count(), 0);
+    }
+
+    #[test]
+    fn clear_empty_engine() {
+        let engine = VectorEngine::new();
+        let removed = engine.clear().unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    // ==================== IVF index tests ====================
+
+    #[test]
+    fn build_ivf_index_basic() {
+        let engine = VectorEngine::new();
+
+        for i in 0..20 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32, (i * 2) as f32])
+                .unwrap();
+        }
+
+        let options = IVFBuildOptions::flat(5);
+        let (index, keys) = engine.build_ivf_index(options).unwrap();
+
+        assert_eq!(keys.len(), 20);
+        assert!(index.len() > 0);
+    }
+
+    #[test]
+    fn build_ivf_index_default_test() {
+        let engine = VectorEngine::new();
+
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32, (i * 2) as f32])
+                .unwrap();
+        }
+
+        let (index, keys) = engine.build_ivf_index_default().unwrap();
+
+        assert_eq!(keys.len(), 10);
+        assert!(index.len() > 0);
+    }
+
+    #[test]
+    fn search_with_ivf_basic() {
+        let engine = VectorEngine::new();
+
+        for i in 0..20 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32, (i * 2) as f32])
+                .unwrap();
+        }
+
+        let options = IVFBuildOptions::flat(5);
+        let (index, keys) = engine.build_ivf_index(options).unwrap();
+
+        let results = engine
+            .search_with_ivf(&index, &keys, &[5.0, 10.0], 3)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn search_with_ivf_nprobe_basic() {
+        let engine = VectorEngine::new();
+
+        for i in 0..20 {
+            engine
+                .store_embedding(&format!("key{i}"), vec![i as f32, (i * 2) as f32])
+                .unwrap();
+        }
+
+        let options = IVFBuildOptions::flat(5);
+        let (index, keys) = engine.build_ivf_index(options).unwrap();
+
+        let results = engine
+            .search_with_ivf_nprobe(&index, &keys, &[5.0, 10.0], 3, 2)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+    }
+
+    // ==================== Dimension and store access ====================
+
+    #[test]
+    fn dimension_with_vectors() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 2.0, 3.0]).unwrap();
+
+        let dim = engine.dimension();
+        assert_eq!(dim, Some(3));
+    }
+
+    #[test]
+    fn dimension_empty_store() {
+        let engine = VectorEngine::new();
+        let dim = engine.dimension();
+        assert_eq!(dim, None);
+    }
+
+    // ==================== Search with HNSW edge cases ====================
+
+    #[test]
+    fn search_with_hnsw_simple() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.0, 1.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![0.0, 0.0, 1.0]).unwrap();
+
+        let (index, keys) = engine.build_hnsw_index_default().unwrap();
+
+        let results = engine
+            .search_with_hnsw(&index, &keys, &[1.0, 0.0, 0.0], 2)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].key, "a");
     }
 }
