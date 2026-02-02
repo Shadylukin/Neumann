@@ -181,6 +181,23 @@ class NeumannClient:
         """Context manager exit."""
         self.close()
 
+    def query(self, query: str, *, identity: str | None = None) -> QueryResult:
+        """Execute a query and return the result.
+
+        This is an alias for execute().
+
+        Args:
+            query: The Neumann query to execute.
+            identity: Optional identity for vault access.
+
+        Returns:
+            QueryResult containing the query results.
+
+        Raises:
+            NeumannError: If query execution fails.
+        """
+        return self.execute(query, identity=identity)
+
     def execute(self, query: str, *, identity: str | None = None) -> QueryResult:
         """Execute a query and return the result.
 

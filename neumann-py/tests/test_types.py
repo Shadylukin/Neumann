@@ -4,7 +4,11 @@
 import pytest
 
 from neumann.types import (
+    AggregateResult,
+    BatchOperationResult,
     BlobStats,
+    CentralityItem,
+    CentralityResult,
     ChainBlockInfo,
     ChainCodebookInfo,
     ChainCommitted,
@@ -21,10 +25,22 @@ from neumann.types import (
     ChainTransactionBegun,
     ChainTransitionAnalysis,
     CheckpointInfo,
+    CommunitiesResult,
+    CommunityItem,
+    ConstraintItem,
+    ConstraintsResult,
     Edge,
+    EdgeBinding,
+    GraphIndexesResult,
     Node,
+    NodeBinding,
+    PageRankItem,
+    PageRankResult,
     Path,
+    PathBinding,
     PathSegment,
+    PatternMatchResult,
+    PatternMatchStats,
     QueryResult,
     QueryResultType,
     Row,
@@ -835,3 +851,327 @@ class TestQueryResultNewAccessors:
 
         checkpoint_result = QueryResult(QueryResultType.CHECKPOINT_LIST, None)
         assert checkpoint_result.checkpoints == []
+
+
+class TestPageRankResult:
+    """Tests for PageRank result types."""
+
+    def test_page_rank_item(self) -> None:
+        """Test PageRankItem creation."""
+        item = PageRankItem(node_id=42, score=0.95)
+        assert item.node_id == 42
+        assert item.score == 0.95
+
+    def test_page_rank_result(self) -> None:
+        """Test PageRankResult creation."""
+        items = [PageRankItem(node_id=1, score=0.5), PageRankItem(node_id=2, score=0.3)]
+        result = PageRankResult(
+            items=items, iterations=10, convergence=0.001, converged=True
+        )
+        assert len(result.items) == 2
+        assert result.iterations == 10
+        assert result.convergence == 0.001
+        assert result.converged is True
+
+    def test_page_rank_result_defaults(self) -> None:
+        """Test PageRankResult default values."""
+        result = PageRankResult()
+        assert result.items == []
+        assert result.iterations is None
+        assert result.convergence is None
+        assert result.converged is None
+
+
+class TestCentralityResult:
+    """Tests for Centrality result types."""
+
+    def test_centrality_item(self) -> None:
+        """Test CentralityItem creation."""
+        item = CentralityItem(node_id=1, score=0.75)
+        assert item.node_id == 1
+        assert item.score == 0.75
+
+    def test_centrality_result(self) -> None:
+        """Test CentralityResult creation."""
+        items = [CentralityItem(node_id=1, score=0.9)]
+        result = CentralityResult(
+            items=items,
+            centrality_type="betweenness",
+            iterations=5,
+            converged=True,
+            sample_count=100,
+        )
+        assert len(result.items) == 1
+        assert result.centrality_type == "betweenness"
+        assert result.iterations == 5
+        assert result.converged is True
+        assert result.sample_count == 100
+
+
+class TestCommunitiesResult:
+    """Tests for Communities result types."""
+
+    def test_community_item(self) -> None:
+        """Test CommunityItem creation."""
+        item = CommunityItem(node_id=5, community_id=2)
+        assert item.node_id == 5
+        assert item.community_id == 2
+
+    def test_communities_result(self) -> None:
+        """Test CommunitiesResult creation."""
+        items = [
+            CommunityItem(node_id=1, community_id=0),
+            CommunityItem(node_id=2, community_id=0),
+            CommunityItem(node_id=3, community_id=1),
+        ]
+        result = CommunitiesResult(
+            items=items,
+            community_count=2,
+            modularity=0.45,
+            passes=3,
+            iterations=10,
+            communities=[[1, 2], [3]],
+        )
+        assert len(result.items) == 3
+        assert result.community_count == 2
+        assert result.modularity == 0.45
+        assert result.passes == 3
+        assert result.iterations == 10
+        assert result.communities == [[1, 2], [3]]
+
+
+class TestConstraintsResult:
+    """Tests for Constraints result types."""
+
+    def test_constraint_item(self) -> None:
+        """Test ConstraintItem creation."""
+        item = ConstraintItem(
+            name="unique_email",
+            target="user",
+            property="email",
+            constraint_type="unique",
+        )
+        assert item.name == "unique_email"
+        assert item.target == "user"
+        assert item.property == "email"
+        assert item.constraint_type == "unique"
+
+    def test_constraints_result(self) -> None:
+        """Test ConstraintsResult creation."""
+        items = [
+            ConstraintItem(
+                name="pk", target="users", property="id", constraint_type="primary_key"
+            )
+        ]
+        result = ConstraintsResult(items=items)
+        assert len(result.items) == 1
+
+
+class TestAggregateResult:
+    """Tests for Aggregate result types."""
+
+    def test_aggregate_result_count(self) -> None:
+        """Test AggregateResult with count."""
+        result = AggregateResult(value=42, aggregate_type="count")
+        assert result.value == 42
+        assert result.aggregate_type == "count"
+
+    def test_aggregate_result_sum(self) -> None:
+        """Test AggregateResult with sum."""
+        result = AggregateResult(value=1234.56, aggregate_type="sum")
+        assert result.value == 1234.56
+        assert result.aggregate_type == "sum"
+
+
+class TestBatchOperationResult:
+    """Tests for BatchOperation result types."""
+
+    def test_batch_operation_result(self) -> None:
+        """Test BatchOperationResult creation."""
+        result = BatchOperationResult(
+            operation="INSERT", affected_count=100, created_ids=[1, 2, 3, 4, 5]
+        )
+        assert result.operation == "INSERT"
+        assert result.affected_count == 100
+        assert len(result.created_ids) == 5
+
+    def test_batch_operation_result_defaults(self) -> None:
+        """Test BatchOperationResult default values."""
+        result = BatchOperationResult(operation="DELETE", affected_count=50)
+        assert result.created_ids == []
+
+
+class TestGraphIndexesResult:
+    """Tests for GraphIndexes result types."""
+
+    def test_graph_indexes_result(self) -> None:
+        """Test GraphIndexesResult creation."""
+        result = GraphIndexesResult(indexes=["idx_user_name", "idx_user_email"])
+        assert len(result.indexes) == 2
+        assert "idx_user_name" in result.indexes
+
+    def test_graph_indexes_result_empty(self) -> None:
+        """Test GraphIndexesResult with no indexes."""
+        result = GraphIndexesResult()
+        assert result.indexes == []
+
+
+class TestPatternMatchResult:
+    """Tests for PatternMatch result types."""
+
+    def test_node_binding(self) -> None:
+        """Test NodeBinding creation."""
+        binding = NodeBinding(id=42, label="Person")
+        assert binding.id == 42
+        assert binding.label == "Person"
+
+    def test_edge_binding(self) -> None:
+        """Test EdgeBinding creation."""
+        binding = EdgeBinding(id=1, edge_type="KNOWS", from_id=10, to_id=20)
+        assert binding.id == 1
+        assert binding.edge_type == "KNOWS"
+        assert binding.from_id == 10
+        assert binding.to_id == 20
+
+    def test_path_binding(self) -> None:
+        """Test PathBinding creation."""
+        binding = PathBinding(nodes=[1, 2, 3], edges=[10, 20], length=2)
+        assert binding.nodes == [1, 2, 3]
+        assert binding.edges == [10, 20]
+        assert binding.length == 2
+
+    def test_path_binding_defaults(self) -> None:
+        """Test PathBinding default values."""
+        binding = PathBinding()
+        assert binding.nodes == []
+        assert binding.edges == []
+        assert binding.length == 0
+
+    def test_pattern_match_stats(self) -> None:
+        """Test PatternMatchStats creation."""
+        stats = PatternMatchStats(
+            matches_found=100,
+            nodes_evaluated=500,
+            edges_evaluated=1000,
+            truncated=False,
+        )
+        assert stats.matches_found == 100
+        assert stats.nodes_evaluated == 500
+        assert stats.edges_evaluated == 1000
+        assert stats.truncated is False
+
+    def test_pattern_match_result(self) -> None:
+        """Test PatternMatchResult creation."""
+        node = NodeBinding(id=1, label="Person")
+        matches = [{"person": node}]
+        stats = PatternMatchStats(
+            matches_found=1, nodes_evaluated=10, edges_evaluated=5, truncated=False
+        )
+        result = PatternMatchResult(matches=matches, stats=stats)
+        assert len(result.matches) == 1
+        assert result.stats is not None
+        assert result.stats.matches_found == 1
+
+
+class TestQueryResultGraphAlgorithms:
+    """Tests for QueryResult with graph algorithm types."""
+
+    def test_page_rank_accessor(self) -> None:
+        """Test page_rank accessor."""
+        items = [PageRankItem(node_id=1, score=0.9)]
+        pr_result = PageRankResult(items=items, iterations=10)
+        result = QueryResult(QueryResultType.PAGE_RANK, pr_result)
+        assert result.page_rank is not None
+        assert len(result.page_rank.items) == 1
+        assert result.page_rank.iterations == 10
+
+    def test_centrality_accessor(self) -> None:
+        """Test centrality accessor."""
+        items = [CentralityItem(node_id=1, score=0.5)]
+        c_result = CentralityResult(items=items, centrality_type="betweenness")
+        result = QueryResult(QueryResultType.CENTRALITY, c_result)
+        assert result.centrality is not None
+        assert len(result.centrality.items) == 1
+        assert result.centrality.centrality_type == "betweenness"
+
+    def test_communities_accessor(self) -> None:
+        """Test communities accessor."""
+        items = [CommunityItem(node_id=1, community_id=0)]
+        comm_result = CommunitiesResult(items=items, community_count=1)
+        result = QueryResult(QueryResultType.COMMUNITIES, comm_result)
+        assert result.communities is not None
+        assert len(result.communities.items) == 1
+        assert result.communities.community_count == 1
+
+    def test_constraints_accessor(self) -> None:
+        """Test constraints accessor."""
+        items = [
+            ConstraintItem(
+                name="pk", target="users", property="id", constraint_type="primary_key"
+            )
+        ]
+        c_result = ConstraintsResult(items=items)
+        result = QueryResult(QueryResultType.CONSTRAINTS, c_result)
+        assert result.constraints is not None
+        assert len(result.constraints.items) == 1
+
+    def test_aggregate_accessor(self) -> None:
+        """Test aggregate accessor."""
+        agg_result = AggregateResult(value=42, aggregate_type="count")
+        result = QueryResult(QueryResultType.AGGREGATE, agg_result)
+        assert result.aggregate is not None
+        assert result.aggregate.value == 42
+        assert result.aggregate.aggregate_type == "count"
+
+    def test_batch_operation_accessor(self) -> None:
+        """Test batch_operation accessor."""
+        batch_result = BatchOperationResult(
+            operation="INSERT", affected_count=10, created_ids=[1, 2, 3]
+        )
+        result = QueryResult(QueryResultType.BATCH_OPERATION, batch_result)
+        assert result.batch_operation is not None
+        assert result.batch_operation.operation == "INSERT"
+        assert result.batch_operation.affected_count == 10
+
+    def test_graph_indexes_accessor(self) -> None:
+        """Test graph_indexes accessor."""
+        idx_result = GraphIndexesResult(indexes=["idx_name"])
+        result = QueryResult(QueryResultType.GRAPH_INDEXES, idx_result)
+        assert result.graph_indexes is not None
+        assert "idx_name" in result.graph_indexes.indexes
+
+    def test_pattern_match_accessor(self) -> None:
+        """Test pattern_match accessor."""
+        node = NodeBinding(id=1, label="Person")
+        matches = [{"p": node}]
+        stats = PatternMatchStats(
+            matches_found=1, nodes_evaluated=5, edges_evaluated=2, truncated=False
+        )
+        pm_result = PatternMatchResult(matches=matches, stats=stats)
+        result = QueryResult(QueryResultType.PATTERN_MATCH, pm_result)
+        assert result.pattern_match is not None
+        assert len(result.pattern_match.matches) == 1
+        assert result.pattern_match.stats is not None
+
+    def test_graph_algorithm_accessors_wrong_type(self) -> None:
+        """Test graph algorithm accessors return None for wrong types."""
+        result = QueryResult(QueryResultType.COUNT, 42)
+        assert result.page_rank is None
+        assert result.centrality is None
+        assert result.communities is None
+        assert result.constraints is None
+        assert result.aggregate is None
+        assert result.batch_operation is None
+        assert result.graph_indexes is None
+        assert result.pattern_match is None
+
+    def test_graph_algorithm_accessors_none_data(self) -> None:
+        """Test graph algorithm accessors with None data."""
+        assert QueryResult(QueryResultType.PAGE_RANK, None).page_rank is None
+        assert QueryResult(QueryResultType.CENTRALITY, None).centrality is None
+        assert QueryResult(QueryResultType.COMMUNITIES, None).communities is None
+        assert QueryResult(QueryResultType.CONSTRAINTS, None).constraints is None
+        assert QueryResult(QueryResultType.AGGREGATE, None).aggregate is None
+        assert QueryResult(QueryResultType.BATCH_OPERATION, None).batch_operation is None
+        assert QueryResult(QueryResultType.GRAPH_INDEXES, None).graph_indexes is None
+        assert QueryResult(QueryResultType.PATTERN_MATCH, None).pattern_match is None

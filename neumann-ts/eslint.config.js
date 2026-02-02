@@ -14,6 +14,21 @@ export default [
         sourceType: 'module',
         project: './tsconfig.json',
       },
+      globals: {
+        // Node.js globals
+        Buffer: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        // Web APIs available in Node.js 18+
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+      },
     },
     plugins: {
       '@typescript-eslint': tseslint,
@@ -36,6 +51,19 @@ export default [
       ],
       'no-console': 'warn',
       'no-debugger': 'error',
+    },
+  },
+  {
+    // Relaxed rules for test files
+    files: ['src/**/*.test.ts'],
+    rules: {
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
     },
   },
   {

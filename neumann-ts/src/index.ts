@@ -7,7 +7,7 @@
  *
  * @example
  * ```typescript
- * import { NeumannClient } from '@neumann/client';
+ * import { NeumannClient, VectorClient } from '@neumann/client';
  *
  * // Connect to a remote server
  * const client = await NeumannClient.connect('localhost:9200', {
@@ -15,7 +15,7 @@
  * });
  *
  * // Execute a query
- * const result = await client.execute('SELECT users');
+ * const result = await client.query('SELECT users');
  *
  * if (result.type === 'rows') {
  *   for (const row of result.rows) {
@@ -25,14 +25,27 @@
  *
  * // Close the connection
  * client.close();
+ *
+ * // Vector operations
+ * const vectors = await VectorClient.connect('localhost:9200');
+ * await vectors.createCollection('docs', 384, 'cosine');
+ * await vectors.upsertPoints('docs', [
+ *   { id: 'doc1', vector: [...], payload: { title: 'Hello' } },
+ * ]);
+ * const results = await vectors.queryPoints('docs', queryVector, { limit: 10 });
+ * vectors.close();
  * ```
  *
  * @packageDocumentation
  */
 
-// Client
+// Main client
 export { NeumannClient } from './client.js';
 export type { ConnectOptions, QueryOptions, ClientMode } from './client.js';
+
+// Vector client
+export { VectorClient } from './vector-client.js';
+export type { VectorConnectOptions } from './vector-client.js';
 
 // Conversion utilities
 export {
@@ -113,3 +126,27 @@ export {
   InternalError,
   errorFromCode,
 } from './types/errors.js';
+
+// Services
+export {
+  BlobClient,
+  HealthClient,
+  HealthStatus,
+  PointsClient,
+  CollectionsClient,
+} from './services/index.js';
+export type {
+  BlobUploadOptions,
+  BlobUploadResult,
+  ArtifactMetadata,
+  HealthCheckResult,
+  VectorPoint,
+  ScoredVectorPoint,
+  UpsertOptions,
+  GetPointsOptions,
+  QueryOptions as VectorQueryOptions,
+  ScrollOptions,
+  ScrollResult,
+  CollectionInfo,
+  DistanceMetric,
+} from './services/index.js';

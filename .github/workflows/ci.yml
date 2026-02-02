@@ -202,6 +202,68 @@ jobs:
         working-directory: tensor_store
         run: cargo miri test
 
+  # TypeScript SDK tests
+  typescript-sdk:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: neumann-ts
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: neumann-ts/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Lint
+        run: npm run lint
+      - name: Test with coverage
+        run: npm run coverage
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-typescript-sdk
+          path: neumann-ts/coverage
+
+  # Python SDK tests
+  python-sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: neumann-py
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: neumann-py/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint with ruff
+        run: ruff check .
+      - name: Format check with ruff
+        run: ruff format --check .
+      - name: Type check with mypy
+        run: mypy src/neumann --strict
+      - name: Test with coverage
+        run: pytest --cov=neumann --cov-report=html --cov-report=term --cov-fail-under=95
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python-sdk
+          path: neumann-py/htmlcov
+
   # Cross-platform tests
   cross-platform:
     name: Cross-Platform
@@ -236,7 +298,7 @@ jobs:
   # Summary job that depends on all checks
   ci-success:
     name: CI Success
-    needs: [check, fmt, clippy, test, coverage, doc, miri, cross-platform]
+    needs: [check, fmt, clippy, test, coverage, doc, miri, cross-platform, typescript-sdk, python-sdk]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -249,7 +311,9 @@ jobs:
              [[ "${{ needs.coverage.result }}" != "success" ]] || \
              [[ "${{ needs.doc.result }}" != "success" ]] || \
              [[ "${{ needs.miri.result }}" != "success" ]] || \
-             [[ "${{ needs.cross-platform.result }}" != "success" ]]; then
+             [[ "${{ needs.cross-platform.result }}" != "success" ]] || \
+             [[ "${{ needs.typescript-sdk.result }}" != "success" ]] || \
+             [[ "${{ needs.python-sdk.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

@@ -171,6 +171,17 @@ export class NeumannClient {
    * @param options - Query options.
    * @returns Query result.
    */
+  async query(query: string, options: QueryOptions = {}): Promise<QueryResult> {
+    return this.execute(query, options);
+  }
+
+  /**
+   * Execute a query and return the result.
+   *
+   * @param query - The Neumann query to execute.
+   * @param options - Query options.
+   * @returns Query result.
+   */
   async execute(query: string, options: QueryOptions = {}): Promise<QueryResult> {
     if (!this.connected || !this.grpcClient) {
       throw new ConnectionError('Client is not connected');

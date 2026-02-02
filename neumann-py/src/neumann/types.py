@@ -369,6 +369,151 @@ class ChainMergeResult:
     merged_count: int
 
 
+@dataclass(frozen=True)
+class PageRankItem:
+    """A single PageRank result item."""
+
+    node_id: int
+    score: float
+
+
+@dataclass(frozen=True)
+class PageRankResult:
+    """Result from PageRank algorithm."""
+
+    items: list[PageRankItem] = field(default_factory=list)
+    iterations: int | None = None
+    convergence: float | None = None
+    converged: bool | None = None
+
+
+@dataclass(frozen=True)
+class CentralityItem:
+    """A single centrality result item."""
+
+    node_id: int
+    score: float
+
+
+@dataclass(frozen=True)
+class CentralityResult:
+    """Result from centrality algorithm."""
+
+    items: list[CentralityItem] = field(default_factory=list)
+    centrality_type: str | None = None
+    iterations: int | None = None
+    converged: bool | None = None
+    sample_count: int | None = None
+
+
+@dataclass(frozen=True)
+class CommunityItem:
+    """A single community assignment."""
+
+    node_id: int
+    community_id: int
+
+
+@dataclass(frozen=True)
+class CommunitiesResult:
+    """Result from community detection algorithm."""
+
+    items: list[CommunityItem] = field(default_factory=list)
+    community_count: int | None = None
+    modularity: float | None = None
+    passes: int | None = None
+    iterations: int | None = None
+    communities: list[list[int]] | None = None
+
+
+@dataclass(frozen=True)
+class ConstraintItem:
+    """A graph constraint definition."""
+
+    name: str
+    target: str
+    property: str
+    constraint_type: str
+
+
+@dataclass(frozen=True)
+class ConstraintsResult:
+    """Result listing graph constraints."""
+
+    items: list[ConstraintItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AggregateResult:
+    """Result from an aggregate operation."""
+
+    value: int | float
+    aggregate_type: str
+
+
+@dataclass(frozen=True)
+class BatchOperationResult:
+    """Result from a batch operation."""
+
+    operation: str
+    affected_count: int
+    created_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GraphIndexesResult:
+    """Result listing graph indexes."""
+
+    indexes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class NodeBinding:
+    """A node binding in a pattern match."""
+
+    id: int
+    label: str
+
+
+@dataclass(frozen=True)
+class EdgeBinding:
+    """An edge binding in a pattern match."""
+
+    id: int
+    edge_type: str
+    from_id: int
+    to_id: int
+
+
+@dataclass(frozen=True)
+class PathBinding:
+    """A path binding in a pattern match."""
+
+    nodes: list[int] = field(default_factory=list)
+    edges: list[int] = field(default_factory=list)
+    length: int = 0
+
+
+@dataclass(frozen=True)
+class PatternMatchStats:
+    """Statistics about a pattern match operation."""
+
+    matches_found: int
+    nodes_evaluated: int
+    edges_evaluated: int
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class PatternMatchResult:
+    """Result from a pattern match query."""
+
+    matches: list[dict[str, NodeBinding | EdgeBinding | PathBinding]] = field(
+        default_factory=list
+    )
+    stats: PatternMatchStats | None = None
+
+
 class QueryResultType(Enum):
     """Types of query results."""
 
@@ -402,6 +547,14 @@ class QueryResultType(Enum):
     CHAIN_CONFLICT_RESOLUTION = "chain_conflict_resolution"
     CHAIN_MERGE = "chain_merge"
     UNIFIED = "unified"
+    PAGE_RANK = "page_rank"
+    CENTRALITY = "centrality"
+    COMMUNITIES = "communities"
+    CONSTRAINTS = "constraints"
+    AGGREGATE = "aggregate"
+    BATCH_OPERATION = "batch_operation"
+    GRAPH_INDEXES = "graph_indexes"
+    PATTERN_MATCH = "pattern_match"
     ERROR = "error"
 
 
@@ -636,5 +789,61 @@ class QueryResult:
     def chain_merge(self) -> ChainMergeResult | None:
         """Get chain merge result if result is chain merge."""
         if self.type == QueryResultType.CHAIN_MERGE:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def page_rank(self) -> PageRankResult | None:
+        """Get PageRank result if result is page rank."""
+        if self.type == QueryResultType.PAGE_RANK:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def centrality(self) -> CentralityResult | None:
+        """Get centrality result if result is centrality."""
+        if self.type == QueryResultType.CENTRALITY:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def communities(self) -> CommunitiesResult | None:
+        """Get communities result if result is communities."""
+        if self.type == QueryResultType.COMMUNITIES:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def constraints(self) -> ConstraintsResult | None:
+        """Get constraints result if result is constraints."""
+        if self.type == QueryResultType.CONSTRAINTS:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def aggregate(self) -> AggregateResult | None:
+        """Get aggregate result if result is aggregate."""
+        if self.type == QueryResultType.AGGREGATE:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def batch_operation(self) -> BatchOperationResult | None:
+        """Get batch operation result if result is batch operation."""
+        if self.type == QueryResultType.BATCH_OPERATION:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def graph_indexes(self) -> GraphIndexesResult | None:
+        """Get graph indexes result if result is graph indexes."""
+        if self.type == QueryResultType.GRAPH_INDEXES:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def pattern_match(self) -> PatternMatchResult | None:
+        """Get pattern match result if result is pattern match."""
+        if self.type == QueryResultType.PATTERN_MATCH:
             return self.data if self.data else None
         return None
