@@ -299,6 +299,34 @@ jobs:
           cargo test -p neumann_parser
           cargo test -p query_router
 
+  # Overall coverage report for Codecov badge
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage report
+        run: |
+          cargo llvm-cov --workspace \
+            --exclude integration_tests \
+            --exclude stress_tests \
+            --exclude examples \
+            --exclude neumann_docs \
+            --codecov --output-path codecov.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: codecov.json
+          fail_ci_if_error: false
+
   # Summary job that depends on all checks
   ci-success:
     name: CI Success
