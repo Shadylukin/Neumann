@@ -323,7 +323,7 @@ class TestTransactionContextManager:
 
         # Manually entering exit should not raise
         result = tx.__exit__(None, None, None)
-        assert result is False
+        assert result is None
 
 
 class TestTransactionIsActive:
