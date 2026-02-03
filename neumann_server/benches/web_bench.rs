@@ -60,7 +60,8 @@ fn setup_engines() -> (Arc<RelationalEngine>, Arc<VectorEngine>, Arc<GraphEngine
         metadata.insert(
             "content".to_string(),
             TensorValue::Scalar(ScalarValue::String(
-                "This is a sample document content that is reasonably long to simulate real data. ".repeat(10),
+                "This is a sample document content that is reasonably long to simulate real data. "
+                    .repeat(10),
             )),
         );
         vector
@@ -225,12 +226,8 @@ fn bench_data_operations(c: &mut Criterion) {
 
     group.bench_function("relational_select_50", |b| {
         b.iter(|| {
-            let _rows = relational.select_with_limit(
-                "test",
-                relational_engine::Condition::True,
-                50,
-                0,
-            );
+            let _rows =
+                relational.select_with_limit("test", relational_engine::Condition::True, 50, 0);
         });
     });
 

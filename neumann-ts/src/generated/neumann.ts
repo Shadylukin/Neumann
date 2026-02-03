@@ -461,6 +461,12 @@ export interface QueryResponse {
   error?: ErrorInfo;
 }
 
+export interface StreamCursorInfo {
+  cursor: string;
+  itemsSent: number;
+  totalCount?: number;
+}
+
 export interface QueryResponseChunk {
   row?: RowChunk;
   node?: NodeChunk;
@@ -469,6 +475,8 @@ export interface QueryResponseChunk {
   blobData?: Uint8Array;
   error?: ErrorInfo;
   isFinal: boolean;
+  cursorInfo?: StreamCursorInfo;
+  sequenceNumber?: number;
 }
 
 export interface BatchQueryRequest {
@@ -477,6 +485,32 @@ export interface BatchQueryRequest {
 
 export interface BatchQueryResponse {
   results: QueryResponse[];
+}
+
+export interface PaginatedQueryRequest {
+  query: string;
+  identity?: string;
+  cursor?: string;
+  pageSize?: number;
+  countTotal?: boolean;
+  cursorTtlSecs?: number;
+}
+
+export interface PaginatedQueryResponse {
+  result?: QueryResponse;
+  nextCursor?: string;
+  prevCursor?: string;
+  totalCount?: number;
+  hasMore: boolean;
+  pageSize: number;
+}
+
+export interface CloseCursorRequest {
+  cursor: string;
+}
+
+export interface CloseCursorResponse {
+  success: boolean;
 }
 
 // === Blob Service Types ===
@@ -550,6 +584,16 @@ export interface QueryServiceClient extends grpc.Client {
     request: BatchQueryRequest,
     metadata: grpc.Metadata,
     callback: GrpcCallback<BatchQueryResponse>
+  ): grpc.ClientUnaryCall;
+  ExecutePaginated(
+    request: PaginatedQueryRequest,
+    metadata: grpc.Metadata,
+    callback: GrpcCallback<PaginatedQueryResponse>
+  ): grpc.ClientUnaryCall;
+  CloseCursor(
+    request: CloseCursorRequest,
+    metadata: grpc.Metadata,
+    callback: GrpcCallback<CloseCursorResponse>
   ): grpc.ClientUnaryCall;
 }
 

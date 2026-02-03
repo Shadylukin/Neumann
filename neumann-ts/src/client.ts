@@ -171,7 +171,7 @@ export class NeumannClient {
         address,
         credentials,
         channelOptions
-      ) as QueryServiceClient;
+      );
 
       // Setup metadata for authentication
       client.grpcMetadata = new grpc.Metadata();

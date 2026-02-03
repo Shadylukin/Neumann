@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use graph_engine::{Node, PageRankConfig, PropertyValue};
 
 use crate::web::templates::layout;
-use crate::web::templates::layout::{breadcrumb, empty_state, format_number, page_header, stat_card};
+use crate::web::templates::layout::{
+    breadcrumb, empty_state, format_number, page_header, stat_card,
+};
 use crate::web::AdminContext;
 use crate::web::NavItem;
 

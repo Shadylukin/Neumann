@@ -27523,3 +27523,1393 @@ fn test_config_presets_have_max_condition_depth() {
     let low = RelationalConfig::low_memory();
     assert_eq!(low.max_condition_depth, 64);
 }
+
+#[test]
+fn test_condition_true_evaluate() {
+    let row = Row {
+        id: 1,
+        values: vec![("name".to_string(), Value::String("test".to_string()))],
+    };
+    let condition = Condition::True;
+    assert!(condition.evaluate(&row));
+}
+
+#[test]
+fn test_condition_gt_evaluate() {
+    let row = Row {
+        id: 1,
+        values: vec![("age".to_string(), Value::Int(30))],
+    };
+    let condition = Condition::Gt("age".to_string(), Value::Int(20));
+    assert!(condition.evaluate(&row));
+
+    let condition_false = Condition::Gt("age".to_string(), Value::Int(40));
+    assert!(!condition_false.evaluate(&row));
+}
+
+#[test]
+fn test_condition_and_evaluate() {
+    let row = Row {
+        id: 1,
+        values: vec![
+            ("age".to_string(), Value::Int(30)),
+            ("name".to_string(), Value::String("Alice".to_string())),
+        ],
+    };
+    let condition = Condition::And(
+        Box::new(Condition::Eq("age".to_string(), Value::Int(30))),
+        Box::new(Condition::Eq(
+            "name".to_string(),
+            Value::String("Alice".to_string()),
+        )),
+    );
+    assert!(condition.evaluate(&row));
+
+    // Test short-circuit: first is false
+    let condition_false = Condition::And(
+        Box::new(Condition::Eq("age".to_string(), Value::Int(99))),
+        Box::new(Condition::Eq(
+            "name".to_string(),
+            Value::String("Alice".to_string()),
+        )),
+    );
+    assert!(!condition_false.evaluate(&row));
+}
+
+#[test]
+fn test_condition_or_evaluate() {
+    let row = Row {
+        id: 1,
+        values: vec![("age".to_string(), Value::Int(30))],
+    };
+    // First is true
+    let condition = Condition::Or(
+        Box::new(Condition::Eq("age".to_string(), Value::Int(30))),
+        Box::new(Condition::Eq("age".to_string(), Value::Int(99))),
+    );
+    assert!(condition.evaluate(&row));
+
+    // Second is true
+    let condition2 = Condition::Or(
+        Box::new(Condition::Eq("age".to_string(), Value::Int(99))),
+        Box::new(Condition::Eq("age".to_string(), Value::Int(30))),
+    );
+    assert!(condition2.evaluate(&row));
+
+    // Both false
+    let condition_false = Condition::Or(
+        Box::new(Condition::Eq("age".to_string(), Value::Int(99))),
+        Box::new(Condition::Eq("age".to_string(), Value::Int(100))),
+    );
+    assert!(!condition_false.evaluate(&row));
+}
+
+#[test]
+fn test_select_with_condition_true() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+    ]);
+    engine.create_table("users", schema).unwrap();
+
+    for i in 1..=5 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("name".to_string(), Value::String(format!("user{i}")));
+        engine.insert("users", values).unwrap();
+    }
+
+    // Condition::True should return all rows
+    let rows = engine.select("users", Condition::True).unwrap();
+    assert_eq!(rows.len(), 5);
+}
+
+#[test]
+fn test_select_with_condition_gt() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("age", ColumnType::Int),
+    ]);
+    engine.create_table("people", schema).unwrap();
+
+    for i in 1..=10 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("age".to_string(), Value::Int(i * 10));
+        engine.insert("people", values).unwrap();
+    }
+
+    // age > 50 should return 5 rows (60, 70, 80, 90, 100)
+    let rows = engine
+        .select("people", Condition::Gt("age".to_string(), Value::Int(50)))
+        .unwrap();
+    assert_eq!(rows.len(), 5);
+}
+
+#[test]
+fn test_select_with_condition_and() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("age", ColumnType::Int),
+        Column::new("active", ColumnType::Bool),
+    ]);
+    engine.create_table("users", schema).unwrap();
+
+    for i in 1..=10 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("age".to_string(), Value::Int(i * 10));
+        values.insert("active".to_string(), Value::Bool(i % 2 == 0));
+        engine.insert("users", values).unwrap();
+    }
+
+    // age > 30 AND active = true
+    let condition = Condition::And(
+        Box::new(Condition::Gt("age".to_string(), Value::Int(30))),
+        Box::new(Condition::Eq("active".to_string(), Value::Bool(true))),
+    );
+    let rows = engine.select("users", condition).unwrap();
+    // Active users with age > 30: 40, 60, 80, 100 (ids 4, 6, 8, 10)
+    assert_eq!(rows.len(), 4);
+}
+
+#[test]
+fn test_select_with_condition_or() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("status", ColumnType::String),
+    ]);
+    engine.create_table("orders", schema).unwrap();
+
+    let statuses = ["pending", "shipped", "delivered", "cancelled", "returned"];
+    for (i, status) in statuses.iter().enumerate() {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i as i64 + 1));
+        values.insert("status".to_string(), Value::String(status.to_string()));
+        engine.insert("orders", values).unwrap();
+    }
+
+    // status = 'shipped' OR status = 'delivered'
+    let condition = Condition::Or(
+        Box::new(Condition::Eq(
+            "status".to_string(),
+            Value::String("shipped".to_string()),
+        )),
+        Box::new(Condition::Eq(
+            "status".to_string(),
+            Value::String("delivered".to_string()),
+        )),
+    );
+    let rows = engine.select("orders", condition).unwrap();
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn test_value_from_malformed_json() {
+    use tensor_store::relational_slab::ColumnValue as SlabColumnValue;
+
+    // Create a malformed JSON string that will fail to parse
+    let malformed_json = "not valid json {{{";
+    let slab_value = SlabColumnValue::Json(malformed_json.to_string());
+    let value = Value::from(slab_value);
+
+    // Should convert to a JSON string value
+    if let Value::Json(json_val) = value {
+        assert!(json_val.is_string());
+    } else {
+        panic!("Expected Value::Json");
+    }
+}
+
+#[test]
+fn test_schema_corrupted_error() {
+    let err = RelationalError::SchemaCorrupted {
+        table: "users".to_string(),
+        reason: "invalid column type".to_string(),
+    };
+    let msg = format!("{err}");
+    assert!(msg.contains("users"));
+    assert!(msg.contains("invalid column type"));
+}
+
+#[test]
+fn test_table_not_found_error() {
+    let err = RelationalError::TableNotFound("missing_table".to_string());
+    let msg = format!("{err}");
+    assert!(msg.contains("missing_table"));
+}
+
+#[test]
+fn test_drop_table_with_foreign_key_references() {
+    use crate::{Constraint, ForeignKeyConstraint, ReferentialAction};
+
+    let engine = RelationalEngine::new();
+
+    // Create parent table
+    let parent_schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+    ]);
+    engine.create_table("parent", parent_schema).unwrap();
+
+    // Create child table with FK to parent
+    let child_schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("parent_id", ColumnType::Int),
+    ]);
+    engine.create_table("child", child_schema).unwrap();
+
+    // Add foreign key constraint
+    let fk = ForeignKeyConstraint::new(
+        "fk_parent",
+        vec!["parent_id".to_string()],
+        "parent",
+        vec!["id".to_string()],
+    )
+    .on_delete(ReferentialAction::Cascade);
+    engine
+        .add_constraint("child", Constraint::ForeignKey(fk))
+        .unwrap();
+
+    // Insert data
+    let mut parent_values = HashMap::new();
+    parent_values.insert("id".to_string(), Value::Int(1));
+    parent_values.insert("name".to_string(), Value::String("Parent1".to_string()));
+    engine.insert("parent", parent_values).unwrap();
+
+    let mut child_values = HashMap::new();
+    child_values.insert("id".to_string(), Value::Int(1));
+    child_values.insert("parent_id".to_string(), Value::Int(1));
+    engine.insert("child", child_values).unwrap();
+
+    // Drop parent table - should clean up FK references
+    engine.drop_table("parent").unwrap();
+
+    // Child table should still exist
+    assert!(engine.list_tables().contains(&"child".to_string()));
+}
+
+#[test]
+fn test_drop_table_cleans_up_indexes() {
+    let engine = RelationalEngine::new();
+
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+        Column::new("age", ColumnType::Int),
+    ]);
+    engine.create_table("indexed_table", schema).unwrap();
+
+    // Create both hash and btree indexes
+    engine.create_index("indexed_table", "name").unwrap();
+    engine.create_btree_index("indexed_table", "age").unwrap();
+
+    // Insert some data
+    for i in 1..=5 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("age".to_string(), Value::Int(20 + i));
+        engine.insert("indexed_table", values).unwrap();
+    }
+
+    // Drop table
+    engine.drop_table("indexed_table").unwrap();
+
+    // Table should be gone
+    assert!(!engine.list_tables().contains(&"indexed_table".to_string()));
+}
+
+#[test]
+fn test_drop_table_with_row_data() {
+    let engine = RelationalEngine::new();
+
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("data", ColumnType::String),
+    ]);
+    engine.create_table("data_table", schema).unwrap();
+
+    // Insert many rows
+    for i in 1..=100 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("data".to_string(), Value::String(format!("Data entry {i}")));
+        engine.insert("data_table", values).unwrap();
+    }
+
+    // Verify rows exist
+    let rows = engine.select("data_table", Condition::True).unwrap();
+    assert_eq!(rows.len(), 100);
+
+    // Drop table
+    engine.drop_table("data_table").unwrap();
+
+    // Verify table is gone
+    assert!(!engine.list_tables().contains(&"data_table".to_string()));
+}
+
+#[test]
+fn test_select_with_aggregates_empty_result() {
+    use crate::AggregateExpr;
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("category", ColumnType::String),
+        Column::new("amount", ColumnType::Float),
+    ]);
+    engine.create_table("empty_agg", schema).unwrap();
+
+    // Select with aggregates on empty table
+    let results = engine
+        .select_grouped(
+            "empty_agg",
+            Condition::True,
+            &["category".to_string()],
+            &[
+                AggregateExpr::CountAll,
+                AggregateExpr::Sum("amount".to_string()),
+                AggregateExpr::Avg("amount".to_string()),
+            ],
+            None,
+        )
+        .unwrap();
+
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_select_with_min_max_null_values() {
+    use crate::{AggregateExpr, AggregateValue};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("group", ColumnType::String),
+        Column::new("value", ColumnType::Int).nullable(),
+    ]);
+    engine.create_table("nullable_agg", schema).unwrap();
+
+    // Insert rows with some nulls
+    let data = [
+        (1, "A", Some(10)),
+        (2, "A", None),
+        (3, "B", None),
+        (4, "B", None),
+    ];
+    for (id, group, value) in data {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(id));
+        values.insert("group".to_string(), Value::String(group.to_string()));
+        values.insert("value".to_string(), value.map_or(Value::Null, Value::Int));
+        engine.insert("nullable_agg", values).unwrap();
+    }
+
+    let results = engine
+        .select_grouped(
+            "nullable_agg",
+            Condition::True,
+            &["group".to_string()],
+            &[
+                AggregateExpr::Min("value".to_string()),
+                AggregateExpr::Max("value".to_string()),
+            ],
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+
+    // Group A has value 10, group B has all nulls
+    for result in &results {
+        let group = result.get_key("group").unwrap();
+        if *group == Value::String("A".to_string()) {
+            let min = result.get_aggregate("min_value").unwrap();
+            let max = result.get_aggregate("max_value").unwrap();
+            assert_eq!(min, &AggregateValue::Min(Some(Value::Int(10))));
+            assert_eq!(max, &AggregateValue::Max(Some(Value::Int(10))));
+        } else {
+            // Group B has all nulls
+            let min = result.get_aggregate("min_value").unwrap();
+            let max = result.get_aggregate("max_value").unwrap();
+            assert_eq!(min, &AggregateValue::Min(None));
+            assert_eq!(max, &AggregateValue::Max(None));
+        }
+    }
+}
+
+#[test]
+fn test_aggregate_sum_with_mixed_types() {
+    use crate::AggregateExpr;
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("category", ColumnType::String),
+        Column::new("amount", ColumnType::Int),
+    ]);
+    engine.create_table("sum_test", schema).unwrap();
+
+    // Insert data
+    for i in 1..=5 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("category".to_string(), Value::String("A".to_string()));
+        values.insert("amount".to_string(), Value::Int(i * 10));
+        engine.insert("sum_test", values).unwrap();
+    }
+
+    let results = engine
+        .select_grouped(
+            "sum_test",
+            Condition::True,
+            &["category".to_string()],
+            &[AggregateExpr::Sum("amount".to_string())],
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    // Sum of 10+20+30+40+50 = 150
+    let sum = results[0].get_aggregate("sum_amount").unwrap();
+    if let crate::AggregateValue::Sum(val) = sum {
+        assert!((val - 150.0).abs() < 0.01);
+    } else {
+        panic!("Expected Sum aggregate");
+    }
+}
+
+#[test]
+fn test_count_column_excludes_nulls() {
+    use crate::{AggregateExpr, AggregateValue};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("group", ColumnType::String),
+        Column::new("optional", ColumnType::String).nullable(),
+    ]);
+    engine.create_table("count_null", schema).unwrap();
+
+    // Insert rows with some nulls
+    let data = [
+        (1, "A", Some("value1")),
+        (2, "A", None),
+        (3, "A", Some("value3")),
+        (4, "A", None),
+    ];
+    for (id, group, optional) in data {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(id));
+        values.insert("group".to_string(), Value::String(group.to_string()));
+        values.insert(
+            "optional".to_string(),
+            optional.map_or(Value::Null, |s| Value::String(s.to_string())),
+        );
+        engine.insert("count_null", values).unwrap();
+    }
+
+    let results = engine
+        .select_grouped(
+            "count_null",
+            Condition::True,
+            &["group".to_string()],
+            &[
+                AggregateExpr::CountAll,
+                AggregateExpr::Count("optional".to_string()),
+            ],
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    // COUNT(*) = 4, COUNT(optional) = 2 (excludes nulls)
+    assert_eq!(
+        results[0].get_aggregate("count_all"),
+        Some(&AggregateValue::Count(4))
+    );
+    assert_eq!(
+        results[0].get_aggregate("count_optional"),
+        Some(&AggregateValue::Count(2))
+    );
+}
+
+#[test]
+fn test_commit_already_committed_transaction() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+    engine.create_table("tx_test", schema).unwrap();
+
+    let tx_id = engine.begin_transaction();
+
+    // First commit should succeed
+    engine.commit(tx_id).unwrap();
+
+    // Second commit should fail with TransactionNotFound (transaction was removed)
+    let result = engine.commit(tx_id);
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_rollback_already_rolled_back_transaction() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+    engine.create_table("tx_test2", schema).unwrap();
+
+    let tx_id = engine.begin_transaction();
+
+    // First rollback should succeed
+    engine.rollback(tx_id).unwrap();
+
+    // Second rollback should fail
+    let result = engine.rollback(tx_id);
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_commit_after_rollback() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+    engine.create_table("tx_test3", schema).unwrap();
+
+    let tx_id = engine.begin_transaction();
+    engine.rollback(tx_id).unwrap();
+
+    // Commit after rollback should fail
+    let result = engine.commit(tx_id);
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_transaction_insert_after_commit() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+    ]);
+    engine.create_table("tx_test4", schema).unwrap();
+
+    let tx_id = engine.begin_transaction();
+    engine.commit(tx_id).unwrap();
+
+    // Insert after commit should fail
+    let mut values = HashMap::new();
+    values.insert("id".to_string(), Value::Int(1));
+    values.insert("name".to_string(), Value::String("test".to_string()));
+    let result = engine.tx_insert(tx_id, "tx_test4", values);
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_transaction_select_after_rollback() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+    engine.create_table("tx_test5", schema).unwrap();
+
+    let tx_id = engine.begin_transaction();
+    engine.rollback(tx_id).unwrap();
+
+    // Select after rollback should fail
+    let result = engine.tx_select(tx_id, "tx_test5", Condition::True);
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_transaction_delete_after_commit() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+    engine.create_table("tx_test6", schema).unwrap();
+
+    // Insert a row first
+    let mut values = HashMap::new();
+    values.insert("id".to_string(), Value::Int(1));
+    engine.insert("tx_test6", values).unwrap();
+
+    let tx_id = engine.begin_transaction();
+    engine.commit(tx_id).unwrap();
+
+    // Delete after commit should fail
+    let result = engine.tx_delete(
+        tx_id,
+        "tx_test6",
+        Condition::Eq("id".to_string(), Value::Int(1)),
+    );
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_transaction_update_after_rollback() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("val", ColumnType::Int),
+    ]);
+    engine.create_table("tx_test7", schema).unwrap();
+
+    // Insert a row first
+    let mut values = HashMap::new();
+    values.insert("id".to_string(), Value::Int(1));
+    values.insert("val".to_string(), Value::Int(10));
+    engine.insert("tx_test7", values).unwrap();
+
+    let tx_id = engine.begin_transaction();
+    engine.rollback(tx_id).unwrap();
+
+    // Update after rollback should fail
+    let mut updates = HashMap::new();
+    updates.insert("val".to_string(), Value::Int(20));
+    let result = engine.tx_update(
+        tx_id,
+        "tx_test7",
+        Condition::Eq("id".to_string(), Value::Int(1)),
+        updates,
+    );
+    assert!(matches!(
+        result,
+        Err(RelationalError::TransactionNotFound(_))
+    ));
+}
+
+#[test]
+fn test_get_schema_table_not_found() {
+    let engine = RelationalEngine::new();
+
+    // Try to get schema for a non-existent table
+    let result = engine.get_schema("nonexistent_table");
+    assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+}
+
+#[test]
+fn test_select_with_zero_timeout() {
+    use crate::QueryOptions;
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("data", ColumnType::String),
+    ]);
+    engine.create_table("timeout_test", schema).unwrap();
+
+    // Insert some data
+    for i in 1..=100 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("data".to_string(), Value::String(format!("Data {i}")));
+        engine.insert("timeout_test", values).unwrap();
+    }
+
+    // Select with zero timeout - fast queries should still succeed
+    let options = QueryOptions::default().with_timeout_ms(0);
+    let result = engine.select_with_options("timeout_test", Condition::True, options);
+    // Fast queries may still succeed even with 0ms timeout
+    assert!(result.is_ok() || matches!(result, Err(RelationalError::QueryTimeout { .. })));
+}
+
+#[test]
+fn test_relational_config_builder_methods() {
+    let config = RelationalConfig::default()
+        .with_max_tables(10)
+        .with_max_indexes_per_table(5)
+        .with_default_timeout_ms(1000)
+        .with_slow_query_threshold_ms(500);
+
+    assert_eq!(config.max_tables, Some(10));
+    assert_eq!(config.max_indexes_per_table, Some(5));
+    assert_eq!(config.default_query_timeout_ms, Some(1000));
+    assert_eq!(config.slow_query_threshold_ms, 500);
+}
+
+#[test]
+fn test_engine_with_config_creates_instance() {
+    let config = RelationalConfig::default()
+        .with_max_tables(5)
+        .with_default_timeout_ms(5000);
+
+    let engine = RelationalEngine::with_config(config);
+    assert!(engine.list_tables().is_empty());
+}
+
+#[test]
+fn test_engine_with_store_creates_instance() {
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+    let engine = RelationalEngine::with_store(store);
+    assert!(engine.list_tables().is_empty());
+}
+
+#[test]
+fn test_engine_with_store_and_config() {
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+    let config = RelationalConfig::default().with_max_tables(10);
+    let engine = RelationalEngine::with_store_and_config(store, config);
+    assert!(engine.list_tables().is_empty());
+}
+
+#[test]
+fn test_sum_with_non_numeric_values() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+        Column::new("amount", ColumnType::Int),
+    ]);
+    engine.create_table("mixed_sum", schema).unwrap();
+
+    // Insert rows with numeric data
+    for i in 1..=5 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("name".to_string(), Value::String(format!("Item{i}")));
+        values.insert("amount".to_string(), Value::Int(i * 10));
+        engine.insert("mixed_sum", values).unwrap();
+    }
+
+    // Sum a string column - should return 0.0 (fallback for non-numeric)
+    let sum = engine.sum("mixed_sum", "name", Condition::True).unwrap();
+    assert!((sum - 0.0).abs() < f64::EPSILON);
+
+    // Sum the numeric column - should work
+    let sum_amount = engine.sum("mixed_sum", "amount", Condition::True).unwrap();
+    assert!((sum_amount - 150.0).abs() < f64::EPSILON); // 10+20+30+40+50
+}
+
+#[test]
+fn test_avg_with_non_numeric_values() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("label", ColumnType::String),
+        Column::new("value", ColumnType::Float),
+    ]);
+    engine.create_table("mixed_avg", schema).unwrap();
+
+    // Insert rows
+    for i in 1..=4 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("label".to_string(), Value::String(format!("Label{i}")));
+        values.insert("value".to_string(), Value::Float(i as f64 * 10.0));
+        engine.insert("mixed_avg", values).unwrap();
+    }
+
+    // Avg a string column - should return None (no numeric values)
+    let avg = engine.avg("mixed_avg", "label", Condition::True).unwrap();
+    assert!(avg.is_none());
+
+    // Avg the numeric column - should work
+    let avg_value = engine.avg("mixed_avg", "value", Condition::True).unwrap();
+    assert!(avg_value.is_some());
+    assert!((avg_value.unwrap() - 25.0).abs() < f64::EPSILON); // (10+20+30+40)/4
+}
+
+#[test]
+fn test_sum_parallel_threshold() {
+    // Test sum with enough rows to trigger parallel processing
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("category", ColumnType::String),
+        Column::new("amount", ColumnType::Int),
+    ]);
+    engine.create_table("parallel_sum", schema).unwrap();
+
+    // Insert rows with mixed types - beyond parallel threshold (1000)
+    for i in 1..=1100 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert(
+            "category".to_string(),
+            Value::String(format!("Cat{}", i % 10)),
+        );
+        values.insert("amount".to_string(), Value::Int(1));
+        engine.insert("parallel_sum", values).unwrap();
+    }
+
+    // Sum string column with parallel path
+    let sum = engine
+        .sum("parallel_sum", "category", Condition::True)
+        .unwrap();
+    assert!((sum - 0.0).abs() < f64::EPSILON);
+
+    // Sum int column
+    let sum_amount = engine
+        .sum("parallel_sum", "amount", Condition::True)
+        .unwrap();
+    assert!((sum_amount - 1100.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_avg_parallel_threshold() {
+    // Test avg with enough rows to trigger parallel processing
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+        Column::new("score", ColumnType::Int),
+    ]);
+    engine.create_table("parallel_avg", schema).unwrap();
+
+    // Insert enough rows to trigger parallel path
+    for i in 1..=1100 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("score".to_string(), Value::Int(100)); // All same for easy avg
+        engine.insert("parallel_avg", values).unwrap();
+    }
+
+    // Avg string column with parallel path
+    let avg = engine.avg("parallel_avg", "name", Condition::True).unwrap();
+    assert!(avg.is_none());
+
+    // Avg int column
+    let avg_score = engine
+        .avg("parallel_avg", "score", Condition::True)
+        .unwrap();
+    assert!(avg_score.is_some());
+    assert!((avg_score.unwrap() - 100.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_select_grouped_with_having_gt() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("dept", ColumnType::String),
+        Column::new("salary", ColumnType::Int),
+    ]);
+    engine.create_table("employees", schema).unwrap();
+
+    // Insert employees in different departments
+    let data = [
+        (1, "eng", 100),
+        (2, "eng", 200),
+        (3, "eng", 150),
+        (4, "sales", 80),
+        (5, "sales", 90),
+        (6, "hr", 50),
+    ];
+    for (id, dept, salary) in data {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(id));
+        values.insert("dept".to_string(), Value::String(dept.to_string()));
+        values.insert("salary".to_string(), Value::Int(salary));
+        engine.insert("employees", values).unwrap();
+    }
+
+    // Group by dept, count employees, filter where count > 2
+    let having = HavingCondition::Gt(AggregateRef::CountAll, Value::Int(2));
+    let results = engine
+        .select_grouped(
+            "employees",
+            Condition::True,
+            &["dept".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // Only eng has 3 employees (> 2)
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get_key("dept"),
+        Some(&Value::String("eng".to_string()))
+    );
+}
+
+#[test]
+fn test_select_grouped_with_having_ge() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("category", ColumnType::String),
+    ]);
+    engine.create_table("items", schema).unwrap();
+
+    for i in 1..=10 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert(
+            "category".to_string(),
+            Value::String(if i <= 5 { "A" } else { "B" }.to_string()),
+        );
+        engine.insert("items", values).unwrap();
+    }
+
+    let having = HavingCondition::Ge(AggregateRef::CountAll, Value::Int(5));
+    let results = engine
+        .select_grouped(
+            "items",
+            Condition::True,
+            &["category".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    assert_eq!(results.len(), 2); // Both A and B have exactly 5 items
+}
+
+#[test]
+fn test_select_grouped_with_having_lt() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("status", ColumnType::String),
+    ]);
+    engine.create_table("orders", schema).unwrap();
+
+    let statuses = [
+        "pending", "pending", "shipped", "shipped", "shipped", "done",
+    ];
+    for (i, status) in statuses.iter().enumerate() {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i as i64 + 1));
+        values.insert("status".to_string(), Value::String(status.to_string()));
+        engine.insert("orders", values).unwrap();
+    }
+
+    let having = HavingCondition::Lt(AggregateRef::CountAll, Value::Int(3));
+    let results = engine
+        .select_grouped(
+            "orders",
+            Condition::True,
+            &["status".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // pending=2, done=1 (both < 3), shipped=3 (not included)
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_select_grouped_with_having_le() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("type", ColumnType::String),
+    ]);
+    engine.create_table("events", schema).unwrap();
+
+    for i in 1..=7 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert(
+            "type".to_string(),
+            Value::String(
+                if i <= 2 {
+                    "A"
+                } else if i <= 5 {
+                    "B"
+                } else {
+                    "C"
+                }
+                .to_string(),
+            ),
+        );
+        engine.insert("events", values).unwrap();
+    }
+
+    let having = HavingCondition::Le(AggregateRef::CountAll, Value::Int(2));
+    let results = engine
+        .select_grouped(
+            "events",
+            Condition::True,
+            &["type".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // A=2, C=2 (<= 2), B=3 (not included)
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_select_grouped_with_having_eq() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("region", ColumnType::String),
+    ]);
+    engine.create_table("sales", schema).unwrap();
+
+    let regions = ["north", "north", "south", "south", "east"];
+    for (i, region) in regions.iter().enumerate() {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i as i64 + 1));
+        values.insert("region".to_string(), Value::String(region.to_string()));
+        engine.insert("sales", values).unwrap();
+    }
+
+    let having = HavingCondition::Eq(AggregateRef::CountAll, Value::Int(2));
+    let results = engine
+        .select_grouped(
+            "sales",
+            Condition::True,
+            &["region".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // north=2, south=2 (== 2), east=1 (not included)
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_select_grouped_with_having_ne() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("tier", ColumnType::String),
+    ]);
+    engine.create_table("customers", schema).unwrap();
+
+    let tiers = ["gold", "gold", "silver", "silver", "silver", "bronze"];
+    for (i, tier) in tiers.iter().enumerate() {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i as i64 + 1));
+        values.insert("tier".to_string(), Value::String(tier.to_string()));
+        engine.insert("customers", values).unwrap();
+    }
+
+    let having = HavingCondition::Ne(AggregateRef::CountAll, Value::Int(2));
+    let results = engine
+        .select_grouped(
+            "customers",
+            Condition::True,
+            &["tier".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // gold=2 (excluded), silver=3 (included), bronze=1 (included)
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_select_grouped_with_having_and() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("group", ColumnType::String),
+    ]);
+    engine.create_table("data", schema).unwrap();
+
+    // A: 1 item, B: 2 items, C: 3 items, D: 4 items
+    for (group, count) in [("A", 1), ("B", 2), ("C", 3), ("D", 4)] {
+        for i in 0..count {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i as i64));
+            values.insert("group".to_string(), Value::String(group.to_string()));
+            engine.insert("data", values).unwrap();
+        }
+    }
+
+    // count >= 2 AND count <= 3
+    let having = HavingCondition::And(
+        Box::new(HavingCondition::Ge(AggregateRef::CountAll, Value::Int(2))),
+        Box::new(HavingCondition::Le(AggregateRef::CountAll, Value::Int(3))),
+    );
+    let results = engine
+        .select_grouped(
+            "data",
+            Condition::True,
+            &["group".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // B=2, C=3 match the AND condition
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_select_grouped_with_having_or() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition};
+
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("category", ColumnType::String),
+    ]);
+    engine.create_table("products", schema).unwrap();
+
+    // X: 1 item, Y: 2 items, Z: 5 items
+    for (cat, count) in [("X", 1), ("Y", 2), ("Z", 5)] {
+        for i in 0..count {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i as i64));
+            values.insert("category".to_string(), Value::String(cat.to_string()));
+            engine.insert("products", values).unwrap();
+        }
+    }
+
+    // count = 1 OR count >= 5
+    let having = HavingCondition::Or(
+        Box::new(HavingCondition::Eq(AggregateRef::CountAll, Value::Int(1))),
+        Box::new(HavingCondition::Ge(AggregateRef::CountAll, Value::Int(5))),
+    );
+    let results = engine
+        .select_grouped(
+            "products",
+            Condition::True,
+            &["category".to_string()],
+            &[AggregateExpr::CountAll],
+            Some(having),
+        )
+        .unwrap();
+
+    // X=1 (matches first), Z=5 (matches second), Y=2 (no match)
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_select_grouped_having_depth_exceeded() {
+    use crate::{AggregateExpr, AggregateRef, HavingCondition, RelationalConfig};
+
+    let config = RelationalConfig::default().with_max_condition_depth(3);
+    let engine = RelationalEngine::with_config(config);
+
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("group", ColumnType::String),
+    ]);
+    engine.create_table("test", schema).unwrap();
+
+    let mut values = HashMap::new();
+    values.insert("id".to_string(), Value::Int(1));
+    values.insert("group".to_string(), Value::String("A".to_string()));
+    engine.insert("test", values).unwrap();
+
+    // Build a deep having condition
+    let mut having = HavingCondition::Gt(AggregateRef::CountAll, Value::Int(0));
+    for _ in 0..10 {
+        having = HavingCondition::And(
+            Box::new(having),
+            Box::new(HavingCondition::Lt(AggregateRef::CountAll, Value::Int(100))),
+        );
+    }
+
+    let result = engine.select_grouped(
+        "test",
+        Condition::True,
+        &["group".to_string()],
+        &[AggregateExpr::CountAll],
+        Some(having),
+    );
+
+    assert!(matches!(
+        result,
+        Err(RelationalError::ConditionTooDeep { .. })
+    ));
+}
+
+#[test]
+fn test_select_streaming() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+    ]);
+    engine.create_table("users", schema).unwrap();
+
+    // Insert test data
+    for i in 0..10 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("name".to_string(), Value::String(format!("user{i}")));
+        engine.insert("users", values).unwrap();
+    }
+
+    // Test streaming cursor
+    let cursor = engine.select_streaming("users", Condition::True);
+    let rows: Vec<_> = cursor.collect();
+    assert_eq!(rows.len(), 10);
+
+    // Verify all rows are present
+    for row_result in &rows {
+        let row = row_result.as_ref().unwrap();
+        assert!(row.get("id").is_some());
+        assert!(row.get("name").is_some());
+    }
+}
+
+#[test]
+fn test_select_streaming_builder() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("value", ColumnType::Int),
+    ]);
+    engine.create_table("items", schema).unwrap();
+
+    // Insert test data
+    for i in 0..100 {
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(i));
+        values.insert("value".to_string(), Value::Int(i * 10));
+        engine.insert("items", values).unwrap();
+    }
+
+    // Test cursor builder with batch size
+    let cursor = engine
+        .select_streaming_builder("items", Condition::True)
+        .batch_size(25)
+        .build();
+    let rows: Vec<_> = cursor.collect();
+    assert_eq!(rows.len(), 100);
+
+    // Test cursor builder with max rows
+    let cursor = engine
+        .select_streaming_builder("items", Condition::True)
+        .max_rows(50)
+        .build();
+    let rows: Vec<_> = cursor.collect();
+    assert_eq!(rows.len(), 50);
+
+    // Test cursor builder with condition
+    let cursor = engine
+        .select_streaming_builder("items", Condition::Lt("id".to_string(), Value::Int(30)))
+        .build();
+    let rows: Vec<_> = cursor.collect();
+    assert_eq!(rows.len(), 30);
+}
+
+#[test]
+fn test_drop_fk_constraint() {
+    let engine = RelationalEngine::new();
+
+    // Create parent table
+    let parent_schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("name", ColumnType::String),
+    ]);
+    engine.create_table("parents", parent_schema).unwrap();
+
+    // Create child table
+    let child_schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("parent_id", ColumnType::Int),
+    ]);
+    engine.create_table("children", child_schema).unwrap();
+
+    // Add FK constraint
+    let fk = ForeignKeyConstraint::new(
+        "fk_parent",
+        vec!["parent_id".to_string()],
+        "parents".to_string(),
+        vec!["id".to_string()],
+    );
+    engine
+        .add_constraint("children", Constraint::ForeignKey(fk))
+        .unwrap();
+
+    // Verify constraint exists
+    let constraints = engine.get_constraints("children").unwrap();
+    assert_eq!(constraints.len(), 1);
+
+    // Drop the FK constraint
+    engine.drop_constraint("children", "fk_parent").unwrap();
+
+    // Verify constraint is gone
+    let constraints = engine.get_constraints("children").unwrap();
+    assert!(constraints.is_empty());
+}
+
+#[test]
+fn test_drop_constraint_updates_fk_references() {
+    let engine = RelationalEngine::new();
+
+    // Create referenced table
+    let ref_schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+    engine.create_table("ref_table", ref_schema).unwrap();
+
+    // Create two tables that reference ref_table
+    let child1_schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("ref_id", ColumnType::Int),
+    ]);
+    engine.create_table("child1", child1_schema).unwrap();
+
+    let child2_schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("ref_id", ColumnType::Int),
+    ]);
+    engine.create_table("child2", child2_schema).unwrap();
+
+    // Add FK constraints to both
+    let fk1 = ForeignKeyConstraint::new(
+        "fk_ref1",
+        vec!["ref_id".to_string()],
+        "ref_table".to_string(),
+        vec!["id".to_string()],
+    );
+    engine
+        .add_constraint("child1", Constraint::ForeignKey(fk1))
+        .unwrap();
+
+    let fk2 = ForeignKeyConstraint::new(
+        "fk_ref2",
+        vec!["ref_id".to_string()],
+        "ref_table".to_string(),
+        vec!["id".to_string()],
+    );
+    engine
+        .add_constraint("child2", Constraint::ForeignKey(fk2))
+        .unwrap();
+
+    // Drop one FK constraint
+    engine.drop_constraint("child1", "fk_ref1").unwrap();
+
+    // Verify only one constraint remains
+    let c1 = engine.get_constraints("child1").unwrap();
+    let c2 = engine.get_constraints("child2").unwrap();
+    assert!(c1.is_empty());
+    assert_eq!(c2.len(), 1);
+}

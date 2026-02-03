@@ -432,8 +432,7 @@ mod tests {
         assert!(json.contains("xp_total"));
         assert!(json.contains("achievements_unlocked"));
 
-        let decoded: UserProgress =
-            serde_json::from_str(&json).expect("deserialization failed");
+        let decoded: UserProgress = serde_json::from_str(&json).expect("deserialization failed");
         assert_eq!(decoded.xp_total, 550); // 500 + 50 from achievement
     }
 }

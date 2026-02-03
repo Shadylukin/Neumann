@@ -372,7 +372,9 @@ pub async fn api_query(
             if !tables.contains(&table_name) {
                 return axum::Json(QueryResponse {
                     rows: None,
-                    error: Some(format!("Table '{table_name}' not found. Available: {tables:?}")),
+                    error: Some(format!(
+                        "Table '{table_name}' not found. Available: {tables:?}"
+                    )),
                     message: None,
                 });
             }
@@ -391,7 +393,10 @@ pub async fn api_query(
             };
 
             // Fetch rows using select with Condition::True
-            match ctx.relational.select(&table_name, relational_engine::Condition::True) {
+            match ctx
+                .relational
+                .select(&table_name, relational_engine::Condition::True)
+            {
                 Ok(rows) => {
                     let json_rows: Vec<serde_json::Value> = rows
                         .into_iter()
@@ -411,7 +416,7 @@ pub async fn api_query(
                         error: None,
                         message: None,
                     })
-                }
+                },
                 Err(e) => axum::Json(QueryResponse {
                     rows: None,
                     error: Some(format!("Query error: {e}")),
@@ -480,12 +485,12 @@ fn value_to_json(value: &relational_engine::Value) -> serde_json::Value {
         relational_engine::Value::Null => serde_json::Value::Null,
         relational_engine::Value::Bool(b) => serde_json::Value::Bool(*b),
         relational_engine::Value::Int(i) => serde_json::Value::Number((*i).into()),
-        relational_engine::Value::Float(f) => {
-            serde_json::Number::from_f64(*f)
-                .map_or(serde_json::Value::Null, serde_json::Value::Number)
-        }
+        relational_engine::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
         relational_engine::Value::String(s) => serde_json::Value::String(s.clone()),
-        relational_engine::Value::Bytes(b) => serde_json::Value::String(format!("<{} bytes>", b.len())),
+        relational_engine::Value::Bytes(b) => {
+            serde_json::Value::String(format!("<{} bytes>", b.len()))
+        },
         relational_engine::Value::Json(j) => j.clone(),
         _ => serde_json::Value::String("<unknown>".to_string()),
     }

@@ -357,7 +357,8 @@ mod tests {
     #[test]
     fn test_achievement_category_section() {
         let progress = UserProgress::new();
-        let html = achievement_category_section(AchievementCategory::Discovery, &progress).into_string();
+        let html =
+            achievement_category_section(AchievementCategory::Discovery, &progress).into_string();
         assert!(html.contains("DISCOVERY"));
     }
 }

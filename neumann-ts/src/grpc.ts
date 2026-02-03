@@ -37,6 +37,12 @@ export type {
   ServingStatus,
 } from './generated/neumann.js';
 
+import type {
+  QueryServiceClient,
+  BlobServiceClient,
+  HealthClient,
+} from './generated/neumann.js';
+
 export type {
   PointsServiceClient,
   CollectionsServiceClient,
@@ -60,6 +66,11 @@ export type {
   DeleteCollectionResponse,
   ListCollectionsRequest,
   ListCollectionsResponse,
+} from './generated/vector.js';
+
+import type {
+  PointsServiceClient,
+  CollectionsServiceClient,
 } from './generated/vector.js';
 
 // Inline proto definitions to avoid filesystem dependencies
@@ -519,9 +530,9 @@ export function getQueryServiceClient(
   address: string,
   credentials: grpc.ChannelCredentials,
   options?: Record<string, string | number | boolean>
-): grpc.Client {
+): QueryServiceClient {
   const QueryService = proto.QueryService as grpc.ServiceClientConstructor;
-  return new QueryService(address, credentials, options);
+  return new QueryService(address, credentials, options) as QueryServiceClient;
 }
 
 /**
@@ -532,9 +543,9 @@ export function getBlobServiceClient(
   address: string,
   credentials: grpc.ChannelCredentials,
   options?: Record<string, string | number | boolean>
-): grpc.Client {
+): BlobServiceClient {
   const BlobService = proto.BlobService as grpc.ServiceClientConstructor;
-  return new BlobService(address, credentials, options);
+  return new BlobService(address, credentials, options) as BlobServiceClient;
 }
 
 /**
@@ -545,9 +556,9 @@ export function getHealthClient(
   address: string,
   credentials: grpc.ChannelCredentials,
   options?: Record<string, string | number | boolean>
-): grpc.Client {
+): HealthClient {
   const Health = proto.Health as grpc.ServiceClientConstructor;
-  return new Health(address, credentials, options);
+  return new Health(address, credentials, options) as HealthClient;
 }
 
 /**
@@ -558,9 +569,9 @@ export function getPointsServiceClient(
   address: string,
   credentials: grpc.ChannelCredentials,
   options?: Record<string, string | number | boolean>
-): grpc.Client {
+): PointsServiceClient {
   const PointsService = proto.PointsService as grpc.ServiceClientConstructor;
-  return new PointsService(address, credentials, options);
+  return new PointsService(address, credentials, options) as PointsServiceClient;
 }
 
 /**
@@ -571,9 +582,9 @@ export function getCollectionsServiceClient(
   address: string,
   credentials: grpc.ChannelCredentials,
   options?: Record<string, string | number | boolean>
-): grpc.Client {
+): CollectionsServiceClient {
   const CollectionsService = proto.CollectionsService as grpc.ServiceClientConstructor;
-  return new CollectionsService(address, credentials, options);
+  return new CollectionsService(address, credentials, options) as CollectionsServiceClient;
 }
 
 /**

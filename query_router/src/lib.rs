@@ -1389,9 +1389,7 @@ impl QueryRouter {
         command: &str,
         options: PaginationOptions,
     ) -> Result<PagedQueryResult> {
-        let page_size = options
-            .page_size
-            .unwrap_or(CursorState::DEFAULT_PAGE_SIZE);
+        let page_size = options.page_size.unwrap_or(CursorState::DEFAULT_PAGE_SIZE);
         let ttl_secs = options
             .cursor_ttl
             .map(|d| d.as_secs() as u32)
@@ -1418,8 +1416,12 @@ impl QueryRouter {
         let full_result = self.execute(command)?;
 
         // Determine result type and apply pagination
-        let (result_type, total_count, paged_result) =
-            self.apply_pagination(&full_result, cursor_state.as_ref(), page_size, options.count_total)?;
+        let (result_type, total_count, paged_result) = self.apply_pagination(
+            &full_result,
+            cursor_state.as_ref(),
+            page_size,
+            options.count_total,
+        )?;
 
         let offset = cursor_state.as_ref().map_or(0, |s| s.offset);
 
@@ -1507,7 +1509,11 @@ impl QueryRouter {
             QueryResult::Similar(items) => {
                 let total = if count_total { Some(items.len()) } else { None };
                 let paged: Vec<_> = items.iter().skip(offset).take(page_size).cloned().collect();
-                Ok((CursorResultType::Similar, total, QueryResult::Similar(paged)))
+                Ok((
+                    CursorResultType::Similar,
+                    total,
+                    QueryResult::Similar(paged),
+                ))
             },
             QueryResult::Unified(unified) => {
                 let total = if count_total {
@@ -15699,7 +15705,9 @@ mod tests {
         let router = QueryRouter::new();
 
         for i in 0..5 {
-            router.execute(&format!("NODE CREATE Node id={}", i)).unwrap();
+            router
+                .execute(&format!("NODE CREATE Node id={}", i))
+                .unwrap();
         }
         for i in 0..4 {
             let from = i + 1;
@@ -16071,9 +16079,7 @@ mod tests {
             .execute(&format!("EDGE CREATE {} -> {} conn score=0.5", a, b))
             .unwrap();
 
-        let result = router
-            .execute("AGGREGATE EDGE PROPERTY score MIN")
-            .unwrap();
+        let result = router.execute("AGGREGATE EDGE PROPERTY score MIN").unwrap();
         assert!(matches!(
             result,
             QueryResult::Aggregate(AggregateResultValue::Min(_))
@@ -16097,9 +16103,7 @@ mod tests {
             .execute(&format!("EDGE CREATE {} -> {} conn value=0.75", a, b))
             .unwrap();
 
-        let result = router
-            .execute("AGGREGATE EDGE PROPERTY value MAX")
-            .unwrap();
+        let result = router.execute("AGGREGATE EDGE PROPERTY value MAX").unwrap();
         assert!(matches!(
             result,
             QueryResult::Aggregate(AggregateResultValue::Max(_))
@@ -16217,8 +16221,9 @@ mod tests {
 
         // Search with a WHERE clause in the collection
         // This exercises the filtered collection search path
-        let result = router
-            .execute_parsed("SIMILAR [1.0, 0.0, 0.0] WHERE key CONTAINS 'item' LIMIT 3 INTO test_coll");
+        let result = router.execute_parsed(
+            "SIMILAR [1.0, 0.0, 0.0] WHERE key CONTAINS 'item' LIMIT 3 INTO test_coll",
+        );
 
         // Should either succeed or fail gracefully - the code path is exercised
         assert!(result.is_ok() || result.is_err());
@@ -17784,7 +17789,9 @@ mod tests {
         }
 
         // Get first page with page_size=10
-        let options = PaginationOptions::new().with_page_size(10).with_count_total(true);
+        let options = PaginationOptions::new()
+            .with_page_size(10)
+            .with_count_total(true);
         let result = router.execute_paginated("SELECT paged_users", options);
 
         assert!(result.is_ok());
@@ -17818,7 +17825,9 @@ mod tests {
         }
 
         // Get first page
-        let options = PaginationOptions::new().with_page_size(10).with_count_total(true);
+        let options = PaginationOptions::new()
+            .with_page_size(10)
+            .with_count_total(true);
         let page1 = router
             .execute_paginated("SELECT cursor_test", options)
             .unwrap();
@@ -17847,9 +17856,7 @@ mod tests {
     fn test_paginated_query_last_page() {
         let router = QueryRouter::new();
 
-        router
-            .execute("CREATE TABLE last_page (val:int)")
-            .unwrap();
+        router.execute("CREATE TABLE last_page (val:int)").unwrap();
         for i in 1..=15 {
             router
                 .execute(&format!("INSERT last_page val={i}"))
@@ -17857,8 +17864,12 @@ mod tests {
         }
 
         // Request page size that exceeds total
-        let options = PaginationOptions::new().with_page_size(20).with_count_total(true);
-        let result = router.execute_paginated("SELECT last_page", options).unwrap();
+        let options = PaginationOptions::new()
+            .with_page_size(20)
+            .with_count_total(true);
+        let result = router
+            .execute_paginated("SELECT last_page", options)
+            .unwrap();
 
         assert!(!result.has_more);
         assert!(result.next_cursor.is_none());
@@ -17880,7 +17891,9 @@ mod tests {
                 .unwrap();
         }
 
-        let options = PaginationOptions::new().with_page_size(10).with_count_total(true);
+        let options = PaginationOptions::new()
+            .with_page_size(10)
+            .with_count_total(true);
         let result = router.execute_paginated("NODE LIST TestNode", options);
 
         assert!(result.is_ok());
@@ -17913,12 +17926,18 @@ mod tests {
         router.execute("CREATE TABLE mismatch1 (val:int)").unwrap();
         router.execute("CREATE TABLE mismatch2 (val:int)").unwrap();
         for i in 1..=10 {
-            router.execute(&format!("INSERT mismatch1 val={i}")).unwrap();
-            router.execute(&format!("INSERT mismatch2 val={i}")).unwrap();
+            router
+                .execute(&format!("INSERT mismatch1 val={i}"))
+                .unwrap();
+            router
+                .execute(&format!("INSERT mismatch2 val={i}"))
+                .unwrap();
         }
 
         // Get cursor for mismatch1 (enable count_total to get cursor)
-        let options = PaginationOptions::new().with_page_size(5).with_count_total(true);
+        let options = PaginationOptions::new()
+            .with_page_size(5)
+            .with_count_total(true);
         let page1 = router
             .execute_paginated("SELECT mismatch1", options)
             .unwrap();
@@ -17930,7 +17949,10 @@ mod tests {
         let options2 = PaginationOptions::new().with_cursor(cursor);
         let result = router.execute_paginated("SELECT mismatch2", options2);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cursor query does not match"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Cursor query does not match"));
     }
 
     #[test]
@@ -17939,12 +17961,18 @@ mod tests {
 
         router.execute("CREATE TABLE close_test (val:int)").unwrap();
         for i in 1..=20 {
-            router.execute(&format!("INSERT close_test val={i}")).unwrap();
+            router
+                .execute(&format!("INSERT close_test val={i}"))
+                .unwrap();
         }
 
         // Get a cursor (must enable count_total to get has_more and next_cursor)
-        let options = PaginationOptions::new().with_page_size(5).with_count_total(true);
-        let page1 = router.execute_paginated("SELECT close_test", options).unwrap();
+        let options = PaginationOptions::new()
+            .with_page_size(5)
+            .with_count_total(true);
+        let page1 = router
+            .execute_paginated("SELECT close_test", options)
+            .unwrap();
 
         // Must have a next cursor since we have 20 items with page_size 5
         let cursor = page1.next_cursor.expect("Should have next cursor");
@@ -17976,23 +18004,28 @@ mod tests {
 
         assert_eq!(options.page_size, Some(50));
         assert!(options.count_total);
-        assert_eq!(
-            options.cursor_ttl,
-            Some(std::time::Duration::from_secs(60))
-        );
+        assert_eq!(options.cursor_ttl, Some(std::time::Duration::from_secs(60)));
     }
 
     #[test]
     fn test_paged_query_result_fields() {
         let router = QueryRouter::new();
 
-        router.execute("CREATE TABLE fields_test (val:int)").unwrap();
+        router
+            .execute("CREATE TABLE fields_test (val:int)")
+            .unwrap();
         for i in 1..=5 {
-            router.execute(&format!("INSERT fields_test val={i}")).unwrap();
+            router
+                .execute(&format!("INSERT fields_test val={i}"))
+                .unwrap();
         }
 
-        let options = PaginationOptions::new().with_page_size(3).with_count_total(true);
-        let result = router.execute_paginated("SELECT fields_test", options).unwrap();
+        let options = PaginationOptions::new()
+            .with_page_size(3)
+            .with_count_total(true);
+        let result = router
+            .execute_paginated("SELECT fields_test", options)
+            .unwrap();
 
         assert_eq!(result.page_size, 3);
         assert_eq!(result.total_count, Some(5));
@@ -18036,14 +18069,17 @@ mod tests {
 
         // Create embeddings for similarity search
         for i in 1..=30 {
-            let vals = (1..=4).map(|j| format!("{}", (i * j) as f32 / 100.0)).collect::<Vec<_>>().join(", ");
-            router
-                .execute(&format!("EMBED key{i} [{vals}]"))
-                .unwrap();
+            let vals = (1..=4)
+                .map(|j| format!("{}", (i * j) as f32 / 100.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            router.execute(&format!("EMBED key{i} [{vals}]")).unwrap();
         }
 
         // Similar search returns SimilarResult
-        let options = PaginationOptions::new().with_page_size(5).with_count_total(true);
+        let options = PaginationOptions::new()
+            .with_page_size(5)
+            .with_count_total(true);
         let result = router.execute_paginated("SIMILAR key1 TOP 20", options);
 
         assert!(result.is_ok());
@@ -18071,7 +18107,9 @@ mod tests {
         }
 
         // FIND query returns UnifiedResult
-        let options = PaginationOptions::new().with_page_size(5).with_count_total(true);
+        let options = PaginationOptions::new()
+            .with_page_size(5)
+            .with_count_total(true);
         let result = router.execute_paginated("FIND ROWS FROM unified_test", options);
 
         assert!(result.is_ok());
@@ -18089,14 +18127,22 @@ mod tests {
     fn test_close_cursor_not_found() {
         let router = QueryRouter::new();
 
-        router.execute("CREATE TABLE close_not_found (val:int)").unwrap();
+        router
+            .execute("CREATE TABLE close_not_found (val:int)")
+            .unwrap();
         for i in 1..=20 {
-            router.execute(&format!("INSERT close_not_found val={i}")).unwrap();
+            router
+                .execute(&format!("INSERT close_not_found val={i}"))
+                .unwrap();
         }
 
         // Get a cursor (must enable count_total)
-        let options = PaginationOptions::new().with_page_size(5).with_count_total(true);
-        let page1 = router.execute_paginated("SELECT close_not_found", options).unwrap();
+        let options = PaginationOptions::new()
+            .with_page_size(5)
+            .with_count_total(true);
+        let page1 = router
+            .execute_paginated("SELECT close_not_found", options)
+            .unwrap();
 
         // Must have a next cursor
         let cursor = page1.next_cursor.expect("Should have next cursor");
@@ -18133,7 +18179,9 @@ mod tests {
             .with_page_size(5)
             .with_count_total(true)
             .with_cursor_ttl(std::time::Duration::from_secs(120));
-        let result = router.execute_paginated("SELECT ttl_test", options).unwrap();
+        let result = router
+            .execute_paginated("SELECT ttl_test", options)
+            .unwrap();
 
         assert!(result.has_more);
         assert!(result.next_cursor.is_some());
@@ -18150,7 +18198,9 @@ mod tests {
 
         // Don't request count_total
         let options = PaginationOptions::new().with_page_size(5);
-        let result = router.execute_paginated("SELECT no_count", options).unwrap();
+        let result = router
+            .execute_paginated("SELECT no_count", options)
+            .unwrap();
 
         // total_count should be None when not requested
         assert_eq!(result.total_count, None);
@@ -18215,26 +18265,44 @@ mod tests {
     fn test_paginated_third_page_with_prev() {
         let router = QueryRouter::new();
 
-        router.execute("CREATE TABLE three_pages (val:int)").unwrap();
+        router
+            .execute("CREATE TABLE three_pages (val:int)")
+            .unwrap();
         for i in 1..=30 {
-            router.execute(&format!("INSERT three_pages val={i}")).unwrap();
+            router
+                .execute(&format!("INSERT three_pages val={i}"))
+                .unwrap();
         }
 
         // First page
-        let opts1 = PaginationOptions::new().with_page_size(10).with_count_total(true);
-        let page1 = router.execute_paginated("SELECT three_pages", opts1).unwrap();
+        let opts1 = PaginationOptions::new()
+            .with_page_size(10)
+            .with_count_total(true);
+        let page1 = router
+            .execute_paginated("SELECT three_pages", opts1)
+            .unwrap();
         assert!(page1.prev_cursor.is_none()); // First page has no prev
 
         // Second page
         let cursor1 = page1.next_cursor.unwrap();
-        let opts2 = PaginationOptions::new().with_cursor(cursor1).with_page_size(10).with_count_total(true);
-        let page2 = router.execute_paginated("SELECT three_pages", opts2).unwrap();
+        let opts2 = PaginationOptions::new()
+            .with_cursor(cursor1)
+            .with_page_size(10)
+            .with_count_total(true);
+        let page2 = router
+            .execute_paginated("SELECT three_pages", opts2)
+            .unwrap();
         assert!(page2.prev_cursor.is_some()); // Second page has prev
 
         // Third page
         let cursor2 = page2.next_cursor.unwrap();
-        let opts3 = PaginationOptions::new().with_cursor(cursor2).with_page_size(10).with_count_total(true);
-        let page3 = router.execute_paginated("SELECT three_pages", opts3).unwrap();
+        let opts3 = PaginationOptions::new()
+            .with_cursor(cursor2)
+            .with_page_size(10)
+            .with_count_total(true);
+        let page3 = router
+            .execute_paginated("SELECT three_pages", opts3)
+            .unwrap();
         assert!(page3.prev_cursor.is_some()); // Third page has prev
         assert!(!page3.has_more); // Third page is last
     }

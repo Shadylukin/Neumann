@@ -882,7 +882,11 @@ pub fn expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
     }
 
     // Show first few and last few
-    let first: Vec<String> = vec.iter().take(max_preview / 2).map(|v| format!("{v:.6}")).collect();
+    let first: Vec<String> = vec
+        .iter()
+        .take(max_preview / 2)
+        .map(|v| format!("{v:.6}"))
+        .collect();
     let last: Vec<String> = vec
         .iter()
         .rev()
@@ -891,7 +895,11 @@ pub fn expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
         .map(|v| format!("{v:.6}"))
         .collect();
     let hidden = total - first.len() - last.len();
-    let preview = format!("[{}, ... ({hidden} more) ..., {}]", first.join(", "), last.join(", "));
+    let preview = format!(
+        "[{}, ... ({hidden} more) ..., {}]",
+        first.join(", "),
+        last.join(", ")
+    );
 
     // Full formatted vector for expansion
     let full_formatted = vec

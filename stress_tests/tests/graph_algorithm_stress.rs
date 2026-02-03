@@ -13,7 +13,9 @@ use std::{
     time::Instant,
 };
 
-use graph_engine::{CentralityConfig, CommunityConfig, Direction, GraphEngine, PageRankConfig, PropertyValue};
+use graph_engine::{
+    CentralityConfig, CommunityConfig, Direction, GraphEngine, PageRankConfig, PropertyValue,
+};
 use stress_tests::{full_config, LatencyHistogram};
 
 #[test]

@@ -205,7 +205,11 @@ pub async fn collection_detail(
         }
     };
 
-    layout(&format!("Collection: {collection}"), NavItem::Vector, content)
+    layout(
+        &format!("Collection: {collection}"),
+        NavItem::Vector,
+        content,
+    )
 }
 
 /// Search form parameters.
@@ -729,7 +733,10 @@ pub async fn point_detail(
     Path((collection, point_id)): Path<(String, String)>,
 ) -> Markup {
     let vector = ctx.vector.get_from_collection(&collection, &point_id);
-    let metadata = ctx.vector.get_collection_metadata(&collection, &point_id).unwrap_or_default();
+    let metadata = ctx
+        .vector
+        .get_collection_metadata(&collection, &point_id)
+        .unwrap_or_default();
 
     let content = html! {
         (breadcrumb(&[

@@ -221,7 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Web UI:  http://127.0.0.1:9201/");
     println!("  gRPC:    127.0.0.1:50051");
     println!();
-    println!("  Loaded {} documentation pages from docs/book/src/", doc_count);
+    println!(
+        "  Loaded {} documentation pages from docs/book/src/",
+        doc_count
+    );
     println!();
     println!("  RELATIONAL  /relational");
     println!("    - 'documents' table: {} rows", doc_count);
@@ -233,7 +236,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("  GRAPH  /graph");
     println!("    - {} nodes (Document + Section)", node_count);
-    println!("    - {} edges (IN_SECTION, RELATED_TO, LINKS_TO)", edge_count);
+    println!(
+        "    - {} edges (IN_SECTION, RELATED_TO, LINKS_TO)",
+        edge_count
+    );
     println!();
     println!("  Press Ctrl+C to stop the server.");
     println!();
@@ -294,9 +300,7 @@ fn load_docs_recursive(
         return Ok(());
     }
 
-    let entries: Vec<_> = fs::read_dir(current_path)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let entries: Vec<_> = fs::read_dir(current_path)?.filter_map(|e| e.ok()).collect();
 
     for entry in entries {
         let path = entry.path();
@@ -357,9 +361,7 @@ fn load_markdown_file(
                     let mut chars = word.chars();
                     match chars.next() {
                         None => String::new(),
-                        Some(first) => {
-                            first.to_uppercase().chain(chars).collect()
-                        }
+                        Some(first) => first.to_uppercase().chain(chars).collect(),
                     }
                 })
                 .collect::<Vec<_>>()

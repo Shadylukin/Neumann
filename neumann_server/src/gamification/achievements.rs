@@ -361,7 +361,10 @@ mod tests {
     #[test]
     fn test_tier_css_class() {
         assert_eq!(AchievementTier::Bronze.css_class(), "achievement-bronze");
-        assert_eq!(AchievementTier::Platinum.css_class(), "achievement-platinum");
+        assert_eq!(
+            AchievementTier::Platinum.css_class(),
+            "achievement-platinum"
+        );
     }
 
     #[test]
@@ -399,7 +402,9 @@ mod tests {
     fn test_achievements_by_category() {
         let discovery = achievements_by_category(AchievementCategory::Discovery);
         assert!(!discovery.is_empty());
-        assert!(discovery.iter().all(|a| a.category == AchievementCategory::Discovery));
+        assert!(discovery
+            .iter()
+            .all(|a| a.category == AchievementCategory::Discovery));
     }
 
     #[test]

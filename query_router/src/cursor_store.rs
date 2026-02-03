@@ -29,8 +29,8 @@ impl Default for CursorStoreConfig {
     fn default() -> Self {
         Self {
             max_cursors: 10_000,
-            default_ttl: Duration::from_secs(300),  // 5 minutes
-            max_ttl: Duration::from_secs(1800),     // 30 minutes
+            default_ttl: Duration::from_secs(300), // 5 minutes
+            max_ttl: Duration::from_secs(1800),    // 30 minutes
             cleanup_interval: Duration::from_secs(30),
         }
     }

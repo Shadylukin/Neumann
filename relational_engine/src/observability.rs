@@ -184,18 +184,6 @@ pub fn check_slow_query(metrics: &QueryMetrics, threshold_ms: u64) {
     }
 }
 
-/// Logs a warning when a full table scan is performed.
-pub fn warn_full_table_scan(table: &str, operation: &str, row_count: usize) {
-    if row_count > 1000 {
-        warn!(
-            table = %table,
-            operation = %operation,
-            row_count = %row_count,
-            "full table scan on large table - consider adding an index"
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

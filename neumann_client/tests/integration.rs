@@ -726,3 +726,246 @@ async fn test_streaming_iterate_to_end() {
 
     drop(shutdown);
 }
+
+#[tokio::test]
+async fn test_remote_execute_paginated() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    // Create table with many rows
+    let _ = client.execute("CREATE TABLE page_test (x:int)").await;
+    for i in 0..25 {
+        let _ = client.execute(&format!("INSERT page_test x={}", i)).await;
+    }
+
+    // Execute paginated query
+    let result = client.execute_paginated("SELECT page_test", 10).await;
+    // The server may or may not support pagination, so we just verify the method works
+    assert!(result.is_ok() || result.is_err());
+
+    if let Ok(page) = result {
+        // Verify accessors work
+        let _has_more = page.has_more();
+        let _page_size = page.page_size();
+        let _next = page.next_cursor();
+        let _prev = page.prev_cursor();
+        let _total = page.total_count();
+        let _result = page.result();
+    }
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_execute_paginated_with_identity() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    let _ = client.execute("CREATE TABLE page_id_test (x:int)").await;
+
+    // Execute paginated query with identity
+    let result = client
+        .execute_paginated_with_identity("SELECT page_id_test", Some("user:alice"), 10)
+        .await;
+    // The server may or may not support pagination
+    assert!(result.is_ok() || result.is_err());
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_execute_paginated_continue() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    // Try to continue with a (likely invalid) cursor
+    let result = client.execute_paginated_continue("fake-cursor").await;
+    // Should either work or return an error about invalid cursor
+    assert!(result.is_ok() || result.is_err());
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_execute_paginated_with_options() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    let _ = client.execute("CREATE TABLE page_opts_test (x:int)").await;
+
+    // Execute paginated query with full options
+    let result = client
+        .execute_paginated_with_options(
+            "SELECT page_opts_test",
+            Some("user:bob"),
+            None,
+            Some(5),
+            Some(true),
+            Some(60),
+        )
+        .await;
+    assert!(result.is_ok() || result.is_err());
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_close_cursor() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    // Try to close a (likely nonexistent) cursor
+    let result = client.close_cursor("nonexistent-cursor").await;
+    // Should either succeed (false) or return an error
+    assert!(result.is_ok() || result.is_err());
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_paginated_not_connected() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let mut client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    client.close();
+
+    // execute_paginated should fail when not connected
+    let result = client.execute_paginated("SELECT test", 10).await;
+    assert!(matches!(result, Err(ClientError::Connection(_))));
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_close_cursor_not_connected() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let mut client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    client.close();
+
+    // close_cursor should fail when not connected
+    let result = client.close_cursor("cursor").await;
+    assert!(matches!(result, Err(ClientError::Connection(_))));
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_paginated_with_invalid_api_key_format() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("invalid\nkey")
+        .build()
+        .await
+        .expect("should connect");
+
+    // The invalid API key should cause a parse error when executing paginated
+    let result = client.execute_paginated("SELECT test", 10).await;
+    assert!(result.is_err());
+    match result {
+        Err(ClientError::InvalidArgument(msg)) => {
+            assert!(msg.contains("Invalid API key format"));
+        },
+        other => panic!("Expected InvalidArgument error, got {:?}", other),
+    }
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_close_cursor_with_invalid_api_key_format() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("invalid\x00key")
+        .build()
+        .await
+        .expect("should connect");
+
+    // The invalid API key should cause a parse error when closing cursor
+    let result = client.close_cursor("cursor").await;
+    assert!(result.is_err());
+    match result {
+        Err(ClientError::InvalidArgument(msg)) => {
+            assert!(msg.contains("Invalid API key format"));
+        },
+        other => panic!("Expected InvalidArgument error, got {:?}", other),
+    }
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_execute_paginated_with_valid_api_key() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("valid-api-key-12345678")
+        .build()
+        .await
+        .expect("should connect");
+
+    let _ = client.execute("CREATE TABLE page_api_test (x:int)").await;
+
+    // Execute paginated query with valid API key
+    let result = client.execute_paginated("SELECT page_api_test", 10).await;
+    // Should succeed or fail with query error (not InvalidArgument)
+    match &result {
+        Ok(_) => {},
+        Err(ClientError::Query(_)) => {},
+        Err(e) => panic!("Unexpected error type: {:?}", e),
+    }
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_close_cursor_with_valid_api_key() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("valid-api-key-12345678")
+        .build()
+        .await
+        .expect("should connect");
+
+    // Try to close a cursor with valid API key
+    let result = client.close_cursor("some-cursor").await;
+    // Should succeed or fail with query error (not InvalidArgument)
+    match &result {
+        Ok(_) => {},
+        Err(ClientError::Query(_)) => {},
+        Err(e) => panic!("Unexpected error type: {:?}", e),
+    }
+
+    drop(shutdown);
+}

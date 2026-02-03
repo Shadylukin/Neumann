@@ -627,7 +627,9 @@ impl QueryService for QueryServiceImpl {
             cursor: req.cursor.clone(),
             page_size: req.page_size.map(|s| s as usize),
             count_total: req.count_total.unwrap_or(false),
-            cursor_ttl: req.cursor_ttl_secs.map(|s| Duration::from_secs(u64::from(s))),
+            cursor_ttl: req
+                .cursor_ttl_secs
+                .map(|s| Duration::from_secs(u64::from(s))),
         };
 
         // Audit the query execution

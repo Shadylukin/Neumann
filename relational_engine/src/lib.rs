@@ -676,39 +676,6 @@ impl Condition {
         }
     }
 
-    /// Evaluates tensor condition with depth tracking.
-    #[allow(dead_code)] // Defensive API for depth-limited tensor queries
-    fn evaluate_tensor_with_depth(
-        &self,
-        tensor: &TensorData,
-        depth: usize,
-        max_depth: usize,
-    ) -> Result<bool> {
-        use std::cmp::Ordering;
-
-        if depth > max_depth {
-            return Err(RelationalError::ConditionTooDeep { max_depth });
-        }
-        match self {
-            Self::True => Ok(true),
-            Self::Eq(col, val) => Ok(Self::tensor_field_eq(tensor, col, val)),
-            Self::Ne(col, val) => Ok(!Self::tensor_field_eq(tensor, col, val)),
-            Self::Lt(col, val) => Ok(Self::tensor_compare_ord(tensor, col, val, Ordering::Less)),
-            Self::Le(col, val) => Ok(Self::tensor_compare_le(tensor, col, val)),
-            Self::Gt(col, val) => Ok(Self::tensor_compare_ord(
-                tensor,
-                col,
-                val,
-                Ordering::Greater,
-            )),
-            Self::Ge(col, val) => Ok(Self::tensor_compare_ge(tensor, col, val)),
-            Self::And(a, b) => Ok(a.evaluate_tensor_with_depth(tensor, depth + 1, max_depth)?
-                && b.evaluate_tensor_with_depth(tensor, depth + 1, max_depth)?),
-            Self::Or(a, b) => Ok(a.evaluate_tensor_with_depth(tensor, depth + 1, max_depth)?
-                || b.evaluate_tensor_with_depth(tensor, depth + 1, max_depth)?),
-        }
-    }
-
     #[allow(dead_code)] // Helper for tensor evaluation methods
     fn tensor_get_value(tensor: &TensorData, col: &str) -> Option<Value> {
         if col == "_id" {
@@ -902,34 +869,6 @@ pub enum HavingCondition {
 }
 
 impl HavingCondition {
-    #[allow(dead_code)] // Recursive helper for HAVING evaluation
-    fn evaluate(&self, row: &GroupedRow) -> bool {
-        match self {
-            Self::Gt(agg_ref, val) => {
-                Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Greater)
-            },
-            Self::Ge(agg_ref, val) => {
-                Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Greater)
-                    || Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Equal)
-            },
-            Self::Lt(agg_ref, val) => {
-                Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Less)
-            },
-            Self::Le(agg_ref, val) => {
-                Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Less)
-                    || Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Equal)
-            },
-            Self::Eq(agg_ref, val) => {
-                Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Equal)
-            },
-            Self::Ne(agg_ref, val) => {
-                !Self::compare_agg(row, agg_ref, val, std::cmp::Ordering::Equal)
-            },
-            Self::And(a, b) => a.evaluate(row) && b.evaluate(row),
-            Self::Or(a, b) => a.evaluate(row) || b.evaluate(row),
-        }
-    }
-
     /// Evaluates with depth tracking to prevent stack overflow.
     #[allow(dead_code)] // Defensive API for depth-limited HAVING queries
     fn evaluate_with_depth(

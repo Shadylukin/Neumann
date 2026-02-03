@@ -17,26 +17,26 @@ use serde::{Deserialize, Serialize};
 
 /// XP requirements for each level.
 const LEVEL_XP: [u64; 20] = [
-    0,      // Level 1
-    100,    // Level 2
-    250,    // Level 3
-    500,    // Level 4
-    1000,   // Level 5
-    1750,   // Level 6
-    2750,   // Level 7
-    4000,   // Level 8
-    5500,   // Level 9
-    7500,   // Level 10
-    10000,  // Level 11
-    13000,  // Level 12
-    16500,  // Level 13
-    20500,  // Level 14
-    25000,  // Level 15
-    30000,  // Level 16
-    36000,  // Level 17
-    43000,  // Level 18
-    51000,  // Level 19
-    60000,  // Level 20
+    0,     // Level 1
+    100,   // Level 2
+    250,   // Level 3
+    500,   // Level 4
+    1000,  // Level 5
+    1750,  // Level 6
+    2750,  // Level 7
+    4000,  // Level 8
+    5500,  // Level 9
+    7500,  // Level 10
+    10000, // Level 11
+    13000, // Level 12
+    16500, // Level 13
+    20500, // Level 14
+    25000, // Level 15
+    30000, // Level 16
+    36000, // Level 17
+    43000, // Level 18
+    51000, // Level 19
+    60000, // Level 20
 ];
 
 /// Calculate level from total XP.

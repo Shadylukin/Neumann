@@ -226,4 +226,50 @@ mod tests {
         assert!(debug.contains("Query"));
         assert!(debug.contains("test"));
     }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_from_tonic_status_additional_codes() {
+        use tonic::{Code, Status};
+
+        // FailedPrecondition -> Internal
+        let status = Status::new(Code::FailedPrecondition, "precondition failed");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // OutOfRange -> Internal
+        let status = Status::new(Code::OutOfRange, "out of range");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // Aborted -> Internal
+        let status = Status::new(Code::Aborted, "aborted");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // DataLoss -> Internal
+        let status = Status::new(Code::DataLoss, "data loss");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // ResourceExhausted -> Internal
+        let status = Status::new(Code::ResourceExhausted, "exhausted");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // Unimplemented -> Internal
+        let status = Status::new(Code::Unimplemented, "unimplemented");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // AlreadyExists -> Internal
+        let status = Status::new(Code::AlreadyExists, "exists");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+
+        // Ok -> Internal (edge case: should not normally happen)
+        let status = Status::new(Code::Ok, "ok");
+        let err: ClientError = status.into();
+        assert!(matches!(err, ClientError::Internal(_)));
+    }
 }

@@ -35,7 +35,7 @@ use tensor_store::{KMeans, KMeansConfig};
 use crate::error::{ChainError, Result};
 
 /// An entry in a codebook representing a valid state.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodebookEntry {
     /// Unique identifier within the codebook.
     id: u32,
@@ -52,6 +52,19 @@ pub struct CodebookEntry {
     /// Optional semantic label.
     label: Option<String>,
 }
+
+impl PartialEq for CodebookEntry {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare semantic identity, ignoring timestamps which vary by creation time
+        self.id == other.id
+            && self.centroid == other.centroid
+            && self.magnitude == other.magnitude
+            && self.access_count == other.access_count
+            && self.label == other.label
+    }
+}
+
+impl Eq for CodebookEntry {}
 
 impl CodebookEntry {
     pub fn new(id: u32, centroid: Vec<f32>) -> Self {

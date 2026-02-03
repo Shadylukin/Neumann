@@ -212,10 +212,14 @@ fn render_value(value: Option<&Value>) -> Markup {
         None => html! { span class="text-phosphor-dark italic" { "null" } },
         Some(Value::Null) => html! { span class="text-phosphor-dark italic" { "null" } },
         Some(Value::Int(v)) => html! { span class="text-phosphor font-data" { (v) } },
-        Some(Value::Float(v)) => html! { span class="text-phosphor font-data" { (format!("{v:.4}")) } },
+        Some(Value::Float(v)) => {
+            html! { span class="text-phosphor font-data" { (format!("{v:.4}")) } }
+        },
         Some(Value::String(v)) => expandable_string(v, 80),
         Some(Value::Bool(v)) => html! { span class="text-amber" { (v) } },
-        Some(Value::Bytes(v)) => html! { span class="text-phosphor-dim" { "[" (v.len()) " bytes]" } },
+        Some(Value::Bytes(v)) => {
+            html! { span class="text-phosphor-dim" { "[" (v.len()) " bytes]" } }
+        },
         Some(Value::Json(v)) => {
             let s = v.to_string();
             expandable_json(&s, 80)

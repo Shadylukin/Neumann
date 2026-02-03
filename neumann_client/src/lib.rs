@@ -107,6 +107,8 @@ pub enum QueryChunk {
     SimilarItem(proto::SimilarItem),
     /// Raw blob data.
     BlobData(Vec<u8>),
+    /// Cursor info for pagination checkpoints.
+    CursorInfo(proto::StreamCursorInfo),
 }
 
 /// Result type for streaming queries.
@@ -169,6 +171,7 @@ impl StreamingQueryResult {
                 .map(QueryChunk::SimilarItem)
                 .ok_or_else(|| ClientError::Internal("Empty similar chunk".to_string())),
             Some(Chunk::BlobData(b)) => Ok(QueryChunk::BlobData(b)),
+            Some(Chunk::CursorInfo(c)) => Ok(QueryChunk::CursorInfo(c)),
             Some(Chunk::Error(e)) => Err(ClientError::Query(e.message)),
             None => Err(ClientError::Internal("Empty chunk received".to_string())),
         }
@@ -342,6 +345,20 @@ impl NeumannClient {
             config: None,
             #[cfg(feature = "remote")]
             connected: false,
+        }
+    }
+
+    /// Create a client in an invalid state for testing defensive code paths.
+    /// This simulates a scenario where connected=true but grpc_client=None.
+    #[cfg(all(test, feature = "remote"))]
+    fn test_invalid_remote_state() -> Self {
+        Self {
+            mode: ClientMode::Remote,
+            #[cfg(feature = "embedded")]
+            router: None,
+            grpc_client: None, // Invalid: connected but no client
+            config: None,
+            connected: true,
         }
     }
 
@@ -693,6 +710,193 @@ impl NeumannClient {
         }
     }
 
+    /// Execute a paginated query (for remote mode).
+    ///
+    /// Returns a paginated result with cursor tokens for navigation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Query execution fails on the server (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn execute_paginated(
+        &self,
+        query: &str,
+        page_size: u32,
+    ) -> Result<PaginatedQueryResult> {
+        self.execute_paginated_with_options(query, None, None, Some(page_size), None, None)
+            .await
+    }
+
+    /// Execute a paginated query with identity (for remote mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Query execution fails on the server (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn execute_paginated_with_identity(
+        &self,
+        query: &str,
+        identity: Option<&str>,
+        page_size: u32,
+    ) -> Result<PaginatedQueryResult> {
+        self.execute_paginated_with_options(query, identity, None, Some(page_size), None, None)
+            .await
+    }
+
+    /// Continue a paginated query using a cursor token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Cursor is invalid or expired (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn execute_paginated_continue(&self, cursor: &str) -> Result<PaginatedQueryResult> {
+        // When continuing, we pass empty query - server uses cursor state
+        self.execute_paginated_with_options("", None, Some(cursor), None, None, None)
+            .await
+    }
+
+    /// Execute a paginated query with full options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Query execution fails on the server (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn execute_paginated_with_options(
+        &self,
+        query: &str,
+        identity: Option<&str>,
+        cursor: Option<&str>,
+        page_size: Option<u32>,
+        count_total: Option<bool>,
+        cursor_ttl_secs: Option<u32>,
+    ) -> Result<PaginatedQueryResult> {
+        match self.mode {
+            #[cfg(feature = "embedded")]
+            ClientMode::Embedded => Err(ClientError::InvalidArgument(
+                "Paginated queries not supported in embedded mode".to_string(),
+            )),
+            #[cfg(not(feature = "embedded"))]
+            ClientMode::Embedded => Err(ClientError::Internal(
+                "Embedded mode not available".to_string(),
+            )),
+            ClientMode::Remote => {
+                if !self.connected {
+                    return Err(ClientError::Connection("Not connected".to_string()));
+                }
+
+                let client = self.grpc_client.as_ref().ok_or_else(|| {
+                    ClientError::Internal("gRPC client not initialized".to_string())
+                })?;
+
+                let paginated_request = proto::PaginatedQueryRequest {
+                    query: query.to_string(),
+                    identity: identity.map(ToString::to_string),
+                    cursor: cursor.map(ToString::to_string),
+                    page_size,
+                    count_total,
+                    cursor_ttl_secs,
+                };
+
+                let mut request = tonic::Request::new(paginated_request);
+
+                // Add API key to metadata if configured
+                if let Some(ref config) = self.config {
+                    if let Some(ref api_key) = config.api_key {
+                        let value = api_key.parse().map_err(|_| {
+                            ClientError::InvalidArgument("Invalid API key format".to_string())
+                        })?;
+                        request.metadata_mut().insert("x-api-key", value);
+                    }
+                }
+
+                let response = client
+                    .clone()
+                    .execute_paginated(request)
+                    .await
+                    .map_err(|e| ClientError::Query(e.message().to_string()))?;
+
+                Ok(PaginatedQueryResult(response.into_inner()))
+            },
+        }
+    }
+
+    /// Close a cursor to free server resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Cursor close fails on the server (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn close_cursor(&self, cursor: &str) -> Result<bool> {
+        match self.mode {
+            #[cfg(feature = "embedded")]
+            ClientMode::Embedded => Err(ClientError::InvalidArgument(
+                "Cursors not supported in embedded mode".to_string(),
+            )),
+            #[cfg(not(feature = "embedded"))]
+            ClientMode::Embedded => Err(ClientError::Internal(
+                "Embedded mode not available".to_string(),
+            )),
+            ClientMode::Remote => {
+                if !self.connected {
+                    return Err(ClientError::Connection("Not connected".to_string()));
+                }
+
+                let client = self.grpc_client.as_ref().ok_or_else(|| {
+                    ClientError::Internal("gRPC client not initialized".to_string())
+                })?;
+
+                let close_request = proto::CloseCursorRequest {
+                    cursor: cursor.to_string(),
+                };
+
+                let mut request = tonic::Request::new(close_request);
+
+                // Add API key to metadata if configured
+                if let Some(ref config) = self.config {
+                    if let Some(ref api_key) = config.api_key {
+                        let value = api_key.parse().map_err(|_| {
+                            ClientError::InvalidArgument("Invalid API key format".to_string())
+                        })?;
+                        request.metadata_mut().insert("x-api-key", value);
+                    }
+                }
+
+                let response = client
+                    .clone()
+                    .close_cursor(request)
+                    .await
+                    .map_err(|e| ClientError::Query(e.message().to_string()))?;
+
+                Ok(response.into_inner().success)
+            },
+        }
+    }
+
     /// Close the client connection.
     pub fn close(&mut self) {
         #[cfg(feature = "remote")]
@@ -799,6 +1003,64 @@ impl RemoteQueryResult {
             Some(proto::query_response::Result::Similar(s)) => Some(&s.items),
             _ => None,
         }
+    }
+}
+
+/// Result from a paginated query execution.
+///
+/// Wraps the proto `PaginatedQueryResponse` to provide cursor-based pagination.
+#[cfg(feature = "remote")]
+#[derive(Debug)]
+pub struct PaginatedQueryResult(proto::PaginatedQueryResponse);
+
+#[cfg(feature = "remote")]
+impl PaginatedQueryResult {
+    /// Get the query result for the current page.
+    #[must_use]
+    pub fn result(&self) -> Option<RemoteQueryResult> {
+        self.0.result.clone().map(RemoteQueryResult)
+    }
+
+    /// Get the cursor token for the next page.
+    #[must_use]
+    pub fn next_cursor(&self) -> Option<&str> {
+        self.0.next_cursor.as_deref()
+    }
+
+    /// Get the cursor token for the previous page.
+    #[must_use]
+    pub fn prev_cursor(&self) -> Option<&str> {
+        self.0.prev_cursor.as_deref()
+    }
+
+    /// Get the total count of results if available.
+    #[must_use]
+    pub fn total_count(&self) -> Option<u64> {
+        self.0.total_count
+    }
+
+    /// Check if there are more results after this page.
+    #[must_use]
+    pub fn has_more(&self) -> bool {
+        self.0.has_more
+    }
+
+    /// Get the number of items in this page.
+    #[must_use]
+    pub fn page_size(&self) -> u32 {
+        self.0.page_size
+    }
+
+    /// Get the underlying proto response.
+    #[must_use]
+    pub fn into_inner(self) -> proto::PaginatedQueryResponse {
+        self.0
+    }
+
+    /// Get a reference to the underlying proto response.
+    #[must_use]
+    pub fn inner(&self) -> &proto::PaginatedQueryResponse {
+        &self.0
     }
 }
 
@@ -1331,6 +1593,7 @@ mod tests {
                 }),
             })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_ok());
@@ -1340,6 +1603,7 @@ mod tests {
         let chunk = proto::QueryResponseChunk {
             chunk: Some(Chunk::Row(proto::RowChunk { row: None })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_err());
@@ -1364,6 +1628,7 @@ mod tests {
                 }),
             })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_ok());
@@ -1373,6 +1638,7 @@ mod tests {
         let chunk = proto::QueryResponseChunk {
             chunk: Some(Chunk::Node(proto::NodeChunk { node: None })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_err());
@@ -1398,6 +1664,7 @@ mod tests {
                 }),
             })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_ok());
@@ -1407,6 +1674,7 @@ mod tests {
         let chunk = proto::QueryResponseChunk {
             chunk: Some(Chunk::Edge(proto::EdgeChunk { edge: None })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_err());
@@ -1430,6 +1698,7 @@ mod tests {
                 }),
             })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_ok());
@@ -1439,6 +1708,7 @@ mod tests {
         let chunk = proto::QueryResponseChunk {
             chunk: Some(Chunk::SimilarItem(proto::SimilarChunk { item: None })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_err());
@@ -1456,6 +1726,7 @@ mod tests {
         let chunk = proto::QueryResponseChunk {
             chunk: Some(Chunk::BlobData(vec![1, 2, 3, 4])),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_ok());
@@ -1477,6 +1748,7 @@ mod tests {
                 details: None,
             })),
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_err());
@@ -1492,6 +1764,7 @@ mod tests {
         let chunk = proto::QueryResponseChunk {
             chunk: None,
             is_final: false,
+            sequence_number: None,
         };
         let result = StreamingQueryResult::convert_chunk(chunk);
         assert!(result.is_err());
@@ -1654,5 +1927,299 @@ mod tests {
             .execute_stream_with_identity("SELECT test", Some("user"))
             .await;
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_cursor_info() {
+        use proto::query_response_chunk::Chunk;
+
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::CursorInfo(proto::StreamCursorInfo {
+                cursor: "cursor-token-123".to_string(),
+                items_sent: 50,
+                total_count: Some(100),
+            })),
+            is_final: false,
+            sequence_number: None,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryChunk::CursorInfo(_)));
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_cursor_info_no_total() {
+        use proto::query_response_chunk::Chunk;
+
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::CursorInfo(proto::StreamCursorInfo {
+                cursor: "cursor-token".to_string(),
+                items_sent: 25,
+                total_count: None,
+            })),
+            is_final: false,
+            sequence_number: Some(25),
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            QueryChunk::CursorInfo(info) => {
+                assert_eq!(info.cursor, "cursor-token");
+                assert_eq!(info.items_sent, 25);
+                assert!(info.total_count.is_none());
+            },
+            other => panic!("Expected CursorInfo, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_query_chunk_cursor_info_debug() {
+        let chunk = QueryChunk::CursorInfo(proto::StreamCursorInfo {
+            cursor: "test-cursor".to_string(),
+            items_sent: 10,
+            total_count: None,
+        });
+        let debug = format!("{:?}", chunk);
+        assert!(debug.contains("CursorInfo"));
+        assert!(debug.contains("test-cursor"));
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_paginated_query_result_accessors() {
+        // Create a paginated response with all fields
+        let response = proto::PaginatedQueryResponse {
+            result: Some(proto::QueryResponse {
+                result: Some(proto::query_response::Result::Count(proto::CountResult {
+                    count: 100,
+                })),
+                error: None,
+            }),
+            next_cursor: Some("next-cursor-token".to_string()),
+            prev_cursor: Some("prev-cursor-token".to_string()),
+            total_count: Some(500),
+            has_more: true,
+            page_size: 25,
+        };
+        let result = PaginatedQueryResult(response);
+
+        assert!(result.result().is_some());
+        assert_eq!(result.next_cursor(), Some("next-cursor-token"));
+        assert_eq!(result.prev_cursor(), Some("prev-cursor-token"));
+        assert_eq!(result.total_count(), Some(500));
+        assert!(result.has_more());
+        assert_eq!(result.page_size(), 25);
+
+        // Test inner reference
+        let inner = result.inner();
+        assert!(inner.has_more);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_paginated_query_result_no_cursors() {
+        // Create a paginated response without cursors (first/last page)
+        let response = proto::PaginatedQueryResponse {
+            result: Some(proto::QueryResponse {
+                result: Some(proto::query_response::Result::Empty(proto::EmptyResult {})),
+                error: None,
+            }),
+            next_cursor: None,
+            prev_cursor: None,
+            total_count: None,
+            has_more: false,
+            page_size: 10,
+        };
+        let result = PaginatedQueryResult(response);
+
+        assert!(result.result().is_some());
+        assert!(result.next_cursor().is_none());
+        assert!(result.prev_cursor().is_none());
+        assert!(result.total_count().is_none());
+        assert!(!result.has_more());
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_paginated_query_result_into_inner() {
+        let response = proto::PaginatedQueryResponse {
+            result: None,
+            next_cursor: Some("cursor".to_string()),
+            prev_cursor: None,
+            total_count: Some(42),
+            has_more: true,
+            page_size: 20,
+        };
+        let result = PaginatedQueryResult(response);
+
+        let inner = result.into_inner();
+        assert_eq!(inner.total_count, Some(42));
+        assert_eq!(inner.page_size, 20);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_paginated_query_result_debug() {
+        let response = proto::PaginatedQueryResponse {
+            result: None,
+            next_cursor: None,
+            prev_cursor: None,
+            total_count: None,
+            has_more: false,
+            page_size: 10,
+        };
+        let result = PaginatedQueryResult(response);
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("PaginatedQueryResult"));
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_paginated_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Calling execute_paginated() on embedded mode should fail
+        let result = client.execute_paginated("SELECT test", 10).await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::InvalidArgument(msg)) => {
+                assert!(msg.contains("Paginated"));
+            },
+            other => panic!("Expected InvalidArgument error, got {:?}", other),
+        }
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_paginated_with_identity_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        let result = client
+            .execute_paginated_with_identity("SELECT test", Some("user"), 10)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_paginated_continue_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        let result = client.execute_paginated_continue("cursor-token").await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_close_cursor_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        let result = client.close_cursor("cursor-token").await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::InvalidArgument(msg)) => {
+                assert!(msg.contains("Cursor"));
+            },
+            other => panic!("Expected InvalidArgument error, got {:?}", other),
+        }
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_paginated_with_options_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        let result = client
+            .execute_paginated_with_options(
+                "SELECT test",
+                None,
+                None,
+                Some(10),
+                Some(true),
+                Some(300),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    // Tests for defensive "gRPC client not initialized" error paths
+    // These test an invalid state that shouldn't occur in normal usage
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_invalid_state_execute_grpc_not_initialized() {
+        let client = NeumannClient::test_invalid_remote_state();
+
+        let result = client.execute("SELECT test").await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => {
+                assert!(msg.contains("gRPC client not initialized"));
+            },
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_invalid_state_execute_batch_grpc_not_initialized() {
+        let client = NeumannClient::test_invalid_remote_state();
+
+        let result = client.execute_batch(&["SELECT test"]).await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => {
+                assert!(msg.contains("gRPC client not initialized"));
+            },
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_invalid_state_execute_stream_grpc_not_initialized() {
+        let client = NeumannClient::test_invalid_remote_state();
+
+        let result = client.execute_stream("SELECT test").await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => {
+                assert!(msg.contains("gRPC client not initialized"));
+            },
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_invalid_state_execute_paginated_grpc_not_initialized() {
+        let client = NeumannClient::test_invalid_remote_state();
+
+        let result = client.execute_paginated("SELECT test", 10).await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => {
+                assert!(msg.contains("gRPC client not initialized"));
+            },
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_invalid_state_close_cursor_grpc_not_initialized() {
+        let client = NeumannClient::test_invalid_remote_state();
+
+        let result = client.close_cursor("cursor").await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => {
+                assert!(msg.contains("gRPC client not initialized"));
+            },
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
     }
 }

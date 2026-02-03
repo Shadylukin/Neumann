@@ -67,6 +67,7 @@ tokio-test = "0.4"
 rcgen = "0.13"
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { version = "0.23", features = ["ring"] }
 
 [[bench]]
 name = "tensor_chain_bench"

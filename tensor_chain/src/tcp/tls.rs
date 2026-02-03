@@ -389,10 +389,19 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for InsecureVerifi
 #[cfg(all(test, feature = "tls"))]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Once;
 
     use super::*;
     use tempfile::TempDir;
     use tokio_rustls::rustls::client::danger::ServerCertVerifier;
+
+    static INIT_CRYPTO: Once = Once::new();
+
+    fn init_crypto_provider() {
+        INIT_CRYPTO.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
 
     struct TestCerts {
         cert_path: PathBuf,
@@ -641,6 +650,7 @@ mod tests {
     // Server TLS Tests
     #[tokio::test]
     async fn test_wrap_server_successful_handshake() {
+        init_crypto_provider();
         use tokio::net::TcpListener;
 
         let certs = generate_test_certs();
@@ -679,6 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrap_server_cert_key_mismatch() {
+        init_crypto_provider();
         // Generate two different cert/key pairs
         let certs1 = generate_test_certs();
         let certs2 = generate_test_certs();
@@ -711,6 +722,7 @@ mod tests {
     // Client TLS Tests
     #[tokio::test]
     async fn test_wrap_client_with_ca_verification() {
+        init_crypto_provider();
         use tokio::net::TcpListener;
 
         // Generate CA and signed certificate
@@ -800,6 +812,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrap_client_ca_add_error() {
+        init_crypto_provider();
         // Test behavior when CA cert file exists but contains no valid certs
         let temp_dir = TempDir::new().unwrap();
         let empty_ca = temp_dir.path().join("empty_ca.pem");
@@ -841,6 +854,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrap_client_missing_ca_file() {
+        init_crypto_provider();
         let certs = generate_test_certs();
         let config =
             TlsConfig::new(&certs.cert_path, &certs.key_path).with_ca_cert("/nonexistent/ca.pem");
@@ -1068,6 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrap_server_with_identity_no_client_auth() {
+        init_crypto_provider();
         use tokio::net::TcpListener;
 
         let certs = generate_test_certs();
@@ -1187,6 +1202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mtls_with_client_auth() {
+        init_crypto_provider();
         use tokio::net::TcpListener;
 
         let (ca_path, server_cert, server_key, _client_cert, _client_key, _temp_dir) =
@@ -1225,6 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrap_server_missing_ca_for_client_auth() {
+        init_crypto_provider();
         use tokio::net::TcpListener;
 
         let certs = generate_test_certs();
@@ -1271,6 +1288,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wrap_client_without_ca_path() {
+        init_crypto_provider();
         use tokio::net::TcpListener;
 
         let certs = generate_test_certs();

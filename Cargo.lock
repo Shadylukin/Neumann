@@ -2984,6 +2984,7 @@ dependencies = [
  "parking_lot",
  "rand",
  "rcgen",
+ "rustls",
  "rustls-pemfile",
  "serde",
  "sha2",

@@ -79,7 +79,9 @@ fn main() {
     // Search for documents similar to a machine learning query
     let ml_query = vec![0.85, 0.75, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
     println!("Searching for documents similar to 'machine learning' query:");
-    let ml_results = engine.search_similar(&ml_query, 3).expect("Failed to search");
+    let ml_results = engine
+        .search_similar(&ml_query, 3)
+        .expect("Failed to search");
     for result in &ml_results {
         let title = documents
             .iter()
@@ -93,7 +95,9 @@ fn main() {
     // Search for database-related documents
     let db_query = vec![0.1, 0.1, 0.8, 0.75, 0.2, 0.1, 0.1, 0.1];
     println!("Searching for documents similar to 'database' query:");
-    let db_results = engine.search_similar(&db_query, 3).expect("Failed to search");
+    let db_results = engine
+        .search_similar(&db_query, 3)
+        .expect("Failed to search");
     for result in &db_results {
         let title = documents
             .iter()
@@ -107,7 +111,9 @@ fn main() {
     // Search for systems programming documents
     let systems_query = vec![0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0.8, 0.8];
     println!("Searching for documents similar to 'systems programming' query:");
-    let systems_results = engine.search_similar(&systems_query, 3).expect("Failed to search");
+    let systems_results = engine
+        .search_similar(&systems_query, 3)
+        .expect("Failed to search");
     for result in &systems_results {
         let title = documents
             .iter()

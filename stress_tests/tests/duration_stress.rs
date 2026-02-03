@@ -17,7 +17,6 @@ use stress_tests::{endurance_config, generate_embeddings, LatencyHistogram};
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;
 
-
 /// Stress test: 1 hour sustained load.
 #[test]
 #[ignore]

@@ -12,13 +12,12 @@ use maud::{html, Markup};
 use serde::{Deserialize, Serialize};
 
 use graph_engine::{
-    AStarConfig, BiconnectedConfig, CentralityConfig, CommunityConfig, Direction,
-    KCoreConfig, MstConfig, PageRankConfig, SccConfig, SimilarityConfig, SimilarityMetric,
-    TriangleConfig,
+    AStarConfig, BiconnectedConfig, CentralityConfig, CommunityConfig, Direction, KCoreConfig,
+    MstConfig, PageRankConfig, SccConfig, SimilarityConfig, SimilarityMetric, TriangleConfig,
 };
 
-use crate::web::templates::layout::{breadcrumb, empty_state, format_number, page_header};
 use crate::web::templates::layout;
+use crate::web::templates::layout::{breadcrumb, empty_state, format_number, page_header};
 use crate::web::AdminContext;
 use crate::web::NavItem;
 
@@ -215,30 +214,26 @@ const ALGORITHMS: &[AlgorithmDef] = &[
         name: "Label Propagation",
         category: AlgorithmCategory::Community,
         description: "Fast community detection via label spreading",
-        params: &[
-            ParamDef {
-                name: "max_iterations",
-                label: "Max Iterations",
-                param_type: ParamType::Int,
-                default: "100",
-                description: "Maximum iteration count",
-            },
-        ],
+        params: &[ParamDef {
+            name: "max_iterations",
+            label: "Max Iterations",
+            param_type: ParamType::Int,
+            default: "100",
+            description: "Maximum iteration count",
+        }],
     },
     AlgorithmDef {
         id: "connected_components",
         name: "Connected Components",
         category: AlgorithmCategory::Community,
         description: "Find groups of interconnected nodes (Union-Find)",
-        params: &[
-            ParamDef {
-                name: "direction",
-                label: "Direction",
-                param_type: ParamType::Direction,
-                default: "both",
-                description: "Edge direction (both = undirected)",
-            },
-        ],
+        params: &[ParamDef {
+            name: "direction",
+            label: "Direction",
+            param_type: ParamType::Direction,
+            default: "both",
+            description: "Edge direction (both = undirected)",
+        }],
     },
     // Pathfinding
     AlgorithmDef {
@@ -348,15 +343,13 @@ const ALGORITHMS: &[AlgorithmDef] = &[
         name: "K-Core Decomposition",
         category: AlgorithmCategory::Structure,
         description: "Find densely connected subgraphs by core number",
-        params: &[
-            ParamDef {
-                name: "min_k",
-                label: "Minimum K",
-                param_type: ParamType::Int,
-                default: "1",
-                description: "Minimum core number to report",
-            },
-        ],
+        params: &[ParamDef {
+            name: "min_k",
+            label: "Minimum K",
+            param_type: ParamType::Int,
+            default: "1",
+            description: "Minimum core number to report",
+        }],
     },
     AlgorithmDef {
         id: "scc",
@@ -370,15 +363,13 @@ const ALGORITHMS: &[AlgorithmDef] = &[
         name: "Minimum Spanning Tree",
         category: AlgorithmCategory::Structure,
         description: "Find minimum weight tree connecting all nodes (Kruskal)",
-        params: &[
-            ParamDef {
-                name: "weight_property",
-                label: "Weight Property",
-                param_type: ParamType::Int,
-                default: "",
-                description: "Edge property for weights (empty = uniform)",
-            },
-        ],
+        params: &[ParamDef {
+            name: "weight_property",
+            label: "Weight Property",
+            param_type: ParamType::Int,
+            default: "",
+            description: "Edge property for weights (empty = uniform)",
+        }],
     },
     AlgorithmDef {
         id: "biconnected",
@@ -392,15 +383,13 @@ const ALGORITHMS: &[AlgorithmDef] = &[
         name: "Triangle Counting",
         category: AlgorithmCategory::Structure,
         description: "Count triangles and compute clustering coefficients",
-        params: &[
-            ParamDef {
-                name: "top_k",
-                label: "Top K",
-                param_type: ParamType::Int,
-                default: "20",
-                description: "Number of top nodes by triangle count",
-            },
-        ],
+        params: &[ParamDef {
+            name: "top_k",
+            label: "Top K",
+            param_type: ParamType::Int,
+            default: "20",
+            description: "Number of top nodes by triangle count",
+        }],
     },
     // Similarity
     AlgorithmDef {
@@ -816,7 +805,7 @@ fn parse_similarity_metric(s: &str) -> SimilarityMetric {
         "resource_allocation" | "resourceallocation" => SimilarityMetric::ResourceAllocation,
         "preferential_attachment" | "preferentialattachment" => {
             SimilarityMetric::PreferentialAttachment
-        }
+        },
         "common_neighbors" | "commonneighbors" => SimilarityMetric::CommonNeighbors,
         _ => SimilarityMetric::Jaccard,
     }
@@ -846,7 +835,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Scores(scores),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -854,7 +843,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "betweenness" => {
             let direction = params
@@ -867,9 +856,8 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                 Ok(result) => {
                     let top_k = params.top_k.unwrap_or(20);
                     let mut scores: Vec<_> = result.scores.into_iter().collect();
-                    scores.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    scores
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     scores.truncate(top_k);
                     AlgorithmResult {
                         algorithm,
@@ -881,7 +869,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Scores(scores),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -889,7 +877,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "closeness" => {
             let direction = params
@@ -902,9 +890,8 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                 Ok(result) => {
                     let top_k = params.top_k.unwrap_or(20);
                     let mut scores: Vec<_> = result.scores.into_iter().collect();
-                    scores.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    scores
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     scores.truncate(top_k);
                     AlgorithmResult {
                         algorithm,
@@ -916,7 +903,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Scores(scores),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -924,7 +911,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "eigenvector" => {
             let config = CentralityConfig::default()
@@ -935,9 +922,8 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                 Ok(result) => {
                     let top_k = params.top_k.unwrap_or(20);
                     let mut scores: Vec<_> = result.scores.into_iter().collect();
-                    scores.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    scores
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     scores.truncate(top_k);
                     AlgorithmResult {
                         algorithm,
@@ -949,7 +935,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Scores(scores),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -957,7 +943,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "louvain" => {
             let config = CommunityConfig::default()
@@ -981,7 +967,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                             communities,
                         }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -989,11 +975,11 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "label_propagation" => {
-            let config = CommunityConfig::default()
-                .max_iterations(params.max_iterations.unwrap_or(100));
+            let config =
+                CommunityConfig::default().max_iterations(params.max_iterations.unwrap_or(100));
 
             match ctx.graph.label_propagation(Some(config)) {
                 Ok(result) => {
@@ -1012,7 +998,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                             communities,
                         }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1020,7 +1006,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "connected_components" => {
             let direction = params
@@ -1046,7 +1032,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                             communities,
                         }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1054,7 +1040,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "astar" => {
             let from: Option<u64> = params.from.as_ref().and_then(|s| s.parse().ok());
@@ -1089,7 +1075,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                                     }),
                                 }
                             }
-                        }
+                        },
                         Err(e) => AlgorithmResult {
                             algorithm,
                             status: ResultStatus::Error,
@@ -1097,7 +1083,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                             data: ResultData::Error(e.to_string()),
                         },
                     }
-                }
+                },
                 _ => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1105,7 +1091,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error("Invalid source or target node ID".to_string()),
                 },
             }
-        }
+        },
 
         "dijkstra" => {
             let from: Option<u64> = params.from.as_ref().and_then(|s| s.parse().ok());
@@ -1118,10 +1104,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
 
             match (from, to) {
                 (Some(from_id), Some(to_id)) => {
-                    match ctx
-                        .graph
-                        .find_weighted_path(from_id, to_id, weight_prop)
-                    {
+                    match ctx.graph.find_weighted_path(from_id, to_id, weight_prop) {
                         Ok(path) => AlgorithmResult {
                             algorithm,
                             status: ResultStatus::Success,
@@ -1152,9 +1135,9 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                                     data: ResultData::Error(e.to_string()),
                                 }
                             }
-                        }
+                        },
                     }
-                }
+                },
                 _ => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1162,7 +1145,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error("Invalid source or target node ID".to_string()),
                 },
             }
-        }
+        },
 
         "variable_paths" => {
             let from: Option<u64> = params.from.as_ref().and_then(|s| s.parse().ok());
@@ -1183,11 +1166,21 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                                 ("paths_found".to_string(), paths.len().to_string()),
                                 (
                                     "min_length".to_string(),
-                                    paths.iter().map(|p| p.nodes.len()).min().unwrap_or(0).to_string(),
+                                    paths
+                                        .iter()
+                                        .map(|p| p.nodes.len())
+                                        .min()
+                                        .unwrap_or(0)
+                                        .to_string(),
                                 ),
                                 (
                                     "max_length".to_string(),
-                                    paths.iter().map(|p| p.nodes.len()).max().unwrap_or(0).to_string(),
+                                    paths
+                                        .iter()
+                                        .map(|p| p.nodes.len())
+                                        .max()
+                                        .unwrap_or(0)
+                                        .to_string(),
                                 ),
                             ]);
                             let items: Vec<_> = paths
@@ -1213,7 +1206,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                                 elapsed_ms: 0,
                                 data: ResultData::Structure(StructureData { summary, items }),
                             }
-                        }
+                        },
                         Err(e) => AlgorithmResult {
                             algorithm,
                             status: ResultStatus::Error,
@@ -1221,7 +1214,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                             data: ResultData::Error(e.to_string()),
                         },
                     }
-                }
+                },
                 _ => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1229,7 +1222,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error("Invalid source or target node ID".to_string()),
                 },
             }
-        }
+        },
 
         "kcore" => {
             let config = KCoreConfig::default();
@@ -1259,7 +1252,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Structure(StructureData { summary, items }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1267,7 +1260,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "scc" => {
             let config = SccConfig::default();
@@ -1275,7 +1268,10 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
             match ctx.graph.strongly_connected_components(&config) {
                 Ok(result) => {
                     let mut summary = HashMap::new();
-                    summary.insert("component_count".to_string(), result.component_count.to_string());
+                    summary.insert(
+                        "component_count".to_string(),
+                        result.component_count.to_string(),
+                    );
 
                     let items: Vec<_> = result
                         .members
@@ -1308,7 +1304,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Structure(StructureData { summary, items }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1316,7 +1312,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "mst" => {
             let weight_prop = params
@@ -1330,7 +1326,10 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                 Ok(result) => {
                     let mut summary = HashMap::new();
                     summary.insert("edge_count".to_string(), result.edges.len().to_string());
-                    summary.insert("total_weight".to_string(), format!("{:.4}", result.total_weight));
+                    summary.insert(
+                        "total_weight".to_string(),
+                        format!("{:.4}", result.total_weight),
+                    );
 
                     let items: Vec<_> = result
                         .edges
@@ -1354,7 +1353,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Structure(StructureData { summary, items }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1362,7 +1361,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "biconnected" => {
             let config = BiconnectedConfig::default();
@@ -1375,14 +1374,14 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         result.articulation_points.len().to_string(),
                     );
                     summary.insert("bridges".to_string(), result.bridges.len().to_string());
-                    summary.insert(
-                        "components".to_string(),
-                        result.component_count.to_string(),
-                    );
+                    summary.insert("components".to_string(), result.component_count.to_string());
 
                     let mut items = Vec::new();
                     for ap in result.articulation_points.iter().take(10) {
-                        items.push((format!("Articulation Point {ap}"), "critical node".to_string()));
+                        items.push((
+                            format!("Articulation Point {ap}"),
+                            "critical node".to_string(),
+                        ));
                     }
                     for (from, to) in result.bridges.iter().take(10) {
                         items.push((format!("Bridge {from} - {to}"), "critical edge".to_string()));
@@ -1394,7 +1393,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Structure(StructureData { summary, items }),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1402,7 +1401,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "triangles" => {
             let config = TriangleConfig::default();
@@ -1416,9 +1415,8 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         .iter()
                         .map(|(k, v)| (*k, *v as f64))
                         .collect();
-                    scores.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    scores
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     scores.truncate(top_k);
 
                     AlgorithmResult {
@@ -1431,7 +1429,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                         elapsed_ms: 0,
                         data: ResultData::Scores(scores),
                     }
-                }
+                },
                 Err(e) => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1439,7 +1437,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error(e.to_string()),
                 },
             }
-        }
+        },
 
         "similarity" => {
             let node_a: Option<u64> = params.node_a.as_ref().and_then(|s| s.parse().ok());
@@ -1467,7 +1465,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                             data: ResultData::Error(e.to_string()),
                         },
                     }
-                }
+                },
                 _ => AlgorithmResult {
                     algorithm,
                     status: ResultStatus::Error,
@@ -1475,7 +1473,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                     data: ResultData::Error("Invalid node IDs".to_string()),
                 },
             }
-        }
+        },
 
         _ => AlgorithmResult {
             algorithm,
@@ -1844,12 +1842,8 @@ mod tests {
             status: ResultStatus::Success,
             elapsed_ms: 50,
             data: ResultData::Structure(StructureData {
-                summary: HashMap::from([
-                    ("degeneracy".to_string(), "5".to_string()),
-                ]),
-                items: vec![
-                    ("Node 1".to_string(), "k=5".to_string()),
-                ],
+                summary: HashMap::from([("degeneracy".to_string(), "5".to_string())]),
+                items: vec![("Node 1".to_string(), "k=5".to_string())],
             }),
         };
         let html = render_result(&result).0;

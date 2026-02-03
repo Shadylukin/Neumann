@@ -407,8 +407,14 @@ mod tests {
 
     #[test]
     fn test_engine_status_css_class() {
-        assert_eq!(EngineStatus::Healthy.css_class(), "status-indicator-connected");
-        assert_eq!(EngineStatus::Degraded.css_class(), "status-indicator-warning");
+        assert_eq!(
+            EngineStatus::Healthy.css_class(),
+            "status-indicator-connected"
+        );
+        assert_eq!(
+            EngineStatus::Degraded.css_class(),
+            "status-indicator-warning"
+        );
         assert_eq!(EngineStatus::Down.css_class(), "status-indicator-error");
     }
 
@@ -526,8 +532,7 @@ mod tests {
         assert!(json.contains("relational"));
         assert!(json.contains("operational"));
 
-        let decoded: MetricsSnapshot =
-            serde_json::from_str(&json).expect("deserialization failed");
+        let decoded: MetricsSnapshot = serde_json::from_str(&json).expect("deserialization failed");
         assert_eq!(decoded.timestamp, 12345);
     }
 }
