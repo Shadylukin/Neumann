@@ -532,7 +532,7 @@ export function getQueryServiceClient(
   options?: Record<string, string | number | boolean>
 ): QueryServiceClient {
   const QueryService = proto.QueryService as grpc.ServiceClientConstructor;
-  return new QueryService(address, credentials, options) as QueryServiceClient;
+  return new QueryService(address, credentials, options) as unknown as QueryServiceClient;
 }
 
 /**
@@ -545,7 +545,7 @@ export function getBlobServiceClient(
   options?: Record<string, string | number | boolean>
 ): BlobServiceClient {
   const BlobService = proto.BlobService as grpc.ServiceClientConstructor;
-  return new BlobService(address, credentials, options) as BlobServiceClient;
+  return new BlobService(address, credentials, options) as unknown as BlobServiceClient;
 }
 
 /**
@@ -558,7 +558,7 @@ export function getHealthClient(
   options?: Record<string, string | number | boolean>
 ): HealthClient {
   const Health = proto.Health as grpc.ServiceClientConstructor;
-  return new Health(address, credentials, options) as HealthClient;
+  return new Health(address, credentials, options) as unknown as HealthClient;
 }
 
 /**
@@ -571,7 +571,7 @@ export function getPointsServiceClient(
   options?: Record<string, string | number | boolean>
 ): PointsServiceClient {
   const PointsService = proto.PointsService as grpc.ServiceClientConstructor;
-  return new PointsService(address, credentials, options) as PointsServiceClient;
+  return new PointsService(address, credentials, options) as unknown as PointsServiceClient;
 }
 
 /**
@@ -584,7 +584,7 @@ export function getCollectionsServiceClient(
   options?: Record<string, string | number | boolean>
 ): CollectionsServiceClient {
   const CollectionsService = proto.CollectionsService as grpc.ServiceClientConstructor;
-  return new CollectionsService(address, credentials, options) as CollectionsServiceClient;
+  return new CollectionsService(address, credentials, options) as unknown as CollectionsServiceClient;
 }
 
 /**
