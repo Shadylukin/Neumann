@@ -4,17 +4,29 @@ import { VectorClient } from './vector-client.js';
 import { ConnectionError } from './types/errors.js';
 
 // Mock the grpc module
-vi.mock('@grpc/grpc-js', () => ({
-  credentials: {
-    createInsecure: vi.fn(() => ({})),
-    createSsl: vi.fn(() => ({})),
-  },
-  Metadata: vi.fn(() => ({
-    set: vi.fn(),
-    get: vi.fn(),
-    clone: vi.fn(),
-  })),
-}));
+vi.mock('@grpc/grpc-js', () => {
+  class MockMetadata {
+    private _data: Map<string, string> = new Map();
+    set(key: string, value: string): void {
+      this._data.set(key, value);
+    }
+    get(key: string): string | undefined {
+      return this._data.get(key);
+    }
+    clone(): MockMetadata {
+      const cloned = new MockMetadata();
+      this._data.forEach((v, k) => cloned.set(k, v));
+      return cloned;
+    }
+  }
+  return {
+    credentials: {
+      createInsecure: vi.fn(() => ({})),
+      createSsl: vi.fn(() => ({})),
+    },
+    Metadata: MockMetadata,
+  };
+});
 
 // Mock the grpc module loading
 vi.mock('./grpc.js', () => ({
