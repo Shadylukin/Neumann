@@ -155,20 +155,34 @@ vi.mock('./grpc.js', () => ({
 }));
 
 // Mock @grpc/grpc-js
-vi.mock('@grpc/grpc-js', () => ({
-  credentials: {
-    createSsl: vi.fn(() => ({})),
-    createInsecure: vi.fn(() => ({})),
-  },
-  Metadata: vi.fn().mockImplementation(() => ({
-    set: vi.fn(),
-  })),
-}));
+vi.mock('@grpc/grpc-js', () => {
+  class MockMetadata {
+    private _data: Map<string, string> = new Map();
+    set(key: string, value: string): void {
+      this._data.set(key, value);
+    }
+    get(key: string): string | undefined {
+      return this._data.get(key);
+    }
+  }
+  return {
+    credentials: {
+      createSsl: vi.fn(() => ({})),
+      createInsecure: vi.fn(() => ({})),
+    },
+    Metadata: MockMetadata,
+  };
+});
 
 // Mock grpc-web
-vi.mock('grpc-web', () => ({
-  GrpcWebClientBase: vi.fn().mockImplementation(() => ({})),
-}));
+vi.mock('grpc-web', () => {
+  class MockGrpcWebClientBase {
+    constructor() {}
+  }
+  return {
+    GrpcWebClientBase: MockGrpcWebClientBase,
+  };
+});
 
 describe('NeumannClient', () => {
   describe('query', () => {
