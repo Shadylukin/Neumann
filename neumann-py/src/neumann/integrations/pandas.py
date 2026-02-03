@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-def result_to_dataframe(result: QueryResult) -> "pd.DataFrame":
+def result_to_dataframe(result: QueryResult) -> pd.DataFrame:
     """Convert a QueryResult with rows to a pandas DataFrame.
 
     Args:
@@ -39,7 +39,7 @@ def result_to_dataframe(result: QueryResult) -> "pd.DataFrame":
     return pd.DataFrame(data)
 
 
-def rows_to_dataframe(rows: list[Row]) -> "pd.DataFrame":
+def rows_to_dataframe(rows: list[Row]) -> pd.DataFrame:
     """Convert a list of Row objects to a pandas DataFrame.
 
     Args:
@@ -64,7 +64,7 @@ def rows_to_dataframe(rows: list[Row]) -> "pd.DataFrame":
 
 
 def dataframe_to_inserts(
-    df: "pd.DataFrame",
+    df: pd.DataFrame,
     table: str,
     *,
     column_mapping: dict[str, str] | None = None,

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 def vector_to_insert(
     key: str,
-    vector: "npt.ArrayLike",
+    vector: npt.ArrayLike,
     *,
     normalize: bool = False,
 ) -> str:
@@ -33,8 +33,7 @@ def vector_to_insert(
         import numpy as np
     except ImportError as e:
         raise ImportError(
-            "numpy is required for vector operations. "
-            "Install with: pip install neumann-db[numpy]"
+            "numpy is required for vector operations. Install with: pip install neumann-db[numpy]"
         ) from e
 
     arr = np.asarray(vector, dtype=np.float32)
@@ -49,7 +48,7 @@ def vector_to_insert(
 
 
 def vectors_to_inserts(
-    vectors: dict[str, "npt.ArrayLike"],
+    vectors: dict[str, npt.ArrayLike],
     *,
     normalize: bool = False,
 ) -> list[str]:
@@ -65,12 +64,10 @@ def vectors_to_inserts(
     Raises:
         ImportError: If numpy is not installed.
     """
-    return [
-        vector_to_insert(key, vec, normalize=normalize) for key, vec in vectors.items()
-    ]
+    return [vector_to_insert(key, vec, normalize=normalize) for key, vec in vectors.items()]
 
 
-def parse_embedding(embedding_str: str) -> "np.ndarray":
+def parse_embedding(embedding_str: str) -> np.ndarray:
     """Parse an embedding string to a NumPy array.
 
     Args:
@@ -87,8 +84,7 @@ def parse_embedding(embedding_str: str) -> "np.ndarray":
         import numpy as np
     except ImportError as e:
         raise ImportError(
-            "numpy is required for vector operations. "
-            "Install with: pip install neumann-db[numpy]"
+            "numpy is required for vector operations. Install with: pip install neumann-db[numpy]"
         ) from e
 
     # Remove brackets and split
@@ -98,8 +94,8 @@ def parse_embedding(embedding_str: str) -> "np.ndarray":
 
 
 def cosine_similarity(
-    a: "npt.ArrayLike",
-    b: "npt.ArrayLike",
+    a: npt.ArrayLike,
+    b: npt.ArrayLike,
 ) -> float:
     """Compute cosine similarity between two vectors.
 
@@ -117,8 +113,7 @@ def cosine_similarity(
         import numpy as np
     except ImportError as e:
         raise ImportError(
-            "numpy is required for vector operations. "
-            "Install with: pip install neumann-db[numpy]"
+            "numpy is required for vector operations. Install with: pip install neumann-db[numpy]"
         ) from e
 
     a_arr = np.asarray(a, dtype=np.float32).flatten()
@@ -135,8 +130,8 @@ def cosine_similarity(
 
 
 def euclidean_distance(
-    a: "npt.ArrayLike",
-    b: "npt.ArrayLike",
+    a: npt.ArrayLike,
+    b: npt.ArrayLike,
 ) -> float:
     """Compute Euclidean distance between two vectors.
 
@@ -154,8 +149,7 @@ def euclidean_distance(
         import numpy as np
     except ImportError as e:
         raise ImportError(
-            "numpy is required for vector operations. "
-            "Install with: pip install neumann-db[numpy]"
+            "numpy is required for vector operations. Install with: pip install neumann-db[numpy]"
         ) from e
 
     a_arr = np.asarray(a, dtype=np.float32).flatten()
@@ -164,7 +158,7 @@ def euclidean_distance(
     return float(np.linalg.norm(a_arr - b_arr))
 
 
-def normalize_vectors(vectors: "npt.ArrayLike") -> "np.ndarray":
+def normalize_vectors(vectors: npt.ArrayLike) -> np.ndarray:
     """L2-normalize a batch of vectors.
 
     Args:
@@ -180,8 +174,7 @@ def normalize_vectors(vectors: "npt.ArrayLike") -> "np.ndarray":
         import numpy as np
     except ImportError as e:
         raise ImportError(
-            "numpy is required for vector operations. "
-            "Install with: pip install neumann-db[numpy]"
+            "numpy is required for vector operations. Install with: pip install neumann-db[numpy]"
         ) from e
 
     arr = np.asarray(vectors, dtype=np.float32)

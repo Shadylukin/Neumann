@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from neumann.errors import NeumannError
@@ -124,32 +125,26 @@ class Transaction:
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
-    ) -> bool:
+    ) -> None:
         """Context manager exit - commits or rolls back.
 
         On normal exit, commits the transaction.
         On exception, rolls back the transaction.
         """
         if not self.is_active:
-            return False
+            return
 
         if exc_type is not None:
             # Exception occurred - rollback
-            try:
+            with contextlib.suppress(NeumannError):
                 self.rollback()
-            except NeumannError:
-                pass  # Ignore rollback errors
-            return False  # Don't suppress the exception
+            return  # Don't suppress the exception
 
         # Normal exit - commit
         try:
             self.commit()
         except NeumannError:
             # Commit failed - try to rollback
-            try:
+            with contextlib.suppress(NeumannError):
                 self.rollback()
-            except NeumannError:
-                pass
             raise
-
-        return False

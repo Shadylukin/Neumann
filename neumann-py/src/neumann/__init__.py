@@ -6,23 +6,33 @@ for both embedded (in-process via PyO3) and remote (gRPC) modes.
 
 Basic usage:
 
-    # Remote connection
+    # Remote connection (sync)
     from neumann import NeumannClient
 
-    client = NeumannClient.connect("localhost:9200", api_key="...")
-    result = client.execute("SELECT users")
-    for row in result.rows:
-        print(row.to_dict())
+    with NeumannClient.connect("localhost:50051", api_key="...") as client:
+        result = client.query("SELECT users")
+        for row in result.rows:
+            print(row.to_dict())
 
     # Embedded mode (requires native module)
     client = NeumannClient.embedded()
     client.execute("CREATE TABLE users (name:string, age:int)")
 
-    # Async client
+    # Async client - preferred pattern
     from neumann.aio import AsyncNeumannClient
 
-    async with await AsyncNeumannClient.connect("localhost:9200") as client:
-        result = await client.execute("SELECT users")
+    async with AsyncNeumannClient("localhost:50051") as client:
+        # Unified query across all engines
+        results = await client.query('''
+            FIND NODE user
+            WHERE role = 'engineer'
+            SIMILAR TO embedding
+            CONNECTED TO 'user:alice'
+        ''')
+
+    # Or using connect() explicitly
+    async with await AsyncNeumannClient.connect("localhost:50051") as client:
+        result = await client.query("SELECT users")
 """
 
 from neumann.client import NeumannClient
@@ -43,6 +53,21 @@ from neumann.errors import (
     ParseError,
     PermissionError,
     QueryError,
+)
+from neumann.services import (
+    ArtifactMetadata,
+    BlobClient,
+    BlobServiceClient,
+    BlobUploadOptions,
+    BlobUploadResult,
+    CollectionInfo,
+    CollectionsClient,
+    DistanceMetric,
+    PointsClient,
+    ScoredVectorPoint,
+    ScrollResult,
+    VectorClient,
+    VectorPoint,
 )
 from neumann.transaction import Transaction
 from neumann.types import (
@@ -94,12 +119,27 @@ from neumann.types import (
     Value,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Client
     "NeumannClient",
     "Transaction",
+    # Vector services
+    "VectorClient",
+    "VectorPoint",
+    "ScoredVectorPoint",
+    "CollectionInfo",
+    "DistanceMetric",
+    "PointsClient",
+    "CollectionsClient",
+    # Blob services
+    "BlobClient",
+    "BlobServiceClient",
+    "BlobUploadOptions",
+    "BlobUploadResult",
+    "ArtifactMetadata",
+    "ScrollResult",
     # Configuration
     "ClientConfig",
     "TimeoutConfig",

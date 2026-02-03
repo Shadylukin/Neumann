@@ -508,9 +508,7 @@ class PatternMatchStats:
 class PatternMatchResult:
     """Result from a pattern match query."""
 
-    matches: list[dict[str, NodeBinding | EdgeBinding | PathBinding]] = field(
-        default_factory=list
-    )
+    matches: list[dict[str, NodeBinding | EdgeBinding | PathBinding]] = field(default_factory=list)
     stats: PatternMatchStats | None = None
 
 

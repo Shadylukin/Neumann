@@ -53,6 +53,9 @@ import {
 } from './types/validation.js';
 import type * as grpc from '@grpc/grpc-js';
 import type { QueryServiceClient } from './grpc.js';
+import type { ClientConfig, PartialClientConfig } from './config.js';
+import { mergeClientConfig, toGrpcChannelOptions } from './config.js';
+import { withRetry } from './retry.js';
 
 /**
  * Options for connecting to a Neumann server.
@@ -64,6 +67,8 @@ export interface ConnectOptions {
   tls?: boolean;
   /** Custom metadata headers. */
   metadata?: Record<string, string>;
+  /** Client configuration (timeouts, retry, keepalive). */
+  config?: PartialClientConfig;
 }
 
 /**
@@ -122,9 +127,18 @@ export class NeumannClient {
   private address: string | undefined;
   private grpcClient: QueryServiceClient | null = null;
   private grpcMetadata: grpc.Metadata | null = null;
+  private config: ClientConfig;
 
-  private constructor(mode: ClientMode) {
+  private constructor(mode: ClientMode, config: ClientConfig) {
     this.mode = mode;
+    this.config = config;
+  }
+
+  /**
+   * Get the client configuration.
+   */
+  get clientConfig(): ClientConfig {
+    return this.config;
   }
 
   /**
@@ -135,7 +149,8 @@ export class NeumannClient {
    * @returns A connected NeumannClient.
    */
   static async connect(address: string, options: ConnectOptions = {}): Promise<NeumannClient> {
-    const client = new NeumannClient('remote');
+    const config = mergeClientConfig(options.config);
+    const client = new NeumannClient('remote', config);
     client.apiKey = options.apiKey;
     client.address = address;
 
@@ -148,10 +163,14 @@ export class NeumannClient {
         ? grpc.credentials.createSsl()
         : grpc.credentials.createInsecure();
 
+      // Apply channel options from config
+      const channelOptions = toGrpcChannelOptions(config);
+
       client.grpcClient = getQueryServiceClient(
         proto,
         address,
-        credentials
+        credentials,
+        channelOptions
       ) as QueryServiceClient;
 
       // Setup metadata for authentication
@@ -181,7 +200,8 @@ export class NeumannClient {
    * @returns A connected NeumannClient.
    */
   static async connectWeb(address: string, options: ConnectOptions = {}): Promise<NeumannClient> {
-    const client = new NeumannClient('remote');
+    const config = mergeClientConfig(options.config);
+    const client = new NeumannClient('remote', config);
     client.apiKey = options.apiKey;
     client.address = address;
 
@@ -245,23 +265,26 @@ export class NeumannClient {
       identity: options.identity ?? '',
     };
 
-    return new Promise((resolve, reject) => {
-      grpcClient.Execute(
-        request,
-        metadata,
-        (err: grpc.ServiceError | null, response: unknown) => {
-          if (err) {
-            reject(this.handleGrpcError(err));
-            return;
+    const executeOnce = (): Promise<QueryResult> =>
+      new Promise((resolve, reject) => {
+        grpcClient.Execute(
+          request,
+          metadata,
+          (err: grpc.ServiceError | null, response: unknown) => {
+            if (err) {
+              reject(this.handleGrpcError(err));
+              return;
+            }
+            try {
+              resolve(this.convertProtoResponse(response));
+            } catch (e) {
+              reject(e);
+            }
           }
-          try {
-            resolve(this.convertProtoResponse(response));
-          } catch (e) {
-            reject(e);
-          }
-        }
-      );
-    });
+        );
+      });
+
+    return withRetry(executeOnce, this.config.retry);
   }
 
   /**
@@ -332,25 +355,28 @@ export class NeumannClient {
       })),
     };
 
-    return new Promise((resolve, reject) => {
-      grpcClient.ExecuteBatch(
-        request,
-        metadata,
-        (err: grpc.ServiceError | null, response: unknown) => {
-          if (err) {
-            reject(this.handleGrpcError(err));
-            return;
+    const executeBatchOnce = (): Promise<QueryResult[]> =>
+      new Promise((resolve, reject) => {
+        grpcClient.ExecuteBatch(
+          request,
+          metadata,
+          (err: grpc.ServiceError | null, response: unknown) => {
+            if (err) {
+              reject(this.handleGrpcError(err));
+              return;
+            }
+            try {
+              const r = response as { results?: unknown[] };
+              const results = (r.results ?? []).map((res) => this.convertProtoResponse(res));
+              resolve(results);
+            } catch (e) {
+              reject(e);
+            }
           }
-          try {
-            const r = response as { results?: unknown[] };
-            const results = (r.results ?? []).map((res) => this.convertProtoResponse(res));
-            resolve(results);
-          } catch (e) {
-            reject(e);
-          }
-        }
-      );
-    });
+        );
+      });
+
+    return withRetry(executeBatchOnce, this.config.retry);
   }
 
   /**
@@ -372,46 +398,49 @@ export class NeumannClient {
       cursorTtlSecs: options.cursorTtlSecs ?? 0,
     };
 
-    return new Promise((resolve, reject) => {
-      grpcClient.ExecutePaginated(
-        request,
-        metadata,
-        (err: grpc.ServiceError | null, response: unknown) => {
-          if (err) {
-            reject(this.handleGrpcError(err));
-            return;
+    const executePaginatedOnce = (): Promise<PaginatedResult> =>
+      new Promise((resolve, reject) => {
+        grpcClient.ExecutePaginated(
+          request,
+          metadata,
+          (err: grpc.ServiceError | null, response: unknown) => {
+            if (err) {
+              reject(this.handleGrpcError(err));
+              return;
+            }
+            try {
+              const r = response as {
+                result?: unknown;
+                nextCursor?: string;
+                prevCursor?: string;
+                totalCount?: number;
+                hasMore?: boolean;
+                pageSize?: number;
+              };
+              const result = this.convertProtoResponse(r.result);
+              const paginatedResult: PaginatedResult = {
+                result,
+                hasMore: r.hasMore ?? false,
+                pageSize: r.pageSize ?? 0,
+              };
+              if (r.nextCursor) {
+                paginatedResult.nextCursor = r.nextCursor;
+              }
+              if (r.prevCursor) {
+                paginatedResult.prevCursor = r.prevCursor;
+              }
+              if (r.totalCount !== undefined) {
+                paginatedResult.totalCount = r.totalCount;
+              }
+              resolve(paginatedResult);
+            } catch (e) {
+              reject(e);
+            }
           }
-          try {
-            const r = response as {
-              result?: unknown;
-              nextCursor?: string;
-              prevCursor?: string;
-              totalCount?: number;
-              hasMore?: boolean;
-              pageSize?: number;
-            };
-            const result = this.convertProtoResponse(r.result);
-            const paginatedResult: PaginatedResult = {
-              result,
-              hasMore: r.hasMore ?? false,
-              pageSize: r.pageSize ?? 0,
-            };
-            if (r.nextCursor) {
-              paginatedResult.nextCursor = r.nextCursor;
-            }
-            if (r.prevCursor) {
-              paginatedResult.prevCursor = r.prevCursor;
-            }
-            if (r.totalCount !== undefined) {
-              paginatedResult.totalCount = r.totalCount;
-            }
-            resolve(paginatedResult);
-          } catch (e) {
-            reject(e);
-          }
-        }
-      );
-    });
+        );
+      });
+
+    return withRetry(executePaginatedOnce, this.config.retry);
   }
 
   /**
@@ -423,20 +452,23 @@ export class NeumannClient {
   async closeCursor(cursor: string): Promise<boolean> {
     const { grpcClient, metadata } = this.assertConnected();
 
-    return new Promise((resolve, reject) => {
-      grpcClient.CloseCursor(
-        { cursor },
-        metadata,
-        (err: grpc.ServiceError | null, response: unknown) => {
-          if (err) {
-            reject(this.handleGrpcError(err));
-            return;
+    const closeCursorOnce = (): Promise<boolean> =>
+      new Promise((resolve, reject) => {
+        grpcClient.CloseCursor(
+          { cursor },
+          metadata,
+          (err: grpc.ServiceError | null, response: unknown) => {
+            if (err) {
+              reject(this.handleGrpcError(err));
+              return;
+            }
+            const r = response as { success?: boolean };
+            resolve(r.success ?? false);
           }
-          const r = response as { success?: boolean };
-          resolve(r.success ?? false);
-        }
-      );
-    });
+        );
+      });
+
+    return withRetry(closeCursorOnce, this.config.retry);
   }
 
   /**

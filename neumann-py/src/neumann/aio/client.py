@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 from neumann.config import ClientConfig
 from neumann.errors import ConnectionError, NeumannError
@@ -20,14 +21,39 @@ class AsyncNeumannClient:
 
     Note: Embedded mode is not supported in async client due to PyO3 limitations.
     Use the synchronous NeumannClient for embedded mode.
+
+    Example:
+        async with await AsyncNeumannClient.connect("localhost:50051") as client:
+            results = await client.query('''
+                FIND NODE user
+                WHERE role = 'engineer'
+                SIMILAR TO embedding
+                CONNECTED TO 'user:alice'
+            ''')
     """
 
-    def __init__(self) -> None:
-        """Initialize async client (internal use - use class methods)."""
-        self._channel: object | None = None
-        self._stub: object | None = None
-        self._api_key: str | None = None
-        self._config: ClientConfig = ClientConfig.default()
+    def __init__(
+        self,
+        address: str | None = None,
+        *,
+        api_key: str | None = None,
+        tls: bool = False,
+        config: ClientConfig | None = None,
+    ) -> None:
+        """Initialize async client.
+
+        Args:
+            address: Server address in format "host:port". If provided, connect() is called.
+            api_key: Optional API key for authentication.
+            tls: Whether to use TLS encryption.
+            config: Optional client configuration.
+        """
+        self._address = address
+        self._channel: Any = None
+        self._stub: Any = None
+        self._api_key: str | None = api_key
+        self._tls = tls
+        self._config: ClientConfig = config or ClientConfig.default()
         self._connected = False
 
     @classmethod
@@ -53,42 +79,46 @@ class AsyncNeumannClient:
         Raises:
             ConnectionError: If connection fails.
         """
-        client = cls()
-        client._api_key = api_key
-        client._config = config or ClientConfig.default()
+        client = cls(address, api_key=api_key, tls=tls, config=config)
+        await client._connect()
+        return client
+
+    async def _connect(self) -> None:
+        """Internal connection method."""
+        if self._connected:
+            return
+
+        if self._address is None:
+            raise ConnectionError("No address specified")
 
         try:
             import grpc.aio
 
             # Channel options with keepalive
             options = [
-                ("grpc.keepalive_time_ms", client._config.keepalive.time_ms),
-                ("grpc.keepalive_timeout_ms", client._config.keepalive.timeout_ms),
+                ("grpc.keepalive_time_ms", self._config.keepalive.time_ms),
+                ("grpc.keepalive_timeout_ms", self._config.keepalive.timeout_ms),
                 (
                     "grpc.keepalive_permit_without_calls",
-                    1 if client._config.keepalive.permit_without_calls else 0,
+                    1 if self._config.keepalive.permit_without_calls else 0,
                 ),
-                ("grpc.http2.min_time_between_pings_ms", client._config.keepalive.time_ms),
+                ("grpc.http2.min_time_between_pings_ms", self._config.keepalive.time_ms),
             ]
 
-            if tls:
+            if self._tls:
                 credentials = grpc.ssl_channel_credentials()
-                client._channel = grpc.aio.secure_channel(address, credentials, options=options)
+                self._channel = grpc.aio.secure_channel(self._address, credentials, options=options)
             else:
-                client._channel = grpc.aio.insecure_channel(address, options=options)
+                self._channel = grpc.aio.insecure_channel(self._address, options=options)
 
             from neumann.proto import neumann_pb2_grpc
 
-            client._stub = neumann_pb2_grpc.QueryServiceStub(client._channel)
-            client._connected = True
+            self._stub = neumann_pb2_grpc.QueryServiceStub(self._channel)
+            self._connected = True
         except ImportError as e:
-            raise ConnectionError(
-                "gRPC not available. Install with: pip install grpcio"
-            ) from e
+            raise ConnectionError("gRPC not available. Install with: pip install grpcio") from e
         except Exception as e:
-            raise ConnectionError(f"Failed to connect to {address}: {e}") from e
-
-        return client
+            raise ConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
     @property
     def is_connected(self) -> bool:
@@ -104,7 +134,9 @@ class AsyncNeumannClient:
         self._connected = False
 
     async def __aenter__(self) -> AsyncNeumannClient:
-        """Async context manager entry."""
+        """Async context manager entry - connects if not already connected."""
+        if not self._connected:
+            await self._connect()
         return self
 
     async def __aexit__(
@@ -143,15 +175,10 @@ class AsyncNeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            timeout = (
-                self._config.timeout.query_timeout_s
-                or self._config.timeout.default_timeout_s
-            )
+            timeout = self._config.timeout.query_timeout_s or self._config.timeout.default_timeout_s
 
-            async def do_execute() -> object:
-                return await self._stub.Execute(
-                    request, timeout=timeout, metadata=metadata or None
-                )
+            async def do_execute() -> Any:
+                return await self._stub.Execute(request, timeout=timeout, metadata=metadata or None)
 
             response = await retry_call_async(do_execute, self._config.retry)
 
@@ -164,6 +191,20 @@ class AsyncNeumannClient:
             if "grpc" in str(type(e).__module__):
                 raise ConnectionError(f"gRPC error: {e}") from e
             raise NeumannError(str(e)) from e
+
+    async def query(self, query: str, *, identity: str | None = None) -> QueryResult:
+        """Execute a query and return the result.
+
+        This is an alias for execute().
+
+        Args:
+            query: The Neumann query to execute.
+            identity: Optional identity for vault access.
+
+        Returns:
+            QueryResult containing the query results.
+        """
+        return await self.execute(query, identity=identity)
 
     async def execute_stream(
         self, query: str, *, identity: str | None = None
@@ -194,19 +235,14 @@ class AsyncNeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            timeout = (
-                self._config.timeout.query_timeout_s
-                or self._config.timeout.default_timeout_s
-            )
+            timeout = self._config.timeout.query_timeout_s or self._config.timeout.default_timeout_s
 
             # Import conversion utilities
             from neumann.client import NeumannClient
 
             converter = NeumannClient.__new__(NeumannClient)
 
-            stream = self._stub.ExecuteStream(
-                request, timeout=timeout, metadata=metadata or None
-            )
+            stream = self._stub.ExecuteStream(request, timeout=timeout, metadata=metadata or None)
             async for chunk in stream:
                 if chunk.is_final:
                     break
@@ -250,17 +286,14 @@ class AsyncNeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            timeout = (
-                self._config.timeout.query_timeout_s
-                or self._config.timeout.default_timeout_s
-            )
+            timeout = self._config.timeout.query_timeout_s or self._config.timeout.default_timeout_s
 
             # Import conversion utilities
             from neumann.client import NeumannClient
 
             converter = NeumannClient.__new__(NeumannClient)
 
-            async def do_batch() -> object:
+            async def do_batch() -> Any:
                 return await self._stub.ExecuteBatch(
                     request, timeout=timeout, metadata=metadata or None
                 )
@@ -272,9 +305,7 @@ class AsyncNeumannClient:
                 raise ConnectionError(f"gRPC error: {e}") from e
             raise NeumannError(str(e)) from e
 
-    async def run_in_executor(
-        self, query: str, *, identity: str | None = None
-    ) -> QueryResult:
+    async def run_in_executor(self, query: str, *, identity: str | None = None) -> QueryResult:
         """Run a query using a thread pool executor.
 
         This is useful when you need to use the synchronous embedded client

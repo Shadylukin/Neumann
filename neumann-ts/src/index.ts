@@ -49,6 +49,37 @@ export type {
   PaginatedResult,
 } from './client.js';
 
+// Retry and configuration
+export {
+  withRetry,
+  withRetryWrapper,
+  isRetryable,
+  calculateBackoff,
+  mergeRetryConfig,
+  DEFAULT_RETRY_CONFIG,
+  RETRYABLE_STATUS_CODES,
+} from './retry.js';
+export type { RetryConfig, PartialRetryConfig } from './retry.js';
+
+export {
+  mergeClientConfig,
+  noRetryConfig,
+  fastFailConfig,
+  highLatencyConfig,
+  toGrpcChannelOptions,
+  DEFAULT_TIMEOUT_CONFIG,
+  DEFAULT_KEEPALIVE_CONFIG,
+  DEFAULT_CLIENT_CONFIG,
+} from './config.js';
+export type {
+  TimeoutConfig,
+  KeepaliveConfig,
+  ClientConfig,
+  PartialTimeoutConfig,
+  PartialKeepaliveConfig,
+  PartialClientConfig,
+} from './config.js';
+
 // Vector client
 export { VectorClient } from './vector-client.js';
 export type { VectorConnectOptions } from './vector-client.js';

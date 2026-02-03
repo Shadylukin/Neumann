@@ -6,8 +6,9 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Awaitable, Callable, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
     from neumann.config import RetryConfig

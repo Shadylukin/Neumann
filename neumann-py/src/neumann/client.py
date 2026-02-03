@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from neumann.config import ClientConfig
 from neumann.errors import (
@@ -55,9 +55,9 @@ class NeumannClient:
     def __init__(self, mode: str = "remote") -> None:
         """Initialize client (internal use - use class methods to create)."""
         self._mode = mode
-        self._native: object | None = None
-        self._channel: object | None = None
-        self._stub: object | None = None
+        self._native: Any = None
+        self._channel: Any = None
+        self._stub: Any = None
         self._api_key: str | None = None
         self._config: ClientConfig = ClientConfig.default()
         self._connected = False
@@ -77,7 +77,7 @@ class NeumannClient:
         """
         client = cls(mode="embedded")
         try:
-            from neumann import _native
+            from neumann import _native  # type: ignore[attr-defined]
 
             if path:
                 client._native = _native.QueryRouter.with_path(path)
@@ -246,12 +246,9 @@ class NeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            timeout = (
-                self._config.timeout.query_timeout_s
-                or self._config.timeout.default_timeout_s
-            )
+            timeout = self._config.timeout.query_timeout_s or self._config.timeout.default_timeout_s
 
-            def do_execute() -> object:
+            def do_execute() -> Any:
                 return self._stub.Execute(request, timeout=timeout, metadata=metadata or None)
 
             response = retry_call(do_execute, self._config.retry)
@@ -299,14 +296,9 @@ class NeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            timeout = (
-                self._config.timeout.query_timeout_s
-                or self._config.timeout.default_timeout_s
-            )
+            timeout = self._config.timeout.query_timeout_s or self._config.timeout.default_timeout_s
 
-            stream = self._stub.ExecuteStream(
-                request, timeout=timeout, metadata=metadata or None
-            )
+            stream = self._stub.ExecuteStream(request, timeout=timeout, metadata=metadata or None)
             for chunk in stream:
                 if chunk.is_final:
                     break
@@ -360,15 +352,10 @@ class NeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            timeout = (
-                self._config.timeout.query_timeout_s
-                or self._config.timeout.default_timeout_s
-            )
+            timeout = self._config.timeout.query_timeout_s or self._config.timeout.default_timeout_s
 
-            def do_batch() -> object:
-                return self._stub.ExecuteBatch(
-                    request, timeout=timeout, metadata=metadata or None
-                )
+            def do_batch() -> Any:
+                return self._stub.ExecuteBatch(request, timeout=timeout, metadata=metadata or None)
 
             response = retry_call(do_batch, self._config.retry)
             return [self._convert_proto_result(r) for r in response.results]
@@ -377,7 +364,7 @@ class NeumannClient:
                 raise ConnectionError(f"gRPC error: {e}") from e
             raise NeumannError(str(e)) from e
 
-    def _convert_native_result(self, result: object) -> QueryResult:
+    def _convert_native_result(self, result: Any) -> QueryResult:
         """Convert native result to QueryResult."""
         # The native module returns a dict-like object
         if result is None:
@@ -441,16 +428,16 @@ class NeumannClient:
         else:
             return self._convert_native_chain_result(result_type, result_dict)
 
-    def _convert_native_row(self, row: dict) -> Row:
+    def _convert_native_row(self, row: dict[str, Any]) -> Row:
         """Convert native row to Row."""
-        values = {}
+        values: dict[str, Value] = {}
         for k, v in row.items():
             values[k] = self._convert_native_value(v)
         return Row(values=values)
 
-    def _convert_native_node(self, node: dict) -> Node:
+    def _convert_native_node(self, node: dict[str, Any]) -> Node:
         """Convert native node to Node."""
-        props = {}
+        props: dict[str, Value] = {}
         for k, v in node.get("properties", {}).items():
             props[k] = self._convert_native_value(v)
         return Node(
@@ -459,9 +446,9 @@ class NeumannClient:
             properties=props,
         )
 
-    def _convert_native_edge(self, edge: dict) -> Edge:
+    def _convert_native_edge(self, edge: dict[str, Any]) -> Edge:
         """Convert native edge to Edge."""
-        props = {}
+        props: dict[str, Value] = {}
         for k, v in edge.get("properties", {}).items():
             props[k] = self._convert_native_value(v)
         return Edge(
@@ -472,9 +459,9 @@ class NeumannClient:
             properties=props,
         )
 
-    def _convert_native_similar(self, item: dict) -> SimilarItem:
+    def _convert_native_similar(self, item: dict[str, Any]) -> SimilarItem:
         """Convert native similar item to SimilarItem."""
-        meta = {}
+        meta: dict[str, Value] = {}
         for k, v in item.get("metadata", {}).items():
             meta[k] = self._convert_native_value(v)
         return SimilarItem(
@@ -483,7 +470,7 @@ class NeumannClient:
             metadata=meta,
         )
 
-    def _convert_native_value(self, value: object) -> Value:
+    def _convert_native_value(self, value: Any) -> Value:
         """Convert native value to Value."""
         if value is None:
             return Value.null()
@@ -500,7 +487,7 @@ class NeumannClient:
         else:
             return Value.string(str(value))
 
-    def _convert_native_checkpoint(self, checkpoint: dict) -> CheckpointInfo:
+    def _convert_native_checkpoint(self, checkpoint: dict[str, Any]) -> CheckpointInfo:
         """Convert native checkpoint to CheckpointInfo."""
         return CheckpointInfo(
             id=checkpoint.get("id", ""),
@@ -509,7 +496,7 @@ class NeumannClient:
             is_auto=checkpoint.get("is_auto", False),
         )
 
-    def _convert_native_unified_item(self, item: dict) -> UnifiedItem:
+    def _convert_native_unified_item(self, item: dict[str, Any]) -> UnifiedItem:
         """Convert native unified item to UnifiedItem."""
         return UnifiedItem(
             entity_type=item.get("entity_type", ""),
@@ -518,7 +505,9 @@ class NeumannClient:
             score=item.get("score"),
         )
 
-    def _convert_native_chain_result(self, result_type: str, result_dict: dict) -> QueryResult:
+    def _convert_native_chain_result(
+        self, result_type: str, result_dict: dict[str, Any]
+    ) -> QueryResult:
         """Convert native chain result to QueryResult."""
         data = result_dict.get("data", {})
 
@@ -632,7 +621,7 @@ class NeumannClient:
         else:
             return QueryResult(QueryResultType.EMPTY)
 
-    def _convert_proto_result(self, response: object) -> QueryResult:
+    def _convert_proto_result(self, response: Any) -> QueryResult:
         """Convert proto response to QueryResult."""
         # Handle error response
         if hasattr(response, "error") and response.error:
@@ -723,21 +712,21 @@ class NeumannClient:
         else:
             return QueryResult(QueryResultType.EMPTY)
 
-    def _convert_proto_row(self, row: object) -> Row:
+    def _convert_proto_row(self, row: Any) -> Row:
         """Convert proto row to Row."""
         values = {}
         for col in row.columns:
             values[col.name] = self._convert_proto_value(col.value)
         return Row(values=values)
 
-    def _convert_proto_node(self, node: object) -> Node:
+    def _convert_proto_node(self, node: Any) -> Node:
         """Convert proto node to Node."""
         props = {}
         for prop in node.properties:
             props[prop.name] = self._convert_proto_value(prop.value)
         return Node(id=node.id, label=node.label, properties=props)
 
-    def _convert_proto_edge(self, edge: object) -> Edge:
+    def _convert_proto_edge(self, edge: Any) -> Edge:
         """Convert proto edge to Edge."""
         props = {}
         for prop in edge.properties:
@@ -750,7 +739,7 @@ class NeumannClient:
             properties=props,
         )
 
-    def _convert_proto_path(self, path: object) -> Path:
+    def _convert_proto_path(self, path: Any) -> Path:
         """Convert proto path to Path."""
         segments = []
         for seg in path.segments:
@@ -760,7 +749,7 @@ class NeumannClient:
                 segments.append(PathSegment(node=node, edge=edge))
         return Path(segments=segments)
 
-    def _convert_proto_similar(self, item: object) -> SimilarItem:
+    def _convert_proto_similar(self, item: Any) -> SimilarItem:
         """Convert proto similar item to SimilarItem."""
         meta = {}
         if hasattr(item, "metadata"):
@@ -768,7 +757,7 @@ class NeumannClient:
                 meta[prop.name] = self._convert_proto_value(prop.value)
         return SimilarItem(key=item.key, score=item.score, metadata=meta)
 
-    def _convert_proto_value(self, value: object) -> Value:
+    def _convert_proto_value(self, value: Any) -> Value:
         """Convert proto value to Value."""
         which = value.WhichOneof("value") if hasattr(value, "WhichOneof") else None
 
@@ -787,7 +776,7 @@ class NeumannClient:
         else:
             return Value.null()
 
-    def _convert_proto_checkpoint(self, checkpoint: object) -> CheckpointInfo:
+    def _convert_proto_checkpoint(self, checkpoint: Any) -> CheckpointInfo:
         """Convert proto checkpoint to CheckpointInfo."""
         return CheckpointInfo(
             id=checkpoint.id,
@@ -796,7 +785,7 @@ class NeumannClient:
             is_auto=checkpoint.is_auto,
         )
 
-    def _convert_proto_unified_item(self, item: object) -> UnifiedItem:
+    def _convert_proto_unified_item(self, item: Any) -> UnifiedItem:
         """Convert proto unified item to UnifiedItem."""
         fields = {}
         if hasattr(item, "fields"):
@@ -809,7 +798,7 @@ class NeumannClient:
             score=item.score if hasattr(item, "score") and item.score else None,
         )
 
-    def _convert_proto_chain_result(self, which: str, result: object) -> QueryResult:
+    def _convert_proto_chain_result(self, which: str, result: Any) -> QueryResult:
         """Convert proto chain result to QueryResult."""
         if which == "chain_transaction_begun":
             return QueryResult(
@@ -912,7 +901,7 @@ class NeumannClient:
         else:
             return QueryResult(QueryResultType.EMPTY)
 
-    def _convert_proto_chunk(self, chunk: object) -> QueryResult:
+    def _convert_proto_chunk(self, chunk: Any) -> QueryResult:
         """Convert proto streaming chunk to QueryResult."""
         which = chunk.WhichOneof("chunk") if hasattr(chunk, "WhichOneof") else None
 
