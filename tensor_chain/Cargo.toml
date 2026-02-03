@@ -48,7 +48,7 @@ crc32fast = "1.4"
 libc = "0.2"
 
 # TCP transport
-bytes = "1.5"
+bytes = "1.11"
 socket2 = { version = "0.5", features = ["all"] }
 lz4_flex = "0.11"
 
