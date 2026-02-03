@@ -5403,4 +5403,1353 @@ mod tests {
         let stats = index.memory_stats();
         assert_eq!(stats.quantized_count, 1);
     }
+
+    // ==================== Instrumentation tests ====================
+
+    #[test]
+    fn test_hnsw_with_instrumentation() {
+        let config = HNSWConfig::default();
+        let index = HNSWIndex::with_instrumentation(config);
+
+        assert!(index.has_instrumentation());
+
+        // Insert some vectors
+        index.insert(vec![1.0, 0.0, 0.0]);
+        index.insert(vec![0.0, 1.0, 0.0]);
+        index.insert(vec![0.0, 0.0, 1.0]);
+
+        // Perform a search to trigger statistics recording
+        let _results = index.search(&[1.0, 0.0, 0.0], 2);
+
+        // Get access stats
+        let stats = index.access_stats();
+        assert!(stats.is_some());
+        let snapshot = stats.unwrap();
+        assert!(snapshot.total_searches > 0);
+    }
+
+    #[test]
+    fn test_hnsw_without_instrumentation() {
+        let index = HNSWIndex::new();
+        assert!(!index.has_instrumentation());
+        assert!(index.access_stats().is_none());
+    }
+
+    #[test]
+    fn test_hnsw_instrumentation_sparse_search() {
+        let config = HNSWConfig::default();
+        let index = HNSWIndex::with_instrumentation(config);
+
+        // Insert vectors
+        index.insert(vec![1.0, 0.0, 0.0]);
+        index.insert(vec![0.0, 1.0, 0.0]);
+
+        // Perform a sparse search
+        let query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let _results = index.search_sparse(&query, 2);
+
+        let stats = index.access_stats().unwrap();
+        assert!(stats.total_searches > 0);
+    }
+
+    // ==================== Binary and PQ accessor tests ====================
+
+    #[test]
+    fn test_embedding_storage_is_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        assert!(binary.is_binary());
+        assert!(!binary.is_sparse());
+        assert!(!binary.is_delta());
+        assert!(!binary.is_tt());
+        assert!(!binary.is_quantized());
+        assert!(!binary.is_pq());
+    }
+
+    #[test]
+    fn test_embedding_storage_as_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        assert!(binary.as_binary().is_some());
+        assert!(binary.as_dense().is_none());
+        assert!(binary.as_sparse().is_none());
+        assert!(binary.as_delta().is_none());
+        assert!(binary.as_tt().is_none());
+        assert!(binary.as_quantized().is_none());
+        assert!(binary.as_pq().is_none());
+
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0]);
+        assert!(dense.as_binary().is_none());
+    }
+
+    #[test]
+    fn test_embedding_storage_is_pq() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 8);
+        assert!(pq.is_pq());
+        assert!(!pq.is_binary());
+        assert!(!pq.is_sparse());
+        assert!(!pq.is_delta());
+        assert!(!pq.is_tt());
+        assert!(!pq.is_quantized());
+    }
+
+    #[test]
+    fn test_embedding_storage_as_pq() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 8);
+        assert!(pq.as_pq().is_some());
+        assert!(pq.as_dense().is_none());
+        assert!(pq.as_sparse().is_none());
+        assert!(pq.as_delta().is_none());
+        assert!(pq.as_tt().is_none());
+        assert!(pq.as_quantized().is_none());
+        assert!(pq.as_binary().is_none());
+
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0]);
+        assert!(dense.as_pq().is_none());
+    }
+
+    #[test]
+    fn test_embedding_storage_binary_dimension() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        assert_eq!(binary.dimension(), 4);
+    }
+
+    #[test]
+    fn test_embedding_storage_pq_dimension() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 64);
+        assert_eq!(pq.dimension(), 64);
+    }
+
+    #[test]
+    fn test_embedding_storage_binary_to_dense() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let dense = binary.try_to_dense().unwrap();
+        assert_eq!(dense.len(), 4);
+        // Binary vectors quantize to +1 or -1
+        assert!(dense
+            .iter()
+            .all(|&v| (v - 1.0).abs() < 0.01 || (v + 1.0).abs() < 0.01));
+    }
+
+    #[test]
+    fn test_embedding_storage_pq_to_dense_requires_codebook() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 8);
+        let result = pq.try_to_dense();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            EmbeddingStorageError::ReconstructionFailed(msg) => {
+                assert!(msg.contains("codebook"));
+            },
+            _ => panic!("Expected ReconstructionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_storage_binary_memory_bytes() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary =
+            EmbeddingStorage::Binary(BinaryVector::from_dense(&[1.0; 64], BinaryThreshold::Sign));
+        let bytes = binary.memory_bytes();
+        assert!(bytes > 0);
+        // Binary vectors use ~1 bit per dimension, so 64 dims = ~8 bytes + overhead
+        assert!(bytes < 64 * 4); // Much less than dense
+    }
+
+    #[test]
+    fn test_embedding_storage_pq_memory_bytes() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 64);
+        let bytes = pq.memory_bytes();
+        // Empty PQ should have minimal memory
+        assert!(bytes < 100);
+    }
+
+    #[test]
+    fn test_embedding_storage_from_binary_vector() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let bv = BinaryVector::from_dense(&[1.0, -1.0, 1.0, -1.0], BinaryThreshold::Sign);
+        let storage: EmbeddingStorage = bv.into();
+        assert!(storage.is_binary());
+    }
+
+    // ==================== Binary distance computation tests ====================
+
+    #[test]
+    fn test_binary_cosine_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let b1 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+        let b2 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&b1, &b2);
+        // Same vectors should have 0 distance
+        assert!(dist.abs() < 0.01);
+    }
+
+    #[test]
+    fn test_binary_euclidean_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let b1 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+        let b2 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+
+        let dist = index.distance_embeddings(&b1, &b2);
+        assert!(dist.abs() < 0.01);
+    }
+
+    #[test]
+    fn test_binary_dot_product_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let b1 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+        let b2 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+
+        let dist = index.distance_embeddings(&b1, &b2);
+        // dot product of [1,1,1,1] . [1,1,1,1] = 4, distance = -4
+        assert!((dist - (-4.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_binary_to_dense_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, -1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let dense = EmbeddingStorage::Dense(vec![1.0, 1.0, -1.0, -1.0]);
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&binary, &dense);
+        // Should be close to 0 (same vectors)
+        assert!(dist < 0.1);
+    }
+
+    #[test]
+    fn test_binary_to_sparse_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, -1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 1.0, -1.0, -1.0]));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&binary, &sparse);
+        assert!(dist.is_finite());
+    }
+
+    // ==================== ProductQuantized error tests ====================
+
+    #[test]
+    fn test_pq_dot_with_dense_requires_codebook() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 4);
+        let query = vec![1.0, 2.0, 3.0, 4.0];
+        let result = pq.try_dot_with_dense(&query);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pq_dot_with_sparse_requires_codebook() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 4);
+        let query = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
+        let result = pq.try_dot_with_sparse(&query);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pq_dot_with_tt_requires_codebook() {
+        use crate::pq::PQVector;
+
+        let config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let query_tt = tt_decompose(&vec, &config).unwrap();
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 64);
+        let result = pq.try_dot_with_tt(&query_tt);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pq_magnitude_requires_codebook() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 4);
+        let result = pq.try_magnitude();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pq_distance_requires_codebook() {
+        use crate::pq::PQVector;
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 4);
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0, 4.0]);
+
+        let index = HNSWIndex::new();
+        let result = index.try_distance_embeddings(&pq, &dense);
+        assert!(result.is_err());
+    }
+
+    // ==================== ScalarQuantizedVector mutable magnitude test ====================
+
+    #[test]
+    fn test_scalar_quantized_magnitude_mutable() {
+        let vec = vec![3.0, 4.0];
+        let mut quantized = ScalarQuantizedVector::from_dense(&vec);
+
+        // First call computes and caches
+        let mag1 = quantized.magnitude();
+        assert!((mag1 - 5.0).abs() < 0.1);
+
+        // Second call uses cache
+        let mag2 = quantized.magnitude();
+        assert!((mag2 - mag1).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_scalar_quantized_magnitude_immutable() {
+        let vec = vec![3.0, 4.0];
+        let quantized = ScalarQuantizedVector::from_dense(&vec);
+
+        // Immutable version doesn't cache
+        let mag = quantized.magnitude_immutable();
+        assert!((mag - 5.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_scalar_quantized_empty() {
+        let quantized = ScalarQuantizedVector::from_dense(&[]);
+        assert_eq!(quantized.dimension(), 0);
+        assert_eq!(quantized.as_bytes().len(), 0);
+    }
+
+    #[test]
+    fn test_scalar_quantized_dot_dense_length_mismatch() {
+        let quantized = ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]);
+        let result = quantized.dot_dense(&[1.0, 2.0]); // Wrong length
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn test_scalar_quantized_min_val() {
+        let vec = vec![-5.0, 0.0, 5.0];
+        let quantized = ScalarQuantizedVector::from_dense(&vec);
+        assert_eq!(quantized.min_val(), -5.0);
+    }
+
+    // ==================== Binary vector magnitude test ====================
+
+    #[test]
+    fn test_binary_magnitude() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary =
+            EmbeddingStorage::Binary(BinaryVector::from_dense(&[1.0; 4], BinaryThreshold::Sign));
+        let result = binary.try_magnitude();
+        assert!(result.is_ok());
+        // Binary magnitude is sqrt(dimension) since values are +/-1
+        let mag = result.unwrap();
+        assert!((mag - 2.0).abs() < 0.01); // sqrt(4) = 2
+    }
+
+    // ==================== Quantized try_to_dense_with_registry ====================
+
+    #[test]
+    fn test_quantized_to_dense_with_registry() {
+        let original = vec![1.0, 2.0, 3.0];
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&original));
+
+        let result = quantized.try_to_dense_with_registry(None);
+        assert!(result.is_ok());
+        let dense = result.unwrap();
+        assert_eq!(dense.len(), 3);
+    }
+
+    // ==================== Quantized distance calculations ====================
+
+    #[test]
+    fn test_quantized_to_quantized_distance() {
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 0.0, 0.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 0.0, 0.0]));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&q1, &q2);
+        assert!(dist < 0.1); // Same vectors
+    }
+
+    #[test]
+    fn test_quantized_to_sparse_distance() {
+        let quantized =
+            EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 2.0, 3.0]));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&quantized, &sparse);
+        assert!(dist < 0.1); // Should be close
+    }
+
+    #[test]
+    fn test_quantized_to_tt_distance() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt = tt_decompose(&vec, &config).unwrap();
+
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&quantized, &tt_storage);
+        assert!(dist.is_finite());
+        assert!(dist < 0.2); // Should be close (same original vector)
+    }
+
+    #[test]
+    fn test_quantized_euclidean_distance() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[0.0, 0.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[3.0, 4.0]));
+
+        let dist = index.distance_embeddings(&q1, &q2);
+        assert!((dist - 5.0).abs() < 0.5); // Allow for quantization error
+    }
+
+    #[test]
+    fn test_quantized_dot_product_distance() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[4.0, 5.0, 6.0]));
+
+        let dist = index.distance_embeddings(&q1, &q2);
+        // dot = 4 + 10 + 18 = 32, distance = -32
+        assert!((dist - (-32.0)).abs() < 2.0); // Allow for quantization error
+    }
+
+    // ==================== Binary with other storage type distances ====================
+
+    #[test]
+    fn test_binary_to_tt_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let tt = tt_decompose(&vec, &config).unwrap();
+
+        let binary =
+            EmbeddingStorage::Binary(BinaryVector::from_dense(&vec, BinaryThreshold::Sign));
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&binary, &tt_storage);
+        assert!(dist.is_finite());
+    }
+
+    #[test]
+    fn test_binary_to_quantized_distance() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let vec = vec![1.0, -1.0, 1.0, -1.0];
+        let binary =
+            EmbeddingStorage::Binary(BinaryVector::from_dense(&vec, BinaryThreshold::Sign));
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&binary, &quantized);
+        assert!(dist.is_finite());
+        assert!(dist < 0.2); // Same original vectors
+    }
+
+    // ==================== HNSW insert/search with binary vectors ====================
+
+    #[test]
+    fn test_hnsw_insert_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let index = HNSWIndex::new();
+        let binary = BinaryVector::from_dense(&[1.0, -1.0, 1.0, -1.0], BinaryThreshold::Sign);
+        let id = index.insert_embedding(EmbeddingStorage::Binary(binary));
+
+        assert_eq!(id, 0);
+        assert_eq!(index.len(), 1);
+
+        let stats = index.memory_stats();
+        assert_eq!(stats.binary_count, 1);
+    }
+
+    #[test]
+    fn test_hnsw_search_with_binary_vectors() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let index = HNSWIndex::new();
+
+        // Insert binary vectors
+        for i in 0..10 {
+            let vec: Vec<f32> = (0..8)
+                .map(|j| if (i + j) % 2 == 0 { 1.0 } else { -1.0 })
+                .collect();
+            let binary = BinaryVector::from_dense(&vec, BinaryThreshold::Sign);
+            index.insert_embedding(EmbeddingStorage::Binary(binary));
+        }
+
+        assert_eq!(index.len(), 10);
+
+        // Search should work
+        let query = vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+        let results = index.search(&query, 5);
+        assert_eq!(results.len(), 5);
+    }
+
+    // ==================== TT cosine distance edge cases ====================
+
+    #[test]
+    fn test_cosine_distance_tt_zero_self_norm() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let zero_vec: Vec<f32> = vec![0.0; 64];
+        let normal_vec: Vec<f32> = (0..64).map(|i| i as f32).collect();
+
+        let tt_zero = tt_decompose(&zero_vec, &config).unwrap();
+        let tt_normal = tt_decompose(&normal_vec, &config).unwrap();
+
+        let storage_zero = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt_zero));
+        let dist = storage_zero.cosine_distance_tt_with_norm(&tt_normal, tt_norm(&tt_normal));
+        assert_eq!(dist, 1.0); // Max distance when self is zero
+    }
+
+    #[test]
+    fn test_dense_cosine_distance_tt_zero_magnitude() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let query_vec: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let tt_query = tt_decompose(&query_vec, &config).unwrap();
+        let query_norm = tt_norm(&tt_query);
+
+        // Zero dense vector
+        let storage = EmbeddingStorage::Dense(vec![0.0; 64]);
+        let dist = storage.cosine_distance_tt_with_norm(&tt_query, query_norm);
+        assert_eq!(dist, 1.0); // Max distance
+    }
+
+    // ==================== Euclidean distance storage tests ====================
+
+    #[test]
+    fn test_euclidean_distance_dense_with_sparse() {
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0]);
+        let query_sparse = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+
+        let dist = dense.euclidean_distance_sparse(&query_sparse);
+        assert!(dist < 0.01); // Same vectors
+    }
+
+    #[test]
+    fn test_euclidean_distance_sparse_with_dense() {
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[0.0, 3.0, 4.0]));
+        let query = vec![0.0, 0.0, 0.0];
+
+        let dist = sparse.euclidean_distance_dense(&query);
+        assert!((dist - 5.0).abs() < 0.01); // sqrt(9 + 16) = 5
+    }
+
+    #[test]
+    fn test_euclidean_distance_tt_with_dense() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vec, &config).unwrap();
+
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+        let dist = storage.euclidean_distance_dense(&vec);
+        assert!(dist < 1.0); // Should be close
+    }
+
+    #[test]
+    fn test_euclidean_distance_quantized_with_dense() {
+        let vec = vec![0.0, 3.0, 4.0];
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let query = vec![0.0, 0.0, 0.0];
+
+        let dist = quantized.euclidean_distance_dense(&query);
+        assert!((dist - 5.0).abs() < 0.5); // Allow for quantization error
+    }
+
+    #[test]
+    fn test_euclidean_distance_quantized_with_sparse() {
+        let vec = vec![1.0, 2.0, 3.0];
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let query = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+
+        let dist = quantized.euclidean_distance_sparse(&query);
+        assert!(dist < 0.5); // Same vectors, allow quantization error
+    }
+
+    #[test]
+    fn test_euclidean_distance_binary_with_dense() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, -1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let query = vec![1.0, 1.0, -1.0, -1.0];
+
+        let dist = binary.euclidean_distance_dense(&query);
+        assert!(dist < 0.01); // Same vectors
+    }
+
+    #[test]
+    fn test_euclidean_distance_binary_with_sparse() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let query = SparseVector::from_dense(&[1.0, -1.0, 1.0, -1.0]);
+
+        let dist = binary.euclidean_distance_sparse(&query);
+        assert!(dist < 0.01); // Same vectors
+    }
+
+    #[test]
+    fn test_euclidean_distance_delta_returns_max() {
+        let delta = DeltaVector::from_parts(0, 3, vec![], vec![]);
+        let storage = EmbeddingStorage::Delta(delta);
+        let query = vec![1.0, 2.0, 3.0];
+
+        let dist = storage.euclidean_distance_dense(&query);
+        assert_eq!(dist, f32::MAX); // Delta unsupported
+    }
+
+    // ==================== try_dot_with_sparse tests ====================
+
+    #[test]
+    fn test_try_dot_with_sparse_quantized() {
+        let vec = vec![1.0, 2.0, 3.0, 4.0];
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let query = SparseVector::from_dense(&[1.0, 1.0, 1.0, 1.0]);
+
+        let result = quantized.try_dot_with_sparse(&query);
+        assert!(result.is_ok());
+        let dot = result.unwrap();
+        assert!((dot - 10.0).abs() < 1.0); // 1+2+3+4=10, allow quantization error
+    }
+
+    #[test]
+    fn test_try_dot_with_sparse_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let query = SparseVector::from_dense(&[1.0, 1.0, 1.0, 1.0]);
+
+        let result = binary.try_dot_with_sparse(&query);
+        assert!(result.is_ok());
+        // Binary reconstructs to [1, -1, 1, -1], dot with [1,1,1,1] = 1-1+1-1 = 0
+        assert!((result.unwrap()).abs() < 0.01);
+    }
+
+    // ==================== try_euclidean_distance between storage types ====================
+
+    #[test]
+    fn test_try_euclidean_dense_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let dense = EmbeddingStorage::Dense(vec![0.0, 3.0, 4.0]);
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[0.0, 0.0, 0.0]));
+
+        let result = index.try_distance_embeddings(&dense, &sparse);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_euclidean_sparse_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let s1 = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+        let s2 = EmbeddingStorage::Sparse(SparseVector::from_dense(&[0.0, 1.0, 0.0]));
+
+        let result = index.try_distance_embeddings(&s1, &s2);
+        assert!(result.is_ok());
+        // sqrt(1 + 1) = sqrt(2)
+        assert!((result.unwrap() - std::f32::consts::SQRT_2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_euclidean_tt_to_tt() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec1: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let vec2: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt1 = tt_decompose(&vec1, &tt_config).unwrap();
+        let tt2 = tt_decompose(&vec2, &tt_config).unwrap();
+
+        let s1 = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt1));
+        let s2 = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt2));
+
+        let result = index.try_distance_embeddings(&s1, &s2);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 1.0); // Same vectors
+    }
+
+    #[test]
+    fn test_try_euclidean_tt_to_dense() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+        let dense = EmbeddingStorage::Dense(vec.clone());
+
+        let result = index.try_distance_embeddings(&tt_storage, &dense);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 1.0);
+    }
+
+    #[test]
+    fn test_try_euclidean_tt_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&vec));
+
+        let result = index.try_distance_embeddings(&tt_storage, &sparse);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 1.0);
+    }
+
+    #[test]
+    fn test_try_euclidean_quantized_to_quantized() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[0.0, 3.0, 4.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[0.0, 0.0, 0.0]));
+
+        let result = index.try_distance_embeddings(&q1, &q2);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 5.0).abs() < 0.5); // Allow quantization error
+    }
+
+    #[test]
+    fn test_try_euclidean_quantized_to_dense() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let quantized =
+            EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[0.0, 3.0, 4.0]));
+        let dense = EmbeddingStorage::Dense(vec![0.0, 0.0, 0.0]);
+
+        let result = index.try_distance_embeddings(&quantized, &dense);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 5.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_try_euclidean_quantized_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let quantized =
+            EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 2.0, 3.0]));
+
+        let result = index.try_distance_embeddings(&quantized, &sparse);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 0.5); // Same vectors
+    }
+
+    #[test]
+    fn test_try_euclidean_quantized_to_tt() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let result = index.try_distance_embeddings(&quantized, &tt_storage);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 1.0);
+    }
+
+    #[test]
+    fn test_try_euclidean_binary_to_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let b1 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, -1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let b2 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, -1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+
+        let result = index.try_distance_embeddings(&b1, &b2);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 0.01); // Same vectors
+    }
+
+    #[test]
+    fn test_try_euclidean_binary_to_other() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, -1.0, 1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let dense = EmbeddingStorage::Dense(vec![1.0, -1.0, 1.0, -1.0]);
+
+        let result = index.try_distance_embeddings(&binary, &dense);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 0.01); // Same vectors
+    }
+
+    #[test]
+    fn test_try_euclidean_delta_fails() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 3, vec![], vec![]));
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0]);
+
+        let result = index.try_distance_embeddings(&delta, &dense);
+        assert!(result.is_err());
+    }
+
+    // ==================== Cosine distance edge cases ====================
+
+    #[test]
+    fn test_try_cosine_quantized_to_quantized_zero_magnitude() {
+        let index = HNSWIndex::new();
+
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[0.0, 0.0, 0.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+
+        let result = index.try_distance_embeddings(&q1, &q2);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 1.0).abs() < 0.01); // Max distance for zero vector
+    }
+
+    #[test]
+    fn test_try_cosine_quantized_to_sparse() {
+        let index = HNSWIndex::new();
+
+        let quantized =
+            EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 0.0, 0.0]));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+
+        let result = index.try_distance_embeddings(&quantized, &sparse);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 0.1); // Same direction
+    }
+
+    #[test]
+    fn test_try_cosine_quantized_to_tt() {
+        let index = HNSWIndex::new();
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let result = index.try_distance_embeddings(&quantized, &tt_storage);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 0.2);
+    }
+
+    #[test]
+    fn test_try_cosine_binary_zero_magnitude() {
+        use crate::BinaryVector;
+
+        let index = HNSWIndex::new();
+
+        // Binary with all negative values (will be encoded as 0s)
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_raw(vec![0], 64));
+        let dense = EmbeddingStorage::Dense(vec![1.0; 64]);
+
+        let result = index.try_distance_embeddings(&binary, &dense);
+        assert!(result.is_ok());
+        // Binary [0..0] reconstructs to all -1s
+    }
+
+    // ==================== Dot product distance tests ====================
+
+    #[test]
+    fn test_try_dot_product_quantized_to_quantized() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[4.0, 5.0, 6.0]));
+
+        let result = index.try_distance_embeddings(&q1, &q2);
+        assert!(result.is_ok());
+        // dot = 4 + 10 + 18 = 32, distance = -32
+        assert!((result.unwrap() - (-32.0)).abs() < 3.0); // Allow quantization error
+    }
+
+    #[test]
+    fn test_try_dot_product_quantized_to_dense() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let quantized =
+            EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+        let dense = EmbeddingStorage::Dense(vec![1.0, 1.0, 1.0]);
+
+        let result = index.try_distance_embeddings(&quantized, &dense);
+        assert!(result.is_ok());
+        // dot = 1 + 2 + 3 = 6, distance = -6
+        assert!((result.unwrap() - (-6.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_try_dot_product_quantized_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let quantized =
+            EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 2.0, 3.0]));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 1.0, 1.0]));
+
+        let result = index.try_distance_embeddings(&quantized, &sparse);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - (-6.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_try_dot_product_quantized_to_tt() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = vec![1.0; 64];
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let result = index.try_distance_embeddings(&quantized, &tt_storage);
+        assert!(result.is_ok());
+        // dot of [1,1,...,1] with itself = 64, distance = -64
+        assert!((result.unwrap() - (-64.0)).abs() < 5.0);
+    }
+
+    #[test]
+    fn test_try_dot_product_binary_to_dense() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+        let dense = EmbeddingStorage::Dense(vec![1.0, 1.0, 1.0, 1.0]);
+
+        let result = index.try_distance_embeddings(&binary, &dense);
+        assert!(result.is_ok());
+        // Binary reconstructs to [1,1,1,1], dot = 4, distance = -4
+        assert!((result.unwrap() - (-4.0)).abs() < 0.01);
+    }
+
+    // ==================== Entry point update test ====================
+
+    #[test]
+    fn test_hnsw_entry_point_update() {
+        // Create index with very high ml (1.0) to force all vectors to higher layers
+        let config = HNSWConfig {
+            m: 4,
+            m0: 8,
+            ef_construction: 50,
+            ef_search: 50,
+            ml: 1.0, // High ml means all vectors likely get high layers
+            max_nodes: 0,
+            sparsity_threshold: 0.9,
+            distance_metric: HNSWDistanceMetric::Cosine,
+        };
+        let index = HNSWIndex::with_config(config);
+
+        // Insert first vector
+        index.insert(vec![1.0, 0.0, 0.0, 0.0]);
+        let first_entry = index.entry_point.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(first_entry, 0);
+
+        // Insert more vectors - with high ml, some may get higher layers and become entry point
+        for i in 1..20 {
+            let v: Vec<f32> = (0..4).map(|j| ((i + j) as f32).sin()).collect();
+            index.insert(v);
+        }
+
+        // Entry point should still be valid
+        let entry = index.entry_point.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(entry < 20);
+    }
+
+    // ==================== Sparse search greedy path test ====================
+
+    #[test]
+    fn test_hnsw_sparse_search_with_layers() {
+        let config = HNSWConfig {
+            m: 4,
+            m0: 8,
+            ef_construction: 50,
+            ef_search: 50,
+            ml: 0.5, // Higher ml for more layers
+            max_nodes: 0,
+            sparsity_threshold: 0.9,
+            distance_metric: HNSWDistanceMetric::Cosine,
+        };
+        let index = HNSWIndex::with_config(config);
+
+        // Insert many vectors to build multi-layer graph
+        for i in 0..50 {
+            let v: Vec<f32> = (0..8).map(|j| ((i * 10 + j) as f32 * 0.1).sin()).collect();
+            index.insert(v);
+        }
+
+        // Search with sparse query
+        let query = SparseVector::from_dense(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+        let results = index.search_sparse(&query, 5);
+        assert_eq!(results.len(), 5);
+    }
+
+    // ==================== ScalarQuantizedVector edge cases ====================
+
+    #[test]
+    fn test_scalar_quantized_cosine_distance_zero_magnitude() {
+        let zero_vec = ScalarQuantizedVector::from_dense(&[0.0, 0.0, 0.0]);
+        let other = vec![1.0, 2.0, 3.0];
+
+        let dist = zero_vec.cosine_distance_dense(&other);
+        assert!((dist - 1.0).abs() < 0.01); // Max distance for zero vector
+    }
+
+    // ==================== try_dot_with_tt for various storage types ====================
+
+    #[test]
+    fn test_try_dot_with_tt_quantized() {
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let quantized = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&vec));
+        let result = quantized.try_dot_with_tt(&tt);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_try_dot_with_tt_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let binary =
+            EmbeddingStorage::Binary(BinaryVector::from_dense(&vec, BinaryThreshold::Sign));
+        let result = binary.try_dot_with_tt(&tt);
+        assert!(result.is_ok());
+    }
+
+    // ==================== Dot product distance combinations ====================
+
+    #[test]
+    fn test_try_dot_product_sparse_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let s1 = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 2.0, 3.0]));
+        let s2 = EmbeddingStorage::Sparse(SparseVector::from_dense(&[4.0, 5.0, 6.0]));
+
+        let result = index.try_distance_embeddings(&s1, &s2);
+        assert!(result.is_ok());
+        // dot = 4 + 10 + 18 = 32, distance = -32
+        assert!((result.unwrap() - (-32.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_dot_product_sparse_to_dense() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 2.0, 3.0]));
+        let dense = EmbeddingStorage::Dense(vec![1.0, 1.0, 1.0]);
+
+        let result = index.try_distance_embeddings(&sparse, &dense);
+        assert!(result.is_ok());
+        // dot = 1 + 2 + 3 = 6, distance = -6
+        assert!((result.unwrap() - (-6.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_dot_product_tt_to_tt() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec1: Vec<f32> = vec![1.0; 64];
+        let vec2: Vec<f32> = vec![1.0; 64];
+        let tt1 = tt_decompose(&vec1, &tt_config).unwrap();
+        let tt2 = tt_decompose(&vec2, &tt_config).unwrap();
+
+        let s1 = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt1));
+        let s2 = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt2));
+
+        let result = index.try_distance_embeddings(&s1, &s2);
+        assert!(result.is_ok());
+        // dot = 64, distance = -64
+        assert!((result.unwrap() - (-64.0)).abs() < 5.0);
+    }
+
+    #[test]
+    fn test_try_dot_product_tt_to_dense() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = vec![1.0; 64];
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+        let dense = EmbeddingStorage::Dense(vec.clone());
+
+        let result = index.try_distance_embeddings(&tt_storage, &dense);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - (-64.0)).abs() < 5.0);
+    }
+
+    #[test]
+    fn test_try_dot_product_tt_to_sparse() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = vec![1.0; 64];
+        let tt = tt_decompose(&vec, &tt_config).unwrap();
+
+        let tt_storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&vec));
+
+        let result = index.try_distance_embeddings(&tt_storage, &sparse);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - (-64.0)).abs() < 5.0);
+    }
+
+    #[test]
+    fn test_try_dot_product_binary_to_binary() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let b1 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+        let b2 = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, 1.0, 1.0],
+            BinaryThreshold::Sign,
+        ));
+
+        let result = index.try_distance_embeddings(&b1, &b2);
+        assert!(result.is_ok());
+        // Binary reconstructs to [1,1,1,1], dot = 4, distance = -4
+        assert!((result.unwrap() - (-4.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_dot_product_binary_to_other() {
+        use crate::{BinaryThreshold, BinaryVector};
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let binary = EmbeddingStorage::Binary(BinaryVector::from_dense(
+            &[1.0, 1.0, -1.0, -1.0],
+            BinaryThreshold::Sign,
+        ));
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 1.0, 1.0, 1.0]));
+
+        let result = index.try_distance_embeddings(&binary, &sparse);
+        assert!(result.is_ok());
+        // Binary reconstructs to [1,1,-1,-1], dot = 1+1-1-1 = 0, distance = 0
+        assert!(result.unwrap().abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_dot_product_delta_fails() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 3, vec![], vec![]));
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0]);
+
+        let result = index.try_distance_embeddings(&delta, &dense);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_dot_product_pq_fails() {
+        use crate::pq::PQVector;
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        let pq = EmbeddingStorage::ProductQuantized(PQVector::new(vec![]), 4);
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0, 4.0]);
+
+        let result = index.try_distance_embeddings(&pq, &dense);
+        assert!(result.is_err());
+    }
+
+    // ==================== TT search with layers ====================
+
+    #[test]
+    fn test_hnsw_tt_search_with_layers() {
+        let config = HNSWConfig {
+            m: 4,
+            m0: 8,
+            ef_construction: 50,
+            ef_search: 50,
+            ml: 0.5,
+            max_nodes: 0,
+            sparsity_threshold: 0.9,
+            distance_metric: HNSWDistanceMetric::Cosine,
+        };
+        let index = HNSWIndex::with_config(config);
+
+        let tt_config = TTConfig::for_dim(64).unwrap();
+
+        // Insert many TT vectors to build multi-layer graph
+        for i in 0..30 {
+            let vec: Vec<f32> = (0..64).map(|j| ((i * 10 + j) as f32 * 0.1).sin()).collect();
+            let tt = tt_decompose(&vec, &tt_config).unwrap();
+            index.insert_embedding(EmbeddingStorage::TensorTrain(TTVectorCached::new(tt)));
+        }
+
+        // Search with TT query (using dense query that gets decomposed internally)
+        let query_vec: Vec<f32> = (0..64).map(|i| (i as f32 * 0.2).sin()).collect();
+        let results = index.search_tt(&query_vec, 5, &tt_config);
+        assert_eq!(results.len(), 5);
+    }
+
+    // ==================== Euclidean distance storage type combinations ====================
+
+    #[test]
+    fn test_euclidean_distance_tt_with_sparse() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vec: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vec, &config).unwrap();
+
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+        let query = SparseVector::from_dense(&vec);
+
+        let dist = storage.euclidean_distance_sparse(&query);
+        assert!(dist < 1.0); // Close to same
+    }
+
+    #[test]
+    fn test_try_cosine_quantized_to_quantized() {
+        let index = HNSWIndex::new();
+
+        let q1 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 0.0, 0.0]));
+        let q2 = EmbeddingStorage::Quantized(ScalarQuantizedVector::from_dense(&[1.0, 0.0, 0.0]));
+
+        let result = index.try_distance_embeddings(&q1, &q2);
+        assert!(result.is_ok());
+        assert!(result.unwrap() < 0.1); // Same direction
+    }
 }

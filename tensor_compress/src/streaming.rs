@@ -484,4 +484,53 @@ mod tests {
         let entries: Vec<_> = reader.map(|r| r.unwrap()).collect();
         assert_eq!(entries.len(), 1000);
     }
+
+    #[test]
+    fn test_streaming_header_invalid_magic() {
+        let header = StreamingHeader {
+            magic: [0, 0, 0, 0],
+            version: STREAMING_VERSION,
+            entry_count: 0,
+            config: CompressionConfig::default(),
+            data_start: 0,
+        };
+        assert!(matches!(header.validate(), Err(FormatError::InvalidMagic)));
+    }
+
+    #[test]
+    fn test_streaming_header_unsupported_version() {
+        let header = StreamingHeader {
+            magic: STREAMING_MAGIC,
+            version: STREAMING_VERSION + 1,
+            entry_count: 0,
+            config: CompressionConfig::default(),
+            data_start: 0,
+        };
+        assert!(matches!(
+            header.validate(),
+            Err(FormatError::UnsupportedVersion(_))
+        ));
+    }
+
+    #[test]
+    fn test_streaming_reader_invalid_data() {
+        // Create invalid streaming data (just magic, no header)
+        let data = vec![0x53, 0x54, 0x52, 0x4D]; // "STRM" magic only
+        let cursor = Cursor::new(data);
+        let result = StreamingReader::open(cursor);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_streaming_convert_to_streaming() {
+        use crate::format::{CompressedSnapshot, Header};
+
+        let header = Header::new(CompressionConfig::default(), 2);
+        let entries = vec![make_test_entry("a", 1), make_test_entry("b", 2)];
+        let snapshot = CompressedSnapshot { header, entries };
+
+        let output = Cursor::new(Vec::new());
+        let count = convert_to_streaming(&snapshot, output).unwrap();
+        assert_eq!(count, 2);
+    }
 }

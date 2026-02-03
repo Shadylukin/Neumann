@@ -2591,4 +2591,383 @@ mod tests {
             h.join().unwrap();
         }
     }
+
+    // ==================== add_column tests ====================
+
+    #[test]
+    fn test_add_column_to_empty_table() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Add new nullable column
+        let col_def = ColumnDef::new("email", ColumnType::String, true);
+        slab.add_column("users", col_def, None).unwrap();
+
+        // Verify schema has 4 columns now
+        let schema = slab.get_schema("users").unwrap();
+        assert_eq!(schema.columns.len(), 4);
+        assert_eq!(schema.columns[3].name, "email");
+    }
+
+    #[test]
+    fn test_add_column_with_default_value() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert a row first
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Add new column with default value
+        let col_def = ColumnDef::new("active", ColumnType::Bool, false);
+        let default = ColumnValue::Bool(true);
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        // Retrieve row and check the new column has default value
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row.len(), 4);
+        assert_eq!(row[3], ColumnValue::Bool(true));
+    }
+
+    #[test]
+    fn test_add_column_nullable_without_default() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert a row first
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Add nullable column without default - should get null
+        let col_def = ColumnDef::new("phone", ColumnType::String, true);
+        slab.add_column("users", col_def, None).unwrap();
+
+        // Retrieve row and check the new column is null
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row.len(), 4);
+        assert_eq!(row[3], ColumnValue::Null);
+    }
+
+    #[test]
+    fn test_add_column_table_not_found() {
+        let slab = RelationalSlab::new();
+        let col_def = ColumnDef::new("email", ColumnType::String, true);
+        let result = slab.add_column("nonexistent", col_def, None);
+        assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+    }
+
+    #[test]
+    fn test_add_column_already_exists() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Try to add column with same name as existing column
+        let col_def = ColumnDef::new("name", ColumnType::String, true);
+        let result = slab.add_column("users", col_def, None);
+        assert!(matches!(result, Err(RelationalError::ColumnExists(_))));
+    }
+
+    #[test]
+    fn test_add_column_non_nullable_without_default_on_non_empty_table() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert a row first
+        slab.insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Try to add non-nullable column without default - should fail
+        let col_def = ColumnDef::new("required_field", ColumnType::Int, false);
+        let result = slab.add_column("users", col_def, None);
+        assert!(matches!(result, Err(RelationalError::ColumnExists(_))));
+    }
+
+    #[test]
+    fn test_add_column_int_type() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let col_def = ColumnDef::new("score", ColumnType::Int, true);
+        let default = ColumnValue::Int(100);
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row[3], ColumnValue::Int(100));
+    }
+
+    #[test]
+    fn test_add_column_float_type() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let col_def = ColumnDef::new("rating", ColumnType::Float, true);
+        let default = ColumnValue::Float(4.5);
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row[3], ColumnValue::Float(4.5));
+    }
+
+    #[test]
+    fn test_add_column_bytes_type() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let col_def = ColumnDef::new("avatar", ColumnType::Bytes, true);
+        let default = ColumnValue::Bytes(vec![0xFF, 0xD8, 0xFF]);
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row[3], ColumnValue::Bytes(vec![0xFF, 0xD8, 0xFF]));
+    }
+
+    #[test]
+    fn test_add_column_json_type() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let col_def = ColumnDef::new("metadata", ColumnType::Json, true);
+        let default = ColumnValue::Json(r#"{"version":1}"#.to_string());
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row[3], ColumnValue::Json(r#"{"version":1}"#.to_string()));
+    }
+
+    #[test]
+    fn test_add_column_with_deleted_rows() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert rows
+        let id1 = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+        let id2 = slab.insert("users", create_test_row(2, "Bob", 25)).unwrap();
+
+        // Delete first row
+        slab.delete("users", id1).unwrap();
+
+        // Add column with default
+        let col_def = ColumnDef::new("status", ColumnType::String, true);
+        let default = ColumnValue::String("active".to_string());
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        // Verify living row has the default
+        let row = slab.get("users", id2).unwrap().unwrap();
+        assert_eq!(row[3], ColumnValue::String("active".to_string()));
+
+        // Deleted row should still be inaccessible
+        assert!(slab.get("users", id1).unwrap().is_none());
+    }
+
+    // ==================== drop_column tests ====================
+
+    #[test]
+    fn test_drop_column_basic() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Verify initial schema has 3 columns
+        let schema = slab.get_schema("users").unwrap();
+        assert_eq!(schema.columns.len(), 3);
+
+        // Drop the 'name' column
+        slab.drop_column("users", "name").unwrap();
+
+        // Verify schema now has 2 columns
+        let schema = slab.get_schema("users").unwrap();
+        assert_eq!(schema.columns.len(), 2);
+        assert!(schema.column_index("name").is_none());
+        assert!(schema.column_index("id").is_some());
+        assert!(schema.column_index("age").is_some());
+    }
+
+    #[test]
+    fn test_drop_column_with_data() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert a row
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Drop the 'name' column
+        slab.drop_column("users", "name").unwrap();
+
+        // Retrieve row - should only have 2 columns now
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row.len(), 2);
+        assert_eq!(row[0], ColumnValue::Int(1)); // id
+        assert_eq!(row[1], ColumnValue::Int(30)); // age (was index 2, now index 1)
+    }
+
+    #[test]
+    fn test_drop_column_table_not_found() {
+        let slab = RelationalSlab::new();
+        let result = slab.drop_column("nonexistent", "name");
+        assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+    }
+
+    #[test]
+    fn test_drop_column_not_found() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let result = slab.drop_column("users", "nonexistent");
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+    }
+
+    #[test]
+    fn test_drop_column_removes_index() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert data and create index
+        for i in 0..5 {
+            slab.insert("users", create_test_row(i, &format!("User{i}"), 20))
+                .unwrap();
+        }
+        slab.create_index("users", "id").unwrap();
+
+        // Verify index works
+        let results = slab.index_lookup("users", "id", 3).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Drop the indexed column
+        slab.drop_column("users", "id").unwrap();
+
+        // Index should no longer work (column doesn't exist)
+        let results = slab.index_lookup("users", "id", 3).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_drop_multiple_columns() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.drop_column("users", "name").unwrap();
+        slab.drop_column("users", "age").unwrap();
+
+        let schema = slab.get_schema("users").unwrap();
+        assert_eq!(schema.columns.len(), 1);
+        assert_eq!(schema.columns[0].name, "id");
+    }
+
+    // ==================== ColumnExists error display ====================
+
+    #[test]
+    fn test_column_exists_error_display() {
+        let err = RelationalError::ColumnExists("email".to_string());
+        assert_eq!(format!("{err}"), "column already exists: email");
+    }
+
+    // ==================== Additional error edge case tests ====================
+
+    #[test]
+    fn test_insert_after_add_column() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Add new column
+        let col_def = ColumnDef::new("email", ColumnType::String, true);
+        slab.add_column("users", col_def, None).unwrap();
+
+        // Insert row with 4 columns
+        let row = vec![
+            ColumnValue::Int(1),
+            ColumnValue::String("Alice".to_string()),
+            ColumnValue::Int(30),
+            ColumnValue::String("alice@example.com".to_string()),
+        ];
+        let row_id = slab.insert("users", row).unwrap();
+
+        // Verify all columns
+        let retrieved = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(retrieved.len(), 4);
+        assert_eq!(
+            retrieved[3],
+            ColumnValue::String("alice@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_insert_after_drop_column() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Drop the 'name' column
+        slab.drop_column("users", "name").unwrap();
+
+        // Insert row with 2 columns
+        let row = vec![ColumnValue::Int(1), ColumnValue::Int(30)];
+        let row_id = slab.insert("users", row).unwrap();
+
+        // Verify
+        let retrieved = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(retrieved.len(), 2);
+        assert_eq!(retrieved[0], ColumnValue::Int(1));
+        assert_eq!(retrieved[1], ColumnValue::Int(30));
+    }
+
+    #[test]
+    fn test_scan_after_add_column() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Add column with default
+        let col_def = ColumnDef::new("status", ColumnType::Bool, true);
+        let default = ColumnValue::Bool(true);
+        slab.add_column("users", col_def, Some(&default)).unwrap();
+
+        // Scan should show all 4 columns
+        let results = slab.scan_all("users").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.len(), 4);
+        assert_eq!(results[0].1[3], ColumnValue::Bool(true));
+    }
+
+    #[test]
+    fn test_update_after_add_column() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Add column
+        let col_def = ColumnDef::new("verified", ColumnType::Bool, true);
+        slab.add_column("users", col_def, None).unwrap();
+
+        // Update the new column
+        let updates = vec![("verified".to_string(), ColumnValue::Bool(true))];
+        slab.update_row("users", row_id, &updates).unwrap();
+
+        let row = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(row[3], ColumnValue::Bool(true));
+    }
 }

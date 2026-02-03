@@ -692,4 +692,60 @@ mod tests {
         assert_eq!(decompressed[50], 2.0);
         assert_eq!(decompressed[99], 3.0);
     }
+
+    #[test]
+    fn test_decompress_vector_raw() {
+        let raw = CompressedValue::VectorRaw(vec![1.0, 2.0, 3.0]);
+        let decompressed = decompress_vector(&raw).unwrap();
+        assert_eq!(decompressed, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_should_use_sparse_threshold_empty() {
+        assert!(!should_use_sparse_threshold(&[], 0.5));
+    }
+
+    #[test]
+    fn test_should_use_sparse_threshold_basic() {
+        // 90% zeros -> should be sparse with 0.5 threshold
+        let mut vec = vec![0.0f32; 100];
+        vec[0] = 1.0;
+        vec[50] = 2.0;
+        assert!(should_use_sparse_threshold(&vec, 0.5));
+    }
+
+    #[test]
+    fn test_should_use_sparse_threshold_boundary() {
+        // All non-zero values -> should NOT be sparse
+        let vec: Vec<f32> = (0..100).map(|i| i as f32 + 0.1).collect();
+        assert!(!should_use_sparse_threshold(&vec, 0.5));
+    }
+
+    #[test]
+    fn test_should_use_sparse_threshold_clamp() {
+        // Test threshold clamping: negative threshold acts as 0
+        let vec = vec![1.0f32; 10];
+        assert!(!should_use_sparse_threshold(&vec, -0.5));
+
+        // threshold > 1 acts as 1 (all must be zero)
+        assert!(!should_use_sparse_threshold(&vec, 1.5));
+    }
+
+    #[test]
+    fn test_compress_vector_with_tt() {
+        use crate::{TTConfig, TensorMode};
+
+        // Create a vector large enough for TT compression
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let config = CompressionConfig {
+            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64).unwrap())),
+            ..Default::default()
+        };
+
+        // Use "emb:" prefix to trigger TT path
+        let result = compress_vector(&vector, "emb:test", "_embedding", &config);
+        assert!(result.is_ok());
+        let compressed = result.unwrap();
+        assert!(matches!(compressed, CompressedValue::VectorTT { .. }));
+    }
 }
