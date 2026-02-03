@@ -325,7 +325,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist
+          args: --release --out dist --manifest-path neumann-native/Cargo.toml
           sccache: 'true'
           manylinux: auto
           working-directory: neumann-py
@@ -334,7 +334,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist
+          args: --out dist --manifest-path neumann-native/Cargo.toml
           working-directory: neumann-py
 
       - name: Install twine
