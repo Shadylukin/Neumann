@@ -192,35 +192,50 @@ export class BlobClient {
         metadata: buildUploadMetadata(filename, options),
       });
 
-      // Stream chunks
-      void (async () => {
+      // Stream chunks with proper error handling
+      const streamChunks = async (): Promise<void> => {
         try {
           for await (const chunk of chunks) {
             call.write({ chunk });
           }
           call.end();
         } catch (err) {
-          call.destroy(err as Error);
+          call.destroy(err instanceof Error ? err : new Error(String(err)));
         }
-      })();
+      };
+
+      streamChunks().catch((err: unknown) => reject(this.handleError(err as grpc.ServiceError)));
     });
   }
 
   /**
    * Download a blob as an async iterable of chunks.
+   * Automatically cancels the stream on early break or error.
    *
    * @param artifactId - The artifact ID to download.
    * @returns Async iterable of data chunks.
    */
   async *downloadBlob(artifactId: string): AsyncIterable<Uint8Array> {
-    const stream = this.client.Download({ artifactId }, this.metadata);
+    const stream = this.client.Download({ artifactId }, this.metadata) as AsyncIterable<
+      BlobDownloadChunk
+    > & { cancel?: () => void };
 
-    for await (const chunk of stream as AsyncIterable<BlobDownloadChunk>) {
-      if (chunk.data && chunk.data.length > 0) {
-        yield chunk.data;
+    try {
+      for await (const chunk of stream) {
+        if (chunk.data && chunk.data.length > 0) {
+          yield chunk.data;
+        }
+        if (chunk.isFinal) {
+          break;
+        }
       }
-      if (chunk.isFinal) {
-        break;
+    } finally {
+      if (typeof stream.cancel === 'function') {
+        try {
+          stream.cancel();
+        } catch {
+          // Ignore cancel errors
+        }
       }
     }
   }

@@ -71,6 +71,8 @@ service QueryService {
   rpc Execute(QueryRequest) returns (QueryResponse);
   rpc ExecuteStream(QueryRequest) returns (stream QueryResponseChunk);
   rpc ExecuteBatch(BatchQueryRequest) returns (BatchQueryResponse);
+  rpc ExecutePaginated(PaginatedQueryRequest) returns (PaginatedQueryResponse);
+  rpc CloseCursor(CloseCursorRequest) returns (CloseCursorResponse);
 }
 
 service BlobService {
@@ -130,10 +132,35 @@ message QueryResponseChunk {
     ErrorInfo error = 10;
   }
   bool is_final = 15;
+  optional StreamCursorInfo cursor_info = 16;
+  optional uint64 sequence_number = 17;
 }
 
 message BatchQueryRequest { repeated QueryRequest queries = 1; }
 message BatchQueryResponse { repeated QueryResponse results = 1; }
+message PaginatedQueryRequest {
+  string query = 1;
+  optional string identity = 2;
+  optional string cursor = 3;
+  optional uint32 page_size = 4;
+  optional bool count_total = 5;
+  optional uint32 cursor_ttl_secs = 6;
+}
+message PaginatedQueryResponse {
+  QueryResponse result = 1;
+  optional string next_cursor = 2;
+  optional string prev_cursor = 3;
+  optional uint64 total_count = 4;
+  bool has_more = 5;
+  uint32 page_size = 6;
+}
+message CloseCursorRequest { string cursor = 1; }
+message CloseCursorResponse { bool success = 1; }
+message StreamCursorInfo {
+  string cursor = 1;
+  uint64 items_sent = 2;
+  optional uint64 total_count = 3;
+}
 message EmptyResult {}
 message StringValue { string value = 1; }
 message CountResult { uint64 count = 1; }
@@ -388,6 +415,45 @@ const LOADER_OPTIONS: protoLoader.Options = {
 let _neumannProto: grpc.GrpcObject | null = null;
 let _vectorProto: grpc.GrpcObject | null = null;
 let _tempDir: string | null = null;
+let _cleanupRegistered = false;
+
+/**
+ * Synchronously clean up temp proto files.
+ * Called on process exit.
+ */
+function cleanupSync(): void {
+  if (_tempDir) {
+    try {
+      fs.rmSync(_tempDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+    _tempDir = null;
+  }
+}
+
+/**
+ * Register cleanup handlers for process exit/signals.
+ */
+function registerCleanupHandlers(): void {
+  if (_cleanupRegistered) {
+    return;
+  }
+  _cleanupRegistered = true;
+
+  // Normal exit
+  process.on('exit', cleanupSync);
+
+  // Handle signals - exit with appropriate code
+  process.on('SIGINT', () => {
+    cleanupSync();
+    process.exit(130);
+  });
+  process.on('SIGTERM', () => {
+    cleanupSync();
+    process.exit(143);
+  });
+}
 
 /**
  * Get or create temp directory for proto files.
@@ -396,6 +462,7 @@ function getTempDir(): string {
   if (_tempDir) {
     return _tempDir;
   }
+  registerCleanupHandlers();
   _tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neumann-proto-'));
   return _tempDir;
 }
