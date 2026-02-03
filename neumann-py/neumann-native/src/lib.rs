@@ -341,6 +341,7 @@ fn convert_value_to_python(py: Python<'_>, value: &relational_engine::Value) -> 
         Value::Bool(b) => (*b).into_py(py),
         Value::Bytes(b) => b.clone().into_py(py),
         Value::Json(j) => j.to_string().into_py(py),
+        _ => py.None(),
     }
 }
 
