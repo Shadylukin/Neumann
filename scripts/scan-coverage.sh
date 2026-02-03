@@ -26,7 +26,7 @@ get_threshold() {
 CRATE_THRESHOLD=$(get_threshold "$CRATE")
 
 # Run coverage and capture output
-COVERAGE_OUTPUT=$(cargo llvm-cov --package "$CRATE" --summary-only 2>&1 || true)
+COVERAGE_OUTPUT=$(cargo llvm-cov --package "$CRATE" --all-features --summary-only 2>&1 || true)
 
 # Parse output and generate JSON
 # Format: Filename  Regions  Missed  Cover%  Functions  Missed  Cover%  Lines  Missed  Cover%
