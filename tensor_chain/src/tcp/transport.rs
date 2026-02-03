@@ -533,6 +533,11 @@ impl TcpTransport {
         self.running.load(Ordering::SeqCst)
     }
 
+    /// Get reference to TLS configuration if enabled.
+    pub fn tls_config(&self) -> Option<&super::config::TlsConfig> {
+        self.config.tls.as_ref()
+    }
+
     pub fn stats(&self) -> TransportStats {
         let mut total_sent = 0u64;
         let mut total_recv = 0u64;

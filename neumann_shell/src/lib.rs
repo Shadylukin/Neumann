@@ -8,6 +8,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 pub mod cli;
+mod doctor;
 mod input;
 mod output;
 mod progress;
@@ -302,6 +303,7 @@ impl Shell {
             "clear" | "\\c" => return CommandResult::Output("\x1B[2J\x1B[H".to_string()),
             "wal status" => return self.handle_wal_status(),
             "wal truncate" => return self.handle_wal_truncate(),
+            "doctor" => return self.handle_doctor(),
             _ => {},
         }
 
@@ -674,6 +676,20 @@ impl Shell {
                 Err(e) => CommandResult::Error(format!("Failed to truncate WAL: {e}")),
             },
         )
+    }
+
+    /// Handles the DOCTOR command for system diagnostics.
+    #[allow(clippy::significant_drop_tightening)]
+    fn handle_doctor(&self) -> CommandResult {
+        let wal_guard = self.wal.lock();
+        let wal_ref = wal_guard.as_ref();
+        let router = self.router.read();
+
+        let ctx = doctor::DiagnosticContext::new(&router, wal_ref);
+        let report = doctor::run_diagnostics(&ctx);
+        let output = doctor::output::format_report(&report, &self.config.theme, self.icons);
+
+        CommandResult::Output(output)
     }
 
     /// Initialize vault from environment variable.
@@ -1235,6 +1251,29 @@ mod tests {
         let mut shell = Shell::new();
         let result = shell.execute("wal truncate");
         assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_execute_doctor_command() {
+        let mut shell = Shell::new();
+        let result = shell.execute("doctor");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_doctor_output_contains_storage() {
+        let mut shell = Shell::new();
+        if let CommandResult::Output(s) = shell.execute("doctor") {
+            let lower = s.to_lowercase();
+            assert!(lower.contains("storage"));
+        }
+    }
+
+    #[test]
+    fn test_doctor_case_insensitive() {
+        let mut shell = Shell::new();
+        let result = shell.execute("DOCTOR");
+        assert!(matches!(result, CommandResult::Output(_)));
     }
 
     #[test]

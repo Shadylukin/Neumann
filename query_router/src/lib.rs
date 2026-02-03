@@ -1140,6 +1140,16 @@ impl QueryRouter {
         self.checkpoint.is_some()
     }
 
+    /// Check if an HNSW index has been built.
+    pub fn has_hnsw_index(&self) -> bool {
+        self.hnsw_index.is_some()
+    }
+
+    /// Get TLS certificate path from cluster (if connected and TLS configured).
+    pub fn tls_cert_path(&self) -> Option<std::path::PathBuf> {
+        self.cluster.as_ref().and_then(|c| c.tls_cert_path())
+    }
+
     /// Set a confirmation handler for destructive operations.
     ///
     /// The handler will be called to confirm operations before they execute.

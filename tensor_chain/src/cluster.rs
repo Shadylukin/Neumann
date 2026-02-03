@@ -832,6 +832,11 @@ impl ClusterOrchestrator {
         &self.transport
     }
 
+    /// Get the TLS certificate path if TLS is configured.
+    pub fn tls_cert_path(&self) -> Option<std::path::PathBuf> {
+        self.transport.tls_config().map(|c| c.cert_path.clone())
+    }
+
     /// Send a query request to a remote node and await the response.
     pub async fn send_query(
         &self,
