@@ -21,7 +21,7 @@ relational_engine = { path = "../relational_engine" }
 vector_engine = { path = "../vector_engine" }
 graph_engine = { path = "../graph_engine" }
 tonic = { version = "0.12", features = ["gzip", "tls"] }
-tonic-web = "0.12"
+tonic-web = "0.14"
 tonic-reflection = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros", "time", "net"] }
