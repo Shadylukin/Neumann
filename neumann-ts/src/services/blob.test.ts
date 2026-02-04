@@ -496,7 +496,7 @@ describe('BlobClient', () => {
     it('should use message fallback when unknown error has empty details', async () => {
       vi.mocked(mockGrpcClient.Delete).mockImplementation(
         (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: { success: boolean }) => void) => {
-          callback({ code: 99, details: '', message: 'fallback message', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, { success: false });
+          callback({ code: 99, details: '', message: 'fallback message', name: 'Error', metadata: {} as grpc.Metadata } as unknown as grpc.ServiceError, { success: false });
           return {} as grpc.ClientUnaryCall;
         }
       );
@@ -507,7 +507,7 @@ describe('BlobClient', () => {
     it('should use Internal error when unknown error has no message', async () => {
       vi.mocked(mockGrpcClient.Delete).mockImplementation(
         (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: { success: boolean }) => void) => {
-          callback({ code: 99, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, { success: false });
+          callback({ code: 99, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as unknown as grpc.ServiceError, { success: false });
           return {} as grpc.ClientUnaryCall;
         }
       );
