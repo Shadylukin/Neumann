@@ -49,6 +49,10 @@ export type {
   PaginatedResult,
 } from './client.js';
 
+// Transactions
+export { Transaction, TransactionBuilder } from './transaction.js';
+export type { TransactionOptions, CommitResult, RollbackResult } from './transaction.js';
+
 // Retry and configuration
 export {
   withRetry,

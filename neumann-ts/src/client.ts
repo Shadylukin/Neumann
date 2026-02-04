@@ -56,6 +56,8 @@ import type { QueryServiceClient } from './grpc.js';
 import type { ClientConfig, PartialClientConfig } from './config.js';
 import { mergeClientConfig, toGrpcChannelOptions } from './config.js';
 import { withRetry } from './retry.js';
+import { Transaction } from './transaction.js';
+import type { TransactionOptions } from './transaction.js';
 
 /**
  * Options for connecting to a Neumann server.
@@ -842,6 +844,55 @@ export class NeumannClient {
       return new ConnectionError(err.details || 'Service unavailable');
     }
     return new InternalError(err.details || err.message || 'Internal error');
+  }
+
+  // ============================================================================
+  // Transaction Support
+  // ============================================================================
+
+  /**
+   * Create a new transaction.
+   *
+   * @param options - Transaction options.
+   * @returns A new Transaction instance.
+   *
+   * @example
+   * ```typescript
+   * const tx = client.beginTransaction();
+   * await tx.begin();
+   * await tx.execute("INSERT users name='Alice'");
+   * await tx.commit();
+   * ```
+   */
+  beginTransaction(options?: TransactionOptions): Transaction {
+    return new Transaction(this, options);
+  }
+
+  /**
+   * Execute a function within a transaction with automatic commit/rollback.
+   *
+   * If the function completes successfully, the transaction is committed.
+   * If the function throws an error, the transaction is rolled back.
+   *
+   * @param fn - The function to execute within the transaction.
+   * @param options - Transaction options.
+   * @returns The result of the function.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.withTransaction(async (tx) => {
+   *   await tx.execute("INSERT users name='Alice'");
+   *   await tx.execute("INSERT users name='Bob'");
+   *   return 'success';
+   * });
+   * ```
+   */
+  async withTransaction<T>(
+    fn: (tx: Transaction) => Promise<T>,
+    options?: TransactionOptions
+  ): Promise<T> {
+    const tx = this.beginTransaction(options);
+    return tx.run(fn);
   }
 }
 
