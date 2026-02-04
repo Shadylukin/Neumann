@@ -132,7 +132,7 @@ async fn test_blob_repair_corrupted_metadata() {
         .unwrap();
 
     // Run repair
-    let repair_stats = blob.repair().await.unwrap();
+    let repair_stats = blob.repair().unwrap();
 
     // With clean data, nothing should need repair
     assert!(repair_stats.artifacts_checked >= 2);
@@ -158,7 +158,7 @@ async fn test_blob_verify_integrity() {
         .unwrap();
 
     // Verify integrity
-    let is_valid = blob.verify(&id).await.unwrap();
+    let is_valid = blob.verify(&id).unwrap();
     assert!(
         is_valid,
         "Freshly uploaded blob should pass integrity check"
