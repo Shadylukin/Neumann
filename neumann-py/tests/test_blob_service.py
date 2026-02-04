@@ -365,8 +365,9 @@ class TestBlobServiceClientConnect:
 
     def test_connect_insecure(self) -> None:
         """Test connecting without TLS."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.neumann_pb2_grpc.BlobServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.neumann_pb2_grpc.BlobServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -378,10 +379,10 @@ class TestBlobServiceClientConnect:
 
     def test_connect_with_tls(self) -> None:
         """Test connecting with TLS."""
-        with patch("grpc.ssl_channel_credentials") as mock_creds, patch(
-            "grpc.secure_channel"
-        ) as mock_channel, patch(
-            "neumann.proto.neumann_pb2_grpc.BlobServiceStub"
+        with (
+            patch("grpc.ssl_channel_credentials") as mock_creds,
+            patch("grpc.secure_channel") as mock_channel,
+            patch("neumann.proto.neumann_pb2_grpc.BlobServiceStub"),
         ):
             mock_creds.return_value = MagicMock()
             mock_channel.return_value = MagicMock()
@@ -394,8 +395,9 @@ class TestBlobServiceClientConnect:
 
     def test_connect_with_api_key(self) -> None:
         """Test connecting with API key."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.neumann_pb2_grpc.BlobServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.neumann_pb2_grpc.BlobServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -409,8 +411,9 @@ class TestBlobServiceClientConnect:
 
     def test_close(self) -> None:
         """Test close clears state."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.neumann_pb2_grpc.BlobServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.neumann_pb2_grpc.BlobServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -423,8 +426,9 @@ class TestBlobServiceClientConnect:
 
     def test_context_manager(self) -> None:
         """Test client as context manager."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.neumann_pb2_grpc.BlobServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.neumann_pb2_grpc.BlobServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -441,8 +445,9 @@ class TestBlobServiceClientConvenienceMethods:
         """Set up test fixtures."""
         self.mock_blob = MagicMock(spec=BlobClient)
 
-        with patch("grpc.insecure_channel"), patch(
-            "neumann.proto.neumann_pb2_grpc.BlobServiceStub"
+        with (
+            patch("grpc.insecure_channel"),
+            patch("neumann.proto.neumann_pb2_grpc.BlobServiceStub"),
         ):
             self.client = BlobServiceClient.connect("localhost:50051")
             self.client._blob = self.mock_blob

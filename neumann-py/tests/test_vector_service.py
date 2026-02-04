@@ -481,12 +481,11 @@ class TestVectorClientConnect:
 
     def test_connect_with_tls(self) -> None:
         """Test connect with TLS creates secure channel."""
-        with patch("grpc.ssl_channel_credentials") as mock_creds, patch(
-            "grpc.secure_channel"
-        ) as mock_channel, patch(
-            "neumann.proto.vector_pb2_grpc.PointsServiceStub"
-        ), patch(
-            "neumann.proto.vector_pb2_grpc.CollectionsServiceStub"
+        with (
+            patch("grpc.ssl_channel_credentials") as mock_creds,
+            patch("grpc.secure_channel") as mock_channel,
+            patch("neumann.proto.vector_pb2_grpc.PointsServiceStub"),
+            patch("neumann.proto.vector_pb2_grpc.CollectionsServiceStub"),
         ):
             mock_creds.return_value = MagicMock()
             mock_channel.return_value = MagicMock()
@@ -501,10 +500,10 @@ class TestVectorClientConnect:
 
     def test_connect_with_api_key(self) -> None:
         """Test connect with API key sets metadata."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.vector_pb2_grpc.PointsServiceStub"
-        ), patch(
-            "neumann.proto.vector_pb2_grpc.CollectionsServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.vector_pb2_grpc.PointsServiceStub"),
+            patch("neumann.proto.vector_pb2_grpc.CollectionsServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -525,10 +524,10 @@ class TestVectorClientConnect:
 
     def test_close_clears_state(self) -> None:
         """Test close clears all state."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.vector_pb2_grpc.PointsServiceStub"
-        ), patch(
-            "neumann.proto.vector_pb2_grpc.CollectionsServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.vector_pb2_grpc.PointsServiceStub"),
+            patch("neumann.proto.vector_pb2_grpc.CollectionsServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -544,10 +543,10 @@ class TestVectorClientConnect:
 
     def test_context_manager(self) -> None:
         """Test client as context manager."""
-        with patch("grpc.insecure_channel") as mock_channel, patch(
-            "neumann.proto.vector_pb2_grpc.PointsServiceStub"
-        ), patch(
-            "neumann.proto.vector_pb2_grpc.CollectionsServiceStub"
+        with (
+            patch("grpc.insecure_channel") as mock_channel,
+            patch("neumann.proto.vector_pb2_grpc.PointsServiceStub"),
+            patch("neumann.proto.vector_pb2_grpc.CollectionsServiceStub"),
         ):
             mock_channel.return_value = MagicMock()
 
@@ -565,10 +564,10 @@ class TestVectorClientConvenienceMethods:
         self.mock_points = MagicMock(spec=PointsClient)
         self.mock_collections = MagicMock(spec=CollectionsClient)
 
-        with patch("grpc.insecure_channel"), patch(
-            "neumann.proto.vector_pb2_grpc.PointsServiceStub"
-        ), patch(
-            "neumann.proto.vector_pb2_grpc.CollectionsServiceStub"
+        with (
+            patch("grpc.insecure_channel"),
+            patch("neumann.proto.vector_pb2_grpc.PointsServiceStub"),
+            patch("neumann.proto.vector_pb2_grpc.CollectionsServiceStub"),
         ):
             self.client = VectorClient.connect("localhost:50051")
             self.client._points = self.mock_points
@@ -650,9 +649,7 @@ class TestVectorClientConvenienceMethods:
 
     def test_query_points(self) -> None:
         """Test query_points delegates to points client."""
-        self.mock_points.query.return_value = [
-            ScoredVectorPoint(id="p1", score=0.9)
-        ]
+        self.mock_points.query.return_value = [ScoredVectorPoint(id="p1", score=0.9)]
 
         result = self.client.query_points(
             "test",
