@@ -1,5 +1,5 @@
 {
-  "name": "@neumann/client",
+  "name": "@scrunchee/client",
   "version": "0.2.0",
   "description": "TypeScript SDK for Neumann database",
   "type": "module",
