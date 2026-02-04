@@ -209,6 +209,15 @@ describe('NeumannClient', () => {
       client.close();
     });
 
+    it('should expose client configuration', async () => {
+      const client = await NeumannClient.connect('localhost:50051');
+      expect(client.clientConfig).toBeDefined();
+      expect(client.clientConfig.timeout.defaultTimeoutS).toBe(30);
+      expect(client.clientConfig.retry).toBeDefined();
+      expect(client.clientConfig.keepalive).toBeDefined();
+      client.close();
+    });
+
     it('should support TLS connections', async () => {
       const client = await NeumannClient.connect('localhost:50051', { tls: true });
       expect(client.isConnected).toBe(true);
