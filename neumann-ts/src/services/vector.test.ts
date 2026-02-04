@@ -271,6 +271,28 @@ describe('PointsClient', () => {
 
       await expect(client.query('test', [0.1])).rejects.toThrow(ConnectionError);
     });
+
+    it('should handle delete error', async () => {
+      vi.mocked(mockGrpcClient.Delete).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: DeletePointsResponse) => void) => {
+          callback(createServiceError(5, 'Collection not found'), { deleted: 0 });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.delete('missing', ['p1'])).rejects.toThrow(NotFoundError);
+    });
+
+    it('should handle scroll error', async () => {
+      vi.mocked(mockGrpcClient.Scroll).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: ScrollPointsResponse) => void) => {
+          callback(createServiceError(14, 'Service unavailable'), { points: [] });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.scroll('test')).rejects.toThrow(ConnectionError);
+    });
   });
 });
 
@@ -407,6 +429,40 @@ describe('CollectionsClient', () => {
       );
 
       await expect(client.create('existing', 384)).rejects.toThrow(InvalidArgumentError);
+    });
+
+    it('should handle delete error', async () => {
+      vi.mocked(mockGrpcClient.Delete).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: DeleteCollectionResponse) => void) => {
+          callback(createServiceError(5, 'Collection not found'), { deleted: false });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.delete('missing')).rejects.toThrow(NotFoundError);
+    });
+
+    it('should handle list error', async () => {
+      vi.mocked(mockGrpcClient.List).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: ListCollectionsResponse) => void) => {
+          callback(createServiceError(14, 'Service unavailable'), { collections: [] });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.list()).rejects.toThrow(ConnectionError);
+    });
+
+    it('should handle unknown error as InternalError', async () => {
+      vi.mocked(mockGrpcClient.Get).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: GetCollectionResponse) => void) => {
+          callback(createServiceError(99, 'Unknown error'), {} as GetCollectionResponse);
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      const { InternalError } = await import('../types/errors.js');
+      await expect(client.get('test')).rejects.toThrow(InternalError);
     });
   });
 });

@@ -118,6 +118,32 @@ describe('BlobClient', () => {
       expect(mockStream.stream.end).toHaveBeenCalled();
     });
 
+    it('should upload with createdBy option', async () => {
+      const response: BlobUploadResponse = {
+        artifactId: 'artifact-456',
+        size: 512,
+        checksum: 'def456',
+      };
+
+      const mockStream = createMockWritableStream(response);
+      vi.mocked(mockGrpcClient.Upload).mockImplementation(
+        (_metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: BlobUploadResponse) => void) => {
+          mockStream.setCallback(callback);
+          setTimeout(() => mockStream.triggerResponse(), 0);
+          return mockStream.stream as unknown as grpc.ClientWritableStream<unknown>;
+        }
+      );
+
+      const result = await client.uploadBlob('test.txt', Buffer.from('data'), {
+        createdBy: 'user-123',
+        linkedTo: ['artifact-1'],
+        custom: { key: 'value' },
+      });
+
+      expect(result.artifactId).toBe('artifact-456');
+      expect(mockStream.stream.write).toHaveBeenCalled();
+    });
+
     it('should handle upload errors', async () => {
       const mockStream = createMockWritableStream({} as BlobUploadResponse);
       vi.mocked(mockGrpcClient.Upload).mockImplementation(
@@ -130,6 +156,72 @@ describe('BlobClient', () => {
 
       await expect(client.uploadBlob('test.txt', Buffer.from('data'))).rejects.toThrow(NotFoundError);
     });
+  });
+
+  describe('uploadBlobStreaming', () => {
+    it('should upload blob from async iterable', async () => {
+      const response: BlobUploadResponse = {
+        artifactId: 'artifact-stream',
+        size: 2048,
+        checksum: 'stream123',
+      };
+
+      const mockStream = createMockWritableStream(response);
+      vi.mocked(mockGrpcClient.Upload).mockImplementation(
+        (_metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: BlobUploadResponse) => void) => {
+          mockStream.setCallback(callback);
+          setTimeout(() => mockStream.triggerResponse(), 10);
+          return mockStream.stream as unknown as grpc.ClientWritableStream<unknown>;
+        }
+      );
+
+      async function* generateChunks(): AsyncIterable<Uint8Array> {
+        yield new Uint8Array([1, 2, 3]);
+        yield new Uint8Array([4, 5, 6]);
+      }
+
+      const result = await client.uploadBlobStreaming('stream.bin', generateChunks());
+
+      expect(result.artifactId).toBe('artifact-stream');
+      expect(mockStream.stream.write).toHaveBeenCalled();
+    });
+
+    it('should handle streaming upload errors', async () => {
+      const mockStream = createMockWritableStream({} as BlobUploadResponse);
+      vi.mocked(mockGrpcClient.Upload).mockImplementation(
+        (_metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: BlobUploadResponse) => void) => {
+          mockStream.setCallback(callback);
+          setTimeout(() => mockStream.triggerError(createServiceError(14, 'Unavailable')), 0);
+          return mockStream.stream as unknown as grpc.ClientWritableStream<unknown>;
+        }
+      );
+
+      async function* generateChunks(): AsyncIterable<Uint8Array> {
+        yield new Uint8Array([1, 2, 3]);
+      }
+
+      await expect(client.uploadBlobStreaming('stream.bin', generateChunks())).rejects.toThrow(ConnectionError);
+    });
+
+    it('should handle chunk iteration errors', async () => {
+      const mockStream = createMockWritableStream({} as BlobUploadResponse);
+      vi.mocked(mockGrpcClient.Upload).mockImplementation(
+        (_metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: BlobUploadResponse) => void) => {
+          mockStream.setCallback(callback);
+          // Trigger error after a short delay to allow iteration to fail first
+          setTimeout(() => mockStream.triggerError(createServiceError(13, 'Internal')), 50);
+          return mockStream.stream as unknown as grpc.ClientWritableStream<unknown>;
+        }
+      );
+
+      async function* failingGenerator(): AsyncIterable<Uint8Array> {
+        yield new Uint8Array([1, 2, 3]);
+        throw new Error('Iteration failed');
+      }
+
+      await expect(client.uploadBlobStreaming('stream.bin', failingGenerator())).rejects.toThrow();
+      expect(mockStream.stream.destroy).toHaveBeenCalled();
+    }, 10000);
   });
 
   describe('downloadBlob', () => {
@@ -150,6 +242,74 @@ describe('BlobClient', () => {
 
       expect(receivedChunks).toHaveLength(3);
       expect(receivedChunks[0]).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
+    it('should skip empty chunks', async () => {
+      const chunks: BlobDownloadChunk[] = [
+        { data: new Uint8Array([1, 2, 3]), isFinal: false },
+        { data: new Uint8Array([]), isFinal: false },
+        { data: new Uint8Array([4, 5, 6]), isFinal: true },
+      ];
+
+      const mockStream = createMockReadableStream(chunks);
+      vi.mocked(mockGrpcClient.Download).mockReturnValue(mockStream);
+
+      const receivedChunks: Uint8Array[] = [];
+      for await (const chunk of client.downloadBlob('artifact-123')) {
+        receivedChunks.push(chunk);
+      }
+
+      expect(receivedChunks).toHaveLength(2);
+    });
+
+    it('should call cancel on stream when available', async () => {
+      const chunks: BlobDownloadChunk[] = [
+        { data: new Uint8Array([1, 2, 3]), isFinal: true },
+      ];
+
+      const cancelFn = vi.fn();
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          for (const chunk of chunks) {
+            yield chunk;
+          }
+        },
+        cancel: cancelFn,
+      };
+
+      vi.mocked(mockGrpcClient.Download).mockReturnValue(mockStream as unknown as grpc.ClientReadableStream<BlobDownloadChunk>);
+
+      const receivedChunks: Uint8Array[] = [];
+      for await (const chunk of client.downloadBlob('artifact-123')) {
+        receivedChunks.push(chunk);
+      }
+
+      expect(cancelFn).toHaveBeenCalled();
+    });
+
+    it('should handle cancel errors gracefully', async () => {
+      const chunks: BlobDownloadChunk[] = [
+        { data: new Uint8Array([1, 2, 3]), isFinal: true },
+      ];
+
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          for (const chunk of chunks) {
+            yield chunk;
+          }
+        },
+        cancel: () => { throw new Error('Cancel failed'); },
+      };
+
+      vi.mocked(mockGrpcClient.Download).mockReturnValue(mockStream as unknown as grpc.ClientReadableStream<BlobDownloadChunk>);
+
+      // Should not throw even though cancel throws
+      const receivedChunks: Uint8Array[] = [];
+      for await (const chunk of client.downloadBlob('artifact-123')) {
+        receivedChunks.push(chunk);
+      }
+
+      expect(receivedChunks).toHaveLength(1);
     });
   });
 
@@ -224,6 +384,45 @@ describe('BlobClient', () => {
       expect(result.id).toBe('artifact-123');
       expect(result.filename).toBe('test.txt');
       expect(result.contentType).toBe('text/plain');
+    });
+
+    it('should handle getBlobMetadata errors', async () => {
+      vi.mocked(mockGrpcClient.GetMetadata).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: ArtifactInfo) => void) => {
+          callback(createServiceError(5, 'Artifact not found'), {} as ArtifactInfo);
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.getBlobMetadata('nonexistent')).rejects.toThrow(NotFoundError);
+    });
+
+    it('should handle metadata without custom field', async () => {
+      const artifactInfo = {
+        id: 'artifact-123',
+        filename: 'test.txt',
+        contentType: 'text/plain',
+        size: 1024,
+        checksum: 'abc123',
+        chunkCount: 1,
+        created: Date.now(),
+        modified: Date.now(),
+        createdBy: 'user-1',
+        tags: ['test'],
+        linkedTo: [],
+        // custom is undefined
+      } as ArtifactInfo;
+
+      vi.mocked(mockGrpcClient.GetMetadata).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: ArtifactInfo) => void) => {
+          callback(null, artifactInfo);
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      const result = await client.getBlobMetadata('artifact-123');
+
+      expect(result.custom).toEqual({});
     });
   });
 

@@ -2407,6 +2407,10 @@ describe('Validation Utilities', () => {
       expect(() => validateFloatValue(Infinity)).toThrow(InvalidArgumentError);
       expect(() => validateFloatValue(-Infinity)).toThrow(InvalidArgumentError);
     });
+
+    it('should include context in error message', () => {
+      expect(() => validateFloatValue(NaN, 'temperature')).toThrow('temperature');
+    });
   });
 
   describe('validateStringValue', () => {
@@ -2419,6 +2423,11 @@ describe('Validation Utilities', () => {
       const longString = 'x'.repeat(MAX_STRING_LENGTH + 1);
       expect(() => validateStringValue(longString)).toThrow(InvalidArgumentError);
     });
+
+    it('should include context in error message', () => {
+      const longString = 'x'.repeat(MAX_STRING_LENGTH + 1);
+      expect(() => validateStringValue(longString, 'description')).toThrow('description');
+    });
   });
 
   describe('validateBytesValue', () => {
@@ -2430,6 +2439,11 @@ describe('Validation Utilities', () => {
     it('should reject bytes exceeding limit', () => {
       const largeBytes = new Uint8Array(MAX_BYTES_LENGTH + 1);
       expect(() => validateBytesValue(largeBytes)).toThrow(InvalidArgumentError);
+    });
+
+    it('should include context in error message', () => {
+      const largeBytes = new Uint8Array(MAX_BYTES_LENGTH + 1);
+      expect(() => validateBytesValue(largeBytes, 'payload')).toThrow('payload');
     });
   });
 
