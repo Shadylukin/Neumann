@@ -101,7 +101,7 @@ jobs:
       - name: Restore corpus cache
         # v4.2.3
         uses: >-
-          actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+          actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: >-
@@ -156,7 +156,7 @@ jobs:
       - name: Save corpus cache
         # v4.2.3
         uses: >-
-          actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+          actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306
         if: always()
         with:
           path: fuzz/corpus/${{ matrix.target }}
