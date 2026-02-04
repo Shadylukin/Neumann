@@ -242,3 +242,156 @@ class TestTransactionBuilder:
 
         assert tx._identity == "user:alice"
         assert tx._auto_commit is False
+
+
+class TestAsyncTransactionErrorHandling:
+    """Tests for AsyncTransaction error handling."""
+
+    @pytest.mark.asyncio
+    async def test_begin_returns_error(self, mock_client: AsyncMock) -> None:
+        """Test begin when server returns error result type."""
+        mock_client.execute.return_value = QueryResult(
+            QueryResultType.ERROR,
+            "Transaction begin failed",
+        )
+
+        tx = AsyncTransaction(mock_client)
+
+        with pytest.raises(NeumannError, match="Failed to begin transaction"):
+            await tx.begin()
+
+    @pytest.mark.asyncio
+    async def test_begin_unexpected_result_type(self, mock_client: AsyncMock) -> None:
+        """Test begin with unexpected result type."""
+        mock_client.execute.return_value = QueryResult(
+            QueryResultType.COUNT,
+            1,
+        )
+
+        tx = AsyncTransaction(mock_client)
+
+        with pytest.raises(NeumannError, match="Unexpected result type"):
+            await tx.begin()
+
+    @pytest.mark.asyncio
+    async def test_commit_when_not_active(self, mock_client: AsyncMock) -> None:
+        """Test commit when transaction not active."""
+        tx = AsyncTransaction(mock_client)
+
+        with pytest.raises(NeumannError, match="not active"):
+            await tx.commit()
+
+    @pytest.mark.asyncio
+    async def test_commit_returns_error(self, mock_client: AsyncMock) -> None:
+        """Test commit when server returns error."""
+        mock_client.execute.side_effect = [
+            QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id="tx-123"),
+            ),
+            QueryResult(
+                QueryResultType.ERROR,
+                "Commit failed",
+            ),
+        ]
+
+        tx = AsyncTransaction(mock_client)
+        await tx.begin()
+
+        with pytest.raises(NeumannError, match="Failed to commit transaction"):
+            await tx.commit()
+
+    @pytest.mark.asyncio
+    async def test_commit_unexpected_result_type(self, mock_client: AsyncMock) -> None:
+        """Test commit with unexpected result type."""
+        mock_client.execute.side_effect = [
+            QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id="tx-123"),
+            ),
+            QueryResult(
+                QueryResultType.COUNT,
+                1,
+            ),
+        ]
+
+        tx = AsyncTransaction(mock_client)
+        await tx.begin()
+
+        with pytest.raises(NeumannError, match="Unexpected result type"):
+            await tx.commit()
+
+    @pytest.mark.asyncio
+    async def test_rollback_when_not_active(self, mock_client: AsyncMock) -> None:
+        """Test rollback when transaction not active."""
+        tx = AsyncTransaction(mock_client)
+
+        with pytest.raises(NeumannError, match="not active"):
+            await tx.rollback()
+
+    @pytest.mark.asyncio
+    async def test_rollback_returns_error(self, mock_client: AsyncMock) -> None:
+        """Test rollback when server returns error."""
+        mock_client.execute.side_effect = [
+            QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id="tx-123"),
+            ),
+            QueryResult(
+                QueryResultType.ERROR,
+                "Rollback failed",
+            ),
+        ]
+
+        tx = AsyncTransaction(mock_client)
+        await tx.begin()
+
+        with pytest.raises(NeumannError, match="Failed to rollback transaction"):
+            await tx.rollback()
+
+    @pytest.mark.asyncio
+    async def test_rollback_unexpected_result_type(self, mock_client: AsyncMock) -> None:
+        """Test rollback with unexpected result type."""
+        mock_client.execute.side_effect = [
+            QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id="tx-123"),
+            ),
+            QueryResult(
+                QueryResultType.COUNT,
+                1,
+            ),
+        ]
+
+        tx = AsyncTransaction(mock_client)
+        await tx.begin()
+
+        with pytest.raises(NeumannError, match="Unexpected result type"):
+            await tx.rollback()
+
+    @pytest.mark.asyncio
+    async def test_context_exit_when_not_active(self, mock_client: AsyncMock) -> None:
+        """Test context manager exit when transaction not active."""
+        tx = AsyncTransaction(mock_client)
+        tx._active = False  # Not active
+
+        # Should not raise - just return
+        await tx.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_context_exit_exception_with_rollback_failure(
+        self, mock_client: AsyncMock
+    ) -> None:
+        """Test context manager handles rollback failure silently."""
+        mock_client.execute.side_effect = [
+            QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id="tx-123"),
+            ),
+            Exception("Rollback failed due to network error"),
+        ]
+
+        # Should suppress the rollback error but propagate original exception
+        with pytest.raises(ValueError, match="original error"):
+            async with AsyncTransaction(mock_client) as tx:
+                raise ValueError("original error")

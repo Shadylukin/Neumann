@@ -332,3 +332,136 @@ class TestIntegrationModuleExports:
         ]
 
         assert set(__all__) == set(expected)
+
+
+class TestPandasIntegrationAdvanced:
+    """Advanced tests for pandas integration."""
+
+    def test_dataframe_to_inserts_with_column_mapping(self) -> None:
+        """Test converting dataframe with column mapping."""
+        pd = pytest.importorskip("pandas")
+        from neumann.integrations.pandas import dataframe_to_inserts
+
+        df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
+
+        inserts = dataframe_to_inserts(
+            df, "test_table", column_mapping={"col1": "id", "col2": "name"}
+        )
+
+        assert len(inserts) == 2
+        assert "id=" in inserts[0]
+        assert "name=" in inserts[0]
+        assert "col1" not in inserts[0]
+
+    def test_dataframe_to_inserts_with_float(self) -> None:
+        """Test converting dataframe with float values."""
+        pd = pytest.importorskip("pandas")
+        from neumann.integrations.pandas import dataframe_to_inserts
+
+        df = pd.DataFrame({"id": [1], "value": [3.14159]})
+
+        inserts = dataframe_to_inserts(df, "data")
+
+        assert len(inserts) == 1
+        assert "3.14159" in inserts[0]
+
+    def test_dataframe_to_inserts_with_special_chars(self) -> None:
+        """Test converting dataframe with special characters in strings."""
+        pd = pytest.importorskip("pandas")
+        from neumann.integrations.pandas import dataframe_to_inserts
+
+        df = pd.DataFrame({"text": ['hello "world"', "line1\nline2"]})
+
+        inserts = dataframe_to_inserts(df, "messages")
+
+        assert len(inserts) == 2
+        assert '\\"' in inserts[0]  # Escaped quote
+
+    def test_dataframe_to_inserts_with_non_primitive_values(self) -> None:
+        """Test converting dataframe with non-primitive values."""
+        pd = pytest.importorskip("pandas")
+        from neumann.integrations.pandas import dataframe_to_inserts
+
+        # Test with a custom object that converts to string
+        df = pd.DataFrame({"data": [{"key": "value"}]})
+
+        inserts = dataframe_to_inserts(df, "objects")
+
+        assert len(inserts) == 1
+        assert "INSERT objects" in inserts[0]
+
+
+class TestNumpyIntegrationAdvanced:
+    """Advanced tests for numpy integration."""
+
+    def test_vector_to_insert_with_zero_norm(self) -> None:
+        """Test vector_to_insert with zero vector and normalize."""
+        np = pytest.importorskip("numpy")
+        from neumann.integrations.numpy import vector_to_insert
+
+        vec = np.array([0.0, 0.0, 0.0])
+        # Zero vector stays zero after normalization (norm == 0)
+        insert = vector_to_insert("zero_vec", vec, normalize=True)
+
+        assert "INSERT VECTOR" in insert
+        assert "0.000000" in insert
+
+    def test_cosine_similarity_zero_vector(self) -> None:
+        """Test cosine similarity with zero vector."""
+        np = pytest.importorskip("numpy")
+        from neumann.integrations.numpy import cosine_similarity
+
+        a = np.array([0.0, 0.0])
+        b = np.array([1.0, 0.0])
+
+        sim = cosine_similarity(a, b)
+        assert sim == 0.0  # Zero vector returns 0
+
+    def test_cosine_similarity_both_zero(self) -> None:
+        """Test cosine similarity with both vectors zero."""
+        np = pytest.importorskip("numpy")
+        from neumann.integrations.numpy import cosine_similarity
+
+        a = np.array([0.0, 0.0])
+        b = np.array([0.0, 0.0])
+
+        sim = cosine_similarity(a, b)
+        assert sim == 0.0
+
+    def test_vectors_to_inserts_with_normalize(self) -> None:
+        """Test converting multiple vectors with normalization."""
+        np = pytest.importorskip("numpy")
+        from neumann.integrations.numpy import vectors_to_inserts
+
+        vectors = {
+            "doc1": np.array([3.0, 4.0]),
+            "doc2": np.array([1.0, 0.0]),
+        }
+        inserts = vectors_to_inserts(vectors, normalize=True)
+
+        assert len(inserts) == 2
+        # First vector [3,4] normalized should be [0.6, 0.8]
+        assert any("0.6" in i for i in inserts)
+        assert any("0.8" in i for i in inserts)
+
+    def test_parse_embedding_with_extra_spaces(self) -> None:
+        """Test parsing embedding with extra whitespace."""
+        np = pytest.importorskip("numpy")
+        from neumann.integrations.numpy import parse_embedding
+
+        embedding_str = "[  0.1,   0.2  ,  0.3  ]"
+        vec = parse_embedding(embedding_str)
+
+        assert len(vec) == 3
+        assert np.allclose(vec, [0.1, 0.2, 0.3])
+
+    def test_normalize_vectors_1d(self) -> None:
+        """Test normalizing 1D array."""
+        np = pytest.importorskip("numpy")
+        from neumann.integrations.numpy import normalize_vectors
+
+        vector = np.array([3.0, 4.0])  # 1D input
+        normalized = normalize_vectors(vector)
+
+        # Should handle 1D input
+        assert np.allclose(np.linalg.norm(normalized), 1.0)

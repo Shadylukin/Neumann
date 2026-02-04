@@ -260,3 +260,132 @@ class TestWithRetryAsyncDecorator:
 
         result = await add(2, 3)
         assert result == 5
+
+
+class TestRetryEdgeCases:
+    """Tests for retry edge cases."""
+
+    def test_with_retry_exhausts_retries(self) -> None:
+        """Test with_retry decorator exhausts all retries."""
+        config = RetryConfig(max_attempts=3, initial_backoff_ms=1)
+        call_count = 0
+
+        @with_retry(config)
+        def failing_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise MockGrpcError(14)  # UNAVAILABLE
+
+        with pytest.raises(MockGrpcError):
+            failing_func()
+
+        assert call_count == 3
+
+    def test_with_retry_success_after_retry(self) -> None:
+        """Test with_retry succeeds after transient failure."""
+        config = RetryConfig(max_attempts=3, initial_backoff_ms=1)
+        call_count = 0
+
+        @with_retry(config)
+        def intermittent_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise MockGrpcError(14)
+            return "success"
+
+        result = intermittent_func()
+
+        assert result == "success"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_with_retry_async_exhausts_retries(self) -> None:
+        """Test with_retry_async decorator exhausts all retries."""
+        config = RetryConfig(max_attempts=3, initial_backoff_ms=1)
+        call_count = 0
+
+        @with_retry_async(config)
+        async def failing_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise MockGrpcError(14)
+
+        with pytest.raises(MockGrpcError):
+            await failing_func()
+
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_with_retry_async_success_after_retry(self) -> None:
+        """Test with_retry_async succeeds after transient failure."""
+        config = RetryConfig(max_attempts=3, initial_backoff_ms=1)
+        call_count = 0
+
+        @with_retry_async(config)
+        async def intermittent_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise MockGrpcError(14)
+            return "success"
+
+        result = await intermittent_func()
+
+        assert result == "success"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_call_async_exhausts_retries(self) -> None:
+        """Test retry_call_async exhausts all retries."""
+        config = RetryConfig(max_attempts=3, initial_backoff_ms=1)
+        call_count = 0
+
+        async def failing_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise MockGrpcError(14)
+
+        with pytest.raises(MockGrpcError):
+            await retry_call_async(failing_func, config)
+
+        assert call_count == 3
+
+    def test_is_retryable_handles_code_exception(self) -> None:
+        """Test _is_retryable handles exceptions from code()."""
+        config = RetryConfig()
+
+        class BadError(Exception):
+            def code(self) -> None:
+                raise RuntimeError("code() failed")
+
+        error = BadError()
+        assert _is_retryable(error, config) is False
+
+    def test_is_retryable_handles_missing_value(self) -> None:
+        """Test _is_retryable handles missing value attribute."""
+        config = RetryConfig()
+
+        class WeirdCode:
+            pass
+
+        class WeirdError(Exception):
+            def code(self) -> WeirdCode:
+                return WeirdCode()
+
+        error = WeirdError()
+        assert _is_retryable(error, config) is False
+
+    def test_is_retryable_handles_non_tuple_value(self) -> None:
+        """Test _is_retryable handles non-tuple value."""
+        config = RetryConfig()
+
+        class IntCode:
+            value = 14  # Not a tuple
+
+        class WeirdError(Exception):
+            def code(self) -> IntCode:
+                return IntCode()
+
+        error = WeirdError()
+        assert _is_retryable(error, config) is False
