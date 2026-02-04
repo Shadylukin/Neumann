@@ -393,5 +393,5 @@ class TestAsyncTransactionErrorHandling:
 
         # Should suppress the rollback error but propagate original exception
         with pytest.raises(ValueError, match="original error"):
-            async with AsyncTransaction(mock_client) as tx:
+            async with AsyncTransaction(mock_client):
                 raise ValueError("original error")

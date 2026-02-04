@@ -520,10 +520,8 @@ class TestVectorClientConnect:
         """Test connect raises when gRPC not available."""
         from neumann.errors import ConnectionError
 
-        with patch.dict("sys.modules", {"grpc": None}):
-            # Force reimport to trigger ImportError
-            with pytest.raises(ConnectionError):
-                VectorClient.connect("localhost:50051")
+        with patch.dict("sys.modules", {"grpc": None}), pytest.raises(ConnectionError):
+            VectorClient.connect("localhost:50051")
 
     def test_close_clears_state(self) -> None:
         """Test close clears all state."""
