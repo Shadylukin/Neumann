@@ -93,6 +93,20 @@ describe('VectorClient', () => {
 
       client.close();
     });
+
+    it('should throw ConnectionError on connection failure', async () => {
+      const { loadVectorProto } = await import('./grpc.js');
+      vi.mocked(loadVectorProto).mockRejectedValueOnce(new Error('Connection refused'));
+
+      await expect(VectorClient.connect('invalid:9200')).rejects.toThrow(ConnectionError);
+    });
+
+    it('should include error message in ConnectionError', async () => {
+      const { loadVectorProto } = await import('./grpc.js');
+      vi.mocked(loadVectorProto).mockRejectedValueOnce(new Error('Connection refused'));
+
+      await expect(VectorClient.connect('invalid:9200')).rejects.toThrow('Failed to connect');
+    });
   });
 
   describe('close', () => {
@@ -217,6 +231,28 @@ describe('VectorClient', () => {
       client.close();
 
       await expect(client.countPoints('test')).rejects.toThrow(ConnectionError);
+    });
+  });
+
+  describe('countPoints', () => {
+    it('should return point count from collection info', async () => {
+      const { getCollectionsServiceClient } = await import('./grpc.js');
+      vi.mocked(getCollectionsServiceClient).mockReturnValue({
+        Get: vi.fn((_req, _meta, cb) => {
+          cb(null, { name: 'test', pointsCount: 42, dimension: 384, distance: 'cosine' });
+          return {} as never;
+        }),
+        Create: vi.fn(),
+        Delete: vi.fn(),
+        List: vi.fn(),
+        close: vi.fn(),
+      } as never);
+
+      const client = await VectorClient.connect('localhost:9200');
+      const count = await client.countPoints('test');
+
+      expect(count).toBe(42);
+      client.close();
     });
   });
 });

@@ -112,6 +112,25 @@ describe('PointsClient', () => {
 
       expect(result[0]?.payload?.name).toBe('hello');
     });
+
+    it('should handle non-JSON payload as string', async () => {
+      // Non-JSON payload (plain text that's not valid JSON)
+      const payload = new TextEncoder().encode('plain text value');
+      const points: Point[] = [
+        { id: 'p1', vector: [0.1], payload: { description: payload } },
+      ];
+
+      vi.mocked(mockGrpcClient.Get).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: GetPointsResponse) => void) => {
+          callback(null, { points });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      const result = await client.get('test-collection', ['p1']);
+
+      expect(result[0]?.payload?.description).toBe('plain text value');
+    });
   });
 
   describe('delete', () => {
@@ -293,6 +312,40 @@ describe('PointsClient', () => {
 
       await expect(client.scroll('test')).rejects.toThrow(ConnectionError);
     });
+
+    it('should handle unknown error as InternalError', async () => {
+      vi.mocked(mockGrpcClient.Get).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: GetPointsResponse) => void) => {
+          callback(createServiceError(99, 'Unknown error'), { points: [] });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      const { InternalError } = await import('../types/errors.js');
+      await expect(client.get('test', ['p1'])).rejects.toThrow(InternalError);
+    });
+
+    it('should use default message when error details is empty', async () => {
+      vi.mocked(mockGrpcClient.Get).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: GetPointsResponse) => void) => {
+          callback({ code: 5, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, { points: [] });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.get('test', ['p1'])).rejects.toThrow('not found');
+    });
+
+    it('should use default message for INVALID_ARGUMENT when details is empty', async () => {
+      vi.mocked(mockGrpcClient.Upsert).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: UpsertPointsResponse) => void) => {
+          callback({ code: 3, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, { upserted: 0 });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.upsert('test', [{ id: 'p1', vector: [] }])).rejects.toThrow('Invalid argument');
+    });
   });
 });
 
@@ -463,6 +516,17 @@ describe('CollectionsClient', () => {
 
       const { InternalError } = await import('../types/errors.js');
       await expect(client.get('test')).rejects.toThrow(InternalError);
+    });
+
+    it('should use default message for INVALID_ARGUMENT when details is empty', async () => {
+      vi.mocked(mockGrpcClient.Create).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: CreateCollectionResponse) => void) => {
+          callback({ code: 3, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, { created: false });
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.create('test', 384)).rejects.toThrow('Invalid argument');
     });
   });
 });

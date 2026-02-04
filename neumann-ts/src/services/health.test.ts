@@ -172,5 +172,38 @@ describe('HealthClient', () => {
 
       await expect(client.check()).rejects.toThrow(InternalError);
     });
+
+    it('should use default message when error details is empty for UNAVAILABLE', async () => {
+      vi.mocked(mockGrpcClient.Check).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: HealthCheckResponse) => void) => {
+          callback({ code: 14, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, {} as HealthCheckResponse);
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.check()).rejects.toThrow('Service unavailable');
+    });
+
+    it('should use default message when error details is empty for unknown error', async () => {
+      vi.mocked(mockGrpcClient.Check).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: HealthCheckResponse) => void) => {
+          callback({ code: 99, details: '', message: 'fallback', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, {} as HealthCheckResponse);
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.check()).rejects.toThrow('fallback');
+    });
+
+    it('should use Internal error when no message available', async () => {
+      vi.mocked(mockGrpcClient.Check).mockImplementation(
+        (_request: unknown, _metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, response: HealthCheckResponse) => void) => {
+          callback({ code: 99, details: '', message: '', name: 'Error', metadata: {} as grpc.Metadata } as grpc.ServiceError, {} as HealthCheckResponse);
+          return {} as grpc.ClientUnaryCall;
+        }
+      );
+
+      await expect(client.check()).rejects.toThrow('Internal error');
+    });
   });
 });
