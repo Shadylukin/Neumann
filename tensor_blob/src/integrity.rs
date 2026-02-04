@@ -130,7 +130,6 @@ pub fn repair(store: &TensorStore) -> Result<RepairStats> {
 /// # Errors
 ///
 /// Returns an error if the artifact is not found.
-#[must_use]
 pub fn check_chunks_exist(store: &TensorStore, artifact_id: &str) -> Result<Vec<String>> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let tensor = store
