@@ -317,6 +317,34 @@ describe('NeumannClient', () => {
       expect(result.type).toBe('empty');
       client.close();
     });
+
+    it('should return empty result for unrecognized response type', async () => {
+      // Mock a response with no recognized fields
+      mockGrpcClient.Execute.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          callback(null, { unknownField: 'some value' });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      const result = await client.execute('SELECT * FROM users');
+      expect(result.type).toBe('empty');
+      client.close();
+    });
+
+    it('should reject when response conversion throws', async () => {
+      // Mock a response that will cause conversion to throw
+      mockGrpcClient.Execute.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          // rows.rows should be an array, passing null will cause map to throw
+          callback(null, { rows: { rows: null } });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      await expect(client.execute('SELECT * FROM users')).rejects.toThrow();
+      client.close();
+    });
   });
 
   describe('executeStream', () => {
@@ -390,6 +418,19 @@ describe('NeumannClient', () => {
       );
       const client = await NeumannClient.connect('localhost:50051');
       await expect(client.executeBatch(['SELECT 1'])).rejects.toThrow(InvalidArgumentError);
+      client.close();
+    });
+
+    it('should reject when batch response conversion throws', async () => {
+      mockGrpcClient.ExecuteBatch.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          // results array with malformed result that will throw during conversion
+          callback(null, { results: [{ rows: { rows: null } }] });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      await expect(client.executeBatch(['SELECT 1'])).rejects.toThrow();
       client.close();
     });
   });
@@ -1283,6 +1324,23 @@ describe('Pagination', () => {
       expect(result.prevCursor).toBe('prev');
       client.close();
     });
+
+    it('should reject when paginated response conversion throws', async () => {
+      mockGrpcClient.ExecutePaginated.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          // Malformed result that will throw during conversion
+          callback(null, {
+            result: { rows: { rows: null } },
+            hasMore: false,
+            pageSize: 10,
+          });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      await expect(client.executePaginated('SELECT')).rejects.toThrow();
+      client.close();
+    });
   });
 
   describe('closeCursor', () => {
@@ -1795,6 +1853,17 @@ describe('New Conversion Functions', () => {
       expect(result.type).toBe('history');
       if (result.type === 'history') {
         expect(result.value.entries.length).toBe(1);
+      }
+    });
+
+    it('should convert history with entry data', () => {
+      const testData = new Uint8Array([1, 2, 3, 4]);
+      const result = convertProtoChainResult({
+        history: { entries: [{ height: 1, transactionType: 'PUT', data: testData }] },
+      });
+      expect(result.type).toBe('history');
+      if (result.type === 'history') {
+        expect(result.value.entries[0]?.data).toEqual(testData);
       }
     });
 

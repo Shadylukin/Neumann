@@ -14,9 +14,7 @@ export default defineConfig({
       thresholds: {
         lines: 95,
         functions: 95,
-        // Note: vitest v4 (CI) reports ~94% vs vitest v1 (local) ~96%
-        // Uncovered branches are internal catch blocks in client.ts
-        branches: 94,
+        branches: 95,
         statements: 95,
       },
     },
