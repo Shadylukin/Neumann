@@ -33,6 +33,7 @@ fuzzing = []
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 peak_alloc = "0.2"
+serial_test = "3"
 
 [[bench]]
 name = "tensor_vault_bench"

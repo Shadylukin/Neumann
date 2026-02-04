@@ -1268,6 +1268,7 @@ impl<'a> NamespacedVault<'a> {
 mod tests {
     use super::*;
     use graph_engine::PropertyValue;
+    use serial_test::serial;
 
     fn create_test_vault() -> Vault {
         let store = TensorStore::new();
@@ -1662,6 +1663,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_with_valid_key() {
         use base64::Engine;
 
@@ -1681,6 +1683,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_missing_key() {
         std::env::remove_var("NEUMANN_VAULT_KEY");
 
@@ -1692,6 +1695,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_invalid_base64() {
         std::env::set_var("NEUMANN_VAULT_KEY", "not-valid-base64!!!");
 
