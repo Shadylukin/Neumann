@@ -70,7 +70,8 @@ impl GarbageCollector {
         }
     }
 
-    /// Run a single GC cycle, processing up to batch_size chunks.
+    /// Run a single GC cycle, processing up to `batch_size` chunks.
+    #[allow(clippy::unused_async)]
     pub async fn gc_cycle(&self) -> GcStats {
         let mut deleted = 0;
         let mut freed_bytes = 0;
@@ -84,11 +85,13 @@ impl GarbageCollector {
         for chunk_key in chunk_keys.into_iter().take(self.config.batch_size) {
             if let Ok(tensor) = self.store.get(&chunk_key) {
                 let refs = get_int(&tensor, "_refs").unwrap_or(0);
-                let created = get_int(&tensor, "_created").unwrap_or(0) as u64;
+                let created =
+                    u64::try_from(get_int(&tensor, "_created").unwrap_or(0).max(0)).unwrap_or(0);
 
                 // Zero refs and old enough
                 if refs == 0 && created < min_created {
-                    let size = get_int(&tensor, "_size").unwrap_or(0) as usize;
+                    let size =
+                        usize::try_from(get_int(&tensor, "_size").unwrap_or(0).max(0)).unwrap_or(0);
 
                     if self.store.delete(&chunk_key).is_ok() {
                         deleted += 1;
@@ -109,6 +112,7 @@ impl GarbageCollector {
     /// # Errors
     ///
     /// Returns an error if chunk deletion fails.
+    #[allow(clippy::unused_async)]
     pub async fn full_gc(&self) -> Result<GcStats> {
         // 1. Build reference set from all artifacts
         let mut referenced: HashSet<String> = HashSet::new();
@@ -128,7 +132,8 @@ impl GarbageCollector {
         for chunk_key in self.store.scan("_blob:chunk:") {
             if !referenced.contains(&chunk_key) {
                 if let Ok(tensor) = self.store.get(&chunk_key) {
-                    let size = get_int(&tensor, "_size").unwrap_or(0) as usize;
+                    let size =
+                        usize::try_from(get_int(&tensor, "_size").unwrap_or(0).max(0)).unwrap_or(0);
 
                     if self.store.delete(&chunk_key).is_ok() {
                         deleted += 1;

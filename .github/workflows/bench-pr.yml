@@ -1,0 +1,134 @@
+---
+name: Benchmark PR
+
+"on":
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    if: github.event.label.name == 'bench'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout PR
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Checkout base branch
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+
+      - name: Install Rust toolchain
+        # stable
+        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
+
+      - name: Install protoc
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install critcmp
+        run: cargo install critcmp
+
+      - name: Benchmark base branch
+        working-directory: base
+        run: |
+          cargo bench --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --exclude integration_tests \
+            --exclude stress_tests \
+            -- --save-baseline base
+
+      - name: Benchmark PR branch
+        run: |
+          cargo bench --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --exclude integration_tests \
+            --exclude stress_tests \
+            -- --save-baseline pr
+
+      - name: Compare benchmarks
+        id: compare
+        run: |
+          critcmp base pr > bench-comparison.txt 2>&1 || true
+
+          PATTERN='\+[1-9][5-9]\.[0-9]+%'
+          PATTERN="$PATTERN|\+[2-9][0-9]+\.[0-9]+%"
+          PATTERN="$PATTERN|\+[0-9]{3,}\.[0-9]+%"
+          REGRESSIONS=$(grep -cE "$PATTERN" bench-comparison.txt || echo 0)
+
+          {
+            echo "comparison<<EOF"
+            cat bench-comparison.txt
+            echo "EOF"
+            if [ "$REGRESSIONS" -gt 0 ]; then
+              echo "has_regressions=true"
+            else
+              echo "has_regressions=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post benchmark results
+        # v7.0.1
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const comparison = `${{ steps.compare.outputs.comparison }}`;
+            const hasRegressions = ${{ steps.compare.outputs.has_regressions }};
+
+            let body = '## Benchmark Results\n\n';
+
+            if (hasRegressions) {
+              body += '> [!WARNING]\n';
+              body += '> Significant regressions detected (>15%)\n\n';
+            }
+
+            body += '```\n' + comparison + '\n```\n\n';
+            const prSha = context.sha.substring(0, 7);
+            const pr = context.payload.pull_request;
+            const baseSha = pr.base.sha.substring(0, 7);
+            body += `_Benchmarks: \`${prSha}\` vs \`${baseSha}\`_`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            const existingComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('## Benchmark Results')
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }

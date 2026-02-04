@@ -2,7 +2,9 @@
 
 ## Executive Summary
 
-The Web UI is built with **Maud + Axum + Tailwind CSS** and exposes approximately **15-20% of backend capabilities**. Performance is excellent with sub-millisecond response times for most operations.
+The Web UI is built with **Maud + Axum + Tailwind CSS** and exposes approximately **15-20%
+of backend capabilities**. Performance is excellent with sub-millisecond response times
+for most operations.
 
 ---
 
@@ -55,17 +57,20 @@ The Web UI is built with **Maud + Axum + Tailwind CSS** and exposes approximatel
 ### Performance Assessment
 
 **Excellent (< 100µs)**
+
 - Template rendering
 - Single record lookups
 - Metadata queries
 - Path finding
 
 **Good (100µs - 500µs)**
+
 - Paginated queries
 - Vector search
 - Collection enumeration
 
 **Acceptable (> 500µs)**
+
 - PageRank algorithm
 - Complex graph traversals
 
@@ -74,17 +79,20 @@ The Web UI is built with **Maud + Axum + Tailwind CSS** and exposes approximatel
 ## Current UI Features
 
 ### Dashboard (`/`)
+
 - Overview stats from all engines
 - Quick access sections
 - Real-time status indicator
 
 ### Relational Engine (`/relational`)
+
 - Table listing with row counts
 - Schema browser
 - Row pagination (50/page)
 - Column type display
 
 ### Vector Engine (`/vector`)
+
 - Collection listing
 - Point browser with metadata
 - k-NN search interface
@@ -92,6 +100,7 @@ The Web UI is built with **Maud + Axum + Tailwind CSS** and exposes approximatel
 - Expandable vector display
 
 ### Graph Engine (`/graph`)
+
 - Force-graph visualization
 - Node/edge browsing
 - Path finder
@@ -206,7 +215,7 @@ The Web UI is built with **Maud + Axum + Tailwind CSS** and exposes approximatel
 
 ## Architecture
 
-```
+```text
 neumann_server/src/web/
 ├── mod.rs              # Router + AdminContext
 ├── assets.rs           # Embedded CSS
@@ -238,6 +247,7 @@ neumann_server/src/web/
 ## Conclusion
 
 The Web UI provides a solid foundation with excellent performance. The main gaps are:
+
 - Write operations (create/delete/update)
 - Advanced queries (joins, aggregations, patterns)
 - Index management

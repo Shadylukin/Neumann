@@ -3,6 +3,10 @@
 //! Provides unified operations across relational, graph, and vector engines.
 //! All operations are async-first and support concurrent execution.
 
+// The async methods in this module are designed for API consistency with async callers,
+// even when the underlying operations are currently synchronous.
+#![allow(clippy::missing_errors_doc)]
+
 use std::{collections::HashMap, sync::Arc};
 
 use graph_engine::{Direction, GraphEngine, Node, PropertyValue};
@@ -15,7 +19,7 @@ use vector_engine::{FilteredSearchConfig, SearchResult, VectorEngine};
 pub use vector_engine::{FilterCondition, FilterValue};
 
 /// Error types for unified operations.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnifiedError {
     /// Error from relational engine.
     RelationalError(String),
@@ -41,12 +45,12 @@ pub enum UnifiedError {
 impl std::fmt::Display for UnifiedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UnifiedError::RelationalError(msg) => write!(f, "Relational error: {msg}"),
-            UnifiedError::GraphError(msg) => write!(f, "Graph error: {msg}"),
-            UnifiedError::VectorError(msg) => write!(f, "Vector error: {msg}"),
-            UnifiedError::NotFound(key) => write!(f, "Entity not found: {key}"),
-            UnifiedError::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
-            UnifiedError::BatchOperationFailed { index, key, cause } => {
+            Self::RelationalError(msg) => write!(f, "Relational error: {msg}"),
+            Self::GraphError(msg) => write!(f, "Graph error: {msg}"),
+            Self::VectorError(msg) => write!(f, "Vector error: {msg}"),
+            Self::NotFound(key) => write!(f, "Entity not found: {key}"),
+            Self::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
+            Self::BatchOperationFailed { index, key, cause } => {
                 write!(
                     f,
                     "Batch operation failed at index {index} (key: {key}): {cause}"
@@ -60,19 +64,19 @@ impl std::error::Error for UnifiedError {}
 
 impl From<graph_engine::GraphError> for UnifiedError {
     fn from(e: graph_engine::GraphError) -> Self {
-        UnifiedError::GraphError(e.to_string())
+        Self::GraphError(e.to_string())
     }
 }
 
 impl From<vector_engine::VectorError> for UnifiedError {
     fn from(e: vector_engine::VectorError) -> Self {
-        UnifiedError::VectorError(e.to_string())
+        Self::VectorError(e.to_string())
     }
 }
 
 impl From<relational_engine::RelationalError> for UnifiedError {
     fn from(e: relational_engine::RelationalError) -> Self {
-        UnifiedError::RelationalError(e.to_string())
+        Self::RelationalError(e.to_string())
     }
 }
 
@@ -93,7 +97,7 @@ pub struct BatchItemError {
 }
 
 /// Result of a batch operation with details about successful items.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchResult {
     /// Keys of successfully processed items.
     pub succeeded: Vec<String>,
@@ -247,6 +251,7 @@ impl UnifiedItem {
 
     /// Sets the similarity score.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn with_score(mut self, score: f32) -> Self {
         self.score = Some(score);
         self
@@ -332,7 +337,7 @@ impl Unified for vector_engine::SearchResult {
 }
 
 /// Pattern for FIND queries.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FindPattern {
     /// Match nodes by optional label.
     Nodes { label: Option<String> },
@@ -420,6 +425,7 @@ impl UnifiedEngine {
 
     /// Creates a unified engine with existing engines.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn with_engines(
         store: TensorStore,
         relational: Arc<RelationalEngine>,
@@ -436,6 +442,7 @@ impl UnifiedEngine {
 
     /// Returns a reference to the underlying store.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn store(&self) -> &TensorStore {
         &self.store
     }
@@ -782,7 +789,7 @@ impl UnifiedEngine {
     }
 
     /// Deletes an entity and all associated data.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::useless_let_if_seq)]
     pub async fn delete_entity(&self, key: &str) -> Result<()> {
         let mut deleted = false;
 
@@ -1274,6 +1281,7 @@ impl UnifiedEngine {
     }
 
     /// Executes a unified FIND query.
+    #[allow(clippy::option_if_let_else)]
     pub async fn find(&self, pattern: &FindPattern, limit: Option<usize>) -> Result<UnifiedResult> {
         let (description, items) = match pattern {
             FindPattern::Nodes { label } => {
@@ -1422,6 +1430,7 @@ impl UnifiedEngine {
     ///
     /// Unlike `embed_batch`, this method continues processing after errors,
     /// returning a `BatchResult` with both successes and failures.
+    #[must_use]
     pub fn embed_batch_collect(&self, items: Vec<(String, Vec<f32>)>) -> BatchResult {
         let mut succeeded = Vec::with_capacity(items.len());
         let mut failed = Vec::new();
@@ -1480,7 +1489,7 @@ impl UnifiedEngine {
             }
 
             match self.create_entity(&key, fields, embedding).await {
-                Ok(_) => succeeded.push(key),
+                Ok(()) => succeeded.push(key),
                 Err(e) => {
                     failed.push(BatchItemError {
                         index: idx,
@@ -1767,7 +1776,7 @@ impl UnifiedEngine {
                 format!("{{{}}}", pairs.join(", "))
             },
             graph_engine::PropertyValue::Bytes(b) => format!("<bytes:{}>", b.len()),
-            graph_engine::PropertyValue::Point { lat, lon } => format!("({}, {})", lat, lon),
+            graph_engine::PropertyValue::Point { lat, lon } => format!("({lat}, {lon})"),
         }
     }
 }

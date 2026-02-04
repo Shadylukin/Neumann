@@ -88,7 +88,7 @@ impl BlobConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error if chunk_size or gc_batch_size is zero.
+    /// Returns an error if `chunk_size` or `gc_batch_size` is zero.
     pub fn validate(&self) -> Result<()> {
         if self.chunk_size == 0 {
             return Err(BlobError::InvalidConfig(

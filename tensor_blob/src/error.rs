@@ -9,7 +9,7 @@ pub enum BlobError {
     ChunkMissing(String),
     /// Checksum verification failed.
     ChecksumMismatch { expected: String, actual: String },
-    /// Storage error from TensorStore.
+    /// Storage error from `TensorStore`.
     StorageError(String),
     /// Graph engine error.
     GraphError(String),

@@ -145,27 +145,27 @@ pub enum RouterError {
 impl std::fmt::Display for RouterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RouterError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            RouterError::UnknownCommand(cmd) => write!(f, "Unknown command: {}", cmd),
-            RouterError::RelationalError(msg) => write!(f, "Relational error: {}", msg),
-            RouterError::GraphError(msg) => write!(f, "Graph error: {}", msg),
-            RouterError::VectorError(msg) => write!(f, "Vector error: {}", msg),
-            RouterError::VaultError(msg) => write!(f, "Vault error: {}", msg),
-            RouterError::CacheError(msg) => write!(f, "Cache error: {}", msg),
-            RouterError::BlobError(msg) => write!(f, "Blob error: {}", msg),
-            RouterError::CheckpointError(msg) => write!(f, "Checkpoint error: {}", msg),
-            RouterError::ChainError(msg) => write!(f, "Chain error: {}", msg),
-            RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
-            RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
-            RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
+            RouterError::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            RouterError::UnknownCommand(cmd) => write!(f, "Unknown command: {cmd}"),
+            RouterError::RelationalError(msg) => write!(f, "Relational error: {msg}"),
+            RouterError::GraphError(msg) => write!(f, "Graph error: {msg}"),
+            RouterError::VectorError(msg) => write!(f, "Vector error: {msg}"),
+            RouterError::VaultError(msg) => write!(f, "Vault error: {msg}"),
+            RouterError::CacheError(msg) => write!(f, "Cache error: {msg}"),
+            RouterError::BlobError(msg) => write!(f, "Blob error: {msg}"),
+            RouterError::CheckpointError(msg) => write!(f, "Checkpoint error: {msg}"),
+            RouterError::ChainError(msg) => write!(f, "Chain error: {msg}"),
+            RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {msg}"),
+            RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {msg}"),
+            RouterError::MissingArgument(msg) => write!(f, "Missing argument: {msg}"),
             RouterError::AuthenticationRequired => {
                 write!(
                     f,
                     "Authentication required: call SET IDENTITY before vault operations"
                 )
             },
-            RouterError::NotFound(msg) => write!(f, "Not found: {}", msg),
-            RouterError::CursorError(msg) => write!(f, "Cursor error: {}", msg),
+            RouterError::NotFound(msg) => write!(f, "Not found: {msg}"),
+            RouterError::CursorError(msg) => write!(f, "Cursor error: {msg}"),
         }
     }
 }
@@ -232,7 +232,7 @@ impl From<UnifiedError> for RouterError {
             UnifiedError::RelationalError(msg) => RouterError::RelationalError(msg),
             UnifiedError::GraphError(msg) => RouterError::GraphError(msg),
             UnifiedError::VectorError(msg) => RouterError::VectorError(msg),
-            UnifiedError::NotFound(msg) => RouterError::VectorError(format!("Not found: {}", msg)),
+            UnifiedError::NotFound(msg) => RouterError::VectorError(format!("Not found: {msg}")),
             UnifiedError::InvalidOperation(msg) => RouterError::InvalidArgument(msg),
             UnifiedError::BatchOperationFailed { index, key, cause } => RouterError::VectorError(
                 format!("Batch operation failed at index {index} (key: {key}): {cause}"),
@@ -280,7 +280,7 @@ pub enum QueryResult {
     CheckpointList(Vec<CheckpointInfo>),
     /// Chain operation result
     Chain(ChainResult),
-    /// PageRank algorithm results with metadata
+    /// `PageRank` algorithm results with metadata
     PageRank(PageRankResult),
     /// Centrality algorithm results with metadata
     Centrality(CentralityResult),
@@ -525,14 +525,14 @@ pub struct ChainTransitionAnalysis {
     pub avg_validity_score: f32,
 }
 
-/// PageRank score for a single node.
+/// `PageRank` score for a single node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageRankItem {
     pub node_id: u64,
     pub score: f64,
 }
 
-/// PageRank result with algorithm metadata.
+/// `PageRank` result with algorithm metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageRankResult {
     pub items: Vec<PageRankItem>,
@@ -655,21 +655,25 @@ pub struct PatternMatchStatsValue {
 
 impl QueryResult {
     /// Convert the result to JSON string.
+    #[must_use]
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
 
     /// Convert the result to pretty-printed JSON string.
+    #[must_use]
     pub fn to_pretty_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
     }
 
     /// Check if the result is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         matches!(self, QueryResult::Empty)
     }
 
     /// Get the count if this is a Count result.
+    #[must_use]
     pub fn as_count(&self) -> Option<usize> {
         if let QueryResult::Count(n) = self {
             Some(*n)
@@ -679,6 +683,7 @@ impl QueryResult {
     }
 
     /// Get the value if this is a Value result.
+    #[must_use]
     pub fn as_value(&self) -> Option<&str> {
         if let QueryResult::Value(v) = self {
             Some(v)
@@ -688,6 +693,7 @@ impl QueryResult {
     }
 
     /// Get the rows if this is a Rows result.
+    #[must_use]
     pub fn as_rows(&self) -> Option<&[Row]> {
         if let QueryResult::Rows(rows) = self {
             Some(rows)
@@ -736,6 +742,7 @@ pub struct QueryRouter {
 
 impl QueryRouter {
     /// Create a new query router with fresh engines sharing a common store.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_shared_store(TensorStore::new())
     }
@@ -777,10 +784,11 @@ impl QueryRouter {
         }
     }
 
-    /// Create a query router with a shared TensorStore for unified entity access.
+    /// Create a query router with a shared `TensorStore` for unified entity access.
     ///
     /// All engines share the same store, enabling cross-engine queries on unified entities.
-    /// Cloning TensorStore shares the underlying storage (via `Arc<DashMap>`).
+    /// Cloning `TensorStore` shares the underlying storage (via `Arc<DashMap>`).
+    #[must_use]
     pub fn with_shared_store(store: TensorStore) -> Self {
         let relational = Arc::new(RelationalEngine::with_store(store.clone()));
         let graph = Arc::new(GraphEngine::with_store(store.clone()));
@@ -843,7 +851,7 @@ impl QueryRouter {
     /// Creates a new Tokio runtime for sync-to-async bridging.
     fn create_runtime() -> Result<Runtime> {
         Runtime::new()
-            .map_err(|e| RouterError::InvalidArgument(format!("Failed to create runtime: {}", e)))
+            .map_err(|e| RouterError::InvalidArgument(format!("Failed to create runtime: {e}")))
     }
 
     /// Get reference to vault (if initialized).
@@ -852,6 +860,10 @@ impl QueryRouter {
     }
 
     /// Initialize the vault with a master key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault fails to initialize with the provided key.
     pub fn init_vault(&mut self, master_key: &[u8]) -> Result<()> {
         let vault = Vault::new(
             master_key,
@@ -874,6 +886,10 @@ impl QueryRouter {
     }
 
     /// Initialize the LLM response cache with default configuration (returns Result).
+    ///
+    /// # Errors
+    ///
+    /// This method currently always succeeds but returns `Result` for API consistency.
     pub fn init_cache_default(&mut self) -> Result<()> {
         self.cache = Some(Arc::new(Cache::new()));
         Ok(())
@@ -898,9 +914,15 @@ impl QueryRouter {
 
     // ========== Auto-Initialization Methods ==========
 
-    /// Ensure vault is initialized, auto-initializing from NEUMANN_VAULT_KEY if needed.
+    /// Ensure vault is initialized, auto-initializing from `NEUMANN_VAULT_KEY` if needed.
     ///
-    /// Returns an error if vault cannot be initialized (no key available).
+    /// # Errors
+    ///
+    /// Returns an error if vault cannot be initialized (no key available or init fails).
+    ///
+    /// # Panics
+    ///
+    /// Panics if vault is `None` after successful initialization (should never happen).
     pub fn ensure_vault(&mut self) -> Result<&Vault> {
         if self.vault.is_none() {
             if let Ok(key) = std::env::var("NEUMANN_VAULT_KEY") {
@@ -916,6 +938,10 @@ impl QueryRouter {
     }
 
     /// Ensure cache is initialized, auto-initializing with defaults if needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if cache is `None` after initialization (should never happen).
     pub fn ensure_cache(&mut self) -> &Cache {
         if self.cache.is_none() {
             self.init_cache();
@@ -924,6 +950,14 @@ impl QueryRouter {
     }
 
     /// Ensure blob store is initialized, auto-initializing with defaults if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if blob store initialization fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if blob store is `None` after successful initialization (should never happen).
     pub fn ensure_blob(&mut self) -> Result<&Arc<tokio::sync::Mutex<BlobStore>>> {
         if self.blob.is_none() {
             self.init_blob()?;
@@ -932,11 +966,19 @@ impl QueryRouter {
     }
 
     /// Initialize the blob store with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the blob store fails to initialize.
     pub fn init_blob(&mut self) -> Result<()> {
         self.init_blob_with_config(BlobConfig::default())
     }
 
     /// Initialize the blob store with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the blob store fails to initialize or runtime creation fails.
     pub fn init_blob_with_config(&mut self, config: BlobConfig) -> Result<()> {
         // Create a runtime for async blob operations
         let runtime = Runtime::new()
@@ -954,6 +996,10 @@ impl QueryRouter {
     }
 
     /// Start the blob store background tasks (GC).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if blob store is not initialized or GC start fails.
     pub fn start_blob(&mut self) -> Result<()> {
         let blob = self
             .blob
@@ -972,6 +1018,10 @@ impl QueryRouter {
     }
 
     /// Shutdown the blob store gracefully.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if shutdown fails.
     pub fn shutdown_blob(&mut self) -> Result<()> {
         if let (Some(blob), Some(runtime)) = (self.blob.as_ref(), self.blob_runtime.as_ref()) {
             runtime.block_on(async {
@@ -990,7 +1040,11 @@ impl QueryRouter {
     /// # Arguments
     /// * `node_id` - Unique identifier for this node
     /// * `bind_addr` - Address to bind for incoming connections
-    /// * `peers` - List of (node_id, address) tuples for peer nodes
+    /// * `peers` - List of (`node_id`, address) tuples for peer nodes
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cluster initialization fails.
     pub fn init_cluster(
         &mut self,
         node_id: &str,
@@ -1005,8 +1059,12 @@ impl QueryRouter {
     /// # Arguments
     /// * `node_id` - Unique identifier for this node
     /// * `bind_addr` - Address to bind for incoming connections
-    /// * `peers` - List of (node_id, address) tuples for peer nodes
+    /// * `peers` - List of (`node_id`, address) tuples for peer nodes
     /// * `executor` - Optional query executor for handling distributed queries
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cluster is already initialized or startup fails.
     pub fn init_cluster_with_executor(
         &mut self,
         node_id: &str,
@@ -1065,6 +1123,10 @@ impl QueryRouter {
     }
 
     /// Shutdown the cluster gracefully.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cluster shutdown fails.
     pub fn shutdown_cluster(&mut self) -> Result<()> {
         if let (Some(cluster), Some(runtime)) =
             (self.cluster.as_ref(), self.cluster_runtime.as_ref())
@@ -1096,6 +1158,10 @@ impl QueryRouter {
     /// Initialize the checkpoint manager with default configuration.
     ///
     /// Requires blob storage to be initialized first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if blob store is not initialized.
     pub fn init_checkpoint(&mut self) -> Result<()> {
         self.init_checkpoint_with_config(CheckpointConfig::default())
     }
@@ -1103,6 +1169,10 @@ impl QueryRouter {
     /// Initialize the checkpoint manager with custom configuration.
     ///
     /// Requires blob storage to be initialized first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if blob store is not initialized.
     pub fn init_checkpoint_with_config(&mut self, config: CheckpointConfig) -> Result<()> {
         let blob = self
             .blob
@@ -1113,17 +1183,22 @@ impl QueryRouter {
                 )
             })?
             .clone();
-        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Blob runtime not initialized".to_string())
-        })?;
 
-        let manager = runtime.block_on(async { CheckpointManager::new(blob, config).await });
+        let manager = CheckpointManager::new(blob, config);
 
         self.checkpoint = Some(Arc::new(tokio::sync::Mutex::new(manager)));
         Ok(())
     }
 
     /// Ensure checkpoint manager is initialized, auto-initializing with defaults if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checkpoint manager initialization fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if checkpoint is `None` after successful initialization (should never happen).
     pub fn ensure_checkpoint(&mut self) -> Result<&Arc<tokio::sync::Mutex<CheckpointManager>>> {
         if self.checkpoint.is_none() {
             // First ensure blob is initialized
@@ -1154,6 +1229,10 @@ impl QueryRouter {
     ///
     /// The handler will be called to confirm operations before they execute.
     /// Requires checkpoint manager to be initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checkpoint manager or blob runtime is not initialized.
     pub fn set_confirmation_handler(&self, handler: Arc<dyn ConfirmationHandler>) -> Result<()> {
         let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
             RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
@@ -1172,6 +1251,10 @@ impl QueryRouter {
     }
 
     /// Initialize the tensor chain with a node ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if chain initialization fails.
     pub fn init_chain(&mut self, node_id: &str) -> Result<()> {
         let store = self.vector.store().clone();
         let chain = TensorChain::new(store, node_id);
@@ -1186,6 +1269,14 @@ impl QueryRouter {
     }
 
     /// Ensure chain is initialized, auto-initializing with default node ID if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if chain initialization fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if chain is None after successful initialization (should never happen).
     pub fn ensure_chain(&mut self) -> Result<&Arc<TensorChain>> {
         if self.chain.is_none() {
             self.init_chain("default_node")?;
@@ -1219,6 +1310,10 @@ impl QueryRouter {
     }
 
     /// Build HNSW index for faster vector similarity search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if index building fails.
     pub fn build_vector_index(&mut self) -> Result<()> {
         let (index, keys) = self.vector.build_hnsw_index_default()?;
         self.hnsw_index = Some((index, keys));
@@ -1232,9 +1327,13 @@ impl QueryRouter {
     ///
     /// Returns entities that:
     /// 1. Have similar embeddings to the query entity
-    /// 2. Are connected (directly or indirectly) to the specified connected_to entity
+    /// 2. Are connected (directly or indirectly) to the specified `connected_to` entity
     ///
     /// Delegates to `UnifiedEngine::find_similar_connected_with_hnsw()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unified engine is not initialized or query fails.
     pub fn find_similar_connected(
         &self,
         query_key: &str,
@@ -1272,6 +1371,10 @@ impl QueryRouter {
     /// Find graph neighbors of an entity that have embeddings, sorted by similarity to a query.
     ///
     /// Delegates to `UnifiedEngine::find_neighbors_by_similarity()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unified engine is not initialized or query fails.
     pub fn find_neighbors_by_similarity(
         &self,
         entity_key: &str,
@@ -1289,6 +1392,10 @@ impl QueryRouter {
     /// Store a unified entity with relational, graph, and vector data.
     ///
     /// Delegates to `UnifiedEngine::create_entity()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unified engine is not initialized or entity creation fails.
     pub fn create_unified_entity(
         &self,
         key: &str,
@@ -1306,6 +1413,10 @@ impl QueryRouter {
     /// Connect two entities with an edge.
     ///
     /// Delegates to `UnifiedEngine::connect_entities()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unified engine is not initialized or connection fails.
     pub fn connect_entities(
         &self,
         from_key: &str,
@@ -1322,6 +1433,10 @@ impl QueryRouter {
     }
 
     /// Execute a command string using the legacy string-based parser.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing fails or the command execution fails.
     #[instrument(skip(self))]
     pub fn execute(&self, command: &str) -> Result<QueryResult> {
         let command = command.trim();
@@ -1355,20 +1470,10 @@ impl QueryRouter {
             "EMBED" => self.execute_embed(command),
             "SIMILAR" => self.execute_similar(command),
 
-            // Unified queries (use parser-based execution)
-            "FIND" => self.execute_parsed(command),
-
-            // Entity commands (use parser-based execution)
-            "ENTITY" => self.execute_parsed(command),
-
-            // Extended graph commands (use parser-based execution)
-            "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" => self.execute_parsed(command),
-
-            // Cluster commands (use parser-based execution)
-            "CLUSTER" => self.execute_parsed(command),
-
-            // Show commands (use parser-based execution)
-            "SHOW" => self.execute_parsed(command),
+            // Parser-based execution: unified, entity, graph, constraint, batch, aggregate, cluster, show
+            "FIND" | "ENTITY" | "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" | "CLUSTER" | "SHOW" => {
+                self.execute_parsed(command)
+            }
 
             _ => Err(RouterError::UnknownCommand(keyword)),
         }
@@ -1384,16 +1489,17 @@ impl QueryRouter {
     /// Returns an error if the query fails, cursor is invalid/expired, or the
     /// result type doesn't support pagination.
     #[instrument(skip(self))]
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     pub fn execute_paginated(
         &self,
         command: &str,
         options: PaginationOptions,
     ) -> Result<PagedQueryResult> {
         let page_size = options.page_size.unwrap_or(CursorState::DEFAULT_PAGE_SIZE);
+        #[allow(clippy::cast_possible_truncation)] // TTL seconds won't exceed u32::MAX
         let ttl_secs = options
             .cursor_ttl
-            .map(|d| d.as_secs() as u32)
-            .unwrap_or(CursorState::DEFAULT_TTL_SECS)
+            .map_or(CursorState::DEFAULT_TTL_SECS, |d| d.as_secs() as u32)
             .min(CursorState::MAX_TTL_SECS);
 
         // If resuming from cursor, decode and validate
@@ -1481,6 +1587,7 @@ impl QueryRouter {
     }
 
     /// Apply pagination to a query result.
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn apply_pagination(
         &self,
         result: &QueryResult,
@@ -1569,6 +1676,10 @@ impl QueryRouter {
     /// Close a cursor, freeing its resources.
     ///
     /// Returns `true` if the cursor was found and closed, `false` if not found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cursor token is invalid or cannot be decoded.
     pub fn close_cursor(&self, cursor_token: &str) -> Result<bool> {
         let state = CursorState::decode(cursor_token)?;
         Ok(self.cursor_store.remove(&state.id))
@@ -1618,7 +1729,7 @@ impl QueryRouter {
         let node_id = nodes
             .get(shard)
             .map(|n| n.node_id.clone())
-            .ok_or_else(|| RouterError::InvalidArgument(format!("Shard {} not found", shard)))?;
+            .ok_or_else(|| RouterError::InvalidArgument(format!("Shard {shard} not found")))?;
 
         // Send query to remote node via transport
         let request = tensor_chain::QueryRequest {
@@ -1671,11 +1782,9 @@ impl QueryRouter {
                     // Execute locally
                     match self.execute_parsed_local(query) {
                         Ok(result) => {
-                            results.push(ShardResult::success(
-                                shard,
-                                result,
-                                start.elapsed().as_micros() as u64,
-                            ));
+                            #[allow(clippy::cast_possible_truncation)] // Microseconds won't exceed u64::MAX
+                            let elapsed = start.elapsed().as_micros() as u64;
+                            results.push(ShardResult::success(shard, result, elapsed));
                         },
                         Err(e) => {
                             if self.distributed_config.fail_fast {
@@ -1688,16 +1797,11 @@ impl QueryRouter {
                 }
 
                 // Get node ID for remote shard
-                let node_id = match nodes.get(shard) {
-                    Some(n) => n.node_id.clone(),
-                    None => {
-                        results.push(ShardResult::error(
-                            shard,
-                            format!("Shard {} not found", shard),
-                        ));
-                        continue;
-                    },
+                let Some(n) = nodes.get(shard) else {
+                    results.push(ShardResult::error(shard, format!("Shard {shard} not found")));
+                    continue;
                 };
+                let node_id = n.node_id.clone();
 
                 // Send query to remote node
                 let request = tensor_chain::QueryRequest {
@@ -1757,10 +1861,14 @@ impl QueryRouter {
 
     /// Execute a command string using the AST-based parser.
     ///
-    /// This method uses the neumann_parser crate to parse the command into an AST,
+    /// This method uses the `neumann_parser` crate to parse the command into an AST,
     /// then dispatches to the appropriate engine based on the statement type.
     /// Cacheable queries (SELECT, SIMILAR, NEIGHBORS, PATH) are cached if a cache is configured.
     /// Write operations (INSERT, UPDATE, DELETE) invalidate the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing fails or statement execution fails.
     pub fn execute_parsed(&self, command: &str) -> Result<QueryResult> {
         // Try distributed execution first if cluster is active
         if let Some(result) = self.try_execute_distributed(command) {
@@ -1794,6 +1902,10 @@ impl QueryRouter {
     }
 
     /// Execute a parsed statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if statement execution fails.
     #[instrument(skip(self, stmt))]
     pub fn execute_statement(&self, stmt: &Statement) -> Result<QueryResult> {
         match &stmt.kind {
@@ -1848,14 +1960,13 @@ impl QueryRouter {
                     .unwrap_or(100);
                 let keys = self.vector.list_keys();
                 let limited: Vec<String> = keys.into_iter().take(limit_val).collect();
-                Ok(QueryResult::Value(format!("Embeddings: {:?}", limited)))
+                Ok(QueryResult::Value(format!("Embeddings: {limited:?}")))
             },
             StatementKind::ShowVectorIndex => match &self.hnsw_index {
                 Some((_, keys)) => {
                     let count = keys.len();
                     Ok(QueryResult::Value(format!(
-                        "HNSW index: {} vectors indexed",
-                        count
+                        "HNSW index: {count} vectors indexed"
                     )))
                 },
                 None => Ok(QueryResult::Value("No HNSW index built".to_string())),
@@ -1925,16 +2036,18 @@ impl QueryRouter {
     fn exec_describe(&self, desc: &DescribeStmt) -> Result<QueryResult> {
         match &desc.target {
             DescribeTarget::Table(name) => {
+                use std::fmt::Write;
                 let schema = self.relational.get_schema(&name.name)?;
                 let mut info = format!("Table: {}\n", name.name);
                 info.push_str("Columns:\n");
                 for col in &schema.columns {
-                    info.push_str(&format!(
-                        "  {} {:?}{}\n",
+                    let _ = writeln!(
+                        info,
+                        "  {} {:?}{}",
                         col.name,
                         col.column_type,
                         if col.nullable { "" } else { " NOT NULL" }
-                    ));
+                    );
                 }
                 Ok(QueryResult::Value(info))
             },
@@ -1959,6 +2072,7 @@ impl QueryRouter {
 
     // ========== Cache Execution ==========
 
+    #[allow(clippy::too_many_lines)] // Cache operations require handling many statement variants
     fn exec_cache(&self, stmt: &CacheStmt) -> Result<QueryResult> {
         let _identity = self.require_identity()?;
 
@@ -2023,7 +2137,7 @@ impl QueryRouter {
                     None => 100, // Default eviction count
                 };
                 let evicted = cache.evict(count_val);
-                Ok(QueryResult::Value(format!("Evicted {} entries", evicted)))
+                Ok(QueryResult::Value(format!("Evicted {evicted} entries")))
             },
             CacheOp::Get { key } => {
                 let key_str = self.expr_to_string(key)?;
@@ -2053,7 +2167,7 @@ impl QueryRouter {
                     Some(hit) => {
                         let similarity_str = hit
                             .similarity
-                            .map(|s| format!(", similarity: {:.4}", s))
+                            .map(|s| format!(", similarity: {s:.4}"))
                             .unwrap_or_default();
                         Ok(QueryResult::Value(format!(
                             "response: {}, layer: {:?}{}",
@@ -2169,7 +2283,7 @@ impl QueryRouter {
                 };
 
                 match self.protect_destructive_op(
-                    &format!("VAULT DELETE '{}'", key_str),
+                    &format!("VAULT DELETE '{key_str}'"),
                     op,
                     vec![format!("secret key: {}", key_str)],
                 )? {
@@ -2214,6 +2328,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn eval_string_expr(&self, expr: &Expr) -> Result<String> {
         match &expr.kind {
             ExprKind::Literal(Literal::String(s)) => Ok(s.clone()),
@@ -2226,6 +2341,7 @@ impl QueryRouter {
 
     // ========== Blob Execution ==========
 
+    #[allow(clippy::too_many_lines)] // Blob operations require handling many statement variants
     fn exec_blob(&self, stmt: &BlobStmt) -> Result<QueryResult> {
         let _identity = self.require_identity()?;
 
@@ -2235,11 +2351,10 @@ impl QueryRouter {
                 return Ok(QueryResult::Value(
                     "Blob store already initialized".to_string(),
                 ));
-            } else {
-                return Err(RouterError::BlobError(
-                    "Use router.init_blob() to initialize blob storage".to_string(),
-                ));
             }
+            return Err(RouterError::BlobError(
+                "Use router.init_blob() to initialize blob storage".to_string(),
+            ));
         }
 
         let blob = self
@@ -2323,7 +2438,7 @@ impl QueryRouter {
                 };
 
                 match self.protect_destructive_op(
-                    &format!("BLOB DELETE '{}'", id),
+                    &format!("BLOB DELETE '{id}'"),
                     op,
                     vec![format!("artifact: {}, size: {} bytes", id, size)],
                 )? {
@@ -2591,6 +2706,7 @@ impl QueryRouter {
         Ok(put_options)
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn expr_to_bytes(&self, expr: &Expr) -> Result<Vec<u8>> {
         match &expr.kind {
             ExprKind::Literal(Literal::String(s)) => Ok(s.as_bytes().to_vec()),
@@ -2624,8 +2740,7 @@ impl QueryRouter {
         })?;
 
         Ok(QueryResult::Value(format!(
-            "Checkpoint created: {}",
-            checkpoint_id
+            "Checkpoint created: {checkpoint_id}"
         )))
     }
 
@@ -2646,8 +2761,7 @@ impl QueryRouter {
         })?;
 
         Ok(QueryResult::Value(format!(
-            "Rolled back to checkpoint: {}",
-            target
+            "Rolled back to checkpoint: {target}"
         )))
     }
 
@@ -2688,6 +2802,7 @@ impl QueryRouter {
 
     // ========== Chain Execution ==========
 
+    #[allow(clippy::too_many_lines)] // Chain operations require handling many statement variants
     fn exec_chain(&self, stmt: &ChainStmt) -> Result<QueryResult> {
         let _identity = self.require_identity()?;
 
@@ -2723,7 +2838,7 @@ impl QueryRouter {
                     .into_iter()
                     .map(|(height, tx)| ChainHistoryEntry {
                         height,
-                        transaction_type: format!("{:?}", tx),
+                        transaction_type: format!("{tx:?}"),
                         data: None,
                     })
                     .collect();
@@ -2777,7 +2892,7 @@ impl QueryRouter {
                         proposer: block.header.proposer.clone(),
                     })))
                 } else {
-                    Err(RouterError::ChainError(format!("Block {} not found", h)))
+                    Err(RouterError::ChainError(format!("Block {h} not found")))
                 }
             },
             ChainOp::Verify => match chain.verify() {
@@ -2831,8 +2946,7 @@ impl QueryRouter {
                 // CLUSTER CONNECT needs &mut self, so we guide users to use shell or API
                 let addr_str = self.eval_string_expr(addresses)?;
                 Err(RouterError::InvalidArgument(format!(
-                    "CLUSTER CONNECT '{}' requires shell support. Use the shell command or call router.init_cluster() from code.",
-                    addr_str
+                    "CLUSTER CONNECT '{addr_str}' requires shell support. Use the shell command or call router.init_cluster() from code."
                 )))
             },
             ClusterOp::Disconnect => {
@@ -2911,11 +3025,10 @@ impl QueryRouter {
                         Some(leader_id) => {
                             if is_self {
                                 Ok(QueryResult::Value(format!(
-                                    "Leader: {} (this node)",
-                                    leader_id
+                                    "Leader: {leader_id} (this node)"
                                 )))
                             } else {
-                                Ok(QueryResult::Value(format!("Leader: {}", leader_id)))
+                                Ok(QueryResult::Value(format!("Leader: {leader_id}")))
                             }
                         },
                         None => Ok(QueryResult::Value(
@@ -2933,6 +3046,7 @@ impl QueryRouter {
 
     // ========== Extended Graph Statement Handlers ==========
 
+    #[allow(clippy::too_many_lines)] // Graph algorithm dispatch requires handling many algorithm types
     fn exec_graph_algorithm(&self, stmt: &GraphAlgorithmStmt) -> Result<QueryResult> {
         match &stmt.operation {
             GraphAlgorithmOp::PageRank {
@@ -2960,8 +3074,7 @@ impl QueryRouter {
                         .unwrap_or(100),
                     direction: direction
                         .as_ref()
-                        .map(|d| self.convert_parsed_direction(d))
-                        .unwrap_or(Direction::Outgoing),
+                        .map_or(Direction::Outgoing, |d| self.convert_parsed_direction(d)),
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                 };
                 let result = self.graph.pagerank(Some(config))?;
@@ -2985,8 +3098,7 @@ impl QueryRouter {
                 let config = CentralityConfig {
                     direction: direction
                         .as_ref()
-                        .map(|d| self.convert_parsed_direction(d))
-                        .unwrap_or(Direction::Both),
+                        .map_or(Direction::Both, |d| self.convert_parsed_direction(d)),
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                     sampling_ratio: sampling_ratio
                         .as_ref()
@@ -3017,8 +3129,7 @@ impl QueryRouter {
                 let config = CentralityConfig {
                     direction: direction
                         .as_ref()
-                        .map(|d| self.convert_parsed_direction(d))
-                        .unwrap_or(Direction::Both),
+                        .map_or(Direction::Both, |d| self.convert_parsed_direction(d)),
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                     sampling_ratio: 1.0,
                     max_iterations: 100,
@@ -3047,8 +3158,7 @@ impl QueryRouter {
                 let config = CentralityConfig {
                     direction: direction
                         .as_ref()
-                        .map(|d| self.convert_parsed_direction(d))
-                        .unwrap_or(Direction::Both),
+                        .map_or(Direction::Both, |d| self.convert_parsed_direction(d)),
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                     sampling_ratio: 1.0,
                     max_iterations: max_iterations
@@ -3085,8 +3195,7 @@ impl QueryRouter {
                 let config = CommunityConfig {
                     direction: direction
                         .as_ref()
-                        .map(|d| self.convert_parsed_direction(d))
-                        .unwrap_or(Direction::Both),
+                        .map_or(Direction::Both, |d| self.convert_parsed_direction(d)),
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                     resolution: resolution
                         .as_ref()
@@ -3127,8 +3236,7 @@ impl QueryRouter {
                 let config = CommunityConfig {
                     direction: direction
                         .as_ref()
-                        .map(|d| self.convert_parsed_direction(d))
-                        .unwrap_or(Direction::Both),
+                        .map_or(Direction::Both, |d| self.convert_parsed_direction(d)),
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                     resolution: 1.0,
                     max_passes: 10,
@@ -3182,10 +3290,9 @@ impl QueryRouter {
                     ConstraintType::Unique => GConstraintType::Unique,
                     ConstraintType::Exists => GConstraintType::Exists,
                     ConstraintType::Type(t) => {
-                        let type_name = t.to_uppercase();
                         use graph_engine::PropertyValueType;
+                        let type_name = t.to_uppercase();
                         match type_name.as_str() {
-                            "STRING" => GConstraintType::PropertyType(PropertyValueType::String),
                             "INT" | "INTEGER" => {
                                 GConstraintType::PropertyType(PropertyValueType::Int)
                             },
@@ -3195,6 +3302,7 @@ impl QueryRouter {
                             "BOOL" | "BOOLEAN" => {
                                 GConstraintType::PropertyType(PropertyValueType::Bool)
                             },
+                            // Default to String for "STRING" and any unrecognized types
                             _ => GConstraintType::PropertyType(PropertyValueType::String),
                         }
                     },
@@ -3219,8 +3327,8 @@ impl QueryRouter {
                     .map(|c| ConstraintInfo {
                         name: c.name,
                         target: match c.target {
-                            GConstraintTarget::NodeLabel(l) => format!("Node({})", l),
-                            GConstraintTarget::EdgeType(t) => format!("Edge({})", t),
+                            GConstraintTarget::NodeLabel(l) => format!("Node({l})"),
+                            GConstraintTarget::EdgeType(t) => format!("Edge({t})"),
                             GConstraintTarget::AllNodes => "AllNodes".to_string(),
                             GConstraintTarget::AllEdges => "AllEdges".to_string(),
                         },
@@ -3228,7 +3336,7 @@ impl QueryRouter {
                         constraint_type: match c.constraint_type {
                             GConstraintType::Unique => "UNIQUE".to_string(),
                             GConstraintType::Exists => "EXISTS".to_string(),
-                            GConstraintType::PropertyType(t) => format!("TYPE({:?})", t),
+                            GConstraintType::PropertyType(t) => format!("TYPE({t:?})"),
                         },
                     })
                     .collect();
@@ -3239,8 +3347,8 @@ impl QueryRouter {
                     let info = ConstraintInfo {
                         name: c.name,
                         target: match c.target {
-                            GConstraintTarget::NodeLabel(l) => format!("Node({})", l),
-                            GConstraintTarget::EdgeType(t) => format!("Edge({})", t),
+                            GConstraintTarget::NodeLabel(l) => format!("Node({l})"),
+                            GConstraintTarget::EdgeType(t) => format!("Edge({t})"),
                             GConstraintTarget::AllNodes => "AllNodes".to_string(),
                             GConstraintTarget::AllEdges => "AllEdges".to_string(),
                         },
@@ -3248,7 +3356,7 @@ impl QueryRouter {
                         constraint_type: match c.constraint_type {
                             GConstraintType::Unique => "UNIQUE".to_string(),
                             GConstraintType::Exists => "EXISTS".to_string(),
-                            GConstraintType::PropertyType(t) => format!("TYPE({:?})", t),
+                            GConstraintType::PropertyType(t) => format!("TYPE({t:?})"),
                         },
                     };
                     Ok(QueryResult::Constraints(vec![info]))
@@ -3369,19 +3477,19 @@ impl QueryRouter {
     fn exec_graph_pattern(&self, stmt: &GraphPatternStmt) -> Result<QueryResult> {
         match &stmt.operation {
             GraphPatternOp::Match { pattern, limit } => {
-                let gp = self.pattern_spec_to_graph_pattern(pattern, limit)?;
+                let gp = self.pattern_spec_to_graph_pattern(pattern, limit.as_ref())?;
                 let result = self.graph.match_pattern(&gp)?;
                 Ok(QueryResult::PatternMatch(
                     self.convert_pattern_match_result(&result),
                 ))
             },
             GraphPatternOp::Count { pattern } => {
-                let gp = self.pattern_spec_to_graph_pattern(pattern, &None)?;
+                let gp = self.pattern_spec_to_graph_pattern(pattern, None)?;
                 let count = self.graph.count_pattern_matches(&gp)?;
                 Ok(QueryResult::Aggregate(AggregateResultValue::Count(count)))
             },
             GraphPatternOp::Exists { pattern } => {
-                let gp = self.pattern_spec_to_graph_pattern(pattern, &None)?;
+                let gp = self.pattern_spec_to_graph_pattern(pattern, None)?;
                 let exists = self.graph.pattern_exists(&gp)?;
                 Ok(QueryResult::Value(exists.to_string()))
             },
@@ -3391,7 +3499,7 @@ impl QueryRouter {
     fn pattern_spec_to_graph_pattern(
         &self,
         pattern: &parser::PatternSpec,
-        limit: &Option<Expr>,
+        limit: Option<&Expr>,
     ) -> Result<graph_engine::Pattern> {
         use graph_engine::{EdgePattern, NodePattern, PathPattern, Pattern};
 
@@ -3472,6 +3580,7 @@ impl QueryRouter {
         Ok(gp)
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn convert_pattern_match_result(
         &self,
         result: &graph_engine::PatternMatchResult,
@@ -3521,6 +3630,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Batch operations require handling multiple node/edge scenarios
     fn exec_graph_batch(&self, stmt: &GraphBatchStmt) -> Result<QueryResult> {
         match &stmt.operation {
             GraphBatchOp::CreateNodes { nodes } => {
@@ -3591,7 +3701,7 @@ impl QueryRouter {
                 if !node_ids.is_empty() {
                     // Checkpoint protection for batch delete
                     let sample_data: Vec<String> =
-                        node_ids.iter().map(|id| format!("node {}", id)).collect();
+                        node_ids.iter().map(|id| format!("node {id}")).collect();
                     let op = DestructiveOp::NodeDelete {
                         node_id: node_ids[0],
                         edge_count: node_ids.len().saturating_sub(1),
@@ -3627,7 +3737,7 @@ impl QueryRouter {
                 if !edge_ids.is_empty() {
                     // Checkpoint protection for batch delete
                     let sample_data: Vec<String> =
-                        edge_ids.iter().map(|id| format!("edge {}", id)).collect();
+                        edge_ids.iter().map(|id| format!("edge {id}")).collect();
                     let op = DestructiveOp::EdgeDelete {
                         edge_id: edge_ids[0],
                     };
@@ -3686,6 +3796,8 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::trivially_copy_pass_by_ref)] // API consistency with other direction converters
     fn convert_parsed_direction(&self, dir: &ParsedDirection) -> Direction {
         match dir {
             ParsedDirection::Outgoing => Direction::Outgoing,
@@ -3694,6 +3806,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn expr_to_property_value(&self, expr: &Expr) -> Result<PropertyValue> {
         match &expr.kind {
             ExprKind::Literal(lit) => match lit {
@@ -3710,6 +3823,9 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for property conversion
+    #[allow(clippy::needless_pass_by_value)] // Takes ownership to extract inner value
     fn property_value_to_f64(&self, value: Option<PropertyValue>) -> Option<f64> {
         match value {
             Some(PropertyValue::Int(i)) => Some(i as f64),
@@ -3771,7 +3887,8 @@ impl QueryRouter {
         // Apply OFFSET clause if present
         if let Some(ref offset_expr) = select.offset {
             if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &offset_expr.kind {
-                let offset = *n as usize;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let offset = *n as usize; // OFFSET values are small positive integers
                 if offset < rows.len() {
                     rows = rows.into_iter().skip(offset).collect();
                 } else {
@@ -3783,7 +3900,8 @@ impl QueryRouter {
         // Apply LIMIT clause if present
         if let Some(ref limit_expr) = select.limit {
             if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &limit_expr.kind {
-                let limit = *n as usize;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let limit = *n as usize; // LIMIT values are small positive integers
                 rows.truncate(limit);
             }
         }
@@ -3791,6 +3909,7 @@ impl QueryRouter {
         Ok(QueryResult::Rows(rows))
     }
 
+    #[allow(clippy::too_many_lines)] // JOIN execution requires handling multiple join types and conditions
     fn exec_select_with_joins(
         &self,
         select: &SelectStmt,
@@ -3829,7 +3948,7 @@ impl QueryRouter {
         let mut rows: Vec<Row> = match join.kind {
             JoinKind::Inner => {
                 let (on_a, on_b) =
-                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                    self.get_join_columns(join.condition.as_ref(), left_table, right_table)?;
                 let pairs = self
                     .relational
                     .join(left_table, right_table, &on_a, &on_b)?;
@@ -3840,7 +3959,7 @@ impl QueryRouter {
             },
             JoinKind::Left => {
                 let (on_a, on_b) =
-                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                    self.get_join_columns(join.condition.as_ref(), left_table, right_table)?;
                 let pairs = self
                     .relational
                     .left_join(left_table, right_table, &on_a, &on_b)?;
@@ -3851,7 +3970,7 @@ impl QueryRouter {
             },
             JoinKind::Right => {
                 let (on_a, on_b) =
-                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                    self.get_join_columns(join.condition.as_ref(), left_table, right_table)?;
                 let pairs = self
                     .relational
                     .right_join(left_table, right_table, &on_a, &on_b)?;
@@ -3862,7 +3981,7 @@ impl QueryRouter {
             },
             JoinKind::Full => {
                 let (on_a, on_b) =
-                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                    self.get_join_columns(join.condition.as_ref(), left_table, right_table)?;
                 let pairs = self
                     .relational
                     .full_join(left_table, right_table, &on_a, &on_b)?;
@@ -3900,7 +4019,8 @@ impl QueryRouter {
         // Apply OFFSET clause if present
         if let Some(ref offset_expr) = select.offset {
             if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &offset_expr.kind {
-                let offset = *n as usize;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let offset = *n as usize; // OFFSET values are small positive integers
                 if offset < rows.len() {
                     rows = rows.into_iter().skip(offset).collect();
                 } else {
@@ -3912,7 +4032,8 @@ impl QueryRouter {
         // Apply LIMIT clause if present
         if let Some(ref limit_expr) = select.limit {
             if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &limit_expr.kind {
-                let limit = *n as usize;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let limit = *n as usize; // LIMIT values are small positive integers
                 rows.truncate(limit);
             }
         }
@@ -3922,7 +4043,7 @@ impl QueryRouter {
 
     fn get_join_columns(
         &self,
-        condition: &Option<JoinCondition>,
+        condition: Option<&JoinCondition>,
         _left_table: &str,
         _right_table: &str,
     ) -> Result<(String, String)> {
@@ -3966,12 +4087,13 @@ impl QueryRouter {
             },
             ExprKind::Ident(_) | ExprKind::Qualified(_, _) => self
                 .get_row_value(expr, row)
-                .map(|v| v.is_truthy())
-                .unwrap_or(false),
+                .is_some_and(|v| v.is_truthy()),
             _ => true,
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for numeric comparison
     fn compare_values(&self, a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
@@ -3991,7 +4113,7 @@ impl QueryRouter {
                 let val_a = self.get_sort_value(&item.expr, a);
                 let val_b = self.get_sort_value(&item.expr, b);
 
-                let cmp = self.compare_values_with_nulls(&val_a, &val_b, item.nulls);
+                let cmp = self.compare_values_with_nulls(val_a.as_ref(), val_b.as_ref(), item.nulls);
                 let cmp = match item.direction {
                     SortDirection::Asc => cmp,
                     SortDirection::Desc => cmp.reverse(),
@@ -4005,6 +4127,7 @@ impl QueryRouter {
         });
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn get_sort_value(&self, expr: &Expr, row: &Row) -> Option<Value> {
         match &expr.kind {
             ExprKind::Ident(ident) => {
@@ -4036,19 +4159,19 @@ impl QueryRouter {
 
     fn compare_values_with_nulls(
         &self,
-        a: &Option<Value>,
-        b: &Option<Value>,
+        a: Option<&Value>,
+        b: Option<&Value>,
         nulls_order: Option<NullsOrder>,
     ) -> std::cmp::Ordering {
         use std::cmp::Ordering;
 
         match (a, b) {
             (None, None) | (Some(Value::Null), Some(Value::Null)) => Ordering::Equal,
-            (None, _) | (Some(Value::Null), _) => match nulls_order.unwrap_or(NullsOrder::Last) {
+            (None | Some(Value::Null), _) => match nulls_order.unwrap_or(NullsOrder::Last) {
                 NullsOrder::First => Ordering::Less,
                 NullsOrder::Last => Ordering::Greater,
             },
-            (_, None) | (_, Some(Value::Null)) => match nulls_order.unwrap_or(NullsOrder::Last) {
+            (_, None | Some(Value::Null)) => match nulls_order.unwrap_or(NullsOrder::Last) {
                 NullsOrder::First => Ordering::Greater,
                 NullsOrder::Last => Ordering::Less,
             },
@@ -4072,9 +4195,7 @@ impl QueryRouter {
             if let Some(agg) = self.parse_aggregate(&item.expr) {
                 let alias = item
                     .alias
-                    .as_ref()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| self.aggregate_default_name(&item.expr));
+                    .as_ref().map_or_else(|| self.aggregate_default_name(&item.expr), |a| a.name.clone());
                 aggregates.push((alias, agg));
             } else {
                 let alias = item
@@ -4181,8 +4302,7 @@ impl QueryRouter {
                     row.values
                         .iter()
                         .find(|(c, _)| c == col)
-                        .map(|(_, v)| v.clone())
-                        .unwrap_or(Value::Null)
+                        .map_or(Value::Null, |(_, v)| v.clone())
                 })
                 .collect();
             let key_str = self.values_to_group_key(&group_key);
@@ -4230,6 +4350,8 @@ impl QueryRouter {
         Ok(Some(QueryResult::Rows(result_rows)))
     }
 
+    #[allow(clippy::too_many_lines)] // Aggregate computation requires handling all SQL aggregate functions
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn compute_aggregate_for_group(&self, agg: &AggregateFunc, rows: &[&Row]) -> Result<Value> {
         match agg {
             AggregateFunc::Count(col) => {
@@ -4362,17 +4484,18 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn values_to_group_key(&self, values: &[Value]) -> String {
         values
             .iter()
             .map(|v| match v {
                 Value::Null => "NULL".to_string(),
-                Value::Int(i) => format!("I:{}", i),
-                Value::Float(f) => format!("F:{}", f),
-                Value::String(s) => format!("S:{}", s),
-                Value::Bool(b) => format!("B:{}", b),
+                Value::Int(i) => format!("I:{i}"),
+                Value::Float(f) => format!("F:{f}"),
+                Value::String(s) => format!("S:{s}"),
+                Value::Bool(b) => format!("B:{b}"),
                 Value::Bytes(b) => format!("BY:{}", hex::encode(b)),
-                Value::Json(j) => format!("J:{}", j),
+                Value::Json(j) => format!("J:{j}"),
                 _ => "UNKNOWN".to_string(),
             })
             .collect::<Vec<_>>()
@@ -4432,13 +4555,13 @@ impl QueryRouter {
         if let ExprKind::Call(call) = &expr.kind {
             let name = call.name.name.to_uppercase();
             if call.args.is_empty() {
-                format!("{}(*)", name)
+                format!("{name}(*)")
             } else if let ExprKind::Wildcard = &call.args[0].kind {
-                format!("{}(*)", name)
+                format!("{name}(*)")
             } else if let Ok(col) = self.expr_to_column_name(&call.args[0]) {
-                format!("{}({})", name, col)
+                format!("{name}({col})")
             } else {
-                format!("{}(?)", name)
+                format!("{name}(?)")
             }
         } else {
             "?".to_string()
@@ -4487,6 +4610,8 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for API consistency with other extract methods
     fn extract_projection(
         &self,
         items: &[neumann_parser::SelectItem],
@@ -4669,7 +4794,7 @@ impl QueryRouter {
                 let pairs: Vec<String> = row
                     .values
                     .iter()
-                    .map(|(k, v)| format!("{}={:?}", k, v))
+                    .map(|(k, v)| format!("{k}={v:?}"))
                     .collect();
                 format!("_id={}, {}", row.id, pairs.join(", "))
             })
@@ -4699,7 +4824,7 @@ impl QueryRouter {
                     .properties
                     .iter()
                     .take(3)
-                    .map(|(k, v)| format!("{}={:?}", k, v))
+                    .map(|(k, v)| format!("{k}={v:?}"))
                     .collect();
                 vec![format!(
                     "label='{}', {}",
@@ -4855,7 +4980,7 @@ impl QueryRouter {
                 };
 
                 match self.protect_destructive_op(
-                    &format!("NODE DELETE {}", node_id),
+                    &format!("NODE DELETE {node_id}"),
                     op,
                     sample_data,
                 )? {
@@ -5095,7 +5220,7 @@ impl QueryRouter {
                 } else {
                     self.vector.get_embedding(&key_str)?
                 };
-                Ok(QueryResult::Value(format!("{:?}", vec)))
+                Ok(QueryResult::Value(format!("{vec:?}")))
             },
             EmbedOp::Delete { key } => {
                 let key_str = self.expr_to_string(key)?;
@@ -5106,7 +5231,7 @@ impl QueryRouter {
                 };
 
                 match self.protect_destructive_op(
-                    &format!("EMBED DELETE '{}'", key_str),
+                    &format!("EMBED DELETE '{key_str}'"),
                     op,
                     vec![format!("embedding key: {}", key_str)],
                 )? {
@@ -5157,6 +5282,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Similarity search requires handling multiple query types and filters
     fn exec_similar(&self, similar: &SimilarStmt) -> Result<QueryResult> {
         let top_k = similar
             .limit
@@ -5352,6 +5478,7 @@ impl QueryRouter {
         }))
     }
 
+    #[allow(clippy::too_many_lines)] // Entity operations require handling create, get, update, delete, and link
     fn exec_entity(&self, entity: &EntityStmt) -> Result<QueryResult> {
         match &entity.operation {
             EntityOp::Create {
@@ -5383,7 +5510,7 @@ impl QueryRouter {
                 // Use the existing create_unified_entity method
                 self.create_unified_entity(&key_str, fields, emb)?;
 
-                Ok(QueryResult::Value(format!("Entity '{}' created", key_str)))
+                Ok(QueryResult::Value(format!("Entity '{key_str}' created")))
             },
             EntityOp::Get { key } => {
                 let key_str = self.expr_to_string(key)?;
@@ -5398,7 +5525,7 @@ impl QueryRouter {
                         .map_err(|e| RouterError::NotFound(e.to_string()))?;
 
                     return Ok(QueryResult::Unified(UnifiedResult {
-                        description: format!("Entity: {}", key_str),
+                        description: format!("Entity: {key_str}"),
                         items: vec![item],
                     }));
                 }
@@ -5417,14 +5544,13 @@ impl QueryRouter {
                         score: None,
                     };
                     return Ok(QueryResult::Unified(UnifiedResult {
-                        description: format!("Entity: {}", key_str),
+                        description: format!("Entity: {key_str}"),
                         items: vec![item],
                     }));
                 }
 
                 Err(RouterError::NotFound(format!(
-                    "Entity '{}' not found",
-                    key_str
+                    "Entity '{key_str}' not found"
                 )))
             },
             EntityOp::Connect {
@@ -5440,8 +5566,7 @@ impl QueryRouter {
                 let edge_key = self.connect_entities(&from_str, &to_str, edge_type_str)?;
 
                 Ok(QueryResult::Value(format!(
-                    "Connected '{}' -> '{}' with edge '{}'",
-                    from_str, to_str, edge_key
+                    "Connected '{from_str}' -> '{to_str}' with edge '{edge_key}'"
                 )))
             },
             EntityOp::Batch { entities } => {
@@ -5516,7 +5641,7 @@ impl QueryRouter {
                     .block_on(unified.update_entity(&key_str, fields, emb))
                     .map_err(|e| RouterError::NotFound(e.to_string()))?;
 
-                Ok(QueryResult::Value(format!("Entity '{}' updated", key_str)))
+                Ok(QueryResult::Value(format!("Entity '{key_str}' updated")))
             },
             EntityOp::Delete { key } => {
                 let key_str = self.expr_to_string(key)?;
@@ -5527,7 +5652,7 @@ impl QueryRouter {
                     .block_on(unified.delete_entity(&key_str))
                     .map_err(|e| RouterError::NotFound(e.to_string()))?;
 
-                Ok(QueryResult::Value(format!("Entity '{}' deleted", key_str)))
+                Ok(QueryResult::Value(format!("Entity '{key_str}' deleted")))
             },
         }
     }
@@ -5588,7 +5713,8 @@ impl QueryRouter {
         Ok(items)
     }
 
-    /// Converts AST FindPattern to unified FindPattern.
+    /// Converts AST `FindPattern` to unified `FindPattern`.
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn convert_find_pattern(&self, ast_pattern: &FindPattern) -> UnifiedFindPattern {
         match ast_pattern {
             FindPattern::Nodes { label } => UnifiedFindPattern::Nodes {
@@ -5654,8 +5780,7 @@ impl QueryRouter {
                     Ok(Condition::Ge(col, val))
                 },
                 _ => Err(RouterError::ParseError(format!(
-                    "Unsupported operator in condition: {:?}",
-                    op
+                    "Unsupported operator in condition: {op:?}"
                 ))),
             },
             _ => Err(RouterError::ParseError(
@@ -5664,10 +5789,14 @@ impl QueryRouter {
         }
     }
 
-    /// Convert an expression to a vector engine FilterCondition.
+    /// Convert an expression to a vector engine `FilterCondition`.
     ///
     /// This method is public to allow programmatic construction of filters
     /// from parsed expressions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expression cannot be converted to a filter condition.
     pub fn expr_to_filter_condition(&self, expr: &Expr) -> Result<FilterCondition> {
         match &expr.kind {
             ExprKind::Binary(left, op, right) => match op {
@@ -5712,8 +5841,7 @@ impl QueryRouter {
                     Ok(FilterCondition::Ge(col, val))
                 },
                 _ => Err(RouterError::ParseError(format!(
-                    "Unsupported operator in filter condition: {:?}",
-                    op
+                    "Unsupported operator in filter condition: {op:?}"
                 ))),
             },
             _ => Err(RouterError::ParseError(
@@ -5722,10 +5850,14 @@ impl QueryRouter {
         }
     }
 
-    /// Convert an expression to a vector engine FilterValue.
+    /// Convert an expression to a vector engine `FilterValue`.
     ///
     /// This method is public to allow programmatic construction of filter values
     /// from parsed expressions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expression cannot be converted to a filter value.
     pub fn expr_to_filter_value(&self, expr: &Expr) -> Result<FilterValue> {
         match &expr.kind {
             ExprKind::Literal(lit) => match lit {
@@ -5743,6 +5875,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn expr_to_value(&self, expr: &Expr) -> Result<Value> {
         match &expr.kind {
             ExprKind::Literal(lit) => match lit {
@@ -5764,6 +5897,10 @@ impl QueryRouter {
     ///
     /// This method is public to allow programmatic extraction of column names
     /// from parsed expressions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expression is not a column reference.
     pub fn expr_to_column_name(&self, expr: &Expr) -> Result<String> {
         match &expr.kind {
             ExprKind::Ident(ident) => Ok(ident.name.clone()),
@@ -5772,6 +5909,8 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_sign_loss)] // Checked: value is >= 0
     fn expr_to_u64(&self, expr: &Expr) -> Result<u64> {
         match &expr.kind {
             ExprKind::Literal(Literal::Integer(i)) if *i >= 0 => Ok(*i as u64),
@@ -5781,6 +5920,9 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_possible_truncation)] // Truncation acceptable for f32 conversion
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for numeric conversion
     fn expr_to_f32(&self, expr: &Expr) -> Result<f32> {
         match &expr.kind {
             ExprKind::Literal(Literal::Float(f)) => Ok(*f as f32),
@@ -5789,6 +5931,8 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for numeric conversion
     fn expr_to_f64(&self, expr: &Expr) -> Result<f64> {
         match &expr.kind {
             ExprKind::Literal(Literal::Float(f)) => Ok(*f),
@@ -5797,6 +5941,9 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_sign_loss)] // Checked: value is >= 0
+    #[allow(clippy::cast_possible_truncation)] // Truncation acceptable on 32-bit systems
     fn expr_to_usize(&self, expr: &Expr) -> Result<usize> {
         match &expr.kind {
             ExprKind::Literal(Literal::Integer(i)) if *i >= 0 => Ok(*i as usize),
@@ -5806,6 +5953,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn expr_to_string(&self, expr: &Expr) -> Result<String> {
         match &expr.kind {
             ExprKind::Literal(Literal::String(s)) => Ok(s.clone()),
@@ -5815,7 +5963,7 @@ impl QueryRouter {
     }
 
     /// Extracts column names from a JOIN ON condition like `a.col = b.col`.
-    /// Returns (left_column, right_column).
+    /// Returns (`left_column`, `right_column`).
     fn extract_join_columns(&self, condition: &JoinCondition) -> Result<(String, String)> {
         match condition {
             JoinCondition::On(expr) => match &expr.kind {
@@ -5841,6 +5989,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn extract_column_from_expr(&self, expr: &Expr) -> Result<String> {
         match &expr.kind {
             ExprKind::Ident(ident) => Ok(ident.name.clone()),
@@ -5851,6 +6000,8 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::cast_possible_wrap)] // Row IDs are typically small enough to fit in i64
     fn merge_rows(
         &self,
         row_a: Option<&Row>,
@@ -5862,17 +6013,17 @@ impl QueryRouter {
 
         // Add columns from table A
         if let Some(r) = row_a {
-            values.push((format!("{}._id", table_a), Value::Int(r.id as i64)));
+            values.push((format!("{table_a}._id"), Value::Int(r.id as i64)));
             for (col, val) in &r.values {
-                values.push((format!("{}.{}", table_a, col), val.clone()));
+                values.push((format!("{table_a}.{col}"), val.clone()));
             }
         }
 
         // Add columns from table B
         if let Some(r) = row_b {
-            values.push((format!("{}._id", table_b), Value::Int(r.id as i64)));
+            values.push((format!("{table_b}._id"), Value::Int(r.id as i64)));
             for (col, val) in &r.values {
-                values.push((format!("{}.{}", table_b, col), val.clone()));
+                values.push((format!("{table_b}.{col}"), val.clone()));
             }
         }
 
@@ -5882,6 +6033,7 @@ impl QueryRouter {
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn properties_to_map(&self, properties: &[Property]) -> Result<HashMap<String, PropertyValue>> {
         let mut map = HashMap::new();
         for prop in properties {
@@ -5904,6 +6056,7 @@ impl QueryRouter {
         Ok(map)
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn data_type_to_column_type(
         &self,
         dt: &parser::DataType,
@@ -5923,8 +6076,7 @@ impl QueryRouter {
             },
             DataType::Boolean => Ok(relational_engine::ColumnType::Bool),
             _ => Err(RouterError::ParseError(format!(
-                "Unsupported data type: {:?}",
-                dt
+                "Unsupported data type: {dt:?}"
             ))),
         }
     }
@@ -6106,8 +6258,7 @@ impl QueryRouter {
             let parts: Vec<&str> = col_def.split(':').collect();
             if parts.len() < 2 {
                 return Err(RouterError::ParseError(format!(
-                    "Invalid column definition: {}",
-                    col_def
+                    "Invalid column definition: {col_def}"
                 )));
             }
 
@@ -6123,8 +6274,7 @@ impl QueryRouter {
                 "BOOL" | "BOOLEAN" => relational_engine::ColumnType::Bool,
                 _ => {
                     return Err(RouterError::ParseError(format!(
-                        "Unknown type: {}",
-                        type_str
+                        "Unknown type: {type_str}"
                     )))
                 },
             };
@@ -6335,7 +6485,7 @@ impl QueryRouter {
                 }
                 Ok(QueryResult::Nodes(results))
             },
-            _ => Err(RouterError::UnknownCommand(format!("NODE {}", subcmd))),
+            _ => Err(RouterError::UnknownCommand(format!("NODE {subcmd}"))),
         }
     }
 
@@ -6376,7 +6526,7 @@ impl QueryRouter {
                 };
                 Ok(QueryResult::Edges(vec![result]))
             },
-            _ => Err(RouterError::UnknownCommand(format!("EDGE {}", subcmd))),
+            _ => Err(RouterError::UnknownCommand(format!("EDGE {subcmd}"))),
         }
     }
 
@@ -6403,8 +6553,7 @@ impl QueryRouter {
             "BOTH" => Direction::Both,
             _ => {
                 return Err(RouterError::InvalidArgument(format!(
-                    "Unknown direction: {}",
-                    direction_str
+                    "Unknown direction: {direction_str}"
                 )))
             },
         };
@@ -6528,11 +6677,12 @@ impl QueryRouter {
         }
 
         Err(RouterError::ParseError(format!(
-            "Invalid condition: {}",
-            cond_str
+            "Invalid condition: {cond_str}"
         )))
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for API consistency with other parse methods
     fn parse_value(&self, val_str: &str) -> Result<Value> {
         let val_str = val_str.trim();
 
@@ -6570,6 +6720,7 @@ impl QueryRouter {
         Ok(Value::String(val_str.to_string()))
     }
 
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for API consistency with other parse methods
     fn parse_values(&self, values_str: &str) -> Result<HashMap<String, Value>> {
         let mut values = HashMap::new();
 
@@ -6577,7 +6728,7 @@ impl QueryRouter {
             let pair = pair.trim();
             let eq_pos = pair
                 .find('=')
-                .ok_or_else(|| RouterError::ParseError(format!("Invalid assignment: {}", pair)))?;
+                .ok_or_else(|| RouterError::ParseError(format!("Invalid assignment: {pair}")))?;
             let key = pair[..eq_pos].trim().to_string();
             let val = self.parse_value(&pair[eq_pos + 1..])?;
             values.insert(key, val);
@@ -6586,6 +6737,7 @@ impl QueryRouter {
         Ok(values)
     }
 
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for API consistency with other parse methods
     fn parse_label_and_props(
         &self,
         rest: &str,
@@ -6612,6 +6764,7 @@ impl QueryRouter {
         Ok((label, props))
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn parse_property_value(&self, val_str: &str) -> PropertyValue {
         let val_str = val_str.trim();
 
@@ -6662,10 +6815,11 @@ impl QueryRouter {
                     .join(", ")
             ),
             PropertyValue::Bytes(bytes) => format!("<{} bytes>", bytes.len()),
-            PropertyValue::Point { lat, lon } => format!("POINT({}, {})", lat, lon),
+            PropertyValue::Point { lat, lon } => format!("POINT({lat}, {lon})"),
         }
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn parse_edge_def(&self, rest: &str) -> Result<(u64, u64, String, bool)> {
         // <from> -> <to> [<label>] [DIRECTED|UNDIRECTED]
         let parts: Vec<&str> = rest.split_whitespace().collect();
@@ -6701,6 +6855,7 @@ impl QueryRouter {
         Ok((from, to, label, directed))
     }
 
+    #[allow(clippy::unused_self)] // Method signature for API consistency
     fn parse_vector(&self, vec_str: &str) -> Result<Vec<f32>> {
         let vec_str = vec_str.trim().trim_matches('[').trim_matches(']');
         let mut vector = Vec::new();
@@ -6709,7 +6864,7 @@ impl QueryRouter {
             let val = val.trim();
             let f: f32 = val
                 .parse()
-                .map_err(|_| RouterError::InvalidArgument(format!("Invalid float: {}", val)))?;
+                .map_err(|_| RouterError::InvalidArgument(format!("Invalid float: {val}")))?;
             vector.push(f);
         }
 
@@ -6755,6 +6910,10 @@ impl QueryRouter {
     /// This method is the async counterpart to `execute_parsed()`. It provides
     /// truly non-blocking execution for I/O-bound operations like blob storage.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing fails or statement execution fails.
+    ///
     /// # Example
     /// ```ignore
     /// let result = router.execute_parsed_async("BLOB GET 'artifact-id'").await?;
@@ -6790,6 +6949,10 @@ impl QueryRouter {
     ///
     /// Most operations are synchronous (in-memory), but blob operations
     /// are truly async, avoiding runtime blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if statement execution fails.
     pub async fn execute_statement_async(&self, stmt: &Statement) -> Result<QueryResult> {
         match &stmt.kind {
             // Blob statements are truly async
@@ -6808,6 +6971,7 @@ impl QueryRouter {
     }
 
     /// Execute blob operations asynchronously without blocking.
+    #[allow(clippy::too_many_lines)] // Async blob operations require handling many statement variants
     async fn exec_blob_async(&self, stmt: &BlobStmt) -> Result<QueryResult> {
         // Handle BLOB INIT specially - doesn't require blob to be initialized
         if matches!(stmt.operation, BlobOp::Init) {
@@ -6815,11 +6979,10 @@ impl QueryRouter {
                 return Ok(QueryResult::Value(
                     "Blob store already initialized".to_string(),
                 ));
-            } else {
-                return Err(RouterError::BlobError(
-                    "Use router.init_blob() to initialize blob storage".to_string(),
-                ));
             }
+            return Err(RouterError::BlobError(
+                "Use router.init_blob() to initialize blob storage".to_string(),
+            ));
         }
 
         let blob = self
@@ -7082,8 +7245,7 @@ impl QueryRouter {
         let checkpoint_id = cp_guard.create(name.as_deref(), store).await?;
 
         Ok(QueryResult::Value(format!(
-            "Checkpoint created: {}",
-            checkpoint_id
+            "Checkpoint created: {checkpoint_id}"
         )))
     }
 
@@ -7100,8 +7262,7 @@ impl QueryRouter {
         cp_guard.rollback(&target, store).await?;
 
         Ok(QueryResult::Value(format!(
-            "Rolled back to checkpoint: {}",
-            target
+            "Rolled back to checkpoint: {target}"
         )))
     }
 
@@ -7143,9 +7304,9 @@ impl QueryRouter {
     /// # Arguments
     /// * `items` - Vector of (key, embedding) pairs to store
     ///
-    /// # Returns
-    /// * `Ok(count)` - Number of embeddings successfully stored
-    /// * `Err(e)` - First error encountered
+    /// # Errors
+    ///
+    /// Returns an error if unified engine is not initialized or embedding fails.
     pub async fn embed_batch_parallel(&self, items: Vec<(String, Vec<f32>)>) -> Result<usize> {
         let unified = self.require_unified()?;
 
@@ -7159,6 +7320,10 @@ impl QueryRouter {
     /// Find similar entities connected to a target asynchronously.
     ///
     /// Delegates to `UnifiedEngine::find_similar_connected_with_hnsw()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unified engine is not available or vector operations fail.
     pub async fn find_similar_connected_async(
         &self,
         query_key: &str,
@@ -7191,6 +7356,10 @@ impl QueryRouter {
     /// Find graph neighbors sorted by similarity asynchronously.
     ///
     /// Delegates to `UnifiedEngine::find_neighbors_by_similarity()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unified engine is not available or similarity search fails.
     pub async fn find_neighbors_by_similarity_async(
         &self,
         entity_key: &str,
@@ -7216,6 +7385,10 @@ impl QueryRouter {
     ///
     /// This is useful for running async operations when you don't have
     /// an async context available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime has not been initialized.
     pub fn block_on<F: std::future::Future>(&self, future: F) -> Result<F::Output> {
         let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
             RouterError::BlobError("Runtime not initialized. Call init_blob() first.".to_string())
@@ -7233,17 +7406,21 @@ impl Default for QueryRouter {
 impl QueryRouter {
     /// Execute a query for cluster distribution, returning serialized result.
     ///
-    /// This is the same as QueryExecutor::execute but as a regular method
+    /// This is the same as `QueryExecutor::execute` but as a regular method
     /// for use when the router is behind a lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if query parsing, execution, or serialization fails.
     pub fn execute_for_cluster(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
         let result = self.execute_parsed(query).map_err(|e| e.to_string())?;
         bitcode::serialize(&result).map_err(|e| format!("Serialization error: {e}"))
     }
 }
 
-/// Implementation of QueryExecutor for distributed query handling.
+/// Implementation of `QueryExecutor` for distributed query handling.
 ///
-/// This enables the QueryRouter to receive remote queries from the cluster
+/// This enables the `QueryRouter` to receive remote queries from the cluster
 /// and execute them locally, returning serialized results.
 impl QueryExecutor for QueryRouter {
     fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String> {

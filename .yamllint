@@ -1,0 +1,22 @@
+---
+extends: default
+
+ignore:
+  - node_modules/
+  - "**/node_modules/"
+  - target/
+  - "**/target/"
+  - fuzz/target/
+  - dist/
+  - "**/dist/"
+  - .venv/
+  - "**/.venv/"
+  - coverage/
+  - "**/coverage/"
+
+rules:
+  line-length:
+    max: 80
+  document-start: enable
+  truthy:
+    check-keys: true

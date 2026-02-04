@@ -38,7 +38,7 @@ npm run lint
 
 ### Project Structure
 
-```
+```text
 neumann-ts/
 ├── src/                    # Source code
 │   ├── index.ts           # Public API exports
@@ -87,12 +87,14 @@ neumann-ts/
 2. Create a feature branch (`git checkout -b feature/your-feature`)
 3. Make your changes
 4. Ensure all checks pass:
+
    ```bash
    npm run lint
    npm run typecheck
    npm test
    npm run build
    ```
+
 5. Commit with a clear message
 6. Push and open a pull request
 
@@ -146,7 +148,7 @@ interface Config {
 
 Write clear, imperative commit messages:
 
-```
+```text
 Add streaming support for large result sets
 
 - Implement executeStream() method

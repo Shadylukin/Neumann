@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Internal state shared between `BlobWriter` and the store.
-pub(crate) struct WriteState {
+pub struct WriteState {
     pub artifact_id: String,
     pub filename: String,
     pub content_type: String,
@@ -69,6 +69,7 @@ impl BlobWriter {
     /// # Errors
     ///
     /// Returns an error if chunk storage fails.
+    #[allow(clippy::unused_async)]
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -131,6 +132,7 @@ impl BlobWriter {
     /// # Errors
     ///
     /// Returns an error if metadata storage fails.
+    #[allow(clippy::unused_async)]
     pub async fn finish(mut self) -> Result<String> {
         // Flush remaining buffer
         if !self.buffer.is_empty() {
@@ -249,6 +251,7 @@ impl BlobWriter {
 
     /// Get the number of chunks written so far.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn chunks_written(&self) -> usize {
         self.chunks.len()
     }
@@ -300,6 +303,7 @@ impl BlobReader {
     /// # Errors
     ///
     /// Returns an error if a chunk is missing.
+    #[allow(clippy::unused_async)]
     pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>> {
         if self.current_chunk >= self.chunks.len() {
             return Ok(None);
@@ -340,6 +344,11 @@ impl BlobReader {
     /// # Errors
     ///
     /// Returns an error if a chunk is missing.
+    ///
+    /// # Panics
+    ///
+    /// This method will not panic under normal conditions. The internal unwrap
+    /// is guarded by the preceding chunk load logic.
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         // Load chunk if needed
         if self.current_data.is_none()
@@ -404,6 +413,7 @@ impl BlobReader {
 
     /// Get the number of chunks.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
@@ -418,28 +428,28 @@ fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn get_int(tensor: &TensorData, field: &str) -> Option<i64> {
+pub fn get_int(tensor: &TensorData, field: &str) -> Option<i64> {
     match tensor.get(field) {
         Some(TensorValue::Scalar(ScalarValue::Int(i))) => Some(*i),
         _ => None,
     }
 }
 
-pub(crate) fn get_string(tensor: &TensorData, field: &str) -> Option<String> {
+pub fn get_string(tensor: &TensorData, field: &str) -> Option<String> {
     match tensor.get(field) {
         Some(TensorValue::Scalar(ScalarValue::String(s))) => Some(s.clone()),
         _ => None,
     }
 }
 
-pub(crate) fn get_bytes(tensor: &TensorData, field: &str) -> Option<Vec<u8>> {
+pub fn get_bytes(tensor: &TensorData, field: &str) -> Option<Vec<u8>> {
     match tensor.get(field) {
         Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => Some(b.clone()),
         _ => None,
     }
 }
 
-pub(crate) fn get_pointers(tensor: &TensorData, field: &str) -> Option<Vec<String>> {
+pub fn get_pointers(tensor: &TensorData, field: &str) -> Option<Vec<String>> {
     match tensor.get(field) {
         Some(TensorValue::Pointers(p)) => Some(p.clone()),
         _ => None,
@@ -447,7 +457,7 @@ pub(crate) fn get_pointers(tensor: &TensorData, field: &str) -> Option<Vec<Strin
 }
 
 #[cfg(feature = "vector")]
-pub(crate) fn get_vector(tensor: &TensorData, field: &str) -> Option<Vec<f32>> {
+pub fn get_vector(tensor: &TensorData, field: &str) -> Option<Vec<f32>> {
     match tensor.get(field) {
         Some(TensorValue::Vector(v)) => Some(v.clone()),
         Some(TensorValue::Sparse(s)) => Some(s.to_dense()),
@@ -456,7 +466,7 @@ pub(crate) fn get_vector(tensor: &TensorData, field: &str) -> Option<Vec<f32>> {
 }
 
 /// Check if a vector should use sparse storage (50% threshold).
-pub(crate) fn should_use_sparse(vector: &[f32]) -> bool {
+pub fn should_use_sparse(vector: &[f32]) -> bool {
     if vector.is_empty() {
         return false;
     }

@@ -1,6 +1,7 @@
+---
 name: Documentation
 
-on:
+"on":
   push:
     branches: [main]
     paths:
@@ -30,23 +31,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # nightly
+        # nightly
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: nightly
           components: rust-docs
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler
 
       - name: Build rustdoc
         run: |
-          RUSTDOCFLAGS="--cfg docsrs -Dwarnings" cargo +nightly doc \
+          RUSTDOCFLAGS="--cfg docsrs -Dwarnings" \
+            cargo +nightly doc \
             --workspace \
             --no-deps \
             --all-features \
@@ -54,7 +64,9 @@ jobs:
             -Zrustdoc-scrape-examples
 
       - name: Upload rustdoc
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: rustdoc
           path: target/doc
@@ -65,13 +77,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install mdBook
         run: |
           mkdir -p ~/.local/bin
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
-          cargo install mdbook-mermaid@0.12.6 mdbook-admonish mdbook-linkcheck
+          BASE="https://github.com/rust-lang/mdBook/releases/download"
+          VER="v0.4.52"
+          ARCHIVE="mdbook-$VER-x86_64-unknown-linux-gnu.tar.gz"
+          curl -sSL "$BASE/$VER/$ARCHIVE" | tar -xz -C ~/.local/bin
+          cargo install mdbook-mermaid@0.12.6 \
+            mdbook-admonish \
+            mdbook-linkcheck
 
       - name: Build book
         working-directory: docs/book
@@ -85,7 +104,9 @@ jobs:
         run: mdbook-linkcheck --standalone
 
       - name: Upload book
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: book
           path: docs/book-output
@@ -96,41 +117,56 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # nightly
+        # nightly
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: nightly
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
 
       - name: Check doc coverage
         run: |
-          cargo +nightly rustdoc -p tensor_chain -- -Z unstable-options --show-coverage 2>&1 | tee coverage.txt
-          # Report coverage but don't fail yet
-          grep -oP '\d+\.\d+%' coverage.txt | head -1 || echo "Coverage check complete"
+          cargo +nightly rustdoc -p tensor_chain \
+            -- -Z unstable-options --show-coverage 2>&1 \
+            | tee coverage.txt
+          grep -oP '\d+\.\d+%' coverage.txt | head -1 \
+            || echo "Coverage check complete"
 
   benchmarks:
     name: Generate Benchmark Docs
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Only run on main branch pushes to avoid long CI times on PRs
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # stable
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
 
       - name: Install jq and protoc
-        run: sudo apt-get update && sudo apt-get install -y jq protobuf-compiler
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y jq protobuf-compiler
 
       - name: Run benchmarks (quick mode)
         run: |
@@ -142,7 +178,9 @@ jobs:
           ./scripts/generate-bench-docs.sh
 
       - name: Upload Criterion reports
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: criterion-reports
           path: target/criterion
@@ -162,25 +200,35 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Download book
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        # v4.3.0
+        uses: >-
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: book
           path: public/
 
       - name: Download rustdoc
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        # v4.3.0
+        uses: >-
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: rustdoc
           path: public/api/
 
       - name: Setup Pages
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+        # v5.0.0
+        uses: >-
+          actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        # v3.0.1
+        uses: >-
+          actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
           path: public/
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        # v4.0.5
+        uses: >-
+          actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e

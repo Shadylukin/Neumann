@@ -180,6 +180,7 @@ impl CursorStore {
     /// Remove a cursor by ID.
     ///
     /// Returns `true` if the cursor was removed, `false` if not found.
+    #[must_use]
     pub fn remove(&self, id: &str) -> bool {
         self.cursors.remove(id).is_some()
     }
@@ -199,6 +200,7 @@ impl CursorStore {
     /// Remove all expired cursors.
     ///
     /// Returns the number of cursors removed.
+    #[must_use]
     pub fn cleanup_expired(&self) -> usize {
         let mut removed = 0;
         self.cursors.retain(|_, entry| {
@@ -222,7 +224,7 @@ impl CursorStore {
         let mut oldest_id: Option<CursorId> = None;
         let mut oldest_time = i64::MAX;
 
-        for entry in self.cursors.iter() {
+        for entry in &self.cursors {
             if entry.last_access < oldest_time {
                 oldest_time = entry.last_access;
                 oldest_id = Some(entry.key().clone());
@@ -278,7 +280,7 @@ impl Default for CursorStore {
 fn current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_secs().cast_signed())
         .unwrap_or(0)
 }
 

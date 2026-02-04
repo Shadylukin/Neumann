@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! TensorCheckpoint - Rollback/Checkpoint System for Neumann
+//! `TensorCheckpoint` - Rollback/Checkpoint System for Neumann
 //!
 //! Provides checkpoint and rollback capabilities for the Neumann database:
 //! - Auto-checkpoints before destructive operations
@@ -7,10 +7,17 @@
 //! - Interactive confirmation with preview of affected data
 //! - Count-based retention with automatic purge
 //!
-//! Checkpoints are stored in tensor_blob for S3-style content-addressable storage.
+//! Checkpoints are stored in `tensor_blob` for S3-style content-addressable storage.
 
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::must_use_candidate)]
+#![allow(clippy::use_self)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::match_same_arms)]
 
 mod error;
 mod preview;
@@ -109,7 +116,7 @@ pub struct CheckpointManager {
 }
 
 impl CheckpointManager {
-    pub async fn new(blob: Arc<Mutex<BlobStore>>, config: CheckpointConfig) -> Self {
+    pub fn new(blob: Arc<Mutex<BlobStore>>, config: CheckpointConfig) -> Self {
         let retention = RetentionManager::new(config.max_checkpoints);
         let preview_gen = PreviewGenerator::new(config.preview_sample_size);
 
@@ -133,13 +140,16 @@ impl CheckpointManager {
     /// Create a manual checkpoint with optional name.
     pub async fn create(&self, name: Option<&str>, store: &TensorStore) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        let name = name.map(String::from).unwrap_or_else(|| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            format!("checkpoint-{now}")
-        });
+        let name = name.map_or_else(
+            || {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                format!("checkpoint-{now}")
+            },
+            String::from,
+        );
 
         let metadata = self.collect_metadata(store);
         let snapshot_bytes = store
@@ -191,10 +201,9 @@ impl CheckpointManager {
             return true;
         }
 
-        match &self.confirm_handler {
-            Some(handler) => handler.confirm(op, preview),
-            None => true, // No handler means auto-confirm
-        }
+        self.confirm_handler
+            .as_ref()
+            .map_or(true, |handler| handler.confirm(op, preview))
     }
 
     /// Generate a preview for a destructive operation.
@@ -208,8 +217,10 @@ impl CheckpointManager {
 
     /// List checkpoints, most recent first.
     pub async fn list(&self, limit: Option<usize>) -> Result<Vec<CheckpointInfo>> {
-        let blob = self.blob.lock().await;
-        let mut checkpoints = CheckpointStorage::list(&blob).await?;
+        let mut checkpoints = {
+            let blob = self.blob.lock().await;
+            CheckpointStorage::list(&blob).await?
+        };
 
         if let Some(limit) = limit {
             checkpoints.truncate(limit);
@@ -220,8 +231,10 @@ impl CheckpointManager {
 
     /// Rollback to a checkpoint by ID or name.
     pub async fn rollback(&self, id_or_name: &str, store: &TensorStore) -> Result<()> {
-        let blob = self.blob.lock().await;
-        let state = CheckpointStorage::load(id_or_name, &blob).await?;
+        let state = {
+            let blob = self.blob.lock().await;
+            CheckpointStorage::load(id_or_name, &blob).await?
+        };
 
         store
             .restore_from_bytes(&state.store_snapshot)
@@ -232,17 +245,24 @@ impl CheckpointManager {
 
     /// Delete a checkpoint by ID or name.
     pub async fn delete(&self, id_or_name: &str) -> Result<()> {
-        let blob = self.blob.lock().await;
-        let checkpoints = CheckpointStorage::list(&blob).await?;
+        let checkpoints = {
+            let blob = self.blob.lock().await;
+            CheckpointStorage::list(&blob).await?
+        };
 
-        for cp in checkpoints {
-            if cp.id == id_or_name || cp.name == id_or_name {
-                CheckpointStorage::delete(&cp.artifact_id, &blob).await?;
-                return Ok(());
+        let artifact_id = checkpoints
+            .into_iter()
+            .find(|cp| cp.id == id_or_name || cp.name == id_or_name)
+            .map(|cp| cp.artifact_id);
+
+        match artifact_id {
+            Some(id) => {
+                let blob = self.blob.lock().await;
+                CheckpointStorage::delete(&id, &blob).await?;
+                Ok(())
             }
+            None => Err(CheckpointError::NotFound(id_or_name.to_string())),
         }
-
-        Err(CheckpointError::NotFound(id_or_name.to_string()))
     }
 
     pub fn auto_checkpoint_enabled(&self) -> bool {
@@ -305,7 +325,7 @@ mod tests {
             .unwrap();
         let blob = Arc::new(Mutex::new(blob));
         let config = CheckpointConfig::default();
-        let manager = CheckpointManager::new(blob, config).await;
+        let manager = CheckpointManager::new(blob, config);
         (manager, store)
     }
 
@@ -394,7 +414,7 @@ mod tests {
         let blob = Arc::new(Mutex::new(blob));
 
         let config = CheckpointConfig::default().with_max_checkpoints(2);
-        let manager = CheckpointManager::new(blob, config).await;
+        let manager = CheckpointManager::new(blob, config);
 
         for i in 0..5 {
             manager
@@ -516,7 +536,7 @@ mod tests {
         let blob = Arc::new(Mutex::new(blob));
 
         let config = CheckpointConfig::default().with_auto_checkpoint(false);
-        let manager = CheckpointManager::new(blob, config).await;
+        let manager = CheckpointManager::new(blob, config);
 
         assert!(!manager.auto_checkpoint_enabled());
     }
@@ -530,7 +550,7 @@ mod tests {
         let blob = Arc::new(Mutex::new(blob));
 
         let config = CheckpointConfig::default().with_interactive_confirm(false);
-        let manager = CheckpointManager::new(blob, config).await;
+        let manager = CheckpointManager::new(blob, config);
 
         assert!(!manager.interactive_confirm_enabled());
     }
@@ -558,7 +578,7 @@ mod tests {
         let blob = Arc::new(Mutex::new(blob));
 
         let config = CheckpointConfig::default().with_interactive_confirm(false);
-        let manager = CheckpointManager::new(blob, config).await;
+        let manager = CheckpointManager::new(blob, config);
 
         let op = DestructiveOp::Delete {
             table: "test".to_string(),

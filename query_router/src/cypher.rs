@@ -40,6 +40,10 @@ impl BindingContext {
 }
 
 /// Execute a Cypher MATCH statement.
+///
+/// # Errors
+///
+/// Returns an error if pattern matching or projection fails.
 pub fn exec_cypher_match(graph: &GraphEngine, stmt: &CypherMatchStmt) -> Result<QueryResult> {
     // For each pattern, find all matching subgraphs
     let mut all_bindings: Vec<BindingContext> = vec![BindingContext::default()];
@@ -54,7 +58,7 @@ pub fn exec_cypher_match(graph: &GraphEngine, stmt: &CypherMatchStmt) -> Result<
     }
 
     // Project results according to RETURN clause
-    let results = project_return(graph, &stmt.return_clause, &all_bindings)?;
+    let results = project_return(graph, &stmt.return_clause, &all_bindings);
 
     // Apply ORDER BY, SKIP, LIMIT if present
     let mut results = results;
@@ -62,6 +66,8 @@ pub fn exec_cypher_match(graph: &GraphEngine, stmt: &CypherMatchStmt) -> Result<
     // Apply SKIP
     if let Some(ref skip_expr) = stmt.skip {
         if let Some(skip_val) = eval_int_expr(skip_expr) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // skip_val.max(0) ensures non-negative; truncation acceptable for pagination
             let skip = skip_val.max(0) as usize;
             if skip < results.len() {
                 results = results.into_iter().skip(skip).collect();
@@ -74,6 +80,8 @@ pub fn exec_cypher_match(graph: &GraphEngine, stmt: &CypherMatchStmt) -> Result<
     // Apply LIMIT
     if let Some(ref limit_expr) = stmt.limit {
         if let Some(limit_val) = eval_int_expr(limit_expr) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // limit_val.max(0) ensures non-negative; truncation acceptable for pagination
             let limit = limit_val.max(0) as usize;
             results.truncate(limit);
         }
@@ -83,6 +91,10 @@ pub fn exec_cypher_match(graph: &GraphEngine, stmt: &CypherMatchStmt) -> Result<
 }
 
 /// Execute a Cypher CREATE statement.
+///
+/// # Errors
+///
+/// Returns an error if node or relationship creation fails.
 pub fn exec_cypher_create(graph: &GraphEngine, stmt: &CypherCreateStmt) -> Result<QueryResult> {
     let mut created_ids = Vec::new();
     let mut ctx = BindingContext::default();
@@ -95,6 +107,10 @@ pub fn exec_cypher_create(graph: &GraphEngine, stmt: &CypherCreateStmt) -> Resul
 }
 
 /// Execute a Cypher DELETE statement.
+///
+/// # Errors
+///
+/// Returns an error if node or edge deletion fails.
 pub fn exec_cypher_delete(graph: &GraphEngine, stmt: &CypherDeleteStmt) -> Result<QueryResult> {
     let mut deleted_count = 0;
 
@@ -110,7 +126,7 @@ pub fn exec_cypher_delete(graph: &GraphEngine, stmt: &CypherDeleteStmt) -> Resul
                     for neighbor in outgoing {
                         // Delete outgoing edges
                         if let Ok(edges) =
-                            graph.find_edges_by_property("from", &PropertyValue::Int(id as i64))
+                            graph.find_edges_by_property("from", &PropertyValue::Int(id.cast_signed()))
                         {
                             for edge in edges {
                                 if edge.to == neighbor.id {
@@ -124,7 +140,7 @@ pub fn exec_cypher_delete(graph: &GraphEngine, stmt: &CypherDeleteStmt) -> Resul
                     for neighbor in incoming {
                         // Delete incoming edges
                         if let Ok(edges) =
-                            graph.find_edges_by_property("to", &PropertyValue::Int(id as i64))
+                            graph.find_edges_by_property("to", &PropertyValue::Int(id.cast_signed()))
                         {
                             for edge in edges {
                                 if edge.from == neighbor.id {
@@ -145,6 +161,10 @@ pub fn exec_cypher_delete(graph: &GraphEngine, stmt: &CypherDeleteStmt) -> Resul
 }
 
 /// Execute a Cypher MERGE statement.
+///
+/// # Errors
+///
+/// Returns an error if pattern matching, creation, or SET operations fail.
 pub fn exec_cypher_merge(graph: &GraphEngine, stmt: &CypherMergeStmt) -> Result<QueryResult> {
     // Try to match the pattern first
     let bindings = match_pattern(graph, &stmt.pattern, vec![BindingContext::default()])?;
@@ -247,7 +267,7 @@ fn match_relationship_chain(
     if let (CypherElement::Rel(rel), CypherElement::Node(target_node)) =
         (&elements[0], &elements[1])
     {
-        let direction = cypher_direction_to_engine(&rel.direction);
+        let direction = cypher_direction_to_engine(rel.direction);
         let edge_type = rel.rel_types.first().map(|t| t.name.as_str());
 
         // Handle variable-length relationships
@@ -448,8 +468,7 @@ fn create_pattern(
                 let edge_type = rel
                     .rel_types
                     .first()
-                    .map(|t| t.name.as_str())
-                    .unwrap_or("RELATED");
+                    .map_or("RELATED", |t| t.name.as_str());
 
                 let props = rel
                     .properties
@@ -482,8 +501,7 @@ fn create_node(graph: &GraphEngine, pattern: &CypherNode) -> Result<u64> {
     let label = pattern
         .labels
         .first()
-        .map(|l| l.name.as_str())
-        .unwrap_or("Node");
+        .map_or("Node", |l| l.name.as_str());
 
     let props: HashMap<String, PropertyValue> = pattern
         .properties
@@ -503,7 +521,7 @@ fn project_return(
     graph: &GraphEngine,
     return_clause: &CypherReturn,
     bindings: &[BindingContext],
-) -> Result<Vec<NodeResult>> {
+) -> Vec<NodeResult> {
     let mut results = Vec::new();
 
     for ctx in bindings {
@@ -554,7 +572,7 @@ fn project_return(
         results.retain(|r| seen.insert(r.id));
     }
 
-    Ok(results)
+    results
 }
 
 // =============================================================================
@@ -577,39 +595,39 @@ fn evaluate_where_clause(graph: &GraphEngine, expr: &Expr, ctx: &BindingContext)
                     Ok(l || r)
                 },
                 BinaryOp::Eq => {
-                    let l = eval_expr_value(graph, left, ctx)?;
-                    let r = eval_expr_value(graph, right, ctx)?;
+                    let l = eval_expr_value(graph, left, ctx);
+                    let r = eval_expr_value(graph, right, ctx);
                     Ok(l == r)
                 },
                 BinaryOp::Ne => {
-                    let l = eval_expr_value(graph, left, ctx)?;
-                    let r = eval_expr_value(graph, right, ctx)?;
+                    let l = eval_expr_value(graph, left, ctx);
+                    let r = eval_expr_value(graph, right, ctx);
                     Ok(l != r)
                 },
                 BinaryOp::Lt => {
-                    let l = eval_expr_value(graph, left, ctx)?;
-                    let r = eval_expr_value(graph, right, ctx)?;
+                    let l = eval_expr_value(graph, left, ctx);
+                    let r = eval_expr_value(graph, right, ctx);
                     Ok(compare_values(&l, &r) == Some(std::cmp::Ordering::Less))
                 },
                 BinaryOp::Le => {
-                    let l = eval_expr_value(graph, left, ctx)?;
-                    let r = eval_expr_value(graph, right, ctx)?;
+                    let l = eval_expr_value(graph, left, ctx);
+                    let r = eval_expr_value(graph, right, ctx);
                     Ok(matches!(
                         compare_values(&l, &r),
-                        Some(std::cmp::Ordering::Less) | Some(std::cmp::Ordering::Equal)
+                        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
                     ))
                 },
                 BinaryOp::Gt => {
-                    let l = eval_expr_value(graph, left, ctx)?;
-                    let r = eval_expr_value(graph, right, ctx)?;
+                    let l = eval_expr_value(graph, left, ctx);
+                    let r = eval_expr_value(graph, right, ctx);
                     Ok(compare_values(&l, &r) == Some(std::cmp::Ordering::Greater))
                 },
                 BinaryOp::Ge => {
-                    let l = eval_expr_value(graph, left, ctx)?;
-                    let r = eval_expr_value(graph, right, ctx)?;
+                    let l = eval_expr_value(graph, left, ctx);
+                    let r = eval_expr_value(graph, right, ctx);
                     Ok(matches!(
                         compare_values(&l, &r),
-                        Some(std::cmp::Ordering::Greater) | Some(std::cmp::Ordering::Equal)
+                        Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
                     ))
                 },
                 _ => Ok(true), // Unsupported operator - pass through
@@ -633,30 +651,30 @@ fn eval_expr_value(
     graph: &GraphEngine,
     expr: &Expr,
     ctx: &BindingContext,
-) -> Result<PropertyValue> {
+) -> PropertyValue {
     match &expr.kind {
-        ExprKind::Literal(lit) => Ok(literal_to_property_value(lit)),
+        ExprKind::Literal(lit) => literal_to_property_value(lit),
         ExprKind::Qualified(base, field) => {
             if let ExprKind::Ident(ref ident) = base.kind {
                 if let Some(node_id) = ctx.nodes.get(&ident.name) {
                     if let Ok(node) = graph.get_node(*node_id) {
                         if let Some(val) = node.properties.get(&field.name) {
-                            return Ok(val.clone());
+                            return val.clone();
                         }
                     }
                 }
             }
-            Ok(PropertyValue::Null)
+            PropertyValue::Null
         },
         ExprKind::Ident(ident) => {
             // Identifier alone - might be a node reference
             if let Some(node_id) = ctx.nodes.get(&ident.name) {
-                Ok(PropertyValue::Int(*node_id as i64))
+                PropertyValue::Int((*node_id).cast_signed())
             } else {
-                Ok(PropertyValue::Null)
+                PropertyValue::Null
             }
         },
-        _ => Ok(PropertyValue::Null),
+        _ => PropertyValue::Null,
     }
 }
 
@@ -690,7 +708,7 @@ fn apply_set_item(
 // Utility Functions
 // =============================================================================
 
-fn cypher_direction_to_engine(dir: &CypherDirection) -> Direction {
+fn cypher_direction_to_engine(dir: CypherDirection) -> Direction {
     match dir {
         CypherDirection::Outgoing => Direction::Outgoing,
         CypherDirection::Incoming => Direction::Incoming,
@@ -735,7 +753,7 @@ fn property_value_to_string(val: &PropertyValue) -> String {
         },
         PropertyValue::DateTime(dt) => dt.to_string(),
         PropertyValue::Bytes(b) => format!("<{} bytes>", b.len()),
-        PropertyValue::Point { lat, lon } => format!("POINT({}, {})", lat, lon),
+        PropertyValue::Point { lat, lon } => format!("POINT({lat}, {lon})"),
     }
 }
 
@@ -743,7 +761,9 @@ fn compare_values(a: &PropertyValue, b: &PropertyValue) -> Option<std::cmp::Orde
     match (a, b) {
         (PropertyValue::Int(a), PropertyValue::Int(b)) => Some(a.cmp(b)),
         (PropertyValue::Float(a), PropertyValue::Float(b)) => a.partial_cmp(b),
+        #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for comparison
         (PropertyValue::Int(a), PropertyValue::Float(b)) => (*a as f64).partial_cmp(b),
+        #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for comparison
         (PropertyValue::Float(a), PropertyValue::Int(b)) => a.partial_cmp(&(*b as f64)),
         (PropertyValue::String(a), PropertyValue::String(b)) => Some(a.cmp(b)),
         _ => None,

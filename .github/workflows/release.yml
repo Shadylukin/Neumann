@@ -1,6 +1,7 @@
+---
 name: Release
 
-on:
+"on":
   push:
     tags:
       - 'v*'
@@ -11,6 +12,7 @@ env:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   create-release:
@@ -29,34 +31,35 @@ jobs:
       - name: Get version from tag
         id: get_version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          if [[ "$VERSION" == *"-alpha"* ]] || [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-rc"* ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          VERSION="${GITHUB_REF#refs/tags/}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *"-alpha"* ]] || \
+             [[ "$VERSION" == *"-beta"* ]] || \
+             [[ "$VERSION" == *"-rc"* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate changelog
         id: changelog
         run: |
-          # Get previous tag
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          VER="${{ steps.get_version.outputs.version }}"
 
-          if [ -n "$PREVIOUS_TAG" ]; then
-            echo "Generating changelog from $PREVIOUS_TAG to ${{ steps.get_version.outputs.version }}"
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "$PREVIOUS_TAG"..HEAD)
+          if [ -n "$PREV" ]; then
+            echo "Generating changelog from $PREV to $VER"
+            git log --pretty=format:"- %s (%h)" "$PREV"..HEAD > changelog.txt
           else
-            echo "No previous tag found, using all commits"
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD~20..HEAD)
+            echo "No previous tag found, using recent commits"
+            git log --pretty=format:"- %s (%h)" HEAD~20..HEAD > changelog.txt
           fi
-
-          # Write to file for multi-line output
-          echo "$CHANGELOG" > changelog.txt
 
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@v1
+        # v2.2.2
+        uses: >-
+          softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
         with:
           tag_name: ${{ steps.get_version.outputs.version }}
           name: Neumann ${{ steps.get_version.outputs.version }}
@@ -100,7 +103,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            protobuf-compiler
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -114,64 +120,108 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release --package neumann_shell --target ${{ matrix.target }}
+          cargo build --release \
+            --package neumann_shell \
+            --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE="${{ matrix.archive }}"
+          BUILD_DIR="target/$TARGET/release/build"
+
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/neumann dist/
+          cp "target/$TARGET/release/neumann" dist/
           cp README.md LICENSE* dist/ 2>/dev/null || true
 
-          # Find and copy completions
-          COMPLETIONS_DIR=$(find target/${{ matrix.target }}/release/build -path "*neumann_shell*/out/completions" -type d | head -1)
-          if [ -d "$COMPLETIONS_DIR" ]; then
+          COMP=$(find "$BUILD_DIR" \
+            -path "*neumann_shell*/out/completions" \
+            -type d | head -1)
+          if [ -d "$COMP" ]; then
             mkdir -p dist/completions
-            cp "$COMPLETIONS_DIR"/* dist/completions/
+            cp "$COMP"/* dist/completions/
           fi
 
-          # Find and copy man page
-          MAN_DIR=$(find target/${{ matrix.target }}/release/build -path "*neumann_shell*/out/man" -type d | head -1)
-          if [ -d "$MAN_DIR" ]; then
+          MAN=$(find "$BUILD_DIR" \
+            -path "*neumann_shell*/out/man" \
+            -type d | head -1)
+          if [ -d "$MAN" ]; then
             mkdir -p dist/man
-            cp "$MAN_DIR"/* dist/man/
+            cp "$MAN"/* dist/man/
           fi
 
           cd dist
-          tar -czvf ../neumann-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }} *
+          tar -czvf "../neumann-$VERSION-$TARGET.$ARCHIVE" -- *
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ver = "${{ needs.create-release.outputs.version }}"
+          $tgt = "${{ matrix.target }}"
+          $arc = "${{ matrix.archive }}"
+          $build = "target/$tgt/release/build"
+
           New-Item -ItemType Directory -Force -Path dist
-          Copy-Item target/${{ matrix.target }}/release/neumann.exe dist/
+          Copy-Item "target/$tgt/release/neumann.exe" dist/
           Copy-Item README.md dist/ -ErrorAction SilentlyContinue
           Copy-Item LICENSE* dist/ -ErrorAction SilentlyContinue
 
-          # Find and copy completions
-          $completionsDir = Get-ChildItem -Path "target/${{ matrix.target }}/release/build" -Recurse -Directory -Filter "completions" | Where-Object { $_.FullName -like "*neumann_shell*out*" } | Select-Object -First 1
-          if ($completionsDir) {
+          $comp = Get-ChildItem -Path $build `
+            -Recurse -Directory -Filter "completions" |
+            Where-Object { $_.FullName -like "*neumann_shell*out*" } |
+            Select-Object -First 1
+          if ($comp) {
             New-Item -ItemType Directory -Force -Path dist/completions
-            Copy-Item "$($completionsDir.FullName)/*" dist/completions/
+            Copy-Item "$($comp.FullName)/*" dist/completions/
           }
 
-          # Find and copy man page
-          $manDir = Get-ChildItem -Path "target/${{ matrix.target }}/release/build" -Recurse -Directory -Filter "man" | Where-Object { $_.FullName -like "*neumann_shell*out*" } | Select-Object -First 1
-          if ($manDir) {
+          $man = Get-ChildItem -Path $build `
+            -Recurse -Directory -Filter "man" |
+            Where-Object { $_.FullName -like "*neumann_shell*out*" } |
+            Select-Object -First 1
+          if ($man) {
             New-Item -ItemType Directory -Force -Path dist/man
-            Copy-Item "$($manDir.FullName)/*" dist/man/
+            Copy-Item "$($man.FullName)/*" dist/man/
           }
 
-          Compress-Archive -Path dist/* -DestinationPath neumann-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          Compress-Archive -Path dist/* `
+            -DestinationPath "neumann-$ver-$tgt.$arc"
+
+      - name: Install cosign
+        # v3.7.0
+        uses: >-
+          sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+
+      - name: Sign release artifact
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+          cosign sign-blob --yes \
+            --output-signature "$ARTIFACT.sig" \
+            --output-certificate "$ARTIFACT.pem" \
+            "$ARTIFACT"
 
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ needs.create-release.outputs.version }}
-          files: neumann-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+        # v2.2.2
+        uses: >-
+          softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.create-release.outputs.version }}
+          files: |
+            neumann-*.tar.gz
+            neumann-*.tar.gz.sig
+            neumann-*.tar.gz.pem
+            neumann-*.zip
+            neumann-*.zip.sig
+            neumann-*.zip.pem
 
   docker:
     name: Publish to Docker Hub
@@ -193,9 +243,8 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VERSION=${{ needs.create-release.outputs.version }}
-          # Remove 'v' prefix for Docker tag
-          echo "tag=${VERSION#v}" >> $GITHUB_OUTPUT
+          VERSION="${{ needs.create-release.outputs.version }}"
+          echo "tag=${VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push server image
         uses: docker/build-push-action@v5
@@ -221,6 +270,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Install cosign
+        # v3.7.0
+        uses: >-
+          sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+
+      - name: Sign server image
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          cosign sign --yes "shadylukinack/neumann:$TAG"
+          cosign sign --yes "shadylukinack/neumann:latest"
+
+      - name: Sign CLI image
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          cosign sign --yes "shadylukinack/neumann:$TAG-cli"
+          cosign sign --yes "shadylukinack/neumann:cli"
+
   publish-crates:
     name: Publish to crates.io
     needs: [create-release, build]
@@ -236,29 +302,27 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            protobuf-compiler
 
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          # Publish in dependency order
-          # Foundation layer first
           cargo publish --package tensor_store --allow-dirty || true
           cargo publish --package tensor_compress --allow-dirty || true
           cargo publish --package neumann_parser --allow-dirty || true
 
-          # Engine layer
-          sleep 30  # Wait for crates.io to index
+          sleep 30
           cargo publish --package relational_engine --allow-dirty || true
           cargo publish --package graph_engine --allow-dirty || true
           cargo publish --package vector_engine --allow-dirty || true
 
-          # Higher layers
           sleep 30
           cargo publish --package query_router --allow-dirty || true
 
-          # CLI
           sleep 30
           cargo publish --package neumann_shell --allow-dirty || true
 
@@ -291,7 +355,7 @@ jobs:
 
       - name: Update version
         run: |
-          VERSION=${{ needs.create-release.outputs.version }}
+          VERSION="${{ needs.create-release.outputs.version }}"
           npm version "${VERSION#v}" --no-git-tag-version
 
       - name: Publish to npm
@@ -315,11 +379,10 @@ jobs:
 
       - name: Update version
         run: |
-          VERSION=${{ needs.create-release.outputs.version }}
-          # Remove 'v' prefix
+          VERSION="${{ needs.create-release.outputs.version }}"
           VERSION="${VERSION#v}"
-          # Update version in pyproject.toml
-          sed -i "s/^version = .*/version = \"$VERSION\"/" neumann-py/pyproject.toml
+          sed -i "s/^version = .*/version = \"$VERSION\"/" \
+            neumann-py/pyproject.toml
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1

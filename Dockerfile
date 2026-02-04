@@ -159,8 +159,8 @@ WORKDIR /var/lib/neumann
 # gRPC port
 EXPOSE 9200
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9200/health || exit 1
+# Health check (30s start-period for Rust server warmup)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+    CMD curl -sf http://localhost:9200/health || exit 1
 
 ENTRYPOINT ["neumann_server"]

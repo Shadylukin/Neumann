@@ -1,0 +1,117 @@
+---
+name: SBOM Generation
+
+"on":
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust toolchain
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+
+      - name: Setup Node.js
+        # v4.1.0
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        # v5.6.0
+        uses: >-
+          actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom
+
+      - name: Install cyclonedx-cli
+        run: |
+          CDX_VERSION="v0.25.1"
+          CDX_URL="https://github.com/CycloneDX/cyclonedx-cli/releases"
+          wget -q "$CDX_URL/download/$CDX_VERSION/cyclonedx-linux-x64"
+          chmod +x cyclonedx-linux-x64
+          sudo mv cyclonedx-linux-x64 /usr/local/bin/cyclonedx
+
+      - name: Generate Rust SBOM
+        run: |
+          cargo sbom --format cyclonedx-json > sbom-rust.json
+
+      - name: Generate TypeScript SBOM
+        working-directory: neumann-ts
+        run: |
+          npm ci
+          npx @cyclonedx/cyclonedx-npm \
+            --output-format json \
+            --output-file ../sbom-typescript.json
+
+      - name: Generate Python SBOM
+        working-directory: neumann-py
+        run: |
+          pip install cyclonedx-bom
+          cyclonedx-py requirements \
+            --format json \
+            --output ../sbom-python.json \
+            pyproject.toml || \
+          cyclonedx-py environment \
+            --format json \
+            --output ../sbom-python.json
+
+      - name: Merge SBOMs
+        run: |
+          cyclonedx merge \
+            --input-files sbom-rust.json \
+              sbom-typescript.json \
+              sbom-python.json \
+            --output-file sbom-combined.json \
+            --output-format json || \
+          echo "Merge failed, using individual SBOMs"
+
+      - name: Attest SBOM
+        # v2.2.0
+        uses: >-
+          actions/attest-sbom@115c3be05ff3974bcbd596578934b3f9ce39bf68
+        with:
+          subject-path: 'sbom-*.json'
+          sbom-path: 'sbom-combined.json'
+
+      - name: Upload SBOMs to release
+        if: github.event_name == 'release'
+        # v2.2.2
+        uses: >-
+          softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
+        with:
+          files: |
+            sbom-rust.json
+            sbom-typescript.json
+            sbom-python.json
+            sbom-combined.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload SBOM artifacts
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sbom-artifacts
+          path: sbom-*.json

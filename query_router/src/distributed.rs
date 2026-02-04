@@ -75,6 +75,7 @@ pub struct ShardResult {
 
 impl ShardResult {
     /// Create a successful shard result.
+    #[must_use]
     pub fn success(shard: ShardId, result: QueryResult, execution_time_us: u64) -> Self {
         Self {
             shard,
@@ -85,6 +86,7 @@ impl ShardResult {
     }
 
     /// Create an error shard result.
+    #[must_use]
     pub fn error(shard: ShardId, error: String) -> Self {
         Self {
             shard,
@@ -142,15 +144,17 @@ impl QueryPlanner {
     }
 
     /// Set the semantic partitioner for embedding-based routing.
+    #[must_use]
     pub fn with_semantic_partitioner(mut self, partitioner: Arc<SemanticPartitioner>) -> Self {
         self.semantic_partitioner = Some(partitioner);
         self
     }
 
     /// Plan query execution.
+    #[must_use]
     pub fn plan(&self, query: &str) -> QueryPlan {
         // Parse query to determine routing
-        let query_type = self.classify_query(query);
+        let query_type = Self::classify_query(query);
 
         match query_type {
             QueryType::PointLookup { key } => {
@@ -200,6 +204,7 @@ impl QueryPlanner {
     }
 
     /// Plan query with explicit embedding for semantic routing.
+    #[must_use]
     pub fn plan_with_embedding(&self, query: &str, embedding: &[f32]) -> QueryPlan {
         // Get semantically relevant shards
         let relevant_shards = self.shards_for_embedding(embedding);
@@ -209,7 +214,7 @@ impl QueryPlanner {
             return self.plan(query);
         }
 
-        let query_type = self.classify_query(query);
+        let query_type = Self::classify_query(query);
 
         match query_type {
             QueryType::SimilaritySearch { k } => QueryPlan::ScatterGather {
@@ -246,7 +251,7 @@ impl QueryPlanner {
     }
 
     /// Classify query type for routing.
-    fn classify_query(&self, query: &str) -> QueryType {
+    fn classify_query(query: &str) -> QueryType {
         let query_upper = query.to_uppercase();
         let query_trimmed = query_upper.trim();
 
@@ -256,14 +261,14 @@ impl QueryPlanner {
             || query_trimmed.starts_with("ENTITY GET ")
         {
             // Extract key from query
-            if let Some(key) = self.extract_key(query) {
+            if let Some(key) = Self::extract_key(query) {
                 return QueryType::PointLookup { key };
             }
         }
 
         // Similarity search
         if query_trimmed.starts_with("SIMILAR ") {
-            let k = self.extract_top_k(query).unwrap_or(10);
+            let k = Self::extract_top_k(query).unwrap_or(10);
             return QueryType::SimilaritySearch { k };
         }
 
@@ -292,7 +297,7 @@ impl QueryPlanner {
     }
 
     /// Extract key from a point lookup query.
-    fn extract_key(&self, query: &str) -> Option<String> {
+    fn extract_key(query: &str) -> Option<String> {
         let parts: Vec<&str> = query.split_whitespace().collect();
         if parts.len() >= 2 {
             // Handle "GET key", "NODE GET key", etc.
@@ -306,11 +311,11 @@ impl QueryPlanner {
     }
 
     /// Extract TOP K value from query.
-    fn extract_top_k(&self, query: &str) -> Option<usize> {
+    fn extract_top_k(query: &str) -> Option<usize> {
         let query_upper = query.to_uppercase();
         if let Some(pos) = query_upper.find("TOP ") {
             let rest = &query_upper[pos + 4..];
-            let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let num_str: String = rest.chars().take_while(char::is_ascii_digit).collect();
             return num_str.parse().ok();
         }
         None
@@ -338,6 +343,11 @@ pub struct ResultMerger;
 
 impl ResultMerger {
     /// Merge shard results using the specified strategy.
+    ///
+    /// # Errors
+    ///
+    /// This function currently never returns an error, but returns `Result` for
+    /// forward compatibility with future merge strategies that may fail.
     pub fn merge(results: Vec<ShardResult>, strategy: &MergeStrategy) -> Result<QueryResult> {
         // Filter out errors if not fail-fast
         let successful: Vec<_> = results.into_iter().filter(|r| r.error.is_none()).collect();
@@ -346,17 +356,17 @@ impl ResultMerger {
             return Ok(QueryResult::Empty);
         }
 
-        match strategy {
+        Ok(match strategy {
             MergeStrategy::Union => Self::merge_union(successful),
             MergeStrategy::TopK(k) => Self::merge_top_k(successful, *k),
             MergeStrategy::Aggregate(func) => Self::merge_aggregate(successful, *func),
             MergeStrategy::FirstNonEmpty => Self::merge_first_non_empty(successful),
             MergeStrategy::Concat => Self::merge_concat(successful),
-        }
+        })
     }
 
     /// Merge results using union (combine all).
-    fn merge_union(results: Vec<ShardResult>) -> Result<QueryResult> {
+    fn merge_union(results: Vec<ShardResult>) -> QueryResult {
         let mut all_rows = Vec::new();
         let mut all_nodes = Vec::new();
         let mut all_edges = Vec::new();
@@ -368,33 +378,39 @@ impl ResultMerger {
                 QueryResult::Nodes(nodes) => all_nodes.extend(nodes),
                 QueryResult::Edges(edges) => all_edges.extend(edges),
                 QueryResult::Similar(similar) => all_similar.extend(similar),
-                QueryResult::Count(n) => all_rows.push(Row {
-                    id: 0,
-                    values: vec![("count".to_string(), Value::Int(n as i64))],
-                }),
+                QueryResult::Count(n) => {
+                    // Safety: usize to i64 wraps on 64-bit if n > i64::MAX, but count
+                    // values are expected to be within reasonable bounds
+                    #[allow(clippy::cast_possible_wrap)]
+                    let count_val = n as i64;
+                    all_rows.push(Row {
+                        id: 0,
+                        values: vec![("count".to_string(), Value::Int(count_val))],
+                    });
+                },
                 _ => {},
             }
         }
 
         // Return appropriate type based on what we collected
         if !all_similar.is_empty() {
-            return Ok(QueryResult::Similar(all_similar));
+            return QueryResult::Similar(all_similar);
         }
         if !all_nodes.is_empty() {
-            return Ok(QueryResult::Nodes(all_nodes));
+            return QueryResult::Nodes(all_nodes);
         }
         if !all_edges.is_empty() {
-            return Ok(QueryResult::Edges(all_edges));
+            return QueryResult::Edges(all_edges);
         }
         if !all_rows.is_empty() {
-            return Ok(QueryResult::Rows(all_rows));
+            return QueryResult::Rows(all_rows);
         }
 
-        Ok(QueryResult::Empty)
+        QueryResult::Empty
     }
 
     /// Merge similarity results keeping top K.
-    fn merge_top_k(results: Vec<ShardResult>, k: usize) -> Result<QueryResult> {
+    fn merge_top_k(results: Vec<ShardResult>, k: usize) -> QueryResult {
         let mut all_similar: Vec<SimilarResult> = Vec::new();
 
         for shard_result in results {
@@ -413,16 +429,22 @@ impl ResultMerger {
         // Take top K
         all_similar.truncate(k);
 
-        Ok(QueryResult::Similar(all_similar))
+        QueryResult::Similar(all_similar)
     }
 
     /// Merge using aggregate function.
-    fn merge_aggregate(results: Vec<ShardResult>, func: AggregateFunction) -> Result<QueryResult> {
+    fn merge_aggregate(results: Vec<ShardResult>, func: AggregateFunction) -> QueryResult {
         let mut values: Vec<i64> = Vec::new();
 
         for shard_result in results {
             match shard_result.result {
-                QueryResult::Count(n) => values.push(n as i64),
+                QueryResult::Count(n) => {
+                    // Safety: usize to i64 wraps on 64-bit if n > i64::MAX, but count
+                    // values are expected to be within reasonable bounds
+                    #[allow(clippy::cast_possible_wrap)]
+                    let count_val = n as i64;
+                    values.push(count_val);
+                },
                 QueryResult::Value(s) => {
                     if let Ok(n) = s.parse::<i64>() {
                         values.push(n);
@@ -433,33 +455,39 @@ impl ResultMerger {
         }
 
         if values.is_empty() {
-            return Ok(QueryResult::Count(0));
+            return QueryResult::Count(0);
         }
 
+        // Safety: i64 to usize casts below may truncate on 32-bit systems or lose sign,
+        // but aggregate results are expected to be non-negative and within usize range.
+        // The len() to i64 cast may wrap if len > i64::MAX, but this is unrealistic.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
         let result = match func {
-            AggregateFunction::Sum => values.iter().sum::<i64>() as usize,
-            AggregateFunction::Count => values.iter().sum::<i64>() as usize,
+            AggregateFunction::Sum | AggregateFunction::Count => {
+                values.iter().sum::<i64>() as usize
+            },
             AggregateFunction::Max => *values.iter().max().unwrap_or(&0) as usize,
             AggregateFunction::Min => *values.iter().min().unwrap_or(&0) as usize,
-            AggregateFunction::Avg => (values.iter().sum::<i64>() / values.len() as i64) as usize,
+            AggregateFunction::Avg => {
+                (values.iter().sum::<i64>() / (values.len() as i64)) as usize
+            },
         };
 
-        Ok(QueryResult::Count(result))
+        QueryResult::Count(result)
     }
 
     /// Return first non-empty result.
-    fn merge_first_non_empty(results: Vec<ShardResult>) -> Result<QueryResult> {
+    fn merge_first_non_empty(results: Vec<ShardResult>) -> QueryResult {
         for shard_result in results {
-            match &shard_result.result {
-                QueryResult::Empty => continue,
-                result => return Ok(result.clone()),
+            if !matches!(&shard_result.result, QueryResult::Empty) {
+                return shard_result.result;
             }
         }
-        Ok(QueryResult::Empty)
+        QueryResult::Empty
     }
 
     /// Concatenate all results in order.
-    fn merge_concat(results: Vec<ShardResult>) -> Result<QueryResult> {
+    fn merge_concat(results: Vec<ShardResult>) -> QueryResult {
         // Same as union for most types
         Self::merge_union(results)
     }
@@ -780,25 +808,22 @@ mod tests {
 
     #[test]
     fn test_planner_extract_key() {
-        let partitioner = create_test_partitioner();
-        let planner = QueryPlanner::new(partitioner, 0);
-
         // Test various GET formats
-        assert_eq!(planner.extract_key("GET mykey"), Some("mykey".to_string()));
         assert_eq!(
-            planner.extract_key("NODE GET user:123"),
+            QueryPlanner::extract_key("GET mykey"),
+            Some("mykey".to_string())
+        );
+        assert_eq!(
+            QueryPlanner::extract_key("NODE GET user:123"),
             Some("user:123".to_string())
         );
     }
 
     #[test]
     fn test_planner_extract_top_k() {
-        let partitioner = create_test_partitioner();
-        let planner = QueryPlanner::new(partitioner, 0);
-
-        assert_eq!(planner.extract_top_k("SIMILAR key TOP 5"), Some(5));
-        assert_eq!(planner.extract_top_k("SIMILAR key TOP 100"), Some(100));
-        assert_eq!(planner.extract_top_k("SIMILAR key"), None);
+        assert_eq!(QueryPlanner::extract_top_k("SIMILAR key TOP 5"), Some(5));
+        assert_eq!(QueryPlanner::extract_top_k("SIMILAR key TOP 100"), Some(100));
+        assert_eq!(QueryPlanner::extract_top_k("SIMILAR key"), None);
     }
 
     #[test]
@@ -1095,20 +1120,14 @@ mod tests {
 
     #[test]
     fn test_extract_key_no_get() {
-        let partitioner = create_test_partitioner();
-        let planner = QueryPlanner::new(partitioner, 0);
-
         // Query without GET keyword
-        assert!(planner.extract_key("something else").is_none());
+        assert!(QueryPlanner::extract_key("something else").is_none());
     }
 
     #[test]
     fn test_extract_key_empty() {
-        let partitioner = create_test_partitioner();
-        let planner = QueryPlanner::new(partitioner, 0);
-
         // Empty query
-        assert!(planner.extract_key("").is_none());
+        assert!(QueryPlanner::extract_key("").is_none());
     }
 
     #[test]
@@ -1220,11 +1239,8 @@ mod tests {
 
     #[test]
     fn test_extract_key_get_at_end() {
-        let partitioner = create_test_partitioner();
-        let planner = QueryPlanner::new(partitioner, 0);
-
         // "GET" at end without following key
-        assert!(planner.extract_key("something GET").is_none());
+        assert!(QueryPlanner::extract_key("something GET").is_none());
     }
 
     #[test]

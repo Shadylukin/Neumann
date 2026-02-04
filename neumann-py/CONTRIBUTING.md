@@ -65,7 +65,7 @@ ruff format src tests
 
 ## Project Structure
 
-```
+```text
 neumann-py/
 ├── src/neumann/           # Main package
 │   ├── __init__.py       # Public API exports
@@ -111,11 +111,13 @@ neumann-py/
 2. Create a feature branch (`git checkout -b feature/your-feature`)
 3. Make your changes
 4. Ensure all checks pass:
+
    ```bash
    ruff check src tests
    mypy src/neumann --strict
    pytest tests -v
    ```
+
 5. Commit with a clear message
 6. Push and open a pull request
 
@@ -146,7 +148,7 @@ neumann-py/
 
 Write clear, imperative commit messages:
 
-```
+```text
 Add streaming support for large result sets
 
 - Implement execute_stream() method

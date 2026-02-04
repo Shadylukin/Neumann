@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - Initial public release preparation
 - Comprehensive documentation
 - CI/CD pipeline
@@ -15,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-01-27
 
 ### Added
+
 - **Dual environment client**: Node.js (gRPC) and browser (gRPC-Web) support
 - **NeumannClient class**: Full-featured client implementation
   - `connect()` - gRPC connection for Node.js
@@ -43,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `rowToObject()`, `nodeToObject()`, `edgeToObject()`
 
 ### Configuration
+
 - ESM and CommonJS dual build support
 - TypeScript strict mode enabled
 - Vitest test framework with 95%+ coverage thresholds

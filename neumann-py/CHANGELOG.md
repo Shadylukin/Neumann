@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - Initial public release preparation
 - Comprehensive documentation
 - CI/CD pipeline
@@ -15,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-01-27
 
 ### Added
+
 - **Dual-mode client**: Embedded (in-process) and Remote (gRPC) operation
 - **Sync client** (`NeumannClient`): Full-featured synchronous client
   - `execute()` - single query execution
@@ -53,11 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Snapshot save/load
 
 ### Security
+
 - TLS support for encrypted connections
 - API key authentication
 - Identity-based access control for Vault operations
 
 ### Documentation
+
 - Comprehensive README with examples
 - Full API reference
 - Type hints for IDE support

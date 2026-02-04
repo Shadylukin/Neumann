@@ -1,11 +1,10 @@
+---
 name: Fuzz
 
-on:
-  # Run on schedule (weekly Sunday 2am UTC)
+"on":
   schedule:
-    - cron: '0 2 * * 0'
+    - cron: '0 2 * * 0'  # Weekly Sunday 2am UTC
 
-  # Allow manual trigger
   workflow_dispatch:
     inputs:
       duration:
@@ -17,7 +16,6 @@ on:
         required: false
         default: 'all'
 
-  # PR fuzzing for security-critical changes
   pull_request:
     paths:
       - 'neumann_parser/**'
@@ -50,23 +48,17 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          # Parser targets
           - parser_parse
           - parser_parse_all
           - parser_parse_expr
           - parser_tokenize
-          # Compression targets
           - compress_ids
           - compress_rle
           - compress_snapshot
-          # Crypto target
           - vault_cipher
-          # Checkpoint target
           - checkpoint_state
-          # Storage targets
           - storage_sparse_vector
           - slab_entity_index
-          # Distributed targets
           - consistent_hash
           - tcp_framing
           - membership
@@ -79,26 +71,26 @@ jobs:
           - lock_manager
           - delta_quantize
           - raft_messages
-          # Relational engine targets
           - relational_condition
           - relational_engine_ops
-          # Vector engine targets
           - vector_engine_ops
-          # Cache targets
           - cache_eviction_scorer
           - cache_semantic_search
           - cache_metric_roundtrip
           - cache_lifecycle
-          # Tensor Train compression targets
           - tt_roundtrip
           - streaming_format
           - delta_apply
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # nightly
+        # nightly
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
           toolchain: nightly
           components: llvm-tools-preview
@@ -106,24 +98,29 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
 
-      - name: Cache corpus
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - name: Restore corpus cache
+        # v4.2.3
+        uses: >-
+          actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
         with:
-          path: fuzz/corpus
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          path: fuzz/corpus/${{ matrix.target }}
+          key: >-
+            fuzz-corpus-${{ matrix.target }}-${{
+            hashFiles('fuzz/fuzz_targets/*.rs') }}-${{ github.sha }}
           restore-keys: |
             fuzz-corpus-${{ matrix.target }}-
-            fuzz-corpus-
 
       - name: Set fuzz duration
         id: duration
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "seconds=30" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event.inputs.duration }}" != "" ]]; then
-            echo "seconds=${{ github.event.inputs.duration }}" >> $GITHUB_OUTPUT
+          EVENT="${{ github.event_name }}"
+          INPUT="${{ github.event.inputs.duration }}"
+          if [[ "$EVENT" == "pull_request" ]]; then
+            echo "seconds=30" >> "$GITHUB_OUTPUT"
+          elif [[ "$INPUT" != "" ]]; then
+            echo "seconds=$INPUT" >> "$GITHUB_OUTPUT"
           else
-            echo "seconds=600" >> $GITHUB_OUTPUT
+            echo "seconds=600" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run fuzzer
@@ -136,25 +133,41 @@ jobs:
       - name: Check for crashes
         if: always()
         run: |
-          if [ -d "fuzz/artifacts/${{ matrix.target }}" ]; then
-            CRASHES=$(find fuzz/artifacts/${{ matrix.target }} -type f 2>/dev/null | wc -l)
+          ARTIFACT_DIR="fuzz/artifacts/${{ matrix.target }}"
+          if [ -d "$ARTIFACT_DIR" ]; then
+            CRASHES=$(find "$ARTIFACT_DIR" -type f 2>/dev/null | wc -l)
             if [ "$CRASHES" -gt 0 ]; then
               echo "::error::Found $CRASHES crash artifacts"
-              ls -la fuzz/artifacts/${{ matrix.target }}/
+              ls -la "$ARTIFACT_DIR/"
               exit 1
             fi
           fi
 
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: crashes-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
           if-no-files-found: ignore
 
+      - name: Save corpus cache
+        # v4.2.3
+        uses: >-
+          actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        if: always()
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: >-
+            fuzz-corpus-${{ matrix.target }}-${{
+            hashFiles('fuzz/fuzz_targets/*.rs') }}-${{ github.sha }}
+
       - name: Upload corpus
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: corpus-${{ matrix.target }}
           path: fuzz/corpus/${{ matrix.target }}/
@@ -171,7 +184,7 @@ jobs:
       - name: Check fuzz results
         run: |
           if [[ "${{ needs.fuzz.result }}" != "success" ]]; then
-            echo "::error::Fuzzing failed - check individual job logs for crashes"
+            echo "::error::Fuzzing failed"
             exit 1
           fi
           echo "Fuzzing completed successfully for all targets"

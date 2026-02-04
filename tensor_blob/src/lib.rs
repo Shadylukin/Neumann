@@ -1,4 +1,4 @@
-//! TensorBlob - Module 11 of Neumann
+//! `TensorBlob` - Module 11 of Neumann
 //!
 //! S3-style object storage for large artifacts using content-addressable
 //! chunked storage with tensor-native metadata.
@@ -59,6 +59,16 @@ use tensor_store::SparseVector;
 use tensor_store::{ScalarValue, TensorStore, TensorValue};
 use tokio::task::JoinHandle;
 
+/// Helper to safely convert i64 to usize.
+fn i64_to_usize(val: i64) -> usize {
+    usize::try_from(val.max(0)).unwrap_or(0)
+}
+
+/// Helper to safely convert i64 to u64.
+fn i64_to_u64(val: i64) -> u64 {
+    u64::try_from(val.max(0)).unwrap_or(0)
+}
+
 /// S3-style blob store with content-addressable chunked storage.
 pub struct BlobStore {
     store: TensorStore,
@@ -69,6 +79,11 @@ pub struct BlobStore {
 
 impl BlobStore {
     /// Create a new blob store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid.
+    #[allow(clippy::unused_async)]
     pub async fn new(store: TensorStore, config: BlobConfig) -> Result<Self> {
         config.validate()?;
 
@@ -84,6 +99,11 @@ impl BlobStore {
     }
 
     /// Start background garbage collection.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn start(&mut self) -> Result<()> {
         if self.gc_handle.is_none() {
             let handle = self.gc.clone().start();
@@ -93,6 +113,11 @@ impl BlobStore {
     }
 
     /// Graceful shutdown.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn shutdown(&mut self) -> Result<()> {
         self.gc.shutdown();
         if let Some(handle) = self.gc_handle.take() {
@@ -102,6 +127,8 @@ impl BlobStore {
     }
 
     /// Get the underlying tensor store.
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn store(&self) -> &TensorStore {
         &self.store
     }
@@ -109,6 +136,10 @@ impl BlobStore {
     // === Simple API ===
 
     /// Store bytes and return artifact ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if data is empty, exceeds max size, or storage fails.
     pub async fn put(&self, filename: &str, data: &[u8], options: PutOptions) -> Result<String> {
         if data.is_empty() {
             return Err(BlobError::EmptyData);
@@ -131,17 +162,31 @@ impl BlobStore {
     }
 
     /// Get all bytes for an artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or a chunk is missing.
     pub async fn get(&self, artifact_id: &str) -> Result<Vec<u8>> {
         let mut reader = self.reader(artifact_id).await?;
         reader.read_all().await
     }
 
     /// Delete an artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or deletion fails.
+    #[allow(clippy::unused_async)]
     pub async fn delete(&self, artifact_id: &str) -> Result<()> {
         integrity::delete_artifact(&self.store, artifact_id)
     }
 
     /// Check if an artifact exists.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn exists(&self, artifact_id: &str) -> Result<bool> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         Ok(self.store.exists(&meta_key))
@@ -150,12 +195,17 @@ impl BlobStore {
     // === Streaming API ===
 
     /// Create a writer for streaming upload.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
     pub async fn writer(&self, filename: &str, options: PutOptions) -> Result<BlobWriter> {
         let artifact_id = uuid::Uuid::new_v4().to_string();
         self.writer_with_id(&artifact_id, filename, options).await
     }
 
     /// Create a writer with a specific artifact ID.
+    #[allow(clippy::unused_async)]
     async fn writer_with_id(
         &self,
         artifact_id: &str,
@@ -173,6 +223,11 @@ impl BlobStore {
     }
 
     /// Create a reader for streaming download.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found.
+    #[allow(clippy::unused_async)]
     pub async fn reader(&self, artifact_id: &str) -> Result<BlobReader> {
         BlobReader::new(self.store.clone(), artifact_id)
     }
@@ -180,6 +235,11 @@ impl BlobStore {
     // === Metadata ===
 
     /// Get artifact metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found.
+    #[allow(clippy::unused_async)]
     pub async fn metadata(&self, artifact_id: &str) -> Result<ArtifactMetadata> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         let tensor = self
@@ -190,7 +250,7 @@ impl BlobStore {
         let tags: Vec<String> = get_pointers(&tensor, "_tags")
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|t| t.strip_prefix("tag:").map(|s| s.to_string()))
+            .filter_map(|t| t.strip_prefix("tag:").map(ToString::to_string))
             .collect();
 
         let mut custom = HashMap::new();
@@ -206,13 +266,13 @@ impl BlobStore {
             id: get_string(&tensor, "_id").unwrap_or_default(),
             filename: get_string(&tensor, "_filename").unwrap_or_default(),
             content_type: get_string(&tensor, "_content_type").unwrap_or_default(),
-            size: get_int(&tensor, "_size").unwrap_or(0) as usize,
+            size: i64_to_usize(get_int(&tensor, "_size").unwrap_or(0)),
             checksum: get_string(&tensor, "_checksum").unwrap_or_default(),
-            chunk_count: get_int(&tensor, "_chunk_count").unwrap_or(0) as usize,
-            chunk_size: get_int(&tensor, "_chunk_size").unwrap_or(0) as usize,
+            chunk_count: i64_to_usize(get_int(&tensor, "_chunk_count").unwrap_or(0)),
+            chunk_size: i64_to_usize(get_int(&tensor, "_chunk_size").unwrap_or(0)),
             created_by: get_string(&tensor, "_created_by").unwrap_or_default(),
-            created: get_int(&tensor, "_created").unwrap_or(0) as u64,
-            modified: get_int(&tensor, "_modified").unwrap_or(0) as u64,
+            created: i64_to_u64(get_int(&tensor, "_created").unwrap_or(0)),
+            modified: i64_to_u64(get_int(&tensor, "_modified").unwrap_or(0)),
             linked_to: get_pointers(&tensor, "_linked_to").unwrap_or_default(),
             tags,
             custom,
@@ -222,6 +282,11 @@ impl BlobStore {
     }
 
     /// Update artifact metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
+    #[allow(clippy::unused_async)]
     pub async fn update_metadata(&self, artifact_id: &str, updates: MetadataUpdates) -> Result<()> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         let mut tensor = self
@@ -254,7 +319,7 @@ impl BlobStore {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or(0);
         tensor.set("_modified", TensorValue::Scalar(ScalarValue::Int(now)));
 
@@ -263,6 +328,11 @@ impl BlobStore {
     }
 
     /// Set custom metadata field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
+    #[allow(clippy::unused_async)]
     pub async fn set_meta(&self, artifact_id: &str, key: &str, value: &str) -> Result<()> {
         integrity::update_artifact_field(
             &self.store,
@@ -273,6 +343,11 @@ impl BlobStore {
     }
 
     /// Get custom metadata field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found.
+    #[allow(clippy::unused_async)]
     pub async fn get_meta(&self, artifact_id: &str, key: &str) -> Result<Option<String>> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         let tensor = self
@@ -286,16 +361,31 @@ impl BlobStore {
     // === Linking ===
 
     /// Link artifact to an entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
+    #[allow(clippy::unused_async)]
     pub async fn link(&self, artifact_id: &str, entity: &str) -> Result<()> {
         integrity::add_artifact_link(&self.store, artifact_id, entity)
     }
 
     /// Unlink artifact from an entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
+    #[allow(clippy::unused_async)]
     pub async fn unlink(&self, artifact_id: &str, entity: &str) -> Result<()> {
         integrity::remove_artifact_link(&self.store, artifact_id, entity)
     }
 
     /// Get entities linked to artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found.
+    #[allow(clippy::unused_async)]
     pub async fn links(&self, artifact_id: &str) -> Result<Vec<String>> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         let tensor = self
@@ -307,6 +397,11 @@ impl BlobStore {
     }
 
     /// Get artifacts linked to entity.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn artifacts_for(&self, entity: &str) -> Result<Vec<String>> {
         let mut result = Vec::new();
 
@@ -328,16 +423,31 @@ impl BlobStore {
     // === Tagging ===
 
     /// Add tag to artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
+    #[allow(clippy::unused_async)]
     pub async fn tag(&self, artifact_id: &str, tag: &str) -> Result<()> {
         integrity::add_artifact_tag(&self.store, artifact_id, tag)
     }
 
     /// Remove tag from artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
+    #[allow(clippy::unused_async)]
     pub async fn untag(&self, artifact_id: &str, tag: &str) -> Result<()> {
         integrity::remove_artifact_tag(&self.store, artifact_id, tag)
     }
 
     /// Get artifacts by tag.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn by_tag(&self, tag: &str) -> Result<Vec<String>> {
         let tag_ref = format!("tag:{tag}");
         let mut result = Vec::new();
@@ -360,7 +470,12 @@ impl BlobStore {
     // === Semantic (if VectorEngine available) ===
 
     /// Set artifact embedding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or update fails.
     #[cfg(feature = "vector")]
+    #[allow(clippy::unused_async)]
     pub async fn set_embedding(
         &self,
         artifact_id: &str,
@@ -390,6 +505,10 @@ impl BlobStore {
     }
 
     /// Find similar artifacts by embedding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found or has no embedding.
     #[cfg(feature = "vector")]
     pub async fn similar(&self, artifact_id: &str, k: usize) -> Result<Vec<SimilarArtifact>> {
         let meta_key = format!("_blob:meta:{artifact_id}");
@@ -413,7 +532,12 @@ impl BlobStore {
     }
 
     /// Search by embedding.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
     #[cfg(feature = "vector")]
+    #[allow(clippy::unused_async)]
     pub async fn search_by_embedding(
         &self,
         embedding: &[f32],
@@ -453,6 +577,11 @@ impl BlobStore {
     // === Queries ===
 
     /// List artifacts by prefix.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn list(&self, prefix: Option<&str>) -> Result<Vec<String>> {
         let mut result = Vec::new();
 
@@ -474,6 +603,11 @@ impl BlobStore {
     }
 
     /// List artifacts by content type.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn by_content_type(&self, content_type: &str) -> Result<Vec<String>> {
         let mut result = Vec::new();
 
@@ -493,6 +627,11 @@ impl BlobStore {
     }
 
     /// List artifacts by creator.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async)]
     pub async fn by_creator(&self, creator: &str) -> Result<Vec<String>> {
         let mut result = Vec::new();
 
@@ -534,11 +673,19 @@ impl BlobStore {
     // === GC ===
 
     /// Run garbage collection.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
     pub async fn gc(&self) -> Result<GcStats> {
         Ok(self.gc.gc_cycle().await)
     }
 
     /// Full GC (recount all references).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if chunk deletion fails.
     pub async fn full_gc(&self) -> Result<GcStats> {
         self.gc.full_gc().await
     }
@@ -546,6 +693,11 @@ impl BlobStore {
     // === Stats ===
 
     /// Get storage statistics.
+    ///
+    /// # Errors
+    ///
+    /// This method currently cannot fail, but returns `Result` for API consistency.
+    #[allow(clippy::unused_async, clippy::cast_precision_loss)]
     pub async fn stats(&self) -> Result<BlobStats> {
         let mut artifact_count = 0;
         let mut total_bytes = 0;
@@ -553,7 +705,7 @@ impl BlobStore {
         for meta_key in self.store.scan("_blob:meta:") {
             artifact_count += 1;
             if let Ok(tensor) = self.store.get(&meta_key) {
-                total_bytes += get_int(&tensor, "_size").unwrap_or(0) as usize;
+                total_bytes += i64_to_usize(get_int(&tensor, "_size").unwrap_or(0));
             }
         }
 
@@ -564,7 +716,7 @@ impl BlobStore {
         for chunk_key in self.store.scan("_blob:chunk:") {
             chunk_count += 1;
             if let Ok(tensor) = self.store.get(&chunk_key) {
-                unique_bytes += get_int(&tensor, "_size").unwrap_or(0) as usize;
+                unique_bytes += i64_to_usize(get_int(&tensor, "_size").unwrap_or(0));
                 if get_int(&tensor, "_refs").unwrap_or(0) == 0 {
                     orphaned_chunks += 1;
                 }

@@ -1,0 +1,27 @@
+# Ignore dependencies
+node_modules/
+**/node_modules/
+
+# Ignore build artifacts
+target/
+**/target/
+dist/
+**/dist/
+build/
+**/build/
+
+# Ignore Python virtual environments
+.venv/
+**/.venv/
+venv/
+**/venv/
+
+# Ignore coverage reports
+coverage/
+**/coverage/
+
+# Ignore generated documentation
+**/doc/
+
+# Ignore mdbook documentation (follows mdbook conventions)
+docs/book/
