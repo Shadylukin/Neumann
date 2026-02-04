@@ -1,0 +1,10 @@
+# OpenSSL config for creating expired certificate
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_ca
+
+[req_distinguished_name]
+CN = expired-cert
+
+[v3_ca]
+basicConstraints = CA:FALSE
