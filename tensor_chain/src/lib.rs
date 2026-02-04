@@ -70,7 +70,7 @@ pub mod signing;
 pub mod snapshot_buffer;
 pub mod snapshot_streaming;
 pub mod state_machine;
-pub(crate) mod state_root;
+pub mod state_root;
 pub mod tcp;
 pub mod transaction;
 pub mod tx_id;
@@ -156,6 +156,7 @@ pub use snapshot_streaming::{
     deserialize_entries, serialize_entries, SnapshotReader, SnapshotWriter, StreamingError,
 };
 pub use state_machine::TensorStateMachine;
+pub use state_root::compute_state_root;
 pub use tcp::{
     Handshake, LengthDelimitedCodec, NodeIdVerification, ReconnectConfig, SecurityConfig,
     SecurityMode, TcpError, TcpResult, TcpTransport, TcpTransportConfig, TlsConfig, TransportStats,

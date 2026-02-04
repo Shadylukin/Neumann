@@ -12,7 +12,7 @@ use crate::{
 ///
 /// The state root is the SHA-256 hash of all keys and values, iterated in
 /// sorted order to avoid dependence on internal storage layout.
-pub(crate) fn compute_state_root(store: &tensor_store::TensorStore) -> Result<BlockHash> {
+pub fn compute_state_root(store: &tensor_store::TensorStore) -> Result<BlockHash> {
     let mut hasher = Sha256::new();
     let mut keys = store.scan("");
     keys.sort();

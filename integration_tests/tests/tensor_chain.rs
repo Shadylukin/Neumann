@@ -378,8 +378,8 @@ fn test_state_machine_transaction_persistence() {
 
     use graph_engine::GraphEngine;
     use tensor_chain::{
-        network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig, RaftNode,
-        TensorStateMachine, Transaction,
+        compute_state_root, network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig,
+        RaftNode, TensorStateMachine, Transaction,
     };
     use tensor_store::{SparseVector, TensorStore, TensorValue};
 
@@ -403,13 +403,22 @@ fn test_state_machine_transaction_persistence() {
 
     let state_machine = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
-    // Create a block with Put transaction using valid prev_hash
+    // Manually apply the transaction to compute the correct state_root
+    let mut data = tensor_store::TensorData::new();
+    data.set(
+        "data",
+        TensorValue::Scalar(tensor_store::ScalarValue::Bytes(vec![42, 43, 44])),
+    );
+    store.put("test_key", data).unwrap();
+    let state_root = compute_state_root(&store).unwrap();
+
+    // Create a block with Put transaction using valid prev_hash and computed state_root
     let block = Block {
         header: BlockHeader {
             height: 1,
             prev_hash,
             tx_root: [0u8; 32],
-            state_root: [0u8; 32],
+            state_root,
             timestamp: 0,
             proposer: "test".to_string(),
             signature: vec![],
@@ -423,7 +432,7 @@ fn test_state_machine_transaction_persistence() {
         signatures: vec![],
     };
 
-    // Apply block (this will also append to chain)
+    // Apply block (this will validate state_root and append to chain)
     state_machine.apply_block(&block).unwrap();
 
     // Verify data was persisted to store
@@ -442,8 +451,8 @@ fn test_state_machine_embed_transaction_persistence() {
 
     use graph_engine::GraphEngine;
     use tensor_chain::{
-        network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig, RaftNode,
-        TensorStateMachine, Transaction,
+        compute_state_root, network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig,
+        RaftNode, TensorStateMachine, Transaction,
     };
     use tensor_store::{SparseVector, TensorStore, TensorValue};
 
@@ -467,14 +476,20 @@ fn test_state_machine_embed_transaction_persistence() {
 
     let state_machine = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
-    // Create a block with Embed transaction
+    // Manually apply the transaction to compute the correct state_root
     let embedding = vec![0.1, 0.2, 0.3, 0.4];
+    let mut data = tensor_store::TensorData::new();
+    data.set("vector", TensorValue::Vector(embedding.clone()));
+    store.put("emb:doc_1", data).unwrap();
+    let state_root = compute_state_root(&store).unwrap();
+
+    // Create a block with Embed transaction
     let block = Block {
         header: BlockHeader {
             height: 1,
             prev_hash,
             tx_root: [0u8; 32],
-            state_root: [0u8; 32],
+            state_root,
             timestamp: 0,
             proposer: "test".to_string(),
             signature: vec![],
@@ -488,7 +503,7 @@ fn test_state_machine_embed_transaction_persistence() {
         signatures: vec![],
     };
 
-    // Apply block (this will also append to chain)
+    // Apply block (this will validate state_root and append to chain)
     state_machine.apply_block(&block).unwrap();
 
     // Verify embedding was persisted with correct key prefix
@@ -507,8 +522,8 @@ fn test_state_machine_node_create_persistence() {
 
     use graph_engine::GraphEngine;
     use tensor_chain::{
-        network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig, RaftNode,
-        TensorStateMachine, Transaction,
+        compute_state_root, network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig,
+        RaftNode, TensorStateMachine, Transaction,
     };
     use tensor_store::{ScalarValue, SparseVector, TensorStore, TensorValue};
 
@@ -532,13 +547,30 @@ fn test_state_machine_node_create_persistence() {
 
     let state_machine = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
+    // Manually apply the transaction to compute the correct state_root
+    let mut data = tensor_store::TensorData::new();
+    data.set(
+        "_id",
+        TensorValue::Scalar(ScalarValue::String("user_123".to_string())),
+    );
+    data.set(
+        "_type",
+        TensorValue::Scalar(ScalarValue::String("node".to_string())),
+    );
+    data.set(
+        "_label",
+        TensorValue::Scalar(ScalarValue::String("User".to_string())),
+    );
+    store.put("node:user_123", data).unwrap();
+    let state_root = compute_state_root(&store).unwrap();
+
     // Create a block with NodeCreate transaction
     let block = Block {
         header: BlockHeader {
             height: 1,
             prev_hash,
             tx_root: [0u8; 32],
-            state_root: [0u8; 32],
+            state_root,
             timestamp: 0,
             proposer: "test".to_string(),
             signature: vec![],
@@ -552,7 +584,7 @@ fn test_state_machine_node_create_persistence() {
         signatures: vec![],
     };
 
-    // Apply block (this will also append to chain)
+    // Apply block (this will validate state_root and append to chain)
     state_machine.apply_block(&block).unwrap();
 
     // Verify node was persisted with correct key prefix
