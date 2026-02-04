@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from neumann.types import (
     QueryResult,
@@ -20,9 +21,9 @@ class TestPandasIntegration:
     def test_import_exports(self) -> None:
         """Test that integration functions are exported."""
         from neumann.integrations import (
+            dataframe_to_inserts,
             result_to_dataframe,
             rows_to_dataframe,
-            dataframe_to_inserts,
         )
 
         assert callable(result_to_dataframe)
@@ -42,7 +43,7 @@ class TestPandasIntegration:
 
     def test_result_to_dataframe_rows(self) -> None:
         """Test converting rows result to dataframe."""
-        pd = pytest.importorskip("pandas")
+        pytest.importorskip("pandas")
         from neumann.integrations.pandas import result_to_dataframe
 
         rows = [
@@ -62,7 +63,7 @@ class TestPandasIntegration:
 
     def test_rows_to_dataframe(self) -> None:
         """Test converting rows to dataframe."""
-        pd = pytest.importorskip("pandas")
+        pytest.importorskip("pandas")
         from neumann.integrations.pandas import rows_to_dataframe
 
         rows = [
@@ -78,7 +79,7 @@ class TestPandasIntegration:
 
     def test_rows_to_dataframe_empty(self) -> None:
         """Test converting empty rows list to dataframe."""
-        pd = pytest.importorskip("pandas")
+        pytest.importorskip("pandas")
         from neumann.integrations.pandas import rows_to_dataframe
 
         df = rows_to_dataframe([])
@@ -104,6 +105,7 @@ class TestPandasIntegration:
         """Test converting dataframe with null values."""
         pd = pytest.importorskip("pandas")
         import numpy as np
+
         from neumann.integrations.pandas import dataframe_to_inserts
 
         df = pd.DataFrame({"id": [1, 2], "value": [10.0, np.nan]})
@@ -118,8 +120,7 @@ class TestPandasIntegration:
         # This test simulates pandas not being installed
         with patch.dict("sys.modules", {"pandas": None}):
             # Force reimport
-            import importlib
-            import neumann.integrations.pandas as pandas_mod
+            pass
 
             # The module should handle the import error gracefully
             # by raising a helpful error when functions are called
@@ -131,12 +132,12 @@ class TestNumpyIntegration:
     def test_import_exports(self) -> None:
         """Test that integration functions are exported."""
         from neumann.integrations import (
-            vector_to_insert,
-            vectors_to_inserts,
-            parse_embedding,
             cosine_similarity,
             euclidean_distance,
             normalize_vectors,
+            parse_embedding,
+            vector_to_insert,
+            vectors_to_inserts,
         )
 
         assert callable(vector_to_insert)
@@ -198,7 +199,7 @@ class TestNumpyIntegration:
 
     def test_parse_embedding_invalid(self) -> None:
         """Test parsing invalid embedding string."""
-        np = pytest.importorskip("numpy")
+        pytest.importorskip("numpy")
         from neumann.integrations.numpy import parse_embedding
 
         with pytest.raises(ValueError):

@@ -116,9 +116,8 @@ class TestNeumannClientRemote:
 
     def test_connect_requires_grpc(self) -> None:
         """Test that connect requires grpcio."""
-        with patch.dict("sys.modules", {"grpc": None}):
-            with pytest.raises(ConnectionError) as exc_info:
-                NeumannClient.connect("localhost:50051")
+        with patch.dict("sys.modules", {"grpc": None}), pytest.raises(ConnectionError):
+            NeumannClient.connect("localhost:50051")
             # The import error should be caught
 
     def test_connect_creates_channel(self) -> None:
@@ -269,7 +268,7 @@ class TestNeumannClientExecute:
         mock_native.execute.return_value = {"type": "value", "data": "secret"}
         client._native = mock_native
 
-        result = client.execute("VAULT GET my_secret", identity="alice")
+        client.execute("VAULT GET my_secret", identity="alice")
 
         mock_native.execute.assert_called_once_with("VAULT GET my_secret", "alice")
 
@@ -865,6 +864,7 @@ class TestNeumannClientEmbeddedDirect:
         with patch.dict("sys.modules", {"neumann._native": mock_native}):
             # Need to reload to pick up the mock
             import importlib
+
             import neumann.client as client_mod
 
             importlib.reload(client_mod)
@@ -882,6 +882,7 @@ class TestNeumannClientEmbeddedDirect:
 
         with patch.dict("sys.modules", {"neumann._native": mock_native}):
             import importlib
+
             import neumann.client as client_mod
 
             importlib.reload(client_mod)
@@ -914,6 +915,7 @@ class TestNeumannClientConnectDirect:
             },
         ):
             import importlib
+
             import neumann.client as client_mod
 
             importlib.reload(client_mod)
@@ -947,6 +949,7 @@ class TestNeumannClientConnectDirect:
             },
         ):
             import importlib
+
             import neumann.client as client_mod
 
             importlib.reload(client_mod)
@@ -980,6 +983,7 @@ class TestNeumannClientConnectDirect:
             },
         ):
             import importlib
+
             import neumann.client as client_mod
 
             importlib.reload(client_mod)
@@ -994,6 +998,7 @@ class TestNeumannClientConnectDirect:
 
         with patch.dict("sys.modules", {"grpc": mock_grpc}):
             import importlib
+
             import neumann.client as client_mod
 
             importlib.reload(client_mod)

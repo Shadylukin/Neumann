@@ -4,18 +4,13 @@ isort:skip_file
 SPDX-License-Identifier: MIT OR Apache-2.0"""
 
 import builtins as _builtins
-import sys
 import typing as _typing
 from collections import abc as _abc
+from typing import TypeAlias as _TypeAlias
 
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from google.protobuf.internal import containers as _containers
-
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias as _TypeAlias
-else:
-    from typing import TypeAlias as _TypeAlias
 
 DESCRIPTOR: _descriptor.FileDescriptor
 

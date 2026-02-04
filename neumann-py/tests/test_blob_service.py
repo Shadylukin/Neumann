@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from neumann.config import ClientConfig, RetryConfig
+from neumann.config import RetryConfig
 from neumann.services.blob import (
     ArtifactMetadata,
     BlobClient,

@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
 
-from neumann.transaction import Transaction
+import pytest
+
 from neumann.errors import NeumannError
+from neumann.transaction import Transaction
 from neumann.types import QueryResult, QueryResultType
 
 
@@ -271,10 +272,9 @@ class TestTransactionContextManager:
         client = MagicMock()
         client.execute.return_value = QueryResult(QueryResultType.EMPTY)
 
-        with pytest.raises(ValueError):
-            with Transaction(client) as tx:
-                tx.execute("INSERT users name='Alice'")
-                raise ValueError("Test error")
+        with pytest.raises(ValueError), Transaction(client) as tx:
+            tx.execute("INSERT users name='Alice'")
+            raise ValueError("Test error")
 
         assert tx._rolled_back
         assert not tx.is_active
@@ -291,9 +291,8 @@ class TestTransactionContextManager:
             QueryResult(QueryResultType.EMPTY),  # ROLLBACK
         ]
 
-        with pytest.raises(NeumannError):
-            with Transaction(client) as tx:
-                tx.execute("INSERT users name='Alice'")
+        with pytest.raises(NeumannError), Transaction(client) as tx:
+            tx.execute("INSERT users name='Alice'")
 
         # Should have attempted rollback after commit failure
         assert client.execute.call_count == 4
@@ -306,9 +305,8 @@ class TestTransactionContextManager:
             QueryResult(QueryResultType.ERROR, "Rollback failed"),  # ROLLBACK
         ]
 
-        with pytest.raises(ValueError):
-            with Transaction(client) as tx:
-                raise ValueError("Test error")
+        with pytest.raises(ValueError), Transaction(client):
+            raise ValueError("Test error")
 
         # Rollback error is ignored, original exception is raised
 

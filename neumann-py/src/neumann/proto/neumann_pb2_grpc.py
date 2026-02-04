@@ -3,6 +3,7 @@
 
 
 import grpc
+
 from . import neumann_pb2 as neumann__pb2
 
 GRPC_GENERATED_VERSION = "1.76.0"

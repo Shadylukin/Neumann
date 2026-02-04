@@ -103,7 +103,7 @@ def dataframe_to_inserts(
                 assignments.append(f"{target_col}=null")
             elif isinstance(value, bool):
                 assignments.append(f"{target_col}={str(value).lower()}")
-            elif isinstance(value, (int, float)):
+            elif isinstance(value, int | float):
                 assignments.append(f"{target_col}={value}")
             elif isinstance(value, str):
                 escaped = value.replace('"', '\\"')

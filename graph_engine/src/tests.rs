@@ -17342,3 +17342,53 @@ fn test_is_durable_false_for_in_memory() {
     let engine = GraphEngine::new();
     assert!(!engine.is_durable());
 }
+
+#[test]
+fn test_with_store_and_config() {
+    use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+    let config = GraphEngineConfig::default();
+    let store = TensorStore::new();
+
+    // Add some data directly to the store to simulate existing data
+    let mut node_data = TensorData::new();
+    node_data.set(
+        "_label",
+        TensorValue::Scalar(ScalarValue::String("Person".into())),
+    );
+    node_data.set(
+        "name",
+        TensorValue::Scalar(ScalarValue::String("Alice".into())),
+    );
+    store.put("node:1", node_data).unwrap();
+
+    let mut edge_data = TensorData::new();
+    edge_data.set(
+        "_edge_type",
+        TensorValue::Scalar(ScalarValue::String("KNOWS".into())),
+    );
+    edge_data.set("from", TensorValue::Scalar(ScalarValue::Int(1)));
+    edge_data.set("to", TensorValue::Scalar(ScalarValue::Int(2)));
+    store.put("edge:5", edge_data).unwrap();
+
+    // Create engine with existing store
+    let engine = GraphEngine::with_store_and_config(store, config);
+
+    // Verify node counter was initialized correctly (should be >= 1)
+    let new_node_id = engine.create_node("Test", HashMap::new()).unwrap();
+    assert!(
+        new_node_id > 1,
+        "New node ID should be greater than existing max"
+    );
+
+    // Verify edge counter was initialized correctly (should be >= 5)
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let new_edge_id = engine
+        .create_edge(n1, n2, "TEST", HashMap::new(), true)
+        .unwrap();
+    assert!(
+        new_edge_id > 5,
+        "New edge ID should be greater than existing max"
+    );
+}

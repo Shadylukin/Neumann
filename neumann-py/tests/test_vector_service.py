@@ -4,19 +4,15 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
-
-from neumann.config import ClientConfig, RetryConfig
 from neumann.services.vector import (
     CollectionInfo,
     CollectionsClient,
     DistanceMetric,
     PointsClient,
-    ScrollResult,
     ScoredVectorPoint,
-    VectorClient,
+    ScrollResult,
     VectorPoint,
 )
 

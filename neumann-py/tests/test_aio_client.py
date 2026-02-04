@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 from neumann.aio.client import AsyncNeumannClient
 from neumann.errors import ConnectionError, NeumannError
@@ -271,6 +272,7 @@ class TestAsyncNeumannClientConnectDirect:
     async def test_connect_insecure_success(self) -> None:
         """Test connect with insecure channel."""
         import grpc.aio
+
         from neumann.proto import neumann_pb2_grpc
 
         # Create client directly using connect()
@@ -297,6 +299,7 @@ class TestAsyncNeumannClientConnectDirect:
         """Test connect with TLS enabled."""
         import grpc
         import grpc.aio
+
         from neumann.proto import neumann_pb2_grpc
 
         with patch.object(grpc, "ssl_channel_credentials") as mock_creds:
@@ -328,6 +331,7 @@ class TestAsyncNeumannClientConnectDirect:
     async def test_connect_with_api_key_stored(self) -> None:
         """Test connect stores API key."""
         import grpc.aio
+
         from neumann.proto import neumann_pb2_grpc
 
         with patch.object(grpc.aio, "insecure_channel") as mock_channel:
@@ -360,7 +364,6 @@ class TestAsyncNeumannClientExecuteDirect:
     @pytest.mark.asyncio
     async def test_execute_success(self) -> None:
         """Test execute succeeds with proper response."""
-        from neumann.proto import neumann_pb2
 
         client = AsyncNeumannClient()
         client._connected = True

@@ -34,6 +34,46 @@ cargo doc --no-deps                            # Documentation builds
 - Comprehensive tests including unit, integration, concurrency, and fuzz tests
 - No `unsafe` code unless absolutely necessary and well-justified
 
+## Development Tools
+
+The following tools are available via Homebrew for code quality and coverage analysis:
+
+```bash
+brew install lcov tokei jq ripgrep fd bat
+```
+
+**Tool descriptions:**
+
+- `lcov` - Coverage report analysis and HTML generation
+  - `lcov --summary file.lcov` - Show coverage summary
+  - `genhtml file.lcov -o output/` - Generate HTML report
+- `tokei` - Fast code statistics (lines of code, comments, blanks)
+  - `tokei <directory>` - Show code statistics
+- `jq` - JSON parsing and manipulation for structured output
+  - `jq '.field' file.json` - Extract JSON fields
+- `ripgrep` (rg) - Fast code search (faster than grep)
+  - `rg "pattern" <directory>` - Search for pattern
+- `fd` - Fast file finder (faster than find)
+  - `fd "pattern"` - Find files matching pattern
+- `bat` - Syntax-highlighted file viewer
+  - `bat file.rs` - View file with syntax highlighting
+
+**Coverage workflow:**
+
+```bash
+# Generate coverage report for a crate
+cargo llvm-cov --package <crate_name> --lcov --output-path /tmp/coverage.lcov
+
+# Extract only the crate's source files
+lcov --extract /tmp/coverage.lcov '*/crate_name/src/*' --output-file /tmp/crate_only.lcov
+
+# View summary
+lcov --summary /tmp/crate_only.lcov
+
+# Generate HTML report
+genhtml /tmp/crate_only.lcov -o /tmp/coverage_html
+```
+
 ## Workspace Structure
 
 The project consists of 19 crates organized in dependency tiers:

@@ -3,6 +3,7 @@
 
 
 import grpc
+
 from . import vector_pb2 as vector__pb2
 
 GRPC_GENERATED_VERSION = "1.76.0"
