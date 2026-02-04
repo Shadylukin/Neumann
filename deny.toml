@@ -67,6 +67,8 @@ feature-depth = 1
 #db-path = "$CARGO_HOME/advisory-dbs"
 # The url(s) of the advisory databases to use
 #db-urls = ["https://github.com/rustsec/advisory-db"]
+# Skip unmaintained advisories (informational only, not security issues)
+unmaintained = "none"
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
