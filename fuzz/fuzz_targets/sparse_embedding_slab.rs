@@ -14,6 +14,7 @@ struct SlabInput {
 
 #[derive(Arbitrary, Debug)]
 struct EmbeddingInput {
+    #[allow(dead_code)]
     entity_id: u32,
     values: Vec<f32>,
 }

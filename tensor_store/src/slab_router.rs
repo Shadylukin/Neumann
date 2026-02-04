@@ -447,6 +447,8 @@ impl SlabRouter {
         let v3 = snapshot::V3Snapshot {
             header: snapshot::SnapshotHeader::new(entry_count),
             router: router_snapshot,
+            hnsw: None,
+            voronoi: None,
         };
 
         bitcode::serialize(&v3).map_err(SnapshotFormatError::from)

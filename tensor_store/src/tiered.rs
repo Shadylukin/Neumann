@@ -76,6 +76,21 @@ impl From<std::io::Error> for TieredError {
 /// Result type for tiered storage operations.
 pub type Result<T> = std::result::Result<T, TieredError>;
 
+/// Strategy for migrating data between hot and cold tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum MigrationStrategy {
+    /// Migrate based on access recency (LRU-style).
+    #[default]
+    AccessRecency,
+    /// Migrate whole Voronoi regions together for sequential I/O.
+    VoronoiRegion,
+    /// Hybrid: weight recency vs region locality.
+    Hybrid {
+        /// Weight for recency (0.0 = pure region, 1.0 = pure recency).
+        recency_weight: f32,
+    },
+}
+
 /// Configuration for tiered storage.
 #[derive(Clone)]
 pub struct TieredConfig {
@@ -85,6 +100,8 @@ pub struct TieredConfig {
     pub cold_capacity: usize,
     /// Sampling rate for access tracking (1 = every access, 100 = 1%).
     pub sample_rate: u32,
+    /// Migration strategy for hot-to-cold transitions.
+    pub migration_strategy: MigrationStrategy,
 }
 
 impl Default for TieredConfig {
@@ -93,6 +110,7 @@ impl Default for TieredConfig {
             cold_dir: PathBuf::from("/tmp/tensor_cold"),
             cold_capacity: 64 * 1024 * 1024, // 64MB initial
             sample_rate: 100,
+            migration_strategy: MigrationStrategy::default(),
         }
     }
 }
@@ -491,6 +509,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         {
@@ -514,6 +533,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -553,6 +573,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -598,6 +619,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -631,6 +653,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -799,6 +822,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 100,
+            migration_strategy: MigrationStrategy::default(),
         });
         let _ = fs::remove_dir_all(&dir);
     }
@@ -810,6 +834,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -828,6 +853,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -876,6 +902,7 @@ mod tests {
             cold_dir: PathBuf::from("/tmp/test"),
             cold_capacity: 1024,
             sample_rate: 50,
+            migration_strategy: MigrationStrategy::default(),
         };
         let cloned = config.clone();
         assert_eq!(config.cold_dir, cloned.cold_dir);
@@ -948,6 +975,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         // Create and populate
@@ -983,6 +1011,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();
@@ -1067,6 +1096,7 @@ mod tests {
             cold_dir: dir.clone(),
             cold_capacity: 4096,
             sample_rate: 1,
+            migration_strategy: MigrationStrategy::default(),
         };
 
         let mut store = TieredStore::new(config).unwrap();

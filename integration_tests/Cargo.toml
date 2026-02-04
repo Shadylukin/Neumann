@@ -33,3 +33,4 @@ parking_lot = "0.12"
 tempfile = "3"
 bitcode = { version = "0.6", features = ["serde"] }
 sha2 = "0.10"
+crc32fast = "1"

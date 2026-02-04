@@ -134,6 +134,70 @@ pub struct V3Snapshot {
     pub header: SnapshotHeader,
     /// Slab router state.
     pub router: SlabRouterSnapshot,
+    /// Optional HNSW index snapshot.
+    pub hnsw: Option<HNSWSnapshot>,
+    /// Optional Voronoi partitioner snapshot.
+    pub voronoi: Option<VoronoiSnapshot>,
+}
+
+/// Snapshot of HNSW index configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HNSWSnapshot {
+    /// Maximum connections per node at layer 0.
+    pub m: usize,
+    /// Maximum connections per node at higher layers.
+    pub m_max: usize,
+    /// Size of dynamic candidate list during construction.
+    pub ef_construction: usize,
+    /// Entry point node index.
+    pub entry_point: Option<usize>,
+    /// Maximum layer in the graph.
+    pub max_layer: usize,
+    /// Node snapshots.
+    pub nodes: Vec<HNSWNodeSnapshot>,
+}
+
+/// Snapshot of a single HNSW node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HNSWNodeSnapshot {
+    /// Key associated with this node.
+    pub key: String,
+    /// Layer this node exists on.
+    pub layer: usize,
+    /// Connections at each layer (layer index -> neighbor indices).
+    pub connections: Vec<Vec<usize>>,
+}
+
+/// Snapshot of Voronoi partitioner configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoronoiPartitionerConfigSnapshot {
+    /// Local node identifier.
+    pub local_node: String,
+    /// Number of shards.
+    pub num_shards: usize,
+    /// Embedding dimension.
+    pub dimension: usize,
+    /// Whether auto-rebalance is enabled.
+    pub auto_rebalance: bool,
+    /// Minimum samples for region computation.
+    pub min_samples_for_regions: usize,
+}
+
+/// Snapshot of Voronoi partitioner state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoronoiSnapshot {
+    /// Configuration snapshot.
+    pub config: VoronoiPartitionerConfigSnapshot,
+    /// Region definitions per node.
+    pub regions: Vec<(String, crate::voronoi::VoronoiRegion)>,
+    /// Region ID mappings.
+    pub region_ids: Vec<(String, u32)>,
+    /// Sample embeddings.
+    pub samples: Vec<Vec<f32>>,
+    /// Whether regions have been computed.
+    pub regions_computed: bool,
+    /// Per-region sequence counters.
+    pub region_sequences: Vec<(u32, u32)>,
 }
 
 /// Errors from snapshot operations.
@@ -239,6 +303,8 @@ fn save_v3_with_compression<P: AsRef<Path>>(
     let snapshot = V3Snapshot {
         header,
         router: router_snapshot,
+        hnsw: None,
+        voronoi: None,
     };
 
     let mut file = File::create(&temp_path)?;
@@ -627,6 +693,8 @@ mod tests {
         let snapshot = V3Snapshot {
             header: SnapshotHeader::new(0),
             router: router.snapshot(),
+            hnsw: None,
+            voronoi: None,
         };
         let debug = format!("{:?}", snapshot);
         assert!(debug.contains("V3Snapshot"));

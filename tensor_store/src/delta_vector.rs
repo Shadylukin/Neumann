@@ -68,7 +68,7 @@ use crate::{ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 ///
 /// Memory layout: `8 (archetype_id) + 8 (dimension) + 8 (cached_magnitude) +
 ///                positions.len() * 2 + deltas.len() * 4` bytes
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeltaVector {
     /// ID of the reference archetype in the archetype registry.
     archetype_id: usize,

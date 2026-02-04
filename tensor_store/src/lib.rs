@@ -85,6 +85,7 @@ pub mod cache_ring;
 pub mod consistent_hash;
 pub mod delta_vector;
 pub mod distance;
+pub mod durable_blob_log;
 pub mod embedding_slab;
 pub mod entity_index;
 pub mod graph_tensor;
@@ -93,6 +94,7 @@ pub mod instrumentation;
 pub mod ivf;
 pub mod metadata_slab;
 pub mod mmap;
+pub mod mmap_regional;
 pub mod partitioned;
 pub mod partitioner;
 pub mod pq;
@@ -114,6 +116,10 @@ pub use delta_vector::{
     KMeansInit, MAX_DIMENSION as DELTA_MAX_DIMENSION,
 };
 pub use distance::{DistanceMetric, GeometricConfig};
+pub use durable_blob_log::{
+    BlobWalRecord, ChunkLocation, DurableBlobLog, DurableBlobLogConfig, DurableBlobLogError,
+    DurableChunkHash,
+};
 pub use embedding_slab::{
     CompressedEmbedding, EmbeddingError, EmbeddingSlab, EmbeddingSlabSnapshot, EmbeddingSlot,
 };
@@ -132,6 +138,9 @@ pub use instrumentation::{
 pub use ivf::{IVFConfig, IVFIndex, IVFIndexState, IVFStorage};
 pub use metadata_slab::{MetadataSlab, MetadataSlabSnapshot};
 pub use mmap::{MmapError, MmapStore, MmapStoreBuilder, MmapStoreMut};
+pub use mmap_regional::{
+    CompactionStats, RegionalMmapConfig, RegionalMmapError, RegionalMmapStore, SortedRunBuilder,
+};
 pub use partitioned::{
     PartitionedError, PartitionedGet, PartitionedPut, PartitionedResult, PartitionedStore,
 };
@@ -148,12 +157,15 @@ pub use semantic_partitioner::{
 pub use slab_router::{SlabRouter, SlabRouterConfig, SlabRouterError, SlabRouterSnapshot};
 pub use snapshot::{
     detect_version as snapshot_detect_version, load as snapshot_load,
-    migrate_v2_to_v3 as snapshot_migrate, save_v3 as snapshot_save, SnapshotFormatError,
-    SnapshotHeader, SnapshotVersion, V3Snapshot,
+    migrate_v2_to_v3 as snapshot_migrate, save_v3 as snapshot_save, HNSWNodeSnapshot, HNSWSnapshot,
+    SnapshotFormatError, SnapshotHeader, SnapshotVersion, V3Snapshot,
+    VoronoiPartitionerConfigSnapshot, VoronoiSnapshot,
 };
 pub use sparse_vector::{SparseVector, SparseVectorError, MAX_DIMENSION as SPARSE_MAX_DIMENSION};
-pub use tiered::{TieredConfig, TieredError, TieredStats, TieredStore};
-pub use voronoi::{VoronoiPartitioner, VoronoiPartitionerConfig, VoronoiRegion};
+pub use tiered::{MigrationStrategy, TieredConfig, TieredError, TieredStats, TieredStore};
+pub use voronoi::{
+    LocalityKey, LocalityKeyGenerator, VoronoiPartitioner, VoronoiPartitionerConfig, VoronoiRegion,
+};
 pub use wal::{
     SyncMode, TensorWal, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalStatus,
 };
@@ -294,6 +306,15 @@ impl BloomFilter {
     #[must_use]
     pub const fn num_hashes(&self) -> usize {
         self.num_hashes
+    }
+}
+
+impl std::fmt::Debug for BloomFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BloomFilter")
+            .field("num_bits", &self.num_bits)
+            .field("num_hashes", &self.num_hashes)
+            .finish_non_exhaustive()
     }
 }
 

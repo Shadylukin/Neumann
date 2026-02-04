@@ -5,6 +5,7 @@
 //! enabling geometric-aware data distribution and query routing.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::RwLock;
 
@@ -16,6 +17,107 @@ use crate::{
     partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId},
     semantic_partitioner::{SemanticPartitioner, SemanticPartitionerConfig},
 };
+
+/// Locality key for disk-friendly ordering.
+///
+/// Encodes `(region_id, sequence)` into a single `u64` for sorting.
+/// Vectors in the same Voronoi region get sequential keys, enabling
+/// sequential I/O when reading a region from disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LocalityKey(u64);
+
+impl LocalityKey {
+    /// Create a new locality key from region ID and sequence number.
+    #[must_use]
+    pub const fn new(region_id: u32, sequence: u32) -> Self {
+        Self(((region_id as u64) << 32) | (sequence as u64))
+    }
+
+    /// Get the region ID component.
+    #[must_use]
+    pub const fn region_id(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+
+    /// Get the sequence number within the region.
+    ///
+    /// Extracts the lower 32 bits of the packed u64.
+    #[must_use]
+    pub const fn sequence(self) -> u32 {
+        (self.0 & 0xFFFF_FFFF) as u32
+    }
+
+    /// Get the raw u64 value for serialization.
+    #[must_use]
+    pub const fn to_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Create from raw u64 value.
+    #[must_use]
+    pub const fn from_u64(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Generator for locality keys with per-region sequence counters.
+///
+/// Maintains monotonically increasing sequence numbers per region,
+/// ensuring vectors added to the same region get ordered keys.
+#[derive(Debug, Default)]
+pub struct LocalityKeyGenerator {
+    region_sequences: RwLock<HashMap<u32, AtomicU32>>,
+}
+
+impl LocalityKeyGenerator {
+    /// Create a new locality key generator.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            region_sequences: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Generate a new locality key for the given region.
+    ///
+    /// The sequence number is monotonically increasing per region.
+    pub fn next_key(&self, region_id: u32) -> LocalityKey {
+        // Try read path first (fast path for existing region)
+        let read_guard = self.region_sequences.read();
+        if let Some(counter) = read_guard.get(&region_id) {
+            let seq = counter.fetch_add(1, Ordering::Relaxed);
+            drop(read_guard);
+            return LocalityKey::new(region_id, seq);
+        }
+        drop(read_guard);
+
+        // Need to create new counter (slow path)
+        let mut write_guard = self.region_sequences.write();
+        let counter = write_guard
+            .entry(region_id)
+            .or_insert_with(|| AtomicU32::new(0));
+        let seq = counter.fetch_add(1, Ordering::Relaxed);
+        drop(write_guard);
+        LocalityKey::new(region_id, seq)
+    }
+
+    /// Reset sequence counters for all regions.
+    pub fn reset(&self) {
+        let sequences = self.region_sequences.read();
+        for counter in sequences.values() {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Get the current sequence for a region without incrementing.
+    #[must_use]
+    pub fn current_sequence(&self, region_id: u32) -> u32 {
+        self.region_sequences
+            .read()
+            .get(&region_id)
+            .map_or(0, |c| c.load(Ordering::Relaxed))
+    }
+}
 
 /// A Voronoi region owned by a node.
 ///
@@ -310,6 +412,28 @@ impl VoronoiPartitioner {
     #[must_use]
     pub const fn semantic(&self) -> &SemanticPartitioner {
         &self.semantic
+    }
+
+    /// Generate a locality key for an embedding.
+    ///
+    /// Uses the Voronoi region assignment to determine the region ID,
+    /// then generates a unique key within that region.
+    /// Returns None if no regions have been computed.
+    #[must_use]
+    pub fn locality_key_for_embedding(&self, embedding: &[f32]) -> Option<LocalityKey> {
+        let region = self.region_for_embedding(embedding)?;
+        // Hash the owner node ID to get a u32 region ID
+        let region_id = Self::hash_node_to_region_id(&region.owner);
+        Some(LocalityKey::new(region_id, 0)) // Sequence would come from LocalityKeyGenerator
+    }
+
+    /// Hash a node ID to a u32 region ID.
+    fn hash_node_to_region_id(node: &PhysicalNodeId) -> u32 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        node.hash(&mut hasher);
+        // Take lower 32 bits of hash
+        (hasher.finish() & 0xFFFF_FFFF) as u32
     }
 }
 

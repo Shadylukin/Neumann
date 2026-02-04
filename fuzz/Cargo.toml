@@ -870,3 +870,26 @@ path = "fuzz_targets/vector_engine_ops.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 41: Geometric storage targets
+
+[[bin]]
+name = "voronoi_snapshot"
+path = "fuzz_targets/voronoi_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regional_mmap_crud"
+path = "fuzz_targets/regional_mmap_crud.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "durable_blob_crash"
+path = "fuzz_targets/durable_blob_crash.rs"
+test = false
+doc = false
+bench = false

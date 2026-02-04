@@ -3,7 +3,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tensor_chain::{DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy, WaitForGraph};
+use tensor_chain::{DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy};
 
 #[derive(Arbitrary, Debug)]
 struct FuzzInput {

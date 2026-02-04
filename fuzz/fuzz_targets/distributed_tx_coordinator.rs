@@ -9,7 +9,7 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use tensor_chain::{
     ConsensusConfig, ConsensusManager, DeltaVector, DistributedTxConfig, DistributedTxCoordinator,
-    PrepareVote, TxPhase,
+    PrepareVote,
 };
 
 #[derive(Arbitrary, Debug)]
