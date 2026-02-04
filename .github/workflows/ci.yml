@@ -313,9 +313,59 @@ jobs:
           cargo test -p neumann_parser
           cargo test -p query_router
 
+  docker:
+    name: Docker Build & Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Build CLI image
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: .
+          target: cli
+          push: false
+          tags: neumann-cli:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Server image
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: .
+          target: server
+          push: false
+          tags: neumann-server:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan CLI image for vulnerabilities
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5 # v0.30.0
+        with:
+          image-ref: neumann-cli:ci
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Scan Server image for vulnerabilities
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5 # v0.30.0
+        with:
+          image-ref: neumann-server:ci
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
   ci-success:
     name: CI Success
-    needs: [fmt, check, clippy, test, coverage, doc, security-audit, cargo-deny, miri, cross-platform, typescript-sdk, python-sdk]
+    needs: [fmt, check, clippy, test, coverage, doc, security-audit, cargo-deny, miri, cross-platform, typescript-sdk, python-sdk, docker]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -323,7 +373,7 @@ jobs:
       - name: Check all jobs passed
         run: |
           FAILED=false
-          for job in fmt check clippy test coverage doc security-audit cargo-deny miri cross-platform; do
+          for job in fmt check clippy test coverage doc security-audit cargo-deny miri cross-platform docker; do
             result="${{ needs[job].result }}"
             if [[ "$result" != "success" ]]; then
               echo "::error::Job $job failed with result: $result"
