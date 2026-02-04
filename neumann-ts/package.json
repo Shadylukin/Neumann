@@ -1,6 +1,6 @@
 {
   "name": "@scrunchee/client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK for Neumann database",
   "type": "module",
   "main": "./dist/cjs/index.js",
@@ -44,7 +44,7 @@
     "graph"
   ],
   "author": "Neumann Team",
-  "license": "MIT",
+  "license": "BSL-1.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/Shadylukin/Neumann.git",

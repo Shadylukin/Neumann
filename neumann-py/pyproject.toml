@@ -4,10 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "neumann-db"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python SDK for Neumann database"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "BSL-1.1" }
 requires-python = ">=3.10"
 authors = [
     { name = "Neumann Team" }
@@ -16,7 +16,7 @@ keywords = ["database", "tensor", "grpc", "vector", "graph"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

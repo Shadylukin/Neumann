@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-04
+
+### Changed
+
+- **License**: Migrated from dual MIT/Apache-2.0 to Business Source License 1.1
+  - Free for personal use, education, evaluation, non-commercial OSS, and small businesses under $5M revenue
+  - Automatically converts to Apache-2.0 after 4 years
+  - Production use by companies with $5M+ revenue requires commercial license
+  - Contact: licensing@tensortech.dev
+
 ## [0.1.0] - 2026-01-31
 
 ### Added
@@ -120,5 +130,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **0.1.0** - Initial public release
 
-[Unreleased]: https://github.com/Shadylukin/Neumann/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Shadylukin/Neumann/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Shadylukin/Neumann/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/Shadylukin/Neumann/releases/tag/v0.1.0
