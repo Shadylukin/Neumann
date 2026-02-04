@@ -21,7 +21,7 @@ tensor_compress = { path = "../tensor_compress" }
 tensor_chain = { path = "../tensor_chain" }
 tensor_checkpoint = { path = "../tensor_checkpoint" }
 tensor_unified = { path = "../tensor_unified" }
-rustyline = "15"
+rustyline = "17"
 base64 = "0.22"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive", "env"] }
