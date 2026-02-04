@@ -15,7 +15,7 @@ use parking_lot::RwLock;
 use tensor_chain::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
     MembershipManager, MemoryTransport, Message, NodeHealth, PeerConfig, RaftConfig, RaftNode,
-    TcpTransport, TcpTransportConfig, TensorChain, Transaction, Transport,
+    SecurityMode, TcpTransport, TcpTransportConfig, TensorChain, Transaction, Transport,
 };
 use tensor_store::{
     ConsistentHashConfig, ConsistentHashPartitioner, PartitionedStore, Partitioner, ScalarValue,
@@ -40,7 +40,9 @@ fn make_tensor(value: i64) -> TensorData {
 #[tokio::test]
 async fn test_tcp_transport_two_node_handshake() {
     // Node 1 config
-    let config1 = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+    let config1 = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let transport1 = TcpTransport::new(config1);
 
     // Start node 1 to get actual bound address
@@ -48,7 +50,9 @@ async fn test_tcp_transport_two_node_handshake() {
     let addr1 = transport1.bound_addr().unwrap();
 
     // Node 2 config pointing to node 1
-    let config2 = TcpTransportConfig::new("node2", "127.0.0.1:0".parse().unwrap());
+    let config2 = TcpTransportConfig::new("node2", "127.0.0.1:0".parse().unwrap())
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let transport2 = TcpTransport::new(config2);
     transport2.start().await.unwrap();
 
@@ -72,12 +76,16 @@ async fn test_tcp_transport_two_node_handshake() {
 #[tokio::test]
 async fn test_tcp_transport_message_exchange() {
     // Set up two nodes
-    let config1 = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+    let config1 = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let transport1 = Arc::new(TcpTransport::new(config1));
     transport1.start().await.unwrap();
     let addr1 = transport1.bound_addr().unwrap();
 
-    let config2 = TcpTransportConfig::new("node2", "127.0.0.1:0".parse().unwrap());
+    let config2 = TcpTransportConfig::new("node2", "127.0.0.1:0".parse().unwrap())
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let transport2 = Arc::new(TcpTransport::new(config2));
     transport2.start().await.unwrap();
     let addr2 = transport2.bound_addr().unwrap();
