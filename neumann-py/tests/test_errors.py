@@ -121,9 +121,7 @@ class TestErrorFromCode:
 
         for code, expected_type in mappings:
             err = error_from_code(code, "test")
-            assert isinstance(
-                err, expected_type
-            ), f"Expected {expected_type.__name__} for {code}"
+            assert isinstance(err, expected_type), f"Expected {expected_type.__name__} for {code}"
 
 
 class TestErrorExceptionHandling:

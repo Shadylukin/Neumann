@@ -177,7 +177,9 @@ class CollectionsServiceServicer(metaclass=_abc_1.ABCMeta):
         self,
         request: _vector_pb2.CreateCollectionRequest,
         context: _ServicerContext,
-    ) -> _vector_pb2.CreateCollectionResponse | _abc.Awaitable[_vector_pb2.CreateCollectionResponse]:
+    ) -> (
+        _vector_pb2.CreateCollectionResponse | _abc.Awaitable[_vector_pb2.CreateCollectionResponse]
+    ):
         """Create a new collection."""
 
     @_abc_1.abstractmethod
@@ -193,7 +195,9 @@ class CollectionsServiceServicer(metaclass=_abc_1.ABCMeta):
         self,
         request: _vector_pb2.DeleteCollectionRequest,
         context: _ServicerContext,
-    ) -> _vector_pb2.DeleteCollectionResponse | _abc.Awaitable[_vector_pb2.DeleteCollectionResponse]:
+    ) -> (
+        _vector_pb2.DeleteCollectionResponse | _abc.Awaitable[_vector_pb2.DeleteCollectionResponse]
+    ):
         """Delete a collection."""
 
     @_abc_1.abstractmethod

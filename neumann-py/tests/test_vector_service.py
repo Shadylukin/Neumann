@@ -29,9 +29,7 @@ class TestVectorPoint:
 
     def test_create_with_payload(self) -> None:
         """Test point creation with payload."""
-        point = VectorPoint(
-            id="p1", vector=[0.1, 0.2, 0.3], payload={"name": "test", "count": 42}
-        )
+        point = VectorPoint(id="p1", vector=[0.1, 0.2, 0.3], payload={"name": "test", "count": 42})
         assert point.payload == {"name": "test", "count": 42}
 
 

@@ -30,9 +30,11 @@ class TestAsyncNeumannClientConnect:
     @pytest.mark.asyncio
     async def test_connect_requires_grpc(self) -> None:
         """Test connect raises when grpc not available."""
-        with patch.dict("sys.modules", {"grpc": None, "grpc.aio": None}):
-            with pytest.raises(ConnectionError):
-                await AsyncNeumannClient.connect("localhost:50051")
+        with (
+            patch.dict("sys.modules", {"grpc": None, "grpc.aio": None}),
+            pytest.raises(ConnectionError),
+        ):
+            await AsyncNeumannClient.connect("localhost:50051")
 
     @pytest.mark.asyncio
     async def test_connect_creates_client(self) -> None:
@@ -255,9 +257,7 @@ class TestAsyncNeumannClientRunInExecutor:
             mock_sync_client = MagicMock()
             mock_sync_client.__enter__ = MagicMock(return_value=mock_sync_client)
             mock_sync_client.__exit__ = MagicMock(return_value=None)
-            mock_sync_client.execute.return_value = QueryResult(
-                QueryResultType.COUNT, 42
-            )
+            mock_sync_client.execute.return_value = QueryResult(QueryResultType.COUNT, 42)
             mock_embedded.return_value = mock_sync_client
 
             result = await client.run_in_executor("SELECT COUNT(*) FROM users")
@@ -314,9 +314,7 @@ class TestAsyncNeumannClientConnectDirect:
                     mock_stub = MagicMock()
                     mock_stub_cls.return_value = mock_stub
 
-                    client = await AsyncNeumannClient.connect(
-                        "localhost:50051", tls=True
-                    )
+                    client = await AsyncNeumannClient.connect("localhost:50051", tls=True)
 
                     assert client.is_connected
                     mock_creds.assert_called_once()
@@ -339,9 +337,7 @@ class TestAsyncNeumannClientConnectDirect:
             mock_channel.return_value = mock_ch
 
             with patch.object(neumann_pb2_grpc, "QueryServiceStub"):
-                client = await AsyncNeumannClient.connect(
-                    "localhost:50051", api_key="secret-key"
-                )
+                client = await AsyncNeumannClient.connect("localhost:50051", api_key="secret-key")
 
                 assert client._api_key == "secret-key"
 

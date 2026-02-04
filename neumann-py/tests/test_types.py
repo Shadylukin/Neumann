@@ -865,9 +865,7 @@ class TestPageRankResult:
     def test_page_rank_result(self) -> None:
         """Test PageRankResult creation."""
         items = [PageRankItem(node_id=1, score=0.5), PageRankItem(node_id=2, score=0.3)]
-        result = PageRankResult(
-            items=items, iterations=10, convergence=0.001, converged=True
-        )
+        result = PageRankResult(items=items, iterations=10, convergence=0.001, converged=True)
         assert len(result.items) == 2
         assert result.iterations == 10
         assert result.convergence == 0.001
@@ -959,9 +957,7 @@ class TestConstraintsResult:
     def test_constraints_result(self) -> None:
         """Test ConstraintsResult creation."""
         items = [
-            ConstraintItem(
-                name="pk", target="users", property="id", constraint_type="primary_key"
-            )
+            ConstraintItem(name="pk", target="users", property="id", constraint_type="primary_key")
         ]
         result = ConstraintsResult(items=items)
         assert len(result.items) == 1
@@ -1106,9 +1102,7 @@ class TestQueryResultGraphAlgorithms:
     def test_constraints_accessor(self) -> None:
         """Test constraints accessor."""
         items = [
-            ConstraintItem(
-                name="pk", target="users", property="id", constraint_type="primary_key"
-            )
+            ConstraintItem(name="pk", target="users", property="id", constraint_type="primary_key")
         ]
         c_result = ConstraintsResult(items=items)
         result = QueryResult(QueryResultType.CONSTRAINTS, c_result)

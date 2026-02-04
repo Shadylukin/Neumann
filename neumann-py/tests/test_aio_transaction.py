@@ -156,9 +156,7 @@ class TestAsyncTransaction:
         assert mock_client.execute.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_context_manager_rollback_on_exception(
-        self, mock_client: AsyncMock
-    ) -> None:
+    async def test_context_manager_rollback_on_exception(self, mock_client: AsyncMock) -> None:
         """Test context manager rolls back on exception."""
         mock_client.execute.side_effect = [
             QueryResult(
@@ -203,9 +201,7 @@ class TestAsyncTransaction:
         tx = AsyncTransaction(mock_client, identity="user:alice")
         await tx.begin()
 
-        mock_client.execute.assert_called_once_with(
-            "CHAIN BEGIN", identity="user:alice"
-        )
+        mock_client.execute.assert_called_once_with("CHAIN BEGIN", identity="user:alice")
 
 
 class TestTransactionBuilder:

@@ -90,9 +90,7 @@ class TestPandasIntegration:
         pd = pytest.importorskip("pandas")
         from neumann.integrations.pandas import dataframe_to_inserts
 
-        df = pd.DataFrame(
-            {"id": [1, 2], "name": ["Alice", "Bob"], "active": [True, False]}
-        )
+        df = pd.DataFrame({"id": [1, 2], "name": ["Alice", "Bob"], "active": [True, False]})
 
         inserts = dataframe_to_inserts(df, "users")
 

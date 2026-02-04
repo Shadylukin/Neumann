@@ -92,7 +92,10 @@ class QueryServiceServicer(metaclass=_abc_1.ABCMeta):
         self,
         request: _neumann_pb2.QueryRequest,
         context: _ServicerContext,
-    ) -> _abc.Iterator[_neumann_pb2.QueryResponseChunk] | _abc.AsyncIterator[_neumann_pb2.QueryResponseChunk]:
+    ) -> (
+        _abc.Iterator[_neumann_pb2.QueryResponseChunk]
+        | _abc.AsyncIterator[_neumann_pb2.QueryResponseChunk]
+    ):
         """Execute a query with streaming results (for large result sets)."""
 
     @_abc_1.abstractmethod
@@ -185,7 +188,10 @@ class BlobServiceServicer(metaclass=_abc_1.ABCMeta):
         self,
         request: _neumann_pb2.BlobDownloadRequest,
         context: _ServicerContext,
-    ) -> _abc.Iterator[_neumann_pb2.BlobDownloadChunk] | _abc.AsyncIterator[_neumann_pb2.BlobDownloadChunk]:
+    ) -> (
+        _abc.Iterator[_neumann_pb2.BlobDownloadChunk]
+        | _abc.AsyncIterator[_neumann_pb2.BlobDownloadChunk]
+    ):
         """Download a blob with streaming chunks."""
 
     @_abc_1.abstractmethod

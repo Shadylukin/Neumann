@@ -71,22 +71,24 @@ class TestNeumannClientEmbedded:
         mock_router = MagicMock()
         mock_native.QueryRouter.return_value = mock_router
 
-        with patch.dict("sys.modules", {"neumann._native": mock_native}):
-            with patch("neumann.client.NeumannClient.__init__", return_value=None):
-                client = NeumannClient.__new__(NeumannClient)
-                client._mode = "embedded"
-                client._native = None
-                client._channel = None
-                client._stub = None
-                client._api_key = None
-                client._connected = False
+        with (
+            patch.dict("sys.modules", {"neumann._native": mock_native}),
+            patch("neumann.client.NeumannClient.__init__", return_value=None),
+        ):
+            client = NeumannClient.__new__(NeumannClient)
+            client._mode = "embedded"
+            client._native = None
+            client._channel = None
+            client._stub = None
+            client._api_key = None
+            client._connected = False
 
-                # Simulate embedded() logic
-                client._native = mock_router
-                client._connected = True
+            # Simulate embedded() logic
+            client._native = mock_router
+            client._connected = True
 
-                assert client.is_connected
-                assert client.mode == "embedded"
+            assert client.is_connected
+            assert client.mode == "embedded"
 
     def test_embedded_with_path(self) -> None:
         """Test embedded mode with persistence path."""
@@ -94,21 +96,23 @@ class TestNeumannClientEmbedded:
         mock_router = MagicMock()
         mock_native.QueryRouter.with_path.return_value = mock_router
 
-        with patch.dict("sys.modules", {"neumann._native": mock_native}):
-            with patch("neumann.client.NeumannClient.__init__", return_value=None):
-                client = NeumannClient.__new__(NeumannClient)
-                client._mode = "embedded"
-                client._native = None
-                client._channel = None
-                client._stub = None
-                client._api_key = None
-                client._connected = False
+        with (
+            patch.dict("sys.modules", {"neumann._native": mock_native}),
+            patch("neumann.client.NeumannClient.__init__", return_value=None),
+        ):
+            client = NeumannClient.__new__(NeumannClient)
+            client._mode = "embedded"
+            client._native = None
+            client._channel = None
+            client._stub = None
+            client._api_key = None
+            client._connected = False
 
-                # Simulate with_path logic
-                client._native = mock_native.QueryRouter.with_path("/tmp/neumann")
-                client._connected = True
+            # Simulate with_path logic
+            client._native = mock_native.QueryRouter.with_path("/tmp/neumann")
+            client._connected = True
 
-                assert client.is_connected
+            assert client.is_connected
 
 
 class TestNeumannClientRemote:
