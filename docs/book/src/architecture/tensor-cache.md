@@ -272,11 +272,11 @@ Configurable distance metrics for semantic similarity:
 
 | Metric | Best For | Range | Formula |
 | --- | --- | --- | --- |
-| Cosine | Dense embeddings (default) | [-1, 1] | `dot(a,b) / (‖a‖ * ‖b‖)` |
-| Angular | Linear angle relationships | [0, PI] | `acos(cosine_sim)` |
-| Jaccard | Sparse/binary embeddings | [0, 1] | `‖A ∩ B‖ / ‖A ∪ B‖` |
-| Euclidean | Absolute distances | [0, inf) | `sqrt(sum((a-b)^2))` |
-| WeightedJaccard | Sparse with magnitudes | [0, 1] | Weighted set similarity |
+| Cosine | Dense embeddings (default) | -1 to 1 | `dot(a,b) / (‖a‖ * ‖b‖)` |
+| Angular | Linear angle relationships | 0 to PI | `acos(cosine_sim)` |
+| Jaccard | Sparse/binary embeddings | 0 to 1 | `‖A ∩ B‖ / ‖A ∪ B‖` |
+| Euclidean | Absolute distances | 0 to inf | `sqrt(sum((a-b)^2))` |
+| WeightedJaccard | Sparse with magnitudes | 0 to 1 | Weighted set similarity |
 
 **Auto-selection**: When `auto_select_metric` is true, the cache automatically
 selects Jaccard for sparse embeddings (sparsity >= threshold, default 70%) and

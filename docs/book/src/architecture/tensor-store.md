@@ -256,7 +256,7 @@ The Bloom filter uses optimal parameters calculated as:
 
 **Number of hash functions**: `k = (m/n) * ln(2)`
 
-- Clamped to range [1, 16]
+- Clamped to range 1 to 16
 
 ### Implementation Details
 
@@ -492,14 +492,14 @@ let orthogonal = v.project_orthogonal(&conflict_direction);
 
 | Metric | Range | Use Case |
 | --- | --- | --- |
-| `cosine_similarity` | [-1, 1] | Directional similarity |
-| `angular_distance` | [0, PI] | Linear for small angles |
-| `geodesic_distance` | [0, PI] | Arc length on unit sphere |
-| `jaccard_index` | [0, 1] | Structural overlap (positions) |
-| `overlap_coefficient` | [0, 1] | Subset containment |
-| `weighted_jaccard` | [0, 1] | Value-weighted structural overlap |
-| `euclidean_distance` | [0, inf) | L2 norm of difference |
-| `manhattan_distance` | [0, inf) | L1 norm of difference |
+| `cosine_similarity` | -1 to 1 | Directional similarity |
+| `angular_distance` | 0 to PI | Linear for small angles |
+| `geodesic_distance` | 0 to PI | Arc length on unit sphere |
+| `jaccard_index` | 0 to 1 | Structural overlap (positions) |
+| `overlap_coefficient` | 0 to 1 | Subset containment |
+| `weighted_jaccard` | 0 to 1 | Value-weighted structural overlap |
+| `euclidean_distance` | 0 to inf | L2 norm of difference |
+| `manhattan_distance` | 0 to inf | L1 norm of difference |
 
 ### Security: NaN/Inf Sanitization
 

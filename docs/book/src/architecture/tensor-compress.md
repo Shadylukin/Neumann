@@ -723,9 +723,9 @@ pub struct RleEncoded<T: Eq> {
 
 | Data Pattern | Runs | Compression |
 | --- | --- | --- |
-| [5, 5, 5, 5, 5] (1000x) | 1 | 500x |
-| [1, 2, 3, 4, 5] (all different) | 5 | 0.8x (overhead) |
-| [1, 1, 2, 2, 2, 3, 1, 1, 1, 1] | 4 | 2.5x |
+| `[5, 5, 5, 5, 5]` (1000x) | 1 | 500x |
+| `[1, 2, 3, 4, 5]` (all different) | 5 | 0.8x (overhead) |
+| `[1, 1, 2, 2, 2, 3, 1, 1, 1, 1]` | 4 | 2.5x |
 | Status column (pending/active/done) | ~300 per 10000 | ~33x |
 
 ### Sparse Vector Format
