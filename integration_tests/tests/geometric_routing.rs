@@ -165,7 +165,7 @@ fn test_tensor_chain_route_by_embedding_disabled() {
     let routed = chain.route_by_embedding(&embedding);
 
     // When disabled, routes to local node
-    assert_eq!(routed, "node1");
+    assert_eq!(routed, chain.node_id().as_str());
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn test_tensor_chain_route_by_embedding_empty() {
     let routed = chain.route_by_embedding(&embedding);
 
     // Empty embedding falls back to local node
-    assert_eq!(routed, "node1");
+    assert_eq!(routed, chain.node_id().as_str());
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn test_tensor_chain_route_by_embedding_no_peers() {
     let routed = chain.route_by_embedding(&embedding);
 
     // Without peers, routes to local node
-    assert_eq!(routed, "node1");
+    assert_eq!(routed, chain.node_id().as_str());
 }
 
 // ============================================================================
@@ -272,7 +272,7 @@ fn test_geometric_routing_with_chain_initialization() {
     for embedding in &embeddings {
         let routed = chain.route_by_embedding(embedding);
         // All should route to local node (no peers)
-        assert_eq!(routed, "node1");
+        assert_eq!(routed, chain.node_id().as_str());
     }
 }
 
