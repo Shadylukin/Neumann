@@ -21,8 +21,8 @@ rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-opentelemetry = { version = "0.21", optional = true, features = ["metrics"] }
-opentelemetry_sdk = { version = "0.21", optional = true, features = ["metrics"] }
+opentelemetry = { version = "0.24", optional = true, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.24", optional = true, features = ["metrics"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
