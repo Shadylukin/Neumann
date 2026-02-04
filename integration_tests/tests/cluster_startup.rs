@@ -39,8 +39,8 @@ impl QueryExecutor for RouterExecutor {
 async fn test_single_node_cluster_startup() {
     // Start a single node cluster
     let local = ClusterNodeConfig::new("node1", test_addr(19001));
-    let config = OrchestratorConfig::new(local, vec![])
-        .with_security_mode(SecurityMode::Development);
+    let config =
+        OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Development);
 
     let orchestrator = ClusterOrchestrator::start(config).await;
     assert!(orchestrator.is_ok(), "Failed to start single node cluster");
@@ -57,8 +57,8 @@ async fn test_single_node_cluster_startup() {
 #[tokio::test]
 async fn test_single_node_with_query_executor() {
     let local = ClusterNodeConfig::new("node1", test_addr(19002));
-    let config = OrchestratorConfig::new(local, vec![])
-        .with_security_mode(SecurityMode::Development);
+    let config =
+        OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Development);
 
     let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
 
