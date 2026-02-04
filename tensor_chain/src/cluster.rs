@@ -130,6 +130,8 @@ pub struct OrchestratorConfig {
     pub handler_timeouts: HandlerTimeoutConfig,
     /// Message validation configuration.
     pub message_validation: MessageValidationConfig,
+    /// Security mode for TCP transport.
+    pub security_mode: Option<SecurityMode>,
 }
 
 impl OrchestratorConfig {
@@ -145,6 +147,7 @@ impl OrchestratorConfig {
             fast_path_threshold: 0.95,
             handler_timeouts: HandlerTimeoutConfig::default(),
             message_validation: MessageValidationConfig::default(),
+            security_mode: None,
         }
     }
 
@@ -193,6 +196,12 @@ impl OrchestratorConfig {
     /// Set the message validation configuration.
     pub fn with_message_validation(mut self, message_validation: MessageValidationConfig) -> Self {
         self.message_validation = message_validation;
+        self
+    }
+
+    /// Set the security mode for TCP transport.
+    pub fn with_security_mode(mut self, security_mode: SecurityMode) -> Self {
+        self.security_mode = Some(security_mode);
         self
     }
 }
@@ -249,7 +258,14 @@ impl ClusterOrchestrator {
         // 2. Create TCP transport
         let mut tcp_config =
             TcpTransportConfig::new(&config.local.node_id, config.local.bind_address);
-        if cfg!(test) {
+        if let Some(security_mode) = config.security_mode {
+            tcp_config = tcp_config
+                .with_security_mode(security_mode)
+                .with_require_tls(!matches!(
+                    security_mode,
+                    SecurityMode::Development | SecurityMode::Legacy
+                ));
+        } else if cfg!(test) {
             tcp_config = tcp_config
                 .with_security_mode(SecurityMode::Development)
                 .with_require_tls(false);

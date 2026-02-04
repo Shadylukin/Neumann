@@ -17,7 +17,7 @@ use parking_lot::RwLock;
 use query_router::QueryRouter;
 use tensor_chain::{
     ClusterNodeConfig, ClusterOrchestrator, ClusterPeerConfig, OrchestratorConfig, QueryExecutor,
-    RaftConfig,
+    RaftConfig, SecurityMode,
 };
 use tokio::time::sleep;
 
@@ -39,7 +39,8 @@ impl QueryExecutor for RouterExecutor {
 async fn test_single_node_cluster_startup() {
     // Start a single node cluster
     let local = ClusterNodeConfig::new("node1", test_addr(19001));
-    let config = OrchestratorConfig::new(local, vec![]);
+    let config = OrchestratorConfig::new(local, vec![])
+        .with_security_mode(SecurityMode::Development);
 
     let orchestrator = ClusterOrchestrator::start(config).await;
     assert!(orchestrator.is_ok(), "Failed to start single node cluster");
@@ -56,7 +57,8 @@ async fn test_single_node_cluster_startup() {
 #[tokio::test]
 async fn test_single_node_with_query_executor() {
     let local = ClusterNodeConfig::new("node1", test_addr(19002));
-    let config = OrchestratorConfig::new(local, vec![]);
+    let config = OrchestratorConfig::new(local, vec![])
+        .with_security_mode(SecurityMode::Development);
 
     let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
 
@@ -95,6 +97,7 @@ async fn test_3_node_cluster_startup() {
             ClusterPeerConfig::new("node3", test_addr(port_base + 2)),
         ],
     )
+    .with_security_mode(SecurityMode::Development)
     .with_raft(RaftConfig {
         election_timeout: (100, 200),
         heartbeat_interval: 50,
@@ -113,6 +116,7 @@ async fn test_3_node_cluster_startup() {
             ClusterPeerConfig::new("node3", test_addr(port_base + 2)),
         ],
     )
+    .with_security_mode(SecurityMode::Development)
     .with_raft(RaftConfig {
         election_timeout: (100, 200),
         heartbeat_interval: 50,
@@ -131,6 +135,7 @@ async fn test_3_node_cluster_startup() {
             ClusterPeerConfig::new("node2", test_addr(port_base + 1)),
         ],
     )
+    .with_security_mode(SecurityMode::Development)
     .with_raft(RaftConfig {
         election_timeout: (100, 200),
         heartbeat_interval: 50,
@@ -175,11 +180,13 @@ async fn test_3_node_cluster_with_run_loop() {
             })
             .collect();
 
-        let config = OrchestratorConfig::new(local, peers).with_raft(RaftConfig {
-            election_timeout: (100, 200),
-            heartbeat_interval: 50,
-            ..RaftConfig::default()
-        });
+        let config = OrchestratorConfig::new(local, peers)
+            .with_security_mode(SecurityMode::Development)
+            .with_raft(RaftConfig {
+                election_timeout: (100, 200),
+                heartbeat_interval: 50,
+                ..RaftConfig::default()
+            });
 
         let node = ClusterOrchestrator::start(config).await.unwrap();
 
@@ -244,7 +251,8 @@ async fn test_cluster_membership_view() {
             ClusterPeerConfig::new("node2", test_addr(port_base + 1)),
             ClusterPeerConfig::new("node3", test_addr(port_base + 2)),
         ],
-    );
+    )
+    .with_security_mode(SecurityMode::Development);
 
     let node = ClusterOrchestrator::start(config).await.unwrap();
 

@@ -1149,7 +1149,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "graph_engine"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "opentelemetry 0.21.0",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "integration_tests"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bitcode",
  "futures",
@@ -1638,7 +1638,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "neumann-examples"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "graph_engine",
  "neumann_server",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "neumann_client"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "neumann_server",
  "parking_lot",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "neumann_docs"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1685,14 +1685,14 @@ dependencies = [
 
 [[package]]
 name = "neumann_parser"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
 ]
 
 [[package]]
 name = "neumann_server"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "bytes",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "neumann_shell"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "query_router"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "bitcode",
@@ -2456,7 +2456,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "relational_engine"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "dashmap 5.5.3",
@@ -2805,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "stress_tests"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "graph_engine",
@@ -2933,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_blob"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "graph_engine",
@@ -2948,7 +2948,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_cache"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bitcode",
  "criterion",
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_chain"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bitcode",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_checkpoint"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bitcode",
  "serde",
@@ -3019,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_compress"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bitcode",
  "criterion",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_store"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bitcode",
  "bitvec",
@@ -3051,7 +3051,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_unified"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "futures",
@@ -3066,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_vault"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3557,7 +3557,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector_engine"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "criterion",
