@@ -52,8 +52,8 @@ mod tests {
     fn test_format_count_thousands() {
         assert_eq!(format_count(1000), "1.0K");
         assert_eq!(format_count(1500), "1.5K");
-        assert_eq!(format_count(10000), "10.0K");
-        assert_eq!(format_count(999999), "1000.0K");
+        assert_eq!(format_count(10_000), "10.0K");
+        assert_eq!(format_count(999_999), "1000.0K");
     }
 
     #[test]

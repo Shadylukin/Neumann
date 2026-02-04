@@ -661,7 +661,7 @@ fn empty_table_select() {
 fn value_clone_and_eq() {
     let v1 = Value::Null;
     let v2 = Value::Int(42);
-    let v3 = Value::Float(3.14);
+    let v3 = Value::Float(3.15);
     let v4 = Value::String("test".into());
     let v5 = Value::Bool(true);
 
@@ -1310,7 +1310,7 @@ fn value_hash_key_variants() {
     assert_eq!(Value::Bool(false).hash_key(), "b:false");
 
     // Float uses to_bits for stable hashing
-    let float_hash = Value::Float(3.14).hash_key();
+    let float_hash = Value::Float(3.15).hash_key();
     assert!(float_hash.starts_with("f:"));
 
     // String uses hasher
@@ -2004,7 +2004,7 @@ fn simd_filter_le() {
     let mut bitmap = vec![0u64; 1];
     simd::filter_le_i64(&values, 5, &mut bitmap);
     // Values <= 5: 1,5,3,2,4 at positions 0,1,2,4,6
-    assert_eq!(bitmap[0] & 0xff, 0b01010111);
+    assert_eq!(bitmap[0] & 0xff, 0b0101_0111);
 }
 
 #[test]
@@ -2013,7 +2013,7 @@ fn simd_filter_ge() {
     let mut bitmap = vec![0u64; 1];
     simd::filter_ge_i64(&values, 5, &mut bitmap);
     // Values >= 5: 5,8,9,7 at positions 1,3,5,7
-    assert_eq!(bitmap[0] & 0xff, 0b10101010);
+    assert_eq!(bitmap[0] & 0xff, 0b1010_1010);
 }
 
 #[test]
@@ -2022,7 +2022,7 @@ fn simd_filter_ne() {
     let mut bitmap = vec![0u64; 1];
     simd::filter_ne_i64(&values, 5, &mut bitmap);
     // Values != 5: 3,2,4 at positions 2,4,6
-    assert_eq!(bitmap[0] & 0xff, 0b01010100);
+    assert_eq!(bitmap[0] & 0xff, 0b0101_0100);
 }
 
 #[test]
@@ -2405,7 +2405,7 @@ fn column_data_debug_clone() {
 
 #[test]
 fn selection_vector_from_bitmap() {
-    let bitmap = vec![0b00000101u64]; // bits 0 and 2 set
+    let bitmap = vec![0b0000_0101u64]; // bits 0 and 2 set
     let sel = SelectionVector::from_bitmap(bitmap, 8);
     assert!(sel.is_selected(0));
     assert!(!sel.is_selected(1));
@@ -2415,7 +2415,7 @@ fn selection_vector_from_bitmap() {
 
 #[test]
 fn selection_vector_selected_indices() {
-    let bitmap = vec![0b00001010u64]; // bits 1 and 3 set
+    let bitmap = vec![0b0000_1010u64]; // bits 1 and 3 set
     let sel = SelectionVector::from_bitmap(bitmap, 8);
     let indices = sel.selected_indices();
     assert_eq!(indices, vec![1, 3]);
@@ -2564,7 +2564,7 @@ fn simd_filter_ne_with_remainder() {
     let mut bitmap = vec![0u64; 1];
     simd::filter_ne_i64(&values, 2, &mut bitmap);
     // Values != 2 at positions 0, 4, 5
-    assert_eq!(bitmap[0] & 0x3f, 0b110001);
+    assert_eq!(bitmap[0] & 0x3f, 0b11_0001);
 }
 
 #[test]
@@ -4175,7 +4175,7 @@ fn test_value_hash_key() {
     let int_key = Value::Int(42).hash_key();
     assert!(int_key.starts_with("i:"));
 
-    let float_key = Value::Float(3.14).hash_key();
+    let float_key = Value::Float(3.15).hash_key();
     assert!(float_key.starts_with("f:"));
 
     let string_key = Value::String("test".to_string()).hash_key();
@@ -4489,8 +4489,8 @@ fn test_value_to_slab_column_value() {
         SlabColumnValue::Int(42)
     );
     assert_eq!(
-        SlabColumnValue::from(&Value::Float(3.14)),
-        SlabColumnValue::Float(3.14)
+        SlabColumnValue::from(&Value::Float(3.15)),
+        SlabColumnValue::Float(3.15)
     );
     assert_eq!(
         SlabColumnValue::from(&Value::String("test".to_string())),
@@ -4507,8 +4507,8 @@ fn test_slab_column_value_to_value() {
     assert_eq!(Value::from(SlabColumnValue::Null), Value::Null);
     assert_eq!(Value::from(SlabColumnValue::Int(42)), Value::Int(42));
     assert_eq!(
-        Value::from(SlabColumnValue::Float(3.14)),
-        Value::Float(3.14)
+        Value::from(SlabColumnValue::Float(3.15)),
+        Value::Float(3.15)
     );
     assert_eq!(
         Value::from(SlabColumnValue::String("test".to_string())),
@@ -4924,8 +4924,8 @@ fn test_value_from_scalar() {
     let int_val = Value::from_scalar(&ScalarValue::Int(42));
     assert_eq!(int_val, Value::Int(42));
 
-    let float_val = Value::from_scalar(&ScalarValue::Float(3.14));
-    assert_eq!(float_val, Value::Float(3.14));
+    let float_val = Value::from_scalar(&ScalarValue::Float(3.15));
+    assert_eq!(float_val, Value::Float(3.15));
 
     let str_val = Value::from_scalar(&ScalarValue::String("test".to_string()));
     assert_eq!(str_val, Value::String("test".to_string()));
@@ -5076,7 +5076,7 @@ fn test_ordered_key_from_value() {
     let int_key = OrderedKey::from_value(&Value::Int(42));
     assert_eq!(int_key, OrderedKey::Int(42));
 
-    let float_key = OrderedKey::from_value(&Value::Float(3.14));
+    let float_key = OrderedKey::from_value(&Value::Float(3.15));
     assert!(matches!(float_key, OrderedKey::Float(_)));
 
     let string_key = OrderedKey::from_value(&Value::String("test".to_string()));
@@ -8019,9 +8019,9 @@ mod condition_tensor_tests {
         let mut tensor = TensorData::new();
         tensor.set(
             "score".to_string(),
-            TensorValue::Scalar(ScalarValue::Float(3.14)),
+            TensorValue::Scalar(ScalarValue::Float(3.15)),
         );
-        assert!(Condition::Eq("score".to_string(), Value::Float(3.14)).evaluate_tensor(&tensor));
+        assert!(Condition::Eq("score".to_string(), Value::Float(3.15)).evaluate_tensor(&tensor));
     }
 
     #[test]
@@ -10770,7 +10770,7 @@ fn test_aggregate_ref_result_name() {
 #[test]
 fn test_aggregate_value_to_value() {
     assert_eq!(AggregateValue::Count(42).to_value(), Value::Int(42));
-    assert_eq!(AggregateValue::Sum(3.14).to_value(), Value::Float(3.14));
+    assert_eq!(AggregateValue::Sum(3.15).to_value(), Value::Float(3.15));
     assert_eq!(AggregateValue::Avg(Some(2.5)).to_value(), Value::Float(2.5));
     assert_eq!(AggregateValue::Avg(None).to_value(), Value::Null);
     assert_eq!(
@@ -16732,7 +16732,7 @@ fn test_column_data_get_value_all_types() {
             "all_types",
             HashMap::from([
                 ("int_col".to_string(), Value::Int(42)),
-                ("float_col".to_string(), Value::Float(3.14)),
+                ("float_col".to_string(), Value::Float(3.15)),
                 ("str_col".to_string(), Value::String("hello".to_string())),
                 ("bool_col".to_string(), Value::Bool(true)),
                 (
@@ -16765,7 +16765,7 @@ fn test_column_data_get_value_all_types() {
     assert_eq!(int_data.get_value(0), Some(Value::Int(42)));
 
     let float_data = engine.load_column_data("all_types", "float_col").unwrap();
-    assert_eq!(float_data.get_value(0), Some(Value::Float(3.14)));
+    assert_eq!(float_data.get_value(0), Some(Value::Float(3.15)));
 
     let str_data = engine.load_column_data("all_types", "str_col").unwrap();
     assert_eq!(
@@ -21062,7 +21062,7 @@ fn test_materialize_all_column_types() {
 
     let mut values = HashMap::new();
     values.insert("int_col".to_string(), Value::Int(42));
-    values.insert("float_col".to_string(), Value::Float(3.14));
+    values.insert("float_col".to_string(), Value::Float(3.15));
     values.insert("str_col".to_string(), Value::String("hello".to_string()));
     values.insert("bool_col".to_string(), Value::Bool(true));
     values.insert("bytes_col".to_string(), Value::Bytes(vec![1, 2, 3]));
@@ -21312,7 +21312,7 @@ fn test_value_equality() {
     assert_ne!(Value::Bool(true), Value::Bool(false));
     assert_eq!(Value::Int(42), Value::Int(42));
     assert_ne!(Value::Int(1), Value::Int(2));
-    assert_eq!(Value::Float(3.14), Value::Float(3.14));
+    assert_eq!(Value::Float(3.15), Value::Float(3.15));
     assert_eq!(
         Value::String("test".to_string()),
         Value::String("test".to_string())
@@ -21329,8 +21329,8 @@ fn test_value_debug_format() {
     let int = format!("{:?}", Value::Int(42));
     assert!(int.contains("42"));
 
-    let float = format!("{:?}", Value::Float(3.14));
-    assert!(float.contains("3.14"));
+    let float = format!("{:?}", Value::Float(3.15));
+    assert!(float.contains("3.15"));
 
     let string = format!("{:?}", Value::String("hello".to_string()));
     assert!(string.contains("hello"));
@@ -22566,7 +22566,7 @@ fn test_fk_constraint_on_delete_on_update() {
 #[test]
 fn test_aggregate_value_to_value_conversion() {
     let count_agg = AggregateValue::Count(42);
-    let sum_agg = AggregateValue::Sum(3.14);
+    let sum_agg = AggregateValue::Sum(3.15);
     let avg_some_agg = AggregateValue::Avg(Some(2.5));
     let avg_none_agg = AggregateValue::Avg(None);
     let min_some_agg = AggregateValue::Min(Some(Value::Int(1)));
@@ -22575,7 +22575,7 @@ fn test_aggregate_value_to_value_conversion() {
     let max_none_agg = AggregateValue::Max(None);
 
     assert_eq!(count_agg.to_value(), Value::Int(42));
-    assert_eq!(sum_agg.to_value(), Value::Float(3.14));
+    assert_eq!(sum_agg.to_value(), Value::Float(3.15));
     assert_eq!(avg_some_agg.to_value(), Value::Float(2.5));
     assert_eq!(avg_none_agg.to_value(), Value::Null);
     assert_eq!(min_some_agg.to_value(), Value::Int(1));
@@ -23501,7 +23501,7 @@ fn test_value_hash_key_all_types() {
     let null_key = Value::Null.hash_key();
     let bool_key = Value::Bool(true).hash_key();
     let int_key = Value::Int(42).hash_key();
-    let float_key = Value::Float(3.14).hash_key();
+    let float_key = Value::Float(3.15).hash_key();
     let string_key = Value::String("test".into()).hash_key();
     let bytes_key = Value::Bytes(vec![1, 2, 3]).hash_key();
     let json_key = Value::Json(serde_json::json!(null)).hash_key();

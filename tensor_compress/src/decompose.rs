@@ -555,10 +555,10 @@ mod tests {
     #[test]
     fn test_matrix_new() {
         let m = Matrix::new(vec![1.0, 2.0, 3.0, 4.0], 2, 2).unwrap();
-        assert_eq!(m.get(0, 0), 1.0);
-        assert_eq!(m.get(0, 1), 2.0);
-        assert_eq!(m.get(1, 0), 3.0);
-        assert_eq!(m.get(1, 1), 4.0);
+        assert!((m.get(0, 0) - 1.0).abs() < f32::EPSILON);
+        assert!((m.get(0, 1) - 2.0).abs() < f32::EPSILON);
+        assert!((m.get(1, 0) - 3.0).abs() < f32::EPSILON);
+        assert!((m.get(1, 1) - 4.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -573,9 +573,9 @@ mod tests {
         let t = m.transpose();
         assert_eq!(t.rows, 3);
         assert_eq!(t.cols, 2);
-        assert_eq!(t.get(0, 0), 1.0);
-        assert_eq!(t.get(0, 1), 4.0);
-        assert_eq!(t.get(2, 1), 6.0);
+        assert!((t.get(0, 0) - 1.0).abs() < f32::EPSILON);
+        assert!((t.get(0, 1) - 4.0).abs() < f32::EPSILON);
+        assert!((t.get(2, 1) - 6.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -583,10 +583,10 @@ mod tests {
         let a = Matrix::new(vec![1.0, 2.0, 3.0, 4.0], 2, 2).unwrap();
         let b = Matrix::new(vec![5.0, 6.0, 7.0, 8.0], 2, 2).unwrap();
         let c = matmul(&a, &b).unwrap();
-        assert_eq!(c.get(0, 0), 19.0); // 1*5 + 2*7
-        assert_eq!(c.get(0, 1), 22.0); // 1*6 + 2*8
-        assert_eq!(c.get(1, 0), 43.0); // 3*5 + 4*7
-        assert_eq!(c.get(1, 1), 50.0); // 3*6 + 4*8
+        assert!((c.get(0, 0) - 19.0).abs() < f32::EPSILON); // 1*5 + 2*7
+        assert!((c.get(0, 1) - 22.0).abs() < f32::EPSILON); // 1*6 + 2*8
+        assert!((c.get(1, 0) - 43.0).abs() < f32::EPSILON); // 3*5 + 4*7
+        assert!((c.get(1, 1) - 50.0).abs() < f32::EPSILON); // 3*6 + 4*8
     }
 
     #[test]

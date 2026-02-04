@@ -443,9 +443,9 @@ mod tests {
         let stats = CacheStats::new();
         let snapshot = stats.snapshot();
 
-        assert_eq!(snapshot.hit_rate(CacheLayer::Exact), 0.0);
-        assert_eq!(snapshot.hit_rate(CacheLayer::Semantic), 0.0);
-        assert_eq!(snapshot.hit_rate(CacheLayer::Embedding), 0.0);
+        assert!(snapshot.hit_rate(CacheLayer::Exact).abs() < f64::EPSILON);
+        assert!(snapshot.hit_rate(CacheLayer::Semantic).abs() < f64::EPSILON);
+        assert!(snapshot.hit_rate(CacheLayer::Embedding).abs() < f64::EPSILON);
     }
 
     #[test]

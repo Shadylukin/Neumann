@@ -2269,7 +2269,7 @@ mod tests {
         let null = ScalarValue::Null;
         let bool_val = ScalarValue::Bool(true);
         let int_val = ScalarValue::Int(42);
-        let float_val = ScalarValue::Float(3.14);
+        let float_val = ScalarValue::Float(3.15);
         let string_val = ScalarValue::String("test".into());
         let bytes_val = ScalarValue::Bytes(vec![1, 2, 3]);
 
@@ -2871,7 +2871,7 @@ mod tests {
         tensor.set("null", TensorValue::Scalar(ScalarValue::Null));
         tensor.set("bool", TensorValue::Scalar(ScalarValue::Bool(true)));
         tensor.set("int", TensorValue::Scalar(ScalarValue::Int(-42)));
-        tensor.set("float", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        tensor.set("float", TensorValue::Scalar(ScalarValue::Float(3.15)));
         tensor.set(
             "string",
             TensorValue::Scalar(ScalarValue::String("hello".into())),
@@ -2897,7 +2897,7 @@ mod tests {
         );
         assert_eq!(
             t.get("float"),
-            Some(&TensorValue::Scalar(ScalarValue::Float(3.14)))
+            Some(&TensorValue::Scalar(ScalarValue::Float(3.15)))
         );
         assert_eq!(
             t.get("string"),
@@ -3041,7 +3041,7 @@ mod tests {
         store.put("emb:test1", tensor).unwrap();
 
         let mut tensor2 = TensorData::new();
-        tensor2.set("value", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        tensor2.set("value", TensorValue::Scalar(ScalarValue::Float(3.15)));
         store.put("other", tensor2).unwrap();
 
         let config = tensor_compress::CompressionConfig {
@@ -3727,7 +3727,7 @@ mod tests {
         assert_eq!(int_val.memory_bytes(), 8);
 
         // Float
-        let float_val = TensorValue::Scalar(ScalarValue::Float(3.14));
+        let float_val = TensorValue::Scalar(ScalarValue::Float(3.15));
         assert_eq!(float_val.memory_bytes(), 8);
 
         // String
@@ -3897,7 +3897,7 @@ mod tests {
         tensor1.set("null_val", TensorValue::Scalar(ScalarValue::Null));
         tensor1.set("bool_val", TensorValue::Scalar(ScalarValue::Bool(true)));
         tensor1.set("int_val", TensorValue::Scalar(ScalarValue::Int(42)));
-        tensor1.set("float_val", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        tensor1.set("float_val", TensorValue::Scalar(ScalarValue::Float(3.15)));
         tensor1.set(
             "string_val",
             TensorValue::Scalar(ScalarValue::String("hello".into())),

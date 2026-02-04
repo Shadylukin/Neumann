@@ -994,3 +994,528 @@ fn pagination(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Default value tests ==========
+
+    #[test]
+    fn test_default_page_size() {
+        assert_eq!(default_page_size(), 50);
+    }
+
+    #[test]
+    fn test_default_top_k() {
+        assert_eq!(default_top_k(), 10);
+    }
+
+    #[test]
+    fn test_default_depth() {
+        assert_eq!(default_depth(), 2);
+    }
+
+    #[test]
+    fn test_default_limit() {
+        assert_eq!(default_limit(), 100);
+    }
+
+    // ========== PaginationParams tests ==========
+
+    #[test]
+    fn test_pagination_params_defaults() {
+        let params: PaginationParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.page, 0);
+        assert_eq!(params.page_size, 50);
+        assert!(params.label.is_none());
+        assert!(params.edge_type.is_none());
+    }
+
+    #[test]
+    fn test_pagination_params_custom() {
+        let params: PaginationParams =
+            serde_json::from_str(r#"{"page": 3, "page_size": 25, "label": "Person"}"#).unwrap();
+        assert_eq!(params.page, 3);
+        assert_eq!(params.page_size, 25);
+        assert_eq!(params.label.as_deref(), Some("Person"));
+    }
+
+    #[test]
+    fn test_pagination_params_edge_type() {
+        let params: PaginationParams = serde_json::from_str(r#"{"edge_type": "KNOWS"}"#).unwrap();
+        assert_eq!(params.edge_type.as_deref(), Some("KNOWS"));
+    }
+
+    // ========== PathFinderParams tests ==========
+
+    #[test]
+    fn test_path_finder_params_defaults() {
+        let params: PathFinderParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.from, "");
+        assert_eq!(params.to, "");
+    }
+
+    #[test]
+    fn test_path_finder_params_custom() {
+        let params: PathFinderParams =
+            serde_json::from_str(r#"{"from": "123", "to": "456"}"#).unwrap();
+        assert_eq!(params.from, "123");
+        assert_eq!(params.to, "456");
+    }
+
+    // ========== AlgorithmParams tests ==========
+
+    #[test]
+    fn test_algorithm_params_defaults() {
+        let params: AlgorithmParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.algorithm, "");
+        assert_eq!(params.top_k, 10);
+    }
+
+    #[test]
+    fn test_algorithm_params_pagerank() {
+        let params: AlgorithmParams =
+            serde_json::from_str(r#"{"algorithm": "pagerank", "top_k": 20}"#).unwrap();
+        assert_eq!(params.algorithm, "pagerank");
+        assert_eq!(params.top_k, 20);
+    }
+
+    #[test]
+    fn test_algorithm_params_components() {
+        let params: AlgorithmParams =
+            serde_json::from_str(r#"{"algorithm": "components"}"#).unwrap();
+        assert_eq!(params.algorithm, "components");
+    }
+
+    // ========== SubgraphParams tests ==========
+
+    #[test]
+    fn test_subgraph_params_defaults() {
+        let params: SubgraphParams = serde_json::from_str("{}").unwrap();
+        assert!(params.center.is_none());
+        assert_eq!(params.depth, 2);
+        assert_eq!(params.limit, 100);
+    }
+
+    #[test]
+    fn test_subgraph_params_custom() {
+        let params: SubgraphParams =
+            serde_json::from_str(r#"{"center": 42, "depth": 3, "limit": 50}"#).unwrap();
+        assert_eq!(params.center, Some(42));
+        assert_eq!(params.depth, 3);
+        assert_eq!(params.limit, 50);
+    }
+
+    // ========== GraphData serialization tests ==========
+
+    #[test]
+    fn test_graph_data_serialization() {
+        let data = GraphData {
+            nodes: vec![GraphNode {
+                id: "1".to_string(),
+                label: "Person".to_string(),
+                name: Some("Alice".to_string()),
+            }],
+            links: vec![GraphLink {
+                source: "1".to_string(),
+                target: "2".to_string(),
+                edge_type: "KNOWS".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"id\":\"1\""));
+        assert!(json.contains("\"label\":\"Person\""));
+        assert!(json.contains("\"name\":\"Alice\""));
+        assert!(json.contains("\"source\":\"1\""));
+        assert!(json.contains("\"target\":\"2\""));
+        assert!(json.contains("\"type\":\"KNOWS\""));
+    }
+
+    #[test]
+    fn test_graph_node_without_name() {
+        let node = GraphNode {
+            id: "42".to_string(),
+            label: "Document".to_string(),
+            name: None,
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("\"id\":\"42\""));
+        assert!(json.contains("\"name\":null"));
+    }
+
+    #[test]
+    fn test_graph_data_empty() {
+        let data = GraphData {
+            nodes: vec![],
+            links: vec![],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"nodes\":[]"));
+        assert!(json.contains("\"links\":[]"));
+    }
+
+    // ========== get_node_display_name tests ==========
+
+    #[test]
+    fn test_get_node_display_name_with_name() {
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        assert_eq!(get_node_display_name(&props), Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn test_get_node_display_name_with_title() {
+        let mut props = HashMap::new();
+        props.insert(
+            "title".to_string(),
+            PropertyValue::String("Document Title".to_string()),
+        );
+        assert_eq!(
+            get_node_display_name(&props),
+            Some("Document Title".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_node_display_name_with_label() {
+        let mut props = HashMap::new();
+        props.insert(
+            "label".to_string(),
+            PropertyValue::String("MyLabel".to_string()),
+        );
+        assert_eq!(get_node_display_name(&props), Some("MyLabel".to_string()));
+    }
+
+    #[test]
+    fn test_get_node_display_name_with_id() {
+        let mut props = HashMap::new();
+        props.insert(
+            "id".to_string(),
+            PropertyValue::String("entity_123".to_string()),
+        );
+        assert_eq!(
+            get_node_display_name(&props),
+            Some("entity_123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_node_display_name_priority() {
+        // "name" has highest priority
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Name".to_string()),
+        );
+        props.insert(
+            "title".to_string(),
+            PropertyValue::String("Title".to_string()),
+        );
+        assert_eq!(get_node_display_name(&props), Some("Name".to_string()));
+    }
+
+    #[test]
+    fn test_get_node_display_name_empty() {
+        let props = HashMap::new();
+        assert_eq!(get_node_display_name(&props), None);
+    }
+
+    #[test]
+    fn test_get_node_display_name_non_string() {
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::Int(42));
+        assert_eq!(get_node_display_name(&props), None);
+    }
+
+    // ========== render_properties_summary tests ==========
+
+    #[test]
+    fn test_render_properties_summary_empty() {
+        let props = HashMap::new();
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("italic"));
+        assert!(html.contains("none"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_null() {
+        let mut props = HashMap::new();
+        props.insert("field".to_string(), PropertyValue::Null);
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("null"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_int() {
+        let mut props = HashMap::new();
+        props.insert("count".to_string(), PropertyValue::Int(42));
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("count"));
+        assert!(html.contains("42"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_float() {
+        let mut props = HashMap::new();
+        props.insert("score".to_string(), PropertyValue::Float(3.14159));
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("score"));
+        assert!(html.contains("3.14"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_bool() {
+        let mut props = HashMap::new();
+        props.insert("active".to_string(), PropertyValue::Bool(true));
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("active"));
+        assert!(html.contains("true"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_string_short() {
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("name"));
+        assert!(html.contains("Alice"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_string_long() {
+        let mut props = HashMap::new();
+        let long_string = "a".repeat(50);
+        props.insert("desc".to_string(), PropertyValue::String(long_string));
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("..."));
+    }
+
+    #[test]
+    fn test_render_properties_summary_multiple() {
+        let mut props = HashMap::new();
+        props.insert("a".to_string(), PropertyValue::Int(1));
+        props.insert("b".to_string(), PropertyValue::Int(2));
+        let html = render_properties_summary(&props).into_string();
+        assert!(html.contains("{"));
+        assert!(html.contains("}"));
+    }
+
+    #[test]
+    fn test_render_properties_summary_more_than_three() {
+        let mut props = HashMap::new();
+        props.insert("a".to_string(), PropertyValue::Int(1));
+        props.insert("b".to_string(), PropertyValue::Int(2));
+        props.insert("c".to_string(), PropertyValue::Int(3));
+        props.insert("d".to_string(), PropertyValue::Int(4));
+        let html = render_properties_summary(&props).into_string();
+        // Should show "..." to indicate more properties
+        assert!(html.contains("..."));
+    }
+
+    // ========== pagination tests ==========
+
+    #[test]
+    fn test_pagination_first_page() {
+        let html = pagination(0, 10, 100, "/test", None).into_string();
+        assert!(html.contains("PAGE 1"));
+        assert!(html.contains("SHOWING 1 - 10"));
+        assert!(!html.contains("PREV")); // No prev on first page
+        assert!(html.contains("NEXT"));
+    }
+
+    #[test]
+    fn test_pagination_middle_page() {
+        let html = pagination(5, 10, 100, "/test", None).into_string();
+        assert!(html.contains("PAGE 6"));
+        assert!(html.contains("PREV"));
+        assert!(html.contains("NEXT"));
+    }
+
+    #[test]
+    fn test_pagination_last_page() {
+        let html = pagination(9, 10, 100, "/test", None).into_string();
+        assert!(html.contains("PAGE 10"));
+        assert!(html.contains("PREV"));
+        assert!(!html.contains("[ NEXT ]")); // No next on last page
+    }
+
+    #[test]
+    fn test_pagination_single_page() {
+        let html = pagination(0, 10, 5, "/test", None).into_string();
+        assert!(html.contains("PAGE 1 / 1"));
+        assert!(!html.contains("PREV"));
+        assert!(!html.contains("[ NEXT ]"));
+    }
+
+    #[test]
+    fn test_pagination_with_filter() {
+        let html = pagination(0, 10, 100, "/graph/nodes", Some("Person")).into_string();
+        assert!(html.contains("label=Person"));
+    }
+
+    #[test]
+    fn test_pagination_without_filter() {
+        let html = pagination(0, 10, 100, "/graph/nodes", None).into_string();
+        // Should not contain label param
+        assert!(!html.contains("label="));
+    }
+
+    // ========== render_nodes_table tests ==========
+
+    #[test]
+    fn test_render_nodes_table_empty() {
+        let nodes: Vec<Node> = vec![];
+        let html = render_nodes_table(&nodes).into_string();
+        assert!(html.contains("table"));
+        assert!(html.contains("NODE REGISTRY"));
+        assert!(html.contains("ID"));
+        assert!(html.contains("LABELS"));
+        assert!(html.contains("PROPERTIES"));
+    }
+
+    #[test]
+    fn test_render_nodes_table_with_node() {
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Test".to_string()),
+        );
+
+        let nodes = vec![Node {
+            id: 42,
+            labels: vec!["Person".to_string()],
+            properties: props,
+            created_at: None,
+            updated_at: None,
+        }];
+        let html = render_nodes_table(&nodes).into_string();
+        assert!(html.contains("42"));
+        assert!(html.contains("Person"));
+        assert!(html.contains("name"));
+    }
+
+    #[test]
+    fn test_render_nodes_table_node_without_labels() {
+        let nodes = vec![Node {
+            id: 1,
+            labels: vec![],
+            properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
+        }];
+        let html = render_nodes_table(&nodes).into_string();
+        assert!(html.contains("none"));
+    }
+
+    #[test]
+    fn test_render_nodes_table_multiple_labels() {
+        let nodes = vec![Node {
+            id: 1,
+            labels: vec!["Person".to_string(), "Employee".to_string()],
+            properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
+        }];
+        let html = render_nodes_table(&nodes).into_string();
+        assert!(html.contains("Person"));
+        assert!(html.contains("Employee"));
+    }
+
+    // ========== render_path_finder_page tests ==========
+
+    #[test]
+    fn test_render_path_finder_page_initial() {
+        let html = render_path_finder_page(None, None).into_string();
+        assert!(html.contains("PATH FINDER"));
+        assert!(html.contains("SOURCE NODE ID"));
+        assert!(html.contains("TARGET NODE ID"));
+        assert!(html.contains("COMPUTE PATH"));
+    }
+
+    #[test]
+    fn test_render_path_finder_page_with_params() {
+        let params = PathFinderParams {
+            from: "123".to_string(),
+            to: "456".to_string(),
+        };
+        let html = render_path_finder_page(Some(&params), None).into_string();
+        assert!(html.contains("123"));
+        assert!(html.contains("456"));
+    }
+
+    #[test]
+    fn test_render_path_finder_page_path_found() {
+        let path = graph_engine::Path {
+            nodes: vec![1, 2, 3],
+            edges: vec![],
+        };
+        let html = render_path_finder_page(None, Some(Ok(path))).into_string();
+        assert!(html.contains("PATH FOUND"));
+        assert!(html.contains("3 NODES IN PATH"));
+    }
+
+    #[test]
+    fn test_render_path_finder_page_not_found() {
+        let html = render_path_finder_page(None, Some(Err(graph_engine::GraphError::PathNotFound)))
+            .into_string();
+        assert!(html.contains("NO PATH FOUND"));
+    }
+
+    #[test]
+    fn test_render_path_finder_page_error() {
+        let html = render_path_finder_page(
+            None,
+            Some(Err(graph_engine::GraphError::StorageError(
+                "test error".to_string(),
+            ))),
+        )
+        .into_string();
+        assert!(html.contains("ERROR"));
+        assert!(html.contains("test error"));
+    }
+
+    // ========== render_algorithms_page tests ==========
+
+    #[test]
+    fn test_render_algorithms_page_initial() {
+        let html = render_algorithms_page(None, None).into_string();
+        assert!(html.contains("GRAPH ALGORITHMS"));
+        assert!(html.contains("ALGORITHM"));
+        assert!(html.contains("TOP K RESULTS"));
+        assert!(html.contains("PageRank"));
+        assert!(html.contains("Connected Components"));
+    }
+
+    #[test]
+    fn test_render_algorithms_page_with_results() {
+        let results = vec![(1u64, 0.5), (2, 0.3), (3, 0.2)];
+        let html = render_algorithms_page(None, Some(("PageRank", results))).into_string();
+        assert!(html.contains("PAGERANK RESULTS"));
+        assert!(html.contains("NODE ID"));
+        assert!(html.contains("SCORE"));
+    }
+
+    #[test]
+    fn test_render_algorithms_page_empty_results() {
+        let html = render_algorithms_page(None, Some(("PageRank", vec![]))).into_string();
+        assert!(html.contains("NO RESULTS"));
+    }
+
+    #[test]
+    fn test_render_algorithms_page_with_params() {
+        let params = AlgorithmParams {
+            algorithm: "components".to_string(),
+            top_k: 20,
+        };
+        let html = render_algorithms_page(Some(&params), None).into_string();
+        // Check that the form has the values
+        assert!(html.contains("20"));
+    }
+}

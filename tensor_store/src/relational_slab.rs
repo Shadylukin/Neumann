@@ -1637,12 +1637,12 @@ mod tests {
         slab.create_table("data", schema).unwrap();
 
         // Insert row with float and bool
-        let row = vec![ColumnValue::Float(3.14), ColumnValue::Bool(true)];
+        let row = vec![ColumnValue::Float(3.15), ColumnValue::Bool(true)];
         let row_id = slab.insert("data", row).unwrap();
 
         // Retrieve and verify
         let retrieved = slab.get("data", row_id).unwrap().unwrap();
-        assert_eq!(retrieved[0], ColumnValue::Float(3.14));
+        assert_eq!(retrieved[0], ColumnValue::Float(3.15));
         assert_eq!(retrieved[1], ColumnValue::Bool(true));
     }
 

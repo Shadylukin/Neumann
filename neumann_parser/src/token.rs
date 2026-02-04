@@ -1259,7 +1259,7 @@ mod tests {
     #[test]
     fn test_is_literal() {
         assert!(TokenKind::Integer(42).is_literal());
-        assert!(TokenKind::Float(3.14).is_literal());
+        assert!(TokenKind::Float(3.15).is_literal());
         assert!(TokenKind::String("hello".to_string()).is_literal());
         assert!(TokenKind::True.is_literal());
         assert!(TokenKind::False.is_literal());
@@ -1571,7 +1571,7 @@ mod tests {
         assert_eq!(format!("{}", TokenKind::Select), "SELECT");
         assert_eq!(format!("{}", TokenKind::Ident("foo".to_string())), "foo");
         assert_eq!(format!("{}", TokenKind::Integer(42)), "42");
-        assert_eq!(format!("{}", TokenKind::Float(3.14)), "3.14");
+        assert_eq!(format!("{}", TokenKind::Float(3.15)), "3.15");
         assert_eq!(
             format!("{}", TokenKind::String("hello".to_string())),
             "'hello'"

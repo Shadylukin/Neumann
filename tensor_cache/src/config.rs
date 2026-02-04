@@ -258,10 +258,12 @@ mod tests {
 
     #[test]
     fn test_config_serialize_with_distance_metric() {
-        let mut config = CacheConfig::default();
-        config.distance_metric = DistanceMetric::Jaccard;
-        config.auto_select_metric = false;
-        config.sparsity_metric_threshold = 0.8;
+        let config = CacheConfig {
+            distance_metric: DistanceMetric::Jaccard,
+            auto_select_metric: false,
+            sparsity_metric_threshold: 0.8,
+            ..CacheConfig::default()
+        };
 
         let json = serde_json::to_string(&config).unwrap();
         let restored: CacheConfig = serde_json::from_str(&json).unwrap();

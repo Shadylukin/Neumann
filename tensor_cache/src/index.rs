@@ -644,7 +644,7 @@ mod tests {
         };
         let cloned = result;
         assert_eq!(cloned.key, "test");
-        assert_eq!(cloned.similarity, 0.95);
+        assert!((cloned.similarity - 0.95).abs() < f32::EPSILON);
         assert_eq!(cloned.metric_used, DistanceMetric::Cosine);
     }
 

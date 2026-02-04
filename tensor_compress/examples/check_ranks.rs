@@ -2,11 +2,14 @@
 use tensor_compress::{tt_decompose, TTConfig};
 
 fn main() {
-    let dim = 1024;
-    let config = TTConfig::for_dim(dim).unwrap();
+    // LCG constant from Knuth's MMIX
+    const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+
+    let dim: u16 = 1024;
+    let config = TTConfig::for_dim(usize::from(dim)).unwrap();
 
     // Sine
-    let v_sine: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.1).sin()).collect();
+    let v_sine: Vec<f32> = (0..dim).map(|i| (f32::from(i) * 0.1).sin()).collect();
     let tt_sine = tt_decompose(&v_sine, &config).unwrap();
     println!(
         "Sine vector [{:?}] Max Rank: {}",
@@ -18,8 +21,10 @@ fn main() {
     let mut state: u64 = 42;
     let v_rand: Vec<f32> = (0..dim)
         .map(|_| {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-            (state as f32) / (u64::MAX as f32)
+            state = state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(1);
+            // Use upper 16 bits for lossless conversion to f32
+            let upper_bits = (state >> 48) as u16;
+            f32::from(upper_bits) / f32::from(u16::MAX)
         })
         .collect();
     let tt_rand = tt_decompose(&v_rand, &config).unwrap();

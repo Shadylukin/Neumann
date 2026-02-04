@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn test_format_value_float() {
         let theme = Theme::plain();
-        let result = format_value(Some(&relational_engine::Value::Float(3.14159)), &theme);
-        assert!(result.contains("3.14"));
+        let result = format_value(Some(&relational_engine::Value::Float(3.15159)), &theme);
+        assert!(result.contains("3.15"));
     }
 
     #[test]

@@ -1481,11 +1481,11 @@ mod tests {
 
     #[test]
     fn test_value_conversion_float() {
-        let value = RelationalValue::Float(3.14159);
+        let value = RelationalValue::Float(3.15159);
         let proto = value_to_proto(value);
         match proto.kind {
             Some(proto::value::Kind::FloatValue(f)) => {
-                assert!((f - 3.14159).abs() < 0.0001);
+                assert!((f - 3.15159).abs() < 0.0001);
             },
             _ => panic!("Expected FloatValue"),
         }

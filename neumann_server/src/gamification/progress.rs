@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_streak_first_activity() {
         let mut progress = UserProgress::new();
-        progress.update_streak(20240115);
+        progress.update_streak(2024_01_15);
         assert_eq!(progress.streak_current, 1);
         assert_eq!(progress.streak_best, 1);
     }
@@ -342,9 +342,9 @@ mod tests {
     #[test]
     fn test_streak_consecutive() {
         let mut progress = UserProgress::new();
-        progress.update_streak(20240115);
-        progress.update_streak(20240116);
-        progress.update_streak(20240117);
+        progress.update_streak(2024_01_15);
+        progress.update_streak(2024_01_16);
+        progress.update_streak(2024_01_17);
         assert_eq!(progress.streak_current, 3);
         assert_eq!(progress.streak_best, 3);
     }
@@ -352,9 +352,9 @@ mod tests {
     #[test]
     fn test_streak_broken() {
         let mut progress = UserProgress::new();
-        progress.update_streak(20240115);
-        progress.update_streak(20240116);
-        progress.update_streak(20240118); // Skipped a day
+        progress.update_streak(2024_01_15);
+        progress.update_streak(2024_01_16);
+        progress.update_streak(2024_01_18); // Skipped a day
         assert_eq!(progress.streak_current, 1);
         assert_eq!(progress.streak_best, 2);
     }
@@ -362,8 +362,8 @@ mod tests {
     #[test]
     fn test_streak_same_day() {
         let mut progress = UserProgress::new();
-        progress.update_streak(20240115);
-        progress.update_streak(20240115);
+        progress.update_streak(2024_01_15);
+        progress.update_streak(2024_01_15);
         assert_eq!(progress.streak_current, 1);
     }
 

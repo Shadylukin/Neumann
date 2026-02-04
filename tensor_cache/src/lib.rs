@@ -1501,10 +1501,10 @@ mod tests {
 
         let retrieved = cache.get_embedding("source", "content").unwrap();
         assert_eq!(retrieved.len(), 100);
-        assert_eq!(retrieved[0], 1.0);
-        assert_eq!(retrieved[50], 2.0);
-        assert_eq!(retrieved[99], 3.0);
-        assert_eq!(retrieved[1], 0.0);
+        assert!((retrieved[0] - 1.0).abs() < f32::EPSILON);
+        assert!((retrieved[50] - 2.0).abs() < f32::EPSILON);
+        assert!((retrieved[99] - 3.0).abs() < f32::EPSILON);
+        assert!(retrieved[1].abs() < f32::EPSILON);
     }
 
     #[test]

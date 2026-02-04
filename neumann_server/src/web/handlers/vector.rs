@@ -886,3 +886,310 @@ fn truncate_key(key: &str, max_len: usize) -> String {
         format!("{}...", &key[..max_len - 3])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tensor_store::SparseVector;
+
+    // ========== score_color tests ==========
+
+    #[test]
+    fn test_score_color_high_score() {
+        assert_eq!(score_color(0.95), "text-phosphor font-data glow-phosphor");
+        assert_eq!(score_color(0.9), "text-phosphor font-data glow-phosphor");
+        assert_eq!(score_color(1.0), "text-phosphor font-data glow-phosphor");
+    }
+
+    #[test]
+    fn test_score_color_medium_high_score() {
+        assert_eq!(score_color(0.89), "text-amber font-data");
+        assert_eq!(score_color(0.7), "text-amber font-data");
+        assert_eq!(score_color(0.75), "text-amber font-data");
+    }
+
+    #[test]
+    fn test_score_color_medium_score() {
+        assert_eq!(score_color(0.69), "text-rust-blood font-data");
+        assert_eq!(score_color(0.5), "text-rust-blood font-data");
+        assert_eq!(score_color(0.55), "text-rust-blood font-data");
+    }
+
+    #[test]
+    fn test_score_color_low_score() {
+        assert_eq!(score_color(0.49), "text-phosphor-dim font-data");
+        assert_eq!(score_color(0.0), "text-phosphor-dim font-data");
+        assert_eq!(score_color(0.25), "text-phosphor-dim font-data");
+    }
+
+    #[test]
+    fn test_score_color_boundary_values() {
+        // Exact boundaries
+        assert_eq!(score_color(0.9), "text-phosphor font-data glow-phosphor");
+        assert_eq!(score_color(0.7), "text-amber font-data");
+        assert_eq!(score_color(0.5), "text-rust-blood font-data");
+    }
+
+    // ========== format_tensor_value_short tests ==========
+
+    #[test]
+    fn test_format_tensor_value_short_string_short() {
+        let value = TensorValue::Scalar(ScalarValue::String("hello".to_string()));
+        assert_eq!(format_tensor_value_short(&value), "\"hello\"");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_string_long() {
+        let long_string = "a".repeat(50);
+        let value = TensorValue::Scalar(ScalarValue::String(long_string));
+        let result = format_tensor_value_short(&value);
+        assert!(result.starts_with("\"aaaaaa"));
+        assert!(result.ends_with("...\""));
+        assert!(result.len() < 40); // truncated
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_string_exact_30() {
+        let exact_30 = "a".repeat(30);
+        let value = TensorValue::Scalar(ScalarValue::String(exact_30.clone()));
+        let result = format_tensor_value_short(&value);
+        assert_eq!(result, format!("\"{}\"", exact_30));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_int() {
+        let value = TensorValue::Scalar(ScalarValue::Int(42));
+        let result = format_tensor_value_short(&value);
+        assert!(result.contains("42"));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_float() {
+        let value = TensorValue::Scalar(ScalarValue::Float(3.14));
+        let result = format_tensor_value_short(&value);
+        assert!(result.contains("3.14"));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_bool() {
+        let value = TensorValue::Scalar(ScalarValue::Bool(true));
+        let result = format_tensor_value_short(&value);
+        assert!(result.contains("true"));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_null() {
+        let value = TensorValue::Scalar(ScalarValue::Null);
+        let result = format_tensor_value_short(&value);
+        assert!(result.contains("Null"));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_vector() {
+        let value = TensorValue::Vector(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(format_tensor_value_short(&value), "[5d vector]");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_vector_empty() {
+        let value = TensorValue::Vector(vec![]);
+        assert_eq!(format_tensor_value_short(&value), "[0d vector]");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_sparse() {
+        let mut sparse = SparseVector::new(100);
+        sparse.set(0, 1.0);
+        sparse.set(50, 2.0);
+        sparse.set(99, 3.0);
+        let value = TensorValue::Sparse(sparse);
+        assert_eq!(format_tensor_value_short(&value), "[sparse 100d]");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_pointer() {
+        let value = TensorValue::Pointer("entity_123".to_string());
+        assert_eq!(format_tensor_value_short(&value), "-> entity_123");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_pointers() {
+        let value = TensorValue::Pointers(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(format_tensor_value_short(&value), "[3 pointers]");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_pointers_empty() {
+        let value = TensorValue::Pointers(vec![]);
+        assert_eq!(format_tensor_value_short(&value), "[0 pointers]");
+    }
+
+    // ========== format_vector_compact tests ==========
+
+    #[test]
+    fn test_format_vector_compact_empty() {
+        let result = format_vector_compact(&[]);
+        assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn test_format_vector_compact_single() {
+        let result = format_vector_compact(&[1.5]);
+        assert_eq!(result, "[1.500000]");
+    }
+
+    #[test]
+    fn test_format_vector_compact_multiple() {
+        let result = format_vector_compact(&[1.0, 2.5, 3.14159]);
+        assert_eq!(result, "[1.000000, 2.500000, 3.141590]");
+    }
+
+    #[test]
+    fn test_format_vector_compact_negative() {
+        let result = format_vector_compact(&[-1.0, 0.0, 1.0]);
+        assert_eq!(result, "[-1.000000, 0.000000, 1.000000]");
+    }
+
+    #[test]
+    fn test_format_vector_compact_precision() {
+        let result = format_vector_compact(&[0.123456789]);
+        assert_eq!(result, "[0.123457]"); // 6 decimal places
+    }
+
+    // ========== truncate_key tests ==========
+
+    #[test]
+    fn test_truncate_key_short() {
+        assert_eq!(truncate_key("short", 10), "short");
+    }
+
+    #[test]
+    fn test_truncate_key_exact_length() {
+        assert_eq!(truncate_key("exactly10!", 10), "exactly10!");
+    }
+
+    #[test]
+    fn test_truncate_key_long() {
+        assert_eq!(truncate_key("this_is_a_very_long_key", 10), "this_is...");
+    }
+
+    #[test]
+    fn test_truncate_key_unicode() {
+        // Note: truncation works on bytes, be careful with unicode
+        assert_eq!(truncate_key("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_key_minimum_length() {
+        // With max_len=4, we'd have 1 char + "..."
+        assert_eq!(truncate_key("abcdef", 4), "a...");
+    }
+
+    // ========== render_tensor_value tests ==========
+
+    #[test]
+    fn test_render_tensor_value_string() {
+        let value = TensorValue::Scalar(ScalarValue::String("test".to_string()));
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("test"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_int() {
+        let value = TensorValue::Scalar(ScalarValue::Int(100));
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("100"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_vector() {
+        let value = TensorValue::Vector(vec![1.0, 2.0]);
+        let html = render_tensor_value(&value).into_string();
+        // Should contain the expandable vector markup
+        assert!(html.contains("1") || html.contains("2"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_sparse() {
+        let mut sparse = SparseVector::new(50);
+        sparse.set(10, 1.0);
+        let value = TensorValue::Sparse(sparse);
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("sparse"));
+        assert!(html.contains("50"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_pointer() {
+        let value = TensorValue::Pointer("ref_123".to_string());
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("ref_123"));
+        assert!(html.contains("-&gt;")); // HTML escaped ->
+    }
+
+    #[test]
+    fn test_render_tensor_value_pointers() {
+        let value = TensorValue::Pointers(vec!["a".to_string(), "b".to_string()]);
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("2 pointers"));
+    }
+
+    // ========== render_payload_preview tests ==========
+
+    #[test]
+    fn test_render_payload_preview_empty() {
+        let metadata = HashMap::new();
+        let html = render_payload_preview(&metadata).into_string();
+        // Empty map should produce minimal output
+        assert!(!html.is_empty());
+    }
+
+    #[test]
+    fn test_render_payload_preview_single_item() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "name".to_string(),
+            TensorValue::Scalar(ScalarValue::String("test".to_string())),
+        );
+        let html = render_payload_preview(&metadata).into_string();
+        assert!(html.contains("name"));
+    }
+
+    #[test]
+    fn test_render_payload_preview_multiple_items() {
+        let mut metadata = HashMap::new();
+        metadata.insert("key1".to_string(), TensorValue::Scalar(ScalarValue::Int(1)));
+        metadata.insert("key2".to_string(), TensorValue::Scalar(ScalarValue::Int(2)));
+        metadata.insert("key3".to_string(), TensorValue::Scalar(ScalarValue::Int(3)));
+        metadata.insert("key4".to_string(), TensorValue::Scalar(ScalarValue::Int(4)));
+        let html = render_payload_preview(&metadata).into_string();
+        // Should show preview (limited items due to expandable_payload_preview limit of 3)
+        assert!(!html.is_empty());
+    }
+
+    // ========== render_payload_table tests ==========
+
+    #[test]
+    fn test_render_payload_table_empty() {
+        let metadata = HashMap::new();
+        let html = render_payload_table(&metadata).into_string();
+        assert!(html.contains("table"));
+        assert!(html.contains("KEY"));
+        assert!(html.contains("VALUE"));
+    }
+
+    #[test]
+    fn test_render_payload_table_with_data() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "name".to_string(),
+            TensorValue::Scalar(ScalarValue::String("Alice".to_string())),
+        );
+        metadata.insert("age".to_string(), TensorValue::Scalar(ScalarValue::Int(30)));
+        let html = render_payload_table(&metadata).into_string();
+        assert!(html.contains("name"));
+        assert!(html.contains("Alice"));
+        assert!(html.contains("age"));
+        assert!(html.contains("30"));
+    }
+}

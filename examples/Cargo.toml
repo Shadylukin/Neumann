@@ -4,9 +4,9 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 repository.workspace = true
 description = "Example code for Neumann database"
-publish = false
 
 [dependencies]
 relational_engine = { path = "../relational_engine" }

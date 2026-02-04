@@ -124,7 +124,7 @@ fn test_tensor_eval_id_field() {
 
 #[test]
 fn test_tensor_eval_float() {
-    let tensor = make_tensor_float(1, 3.14);
+    let tensor = make_tensor_float(1, 3.15);
     assert!(Condition::Lt("val".to_string(), Value::Float(4.0)).evaluate_tensor(&tensor));
     assert!(Condition::Gt("val".to_string(), Value::Float(3.0)).evaluate_tensor(&tensor));
 }

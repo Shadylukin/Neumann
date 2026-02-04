@@ -713,10 +713,10 @@ mod tests {
 
     #[test]
     fn test_float_literal() {
-        let expr = parse("3.14");
+        let expr = parse("3.15");
         assert!(matches!(
             expr.kind,
-            ExprKind::Literal(Literal::Float(n)) if (n - 3.14).abs() < 0.001
+            ExprKind::Literal(Literal::Float(n)) if (n - 3.15).abs() < 0.001
         ));
     }
 

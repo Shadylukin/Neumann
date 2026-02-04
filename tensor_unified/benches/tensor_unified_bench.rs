@@ -81,7 +81,7 @@ fn bench_find_nodes(c: &mut Criterion) {
                         label: Some("test".to_string()),
                     };
                     let result = engine.find(&pattern, None).await;
-                    black_box(result);
+                    let _ = black_box(result);
                 });
             });
         });

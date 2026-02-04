@@ -580,13 +580,13 @@ mod tests {
 
         let decompressed = decompress_vector(&compressed).unwrap();
         assert_eq!(decompressed.len(), 100);
-        assert_eq!(decompressed[0], 0.5);
-        assert_eq!(decompressed[10], 1.5);
-        assert_eq!(decompressed[50], 2.5);
-        assert_eq!(decompressed[99], 3.5);
+        assert!((decompressed[0] - 0.5).abs() < f32::EPSILON);
+        assert!((decompressed[10] - 1.5).abs() < f32::EPSILON);
+        assert!((decompressed[50] - 2.5).abs() < f32::EPSILON);
+        assert!((decompressed[99] - 3.5).abs() < f32::EPSILON);
         // All other values should be zero
-        assert_eq!(decompressed[1], 0.0);
-        assert_eq!(decompressed[49], 0.0);
+        assert!(decompressed[1].abs() < f32::EPSILON);
+        assert!(decompressed[49].abs() < f32::EPSILON);
     }
 
     #[test]
@@ -613,9 +613,9 @@ mod tests {
 
         // Verify roundtrip
         let decompressed = decompress_vector(&compressed).unwrap();
-        assert_eq!(decompressed[5], 1.0);
-        assert_eq!(decompressed[25], 2.0);
-        assert_eq!(decompressed[75], 3.0);
+        assert!((decompressed[5] - 1.0).abs() < f32::EPSILON);
+        assert!((decompressed[25] - 2.0).abs() < f32::EPSILON);
+        assert!((decompressed[75] - 3.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -688,9 +688,9 @@ mod tests {
 
         let decompressed = decompress_vector(restored_vec).unwrap();
         assert_eq!(decompressed.len(), 100);
-        assert_eq!(decompressed[0], 1.0);
-        assert_eq!(decompressed[50], 2.0);
-        assert_eq!(decompressed[99], 3.0);
+        assert!((decompressed[0] - 1.0).abs() < f32::EPSILON);
+        assert!((decompressed[50] - 2.0).abs() < f32::EPSILON);
+        assert!((decompressed[99] - 3.0).abs() < f32::EPSILON);
     }
 
     #[test]

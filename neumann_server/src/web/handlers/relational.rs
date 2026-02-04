@@ -258,3 +258,129 @@ fn pagination(page: usize, page_size: usize, total: usize, base_url: &str) -> Ma
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_page_size() {
+        assert_eq!(default_page_size(), 50);
+    }
+
+    #[test]
+    fn test_pagination_params_default() {
+        let params: PaginationParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.page, 0);
+        assert_eq!(params.page_size, 50);
+    }
+
+    #[test]
+    fn test_pagination_params_custom() {
+        let params: PaginationParams =
+            serde_json::from_str(r#"{"page": 5, "page_size": 25}"#).unwrap();
+        assert_eq!(params.page, 5);
+        assert_eq!(params.page_size, 25);
+    }
+
+    #[test]
+    fn test_render_value_none() {
+        let html = render_value(None).into_string();
+        assert!(html.contains("null"));
+    }
+
+    #[test]
+    fn test_render_value_null() {
+        let html = render_value(Some(&Value::Null)).into_string();
+        assert!(html.contains("null"));
+    }
+
+    #[test]
+    fn test_render_value_int() {
+        let html = render_value(Some(&Value::Int(42))).into_string();
+        assert!(html.contains("42"));
+    }
+
+    #[test]
+    fn test_render_value_negative_int() {
+        let html = render_value(Some(&Value::Int(-100))).into_string();
+        assert!(html.contains("-100"));
+    }
+
+    #[test]
+    fn test_render_value_float() {
+        let html = render_value(Some(&Value::Float(3.1415))).into_string();
+        assert!(html.contains("3.1415"));
+    }
+
+    #[test]
+    fn test_render_value_string() {
+        let html = render_value(Some(&Value::String("hello world".to_string()))).into_string();
+        assert!(html.contains("hello world"));
+    }
+
+    #[test]
+    fn test_render_value_bool_true() {
+        let html = render_value(Some(&Value::Bool(true))).into_string();
+        assert!(html.contains("true"));
+    }
+
+    #[test]
+    fn test_render_value_bool_false() {
+        let html = render_value(Some(&Value::Bool(false))).into_string();
+        assert!(html.contains("false"));
+    }
+
+    #[test]
+    fn test_render_value_bytes() {
+        let html = render_value(Some(&Value::Bytes(vec![1, 2, 3, 4, 5]))).into_string();
+        assert!(html.contains("5 bytes"));
+    }
+
+    #[test]
+    fn test_render_value_json() {
+        let json = serde_json::json!({"key": "value"});
+        let html = render_value(Some(&Value::Json(json))).into_string();
+        assert!(html.contains("key"));
+    }
+
+    #[test]
+    fn test_pagination_first_page() {
+        let html = pagination(0, 10, 100, "/test").into_string();
+        assert!(html.contains("PAGE 1"));
+        assert!(html.contains("SHOWING 1 - 10"));
+        assert!(!html.contains("PREV")); // No prev on first page
+        assert!(html.contains("NEXT"));
+    }
+
+    #[test]
+    fn test_pagination_middle_page() {
+        let html = pagination(5, 10, 100, "/test").into_string();
+        assert!(html.contains("PAGE 6"));
+        assert!(html.contains("PREV"));
+        assert!(html.contains("NEXT"));
+    }
+
+    #[test]
+    fn test_pagination_last_page() {
+        let html = pagination(9, 10, 100, "/test").into_string();
+        assert!(html.contains("PAGE 10"));
+        assert!(html.contains("PREV"));
+        assert!(!html.contains("NEXT")); // No next on last page
+    }
+
+    #[test]
+    fn test_pagination_single_page() {
+        let html = pagination(0, 10, 5, "/test").into_string();
+        assert!(html.contains("PAGE 1 / 1"));
+        assert!(!html.contains("PREV"));
+        assert!(!html.contains("NEXT"));
+    }
+
+    #[test]
+    fn test_pagination_empty() {
+        let html = pagination(0, 10, 0, "/test").into_string();
+        // Should handle edge case of 0 items
+        assert!(html.contains("PAGE 1"));
+    }
+}

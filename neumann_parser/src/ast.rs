@@ -1521,7 +1521,7 @@ mod tests {
         assert_eq!(format!("{}", Literal::Boolean(true)), "TRUE");
         assert_eq!(format!("{}", Literal::Boolean(false)), "FALSE");
         assert_eq!(format!("{}", Literal::Integer(42)), "42");
-        assert_eq!(format!("{}", Literal::Float(3.14)), "3.14");
+        assert_eq!(format!("{}", Literal::Float(3.15)), "3.15");
         assert_eq!(
             format!("{}", Literal::String("hello".to_string())),
             "'hello'"
@@ -1721,7 +1721,7 @@ mod tests {
 
     #[test]
     fn test_literal_display_all() {
-        assert_eq!(format!("{}", Literal::Float(3.14)), "3.14");
+        assert_eq!(format!("{}", Literal::Float(3.15)), "3.15");
         assert_eq!(format!("{}", Literal::Boolean(false)), "FALSE");
     }
 

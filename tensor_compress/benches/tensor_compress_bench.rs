@@ -66,9 +66,8 @@ fn bench_rle_decode(c: &mut Criterion) {
 
 // Tensor Train (TT) decomposition benchmarks
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_decompose_256d(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..256).map(|i| (i as f32).sin()).collect();
+    let vector: Vec<f32> = (0..256_u16).map(|i| f32::from(i).sin()).collect();
     let config = TTConfig::for_dim(256).unwrap();
 
     PEAK_ALLOC.reset_peak_usage();
@@ -81,9 +80,8 @@ fn bench_tt_decompose_256d(c: &mut Criterion) {
     );
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_decompose_1024d(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..1024).map(|i| (i as f32).sin()).collect();
+    let vector: Vec<f32> = (0..1024_u16).map(|i| f32::from(i).sin()).collect();
     let config = TTConfig::for_dim(1024).unwrap();
 
     PEAK_ALLOC.reset_peak_usage();
@@ -96,9 +94,8 @@ fn bench_tt_decompose_1024d(c: &mut Criterion) {
     );
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_decompose_4096d(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let vector: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).sin()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
 
     PEAK_ALLOC.reset_peak_usage();
@@ -111,9 +108,8 @@ fn bench_tt_decompose_4096d(c: &mut Criterion) {
     );
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_reconstruct_4096d(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let vector: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).sin()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
     let tt = tt_decompose(&vector, &config).unwrap();
 
@@ -127,10 +123,9 @@ fn bench_tt_reconstruct_4096d(c: &mut Criterion) {
     );
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_dot_product_4096d(c: &mut Criterion) {
-    let v1: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
-    let v2: Vec<f32> = (0..4096).map(|i| (i as f32).cos()).collect();
+    let v1: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).sin()).collect();
+    let v2: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).cos()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
     let tt1 = tt_decompose(&v1, &config).unwrap();
     let tt2 = tt_decompose(&v2, &config).unwrap();
@@ -145,10 +140,9 @@ fn bench_tt_dot_product_4096d(c: &mut Criterion) {
     );
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_cosine_similarity_4096d(c: &mut Criterion) {
-    let v1: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
-    let v2: Vec<f32> = (0..4096).map(|i| (i as f32).cos()).collect();
+    let v1: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).sin()).collect();
+    let v2: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).cos()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
     let tt1 = tt_decompose(&v1, &config).unwrap();
     let tt2 = tt_decompose(&v2, &config).unwrap();
@@ -163,9 +157,8 @@ fn bench_tt_cosine_similarity_4096d(c: &mut Criterion) {
     );
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn bench_tt_compression_ratio(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let vector: Vec<f32> = (0..4096_u16).map(|i| f32::from(i).sin()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
 
     c.bench_function("tt_compression_ratio_4096d", |b| {

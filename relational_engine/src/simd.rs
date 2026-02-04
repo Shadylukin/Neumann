@@ -337,7 +337,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         filter_lt_i64(&values, 5, &mut bitmap);
         // Positions 0,2,4,6 have values < 5: 1,3,2,4
-        assert_eq!(bitmap[0] & 0xff, 0b01010101);
+        assert_eq!(bitmap[0] & 0xff, 0b0101_0101);
     }
 
     #[test]
@@ -346,7 +346,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         filter_eq_i64(&values, 5, &mut bitmap);
         // Positions 1,2,4 have value == 5
-        assert_eq!(bitmap[0] & 0xff, 0b00010110);
+        assert_eq!(bitmap[0] & 0xff, 0b0001_0110);
     }
 
     #[test]
@@ -355,7 +355,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         filter_gt_i64(&values, 5, &mut bitmap);
         // Positions 3,5,7 have values > 5: 8,9,7
-        assert_eq!(bitmap[0] & 0xff, 0b10101000);
+        assert_eq!(bitmap[0] & 0xff, 0b1010_1000);
     }
 
     #[test]
@@ -364,7 +364,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         filter_lt_i64(&values, 4, &mut bitmap);
         // Positions 0,1,2 have values < 4
-        assert_eq!(bitmap[0] & 0xff, 0b00000111);
+        assert_eq!(bitmap[0] & 0xff, 0b0000_0111);
     }
 
     #[test]
@@ -374,7 +374,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         filter_lt_i64(&values, 5, &mut bitmap);
         // Only position 4 (value 1) is < 5
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 
     #[test]
@@ -382,7 +382,7 @@ mod tests {
         let values = vec![10, 10, 10, 10, 5]; // 5 elements, position 4 matches <=
         let mut bitmap = vec![0u64; 1];
         filter_le_i64(&values, 5, &mut bitmap);
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 
     #[test]
@@ -390,7 +390,7 @@ mod tests {
         let values = vec![1, 1, 1, 1, 10]; // 5 elements, position 4 matches >
         let mut bitmap = vec![0u64; 1];
         filter_gt_i64(&values, 5, &mut bitmap);
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 
     #[test]
@@ -398,7 +398,7 @@ mod tests {
         let values = vec![1, 1, 1, 1, 5]; // 5 elements, position 4 matches >=
         let mut bitmap = vec![0u64; 1];
         filter_ge_i64(&values, 5, &mut bitmap);
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 
     #[test]
@@ -421,14 +421,14 @@ mod tests {
 
     #[test]
     fn test_selected_indices() {
-        let bitmap = [0b00010110u64]; // bits 1,2,4 set
+        let bitmap = [0b0001_0110u64]; // bits 1,2,4 set
         let indices = selected_indices(&bitmap, 10);
         assert_eq!(indices, vec![1, 2, 4]);
     }
 
     #[test]
     fn test_popcount() {
-        let bitmap = [0b11110000u64, 0b00001111u64];
+        let bitmap = [0b1111_0000u64, 0b0000_1111u64];
         assert_eq!(popcount(&bitmap), 8);
     }
 
@@ -437,7 +437,7 @@ mod tests {
         let values = vec![10.0, 10.0, 10.0, 10.0, 1.0]; // 5 elements
         let mut bitmap = vec![0u64; 1];
         filter_lt_f64(&values, 5.0, &mut bitmap);
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 
     #[test]
@@ -445,7 +445,7 @@ mod tests {
         let values = vec![1.0, 1.0, 1.0, 1.0, 10.0]; // 5 elements
         let mut bitmap = vec![0u64; 1];
         filter_gt_f64(&values, 5.0, &mut bitmap);
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 
     #[test]
@@ -453,6 +453,6 @@ mod tests {
         let values = vec![1.0, 1.0, 1.0, 1.0, 5.0]; // 5 elements
         let mut bitmap = vec![0u64; 1];
         filter_eq_f64(&values, 5.0, &mut bitmap);
-        assert_eq!(bitmap[0], 0b00010000);
+        assert_eq!(bitmap[0], 0b0001_0000);
     }
 }

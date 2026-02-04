@@ -495,3 +495,457 @@ fn value_to_json(value: &relational_engine::Value) -> serde_json::Value {
         _ => serde_json::Value::String("<unknown>".to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graph_engine::GraphEngine;
+    use relational_engine::RelationalEngine;
+    use vector_engine::VectorEngine;
+
+    fn create_test_context() -> Arc<AdminContext> {
+        Arc::new(AdminContext {
+            relational: Arc::new(RelationalEngine::new()),
+            vector: Arc::new(VectorEngine::new()),
+            graph: Arc::new(GraphEngine::new()),
+            auth_config: None,
+            metrics: None,
+        })
+    }
+
+    // === Value Conversion Tests ===
+
+    #[test]
+    fn test_value_to_json_null() {
+        let result = value_to_json(&relational_engine::Value::Null);
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_value_to_json_bool_true() {
+        let result = value_to_json(&relational_engine::Value::Bool(true));
+        assert_eq!(result, serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn test_value_to_json_bool_false() {
+        let result = value_to_json(&relational_engine::Value::Bool(false));
+        assert_eq!(result, serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_value_to_json_int() {
+        let result = value_to_json(&relational_engine::Value::Int(42));
+        assert_eq!(result, serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_value_to_json_negative_int() {
+        let result = value_to_json(&relational_engine::Value::Int(-100));
+        assert_eq!(result, serde_json::json!(-100));
+    }
+
+    #[test]
+    fn test_value_to_json_float() {
+        let result = value_to_json(&relational_engine::Value::Float(3.15));
+        if let serde_json::Value::Number(n) = result {
+            assert!((n.as_f64().unwrap() - 3.15).abs() < 0.001);
+        } else {
+            panic!("Expected number");
+        }
+    }
+
+    #[test]
+    fn test_value_to_json_float_nan() {
+        let result = value_to_json(&relational_engine::Value::Float(f64::NAN));
+        // NaN cannot be represented in JSON, should be null
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_value_to_json_string() {
+        let result = value_to_json(&relational_engine::Value::String("hello".to_string()));
+        assert_eq!(result, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_value_to_json_empty_string() {
+        let result = value_to_json(&relational_engine::Value::String(String::new()));
+        assert_eq!(result, serde_json::json!(""));
+    }
+
+    #[test]
+    fn test_value_to_json_bytes() {
+        let result = value_to_json(&relational_engine::Value::Bytes(vec![1, 2, 3, 4, 5]));
+        assert_eq!(result, serde_json::json!("<5 bytes>"));
+    }
+
+    #[test]
+    fn test_value_to_json_empty_bytes() {
+        let result = value_to_json(&relational_engine::Value::Bytes(vec![]));
+        assert_eq!(result, serde_json::json!("<0 bytes>"));
+    }
+
+    #[test]
+    fn test_value_to_json_json() {
+        let json_value = serde_json::json!({"key": "value", "num": 42});
+        let result = value_to_json(&relational_engine::Value::Json(json_value.clone()));
+        assert_eq!(result, json_value);
+    }
+
+    // === DashboardStats Tests ===
+
+    #[test]
+    fn test_dashboard_stats_gather_empty_engines() {
+        let ctx = create_test_context();
+        let stats = DashboardStats::gather(&ctx);
+
+        assert_eq!(stats.table_count, 0);
+        assert_eq!(stats.total_rows, 0);
+        assert_eq!(stats.collection_count, 0);
+        assert_eq!(stats.node_count, 0);
+        assert_eq!(stats.edge_count, 0);
+        assert!(stats.top_tables.is_empty());
+    }
+
+    #[test]
+    fn test_dashboard_stats_gather_with_tables() {
+        use relational_engine::{Column, ColumnType, Schema, Value};
+
+        let relational = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![
+            Column::new("id".to_string(), ColumnType::Int),
+            Column::new("name".to_string(), ColumnType::String),
+        ]);
+        relational.create_table("users", schema).unwrap();
+
+        // Insert a few rows
+        for i in 0..5 {
+            let values = vec![
+                ("id".to_string(), Value::Int(i)),
+                ("name".to_string(), Value::String(format!("user{}", i))),
+            ];
+            relational
+                .insert("users", values.into_iter().collect())
+                .unwrap();
+        }
+
+        let ctx = Arc::new(AdminContext {
+            relational,
+            vector: Arc::new(VectorEngine::new()),
+            graph: Arc::new(GraphEngine::new()),
+            auth_config: None,
+            metrics: None,
+        });
+
+        let stats = DashboardStats::gather(&ctx);
+
+        assert_eq!(stats.table_count, 1);
+        assert_eq!(stats.total_rows, 5);
+        assert_eq!(stats.top_tables.len(), 1);
+        assert_eq!(stats.top_tables[0].0, "users");
+    }
+
+    #[test]
+    fn test_dashboard_stats_gather_with_vectors() {
+        let vector = Arc::new(VectorEngine::new());
+        vector
+            .create_collection("embeddings", Default::default())
+            .unwrap();
+        vector
+            .store_in_collection("embeddings", "v1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        vector
+            .store_in_collection("embeddings", "v2", vec![0.0, 1.0, 0.0])
+            .unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational: Arc::new(RelationalEngine::new()),
+            vector,
+            graph: Arc::new(GraphEngine::new()),
+            auth_config: None,
+            metrics: None,
+        });
+
+        let stats = DashboardStats::gather(&ctx);
+
+        assert_eq!(stats.collection_count, 1);
+        assert_eq!(stats.vector_count, 2);
+        assert_eq!(stats.collections.len(), 1);
+    }
+
+    #[test]
+    fn test_dashboard_stats_gather_with_graph() {
+        let graph = Arc::new(GraphEngine::new());
+        let n1 = graph.create_node("Person", Default::default()).unwrap();
+        let n2 = graph.create_node("Person", Default::default()).unwrap();
+        graph
+            .create_edge(n1, n2, "KNOWS", Default::default(), true)
+            .unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational: Arc::new(RelationalEngine::new()),
+            vector: Arc::new(VectorEngine::new()),
+            graph,
+            auth_config: None,
+            metrics: None,
+        });
+
+        let stats = DashboardStats::gather(&ctx);
+
+        assert_eq!(stats.node_count, 2);
+        assert_eq!(stats.edge_count, 1);
+        assert_eq!(stats.graph_summary.len(), 2);
+    }
+
+    // === QueryRequest/Response Tests ===
+
+    #[test]
+    fn test_query_request_deserialize() {
+        let json = r#"{"query": "SELECT * FROM users"}"#;
+        let req: QueryRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.query, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_query_response_serialize_rows() {
+        let response = QueryResponse {
+            rows: Some(vec![
+                serde_json::json!({"id": 1}),
+                serde_json::json!({"id": 2}),
+            ]),
+            error: None,
+            message: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("rows"));
+        assert!(!json.contains("error"));
+        assert!(!json.contains("message"));
+    }
+
+    #[test]
+    fn test_query_response_serialize_error() {
+        let response = QueryResponse {
+            rows: None,
+            error: Some("Table not found".to_string()),
+            message: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("rows"));
+        assert!(json.contains("Table not found"));
+    }
+
+    #[test]
+    fn test_query_response_serialize_message() {
+        let response = QueryResponse {
+            rows: None,
+            error: None,
+            message: Some("Operation completed".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("Operation completed"));
+    }
+
+    // === API Query Handler Tests ===
+
+    #[tokio::test]
+    async fn test_api_query_empty() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("Empty"));
+    }
+
+    #[tokio::test]
+    async fn test_api_query_whitespace_only() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "   \n\t  ".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_api_query_show_tables_empty() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SHOW TABLES".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.rows.is_some());
+        assert!(response.0.rows.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_query_show_collections_empty() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SHOW COLLECTIONS".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.rows.is_some());
+        assert!(response.0.rows.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_query_show_nodes() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SHOW NODES".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.message.is_some());
+        assert!(response.0.message.unwrap().contains("0 nodes"));
+    }
+
+    #[tokio::test]
+    async fn test_api_query_show_edges() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SHOW EDGES".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.message.is_some());
+        assert!(response.0.message.unwrap().contains("0 edges"));
+    }
+
+    #[tokio::test]
+    async fn test_api_query_unsupported() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "DROP TABLE users".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("Unsupported"));
+    }
+
+    #[tokio::test]
+    async fn test_api_query_select_no_from() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SELECT *".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("FROM"));
+    }
+
+    #[tokio::test]
+    async fn test_api_query_select_table_not_found() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SELECT * FROM nonexistent".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_api_query_select_success() {
+        use relational_engine::{Column, ColumnType, Schema, Value};
+
+        let relational = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![
+            Column::new("id".to_string(), ColumnType::Int),
+            Column::new("name".to_string(), ColumnType::String),
+        ]);
+        relational.create_table("test_table", schema).unwrap();
+        relational
+            .insert(
+                "test_table",
+                [
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("test".to_string())),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational,
+            vector: Arc::new(VectorEngine::new()),
+            graph: Arc::new(GraphEngine::new()),
+            auth_config: None,
+            metrics: None,
+        });
+
+        let req = QueryRequest {
+            query: "SELECT * FROM test_table".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.rows.is_some());
+        let rows = response.0.rows.unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_api_query_select_with_limit() {
+        use relational_engine::{Column, ColumnType, Schema, Value};
+
+        let relational = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("id".to_string(), ColumnType::Int)]);
+        relational.create_table("numbers", schema).unwrap();
+
+        for i in 0..20 {
+            relational
+                .insert(
+                    "numbers",
+                    [("id".to_string(), Value::Int(i))].into_iter().collect(),
+                )
+                .unwrap();
+        }
+
+        let ctx = Arc::new(AdminContext {
+            relational,
+            vector: Arc::new(VectorEngine::new()),
+            graph: Arc::new(GraphEngine::new()),
+            auth_config: None,
+            metrics: None,
+        });
+
+        let req = QueryRequest {
+            query: "SELECT * FROM numbers LIMIT 5".to_string(),
+        };
+
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.rows.is_some());
+        let rows = response.0.rows.unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_api_query_case_insensitive() {
+        let ctx = create_test_context();
+
+        // Test lowercase
+        let req = QueryRequest {
+            query: "show tables".to_string(),
+        };
+        let response = api_query(State(ctx.clone()), axum::Json(req)).await;
+        assert!(response.0.rows.is_some());
+
+        // Test mixed case
+        let req = QueryRequest {
+            query: "Show Tables".to_string(),
+        };
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.rows.is_some());
+    }
+}

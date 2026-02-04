@@ -29,6 +29,7 @@ version = "0.3.0"
 authors = ["Lukin Ackroyd <lukin@scrunchee.ai>"]
 edition = "2021"
 license = "BSL-1.1"
+publish = false
 repository = "https://github.com/Shadylukin/Neumann"
 homepage = "https://scrunchee.ai"
 documentation = "https://github.com/Shadylukin/Neumann/tree/main/docs"

@@ -1070,4 +1070,112 @@ mod tests {
         let stored = server.metrics.as_ref().unwrap();
         assert!(Arc::ptr_eq(stored, &metrics));
     }
+
+    #[test]
+    fn test_server_with_relational_engine() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let relational = Arc::new(RelationalEngine::new());
+
+        let server =
+            NeumannServer::new(router, config).with_relational_engine(Arc::clone(&relational));
+
+        assert!(server.relational_engine.is_some());
+        let stored = server.relational_engine.as_ref().unwrap();
+        assert!(Arc::ptr_eq(stored, &relational));
+    }
+
+    #[test]
+    fn test_server_with_vector_engine() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let vector = Arc::new(VectorEngine::new());
+
+        let server = NeumannServer::new(router, config).with_vector_engine(Arc::clone(&vector));
+
+        assert!(server.vector_engine.is_some());
+        let stored = server.vector_engine.as_ref().unwrap();
+        assert!(Arc::ptr_eq(stored, &vector));
+    }
+
+    #[test]
+    fn test_server_with_graph_engine() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let graph = Arc::new(GraphEngine::new());
+
+        let server = NeumannServer::new(router, config).with_graph_engine(Arc::clone(&graph));
+
+        assert!(server.graph_engine.is_some());
+        let stored = server.graph_engine.as_ref().unwrap();
+        assert!(Arc::ptr_eq(stored, &graph));
+    }
+
+    #[test]
+    fn test_server_full_builder_chain() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let relational = Arc::new(RelationalEngine::new());
+        let vector = Arc::new(VectorEngine::new());
+        let graph = Arc::new(GraphEngine::new());
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let server = NeumannServer::new(router, config)
+            .with_relational_engine(relational)
+            .with_vector_engine(vector)
+            .with_graph_engine(graph)
+            .with_metrics(metrics);
+
+        assert!(server.relational_engine.is_some());
+        assert!(server.vector_engine.is_some());
+        assert!(server.graph_engine.is_some());
+        assert!(server.metrics.is_some());
+    }
+
+    #[test]
+    fn test_server_with_rate_limit_config() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let mut config = ServerConfig::default();
+        config.rate_limit = Some(RateLimitConfig::default());
+
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.rate_limiter.is_some());
+    }
+
+    #[test]
+    fn test_server_with_audit_config() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let mut config = ServerConfig::default();
+        config.audit = Some(AuditConfig::default());
+
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.audit_logger.is_some());
+    }
+
+    #[test]
+    fn test_server_without_rate_limit() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.rate_limiter.is_none());
+    }
+
+    #[test]
+    fn test_server_without_audit() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.audit_logger.is_none());
+    }
 }

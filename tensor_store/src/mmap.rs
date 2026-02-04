@@ -652,7 +652,9 @@ impl MmapStoreMut {
     }
 }
 
-#[cfg(test)]
+// Mmap tests require real filesystem operations (create, mmap, unlink)
+// which are not supported in Miri's isolated environment
+#[cfg(all(test, not(miri)))]
 mod tests {
     use std::fs;
 

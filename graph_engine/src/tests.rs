@@ -393,7 +393,7 @@ fn property_value_conversions() {
     let exact_values = vec![
         PropertyValue::Null,
         PropertyValue::Int(42),
-        PropertyValue::Float(3.14),
+        PropertyValue::Float(3.15),
         PropertyValue::String("test".into()),
         PropertyValue::Bool(true),
         PropertyValue::Bytes(vec![1, 2, 3]),
@@ -1492,13 +1492,13 @@ fn find_nodes_by_property_float() {
     let engine = GraphEngine::new();
 
     let mut props = HashMap::new();
-    props.insert("score".to_string(), PropertyValue::Float(3.14));
+    props.insert("score".to_string(), PropertyValue::Float(3.15));
     engine.create_node("Person", props).unwrap();
 
     engine.create_node_property_index("score").unwrap();
 
     let nodes = engine
-        .find_nodes_by_property("score", &PropertyValue::Float(3.14))
+        .find_nodes_by_property("score", &PropertyValue::Float(3.15))
         .unwrap();
     assert_eq!(nodes.len(), 1);
 }
@@ -9314,7 +9314,7 @@ fn property_value_type() {
     assert_eq!(PropertyValue::Null.value_type(), PropertyValueType::Null);
     assert_eq!(PropertyValue::Int(42).value_type(), PropertyValueType::Int);
     assert_eq!(
-        PropertyValue::Float(3.14).value_type(),
+        PropertyValue::Float(3.15).value_type(),
         PropertyValueType::Float
     );
     assert_eq!(
@@ -11634,7 +11634,7 @@ fn test_property_value_value_type() {
     assert_eq!(PropertyValue::Null.value_type(), PropertyValueType::Null);
     assert_eq!(PropertyValue::Int(42).value_type(), PropertyValueType::Int);
     assert_eq!(
-        PropertyValue::Float(3.14).value_type(),
+        PropertyValue::Float(3.15).value_type(),
         PropertyValueType::Float
     );
     assert_eq!(
@@ -11674,7 +11674,7 @@ fn test_property_value_to_scalar_and_back() {
     let back = PropertyValue::from_scalar(&scalar);
     assert_eq!(back, original_int);
 
-    let original_float = PropertyValue::Float(3.14);
+    let original_float = PropertyValue::Float(3.15);
     let scalar = original_float.to_scalar();
     let back = PropertyValue::from_scalar(&scalar);
     assert_eq!(back, original_float);
@@ -13689,8 +13689,8 @@ fn test_property_value_from_scalar_all_types() {
     let pv = PropertyValue::from_scalar(&ScalarValue::Int(42));
     assert_eq!(pv, PropertyValue::Int(42));
 
-    let pv = PropertyValue::from_scalar(&ScalarValue::Float(3.14));
-    assert_eq!(pv, PropertyValue::Float(3.14));
+    let pv = PropertyValue::from_scalar(&ScalarValue::Float(3.15));
+    assert_eq!(pv, PropertyValue::Float(3.15));
 
     let pv = PropertyValue::from_scalar(&ScalarValue::String("test".to_string()));
     assert_eq!(pv, PropertyValue::String("test".to_string()));

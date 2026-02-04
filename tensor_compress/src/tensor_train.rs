@@ -675,18 +675,18 @@ mod tests {
     #[test]
     fn test_tt_core_get() {
         // Shape (2, 2, 2) = 8 elements
-        let data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let data: Vec<f32> = (0..8_u8).map(|i| f32::from(i)).collect();
         let core = TTCore::new(data, 2, 2, 2);
-        assert_eq!(core.get(0, 0, 0), 0.0);
-        assert_eq!(core.get(0, 0, 1), 1.0);
-        assert_eq!(core.get(0, 1, 0), 2.0);
-        assert_eq!(core.get(1, 0, 0), 4.0);
+        assert!(core.get(0, 0, 0).abs() < f32::EPSILON);
+        assert!((core.get(0, 0, 1) - 1.0).abs() < f32::EPSILON);
+        assert!((core.get(0, 1, 0) - 2.0).abs() < f32::EPSILON);
+        assert!((core.get(1, 0, 0) - 4.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn test_tt_decompose_simple() {
         // Simple test: decompose a 64-dim vector
-        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let vector: Vec<f32> = (0..64_u8).map(|i| (f32::from(i) * 0.1).sin()).collect();
         let config = TTConfig::for_dim(64).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
@@ -978,7 +978,12 @@ mod tests {
     fn test_tt_random_dense() {
         // Pseudo-random dense vector - typical neural embedding
         let vector: Vec<f32> = (0..256)
-            .map(|i| f32::midpoint((i as f32 * 1.618).sin(), (i as f32 * 2.718).cos()))
+            .map(|i| {
+                f32::midpoint(
+                    (f32::from(i as u8) * 1.619).sin(),
+                    (f32::from(i as u8) * 2.719).cos(),
+                )
+            })
             .collect();
         let config = TTConfig::for_dim(256).unwrap();
 

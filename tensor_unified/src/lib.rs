@@ -2395,10 +2395,10 @@ mod tests {
             &Value::Bool(true)
         ));
 
-        let prop_float = graph_engine::PropertyValue::Float(3.14);
+        let prop_float = graph_engine::PropertyValue::Float(3.15);
         assert!(UnifiedEngine::property_matches_value(
             &prop_float,
-            &Value::Float(3.14)
+            &Value::Float(3.15)
         ));
     }
 
@@ -3098,7 +3098,7 @@ mod tests {
 
         assert_eq!(value_to_string(&Value::Null), "null");
         assert_eq!(value_to_string(&Value::Int(42)), "42");
-        assert_eq!(value_to_string(&Value::Float(3.14)), "3.14");
+        assert_eq!(value_to_string(&Value::Float(3.15)), "3.15");
         assert_eq!(value_to_string(&Value::String("test".to_string())), "test");
         assert_eq!(value_to_string(&Value::Bool(true)), "true");
         assert_eq!(value_to_string(&Value::Bytes(vec![1, 2, 3])), "<3 bytes>");
@@ -3371,7 +3371,7 @@ mod tests {
 
         // Test FilterValue variants
         let int_val = FilterValue::Int(42);
-        let float_val = FilterValue::Float(3.14);
+        let float_val = FilterValue::Float(3.15);
         let bool_val = FilterValue::Bool(true);
         assert!(matches!(int_val, FilterValue::Int(_)));
         assert!(matches!(float_val, FilterValue::Float(_)));
@@ -3470,8 +3470,8 @@ mod tests {
 
         // Test float
         let f =
-            UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::Float(3.14)));
-        assert_eq!(f, Some("3.14".to_string()));
+            UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::Float(3.15)));
+        assert_eq!(f, Some("3.15".to_string()));
 
         // Test bool
         let b =

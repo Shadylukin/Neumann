@@ -863,7 +863,7 @@ mod tests {
         data.set("null", TensorValue::Scalar(ScalarValue::Null));
         data.set("bool", TensorValue::Scalar(ScalarValue::Bool(true)));
         data.set("int", TensorValue::Scalar(ScalarValue::Int(42)));
-        data.set("float", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        data.set("float", TensorValue::Scalar(ScalarValue::Float(3.15)));
         data.set(
             "string",
             TensorValue::Scalar(ScalarValue::String("hello".to_string())),

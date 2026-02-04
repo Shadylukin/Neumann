@@ -263,7 +263,7 @@ mod tests {
         let scorer = EvictionScorer::new(EvictionStrategy::CostBased);
 
         let score = scorer.score(60.0, 10, 0.5, 0);
-        assert_eq!(score, 0.0);
+        assert!(score.abs() < f64::EPSILON);
     }
 
     #[test]

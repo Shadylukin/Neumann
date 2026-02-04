@@ -102,14 +102,14 @@ fn bench_encrypt_decrypt(c: &mut Criterion) {
     );
 
     // 10KB data
-    let data_10kb = "x".repeat(10 * 1024);
+    let large_data = "x".repeat(10 * 1024);
 
     PEAK_ALLOC.reset_peak_usage();
     group.bench_function("set_10kb", |b| {
         let vault = create_vault();
         b.iter(|| {
             vault
-                .set(Vault::ROOT, black_box("bench:key"), black_box(&data_10kb))
+                .set(Vault::ROOT, black_box("bench:key"), black_box(&large_data))
                 .unwrap();
         });
     });
@@ -121,7 +121,7 @@ fn bench_encrypt_decrypt(c: &mut Criterion) {
     PEAK_ALLOC.reset_peak_usage();
     group.bench_function("get_10kb", |b| {
         let vault = create_vault();
-        vault.set(Vault::ROOT, "bench:key", &data_10kb).unwrap();
+        vault.set(Vault::ROOT, "bench:key", &large_data).unwrap();
         b.iter(|| {
             let _ = vault.get(black_box(Vault::ROOT), black_box("bench:key"));
         });

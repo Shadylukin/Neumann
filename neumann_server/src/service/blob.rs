@@ -788,4 +788,431 @@ mod tests {
         let result = service.delete(request).await;
         assert!(result.is_ok());
     }
+
+    // === Builder Pattern Tests ===
+
+    #[test]
+    fn test_with_full_config_all_parameters() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::metrics::ServerMetrics;
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let store = TensorStore::new();
+        let blob_store = Arc::new(Mutex::new(
+            futures::executor::block_on(BlobStore::new(store, BlobConfig::default())).unwrap(),
+        ));
+        let config = ServerConfig::new()
+            .with_blob_chunk_size(128 * 1024)
+            .with_max_upload_size(256 * 1024 * 1024);
+        let rate_limiter = Arc::new(RateLimiter::new(RateLimitConfig::default()));
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = BlobServiceImpl::with_full_config(
+            blob_store,
+            &config,
+            Some(Arc::clone(&rate_limiter)),
+            Some(Arc::clone(&audit_logger)),
+            Some(Arc::clone(&metrics)),
+        );
+
+        assert_eq!(service.chunk_size, 128 * 1024);
+        assert_eq!(service.max_upload_size, 256 * 1024 * 1024);
+        assert!(service.rate_limiter.is_some());
+        assert!(service.audit_logger.is_some());
+        assert!(service.metrics.is_some());
+    }
+
+    #[test]
+    fn test_with_full_config_minimal_parameters() {
+        let store = TensorStore::new();
+        let blob_store = Arc::new(Mutex::new(
+            futures::executor::block_on(BlobStore::new(store, BlobConfig::default())).unwrap(),
+        ));
+        let config = ServerConfig::new();
+
+        let service = BlobServiceImpl::with_full_config(blob_store, &config, None, None, None);
+
+        assert!(service.rate_limiter.is_none());
+        assert!(service.audit_logger.is_none());
+        assert!(service.metrics.is_none());
+    }
+
+    #[test]
+    fn test_constructor_new() {
+        let store = TensorStore::new();
+        let blob_store = Arc::new(Mutex::new(
+            futures::executor::block_on(BlobStore::new(store, BlobConfig::default())).unwrap(),
+        ));
+
+        let service = BlobServiceImpl::new(blob_store);
+
+        assert_eq!(service.chunk_size, 64 * 1024);
+        assert_eq!(service.max_upload_size, DEFAULT_MAX_UPLOAD_SIZE);
+        assert!(service.auth_config.is_none());
+        assert!(service.rate_limiter.is_none());
+    }
+
+    #[test]
+    fn test_constructor_with_auth() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let store = TensorStore::new();
+        let blob_store = Arc::new(Mutex::new(
+            futures::executor::block_on(BlobStore::new(store, BlobConfig::default())).unwrap(),
+        ));
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "test-key-1234567890".to_string(),
+            "user:test".to_string(),
+        ));
+
+        let service = BlobServiceImpl::with_auth(blob_store, auth_config);
+
+        assert!(service.auth_config.is_some());
+    }
+
+    // === Auth Failure Tests ===
+
+    #[tokio::test]
+    async fn test_download_auth_required() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let blob_store = create_test_blob_store().await;
+
+        // Upload something first
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"data", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "required-key-123456".to_string(),
+                "user:required".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = BlobServiceImpl::with_auth(Arc::clone(&blob_store), auth_config);
+
+        // Request without auth should fail
+        let request = Request::new(BlobDownloadRequest { artifact_id });
+        let result = service.download(request).await;
+        assert!(result.is_err());
+        if let Err(status) = result {
+            assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_invalid_api_key() {
+        use crate::config::{ApiKey, AuthConfig};
+        use tonic::metadata::MetadataValue;
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"data", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "valid-key-123456789".to_string(),
+                "user:valid".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = BlobServiceImpl::with_auth(Arc::clone(&blob_store), auth_config);
+
+        let mut request = Request::new(BlobDownloadRequest { artifact_id });
+        request
+            .metadata_mut()
+            .insert("x-api-key", MetadataValue::from_static("wrong-key-000000"));
+
+        let result = service.download(request).await;
+        assert!(result.is_err());
+        if let Err(status) = result {
+            assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_auth_required() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"data", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "delete-key-1234567".to_string(),
+                "user:delete".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = BlobServiceImpl::with_auth(Arc::clone(&blob_store), auth_config);
+
+        let request = Request::new(BlobDeleteRequest { artifact_id });
+        let result = service.delete(request).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_metadata_auth_required() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"data", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "meta-key-12345678".to_string(),
+                "user:meta".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = BlobServiceImpl::with_auth(Arc::clone(&blob_store), auth_config);
+
+        let request = Request::new(BlobMetadataRequest { artifact_id });
+        let result = service.get_metadata(request).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    // === Rate Limiting Tests ===
+
+    #[tokio::test]
+    async fn test_download_rate_limited() {
+        use crate::config::{ApiKey, AuthConfig};
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use tonic::metadata::MetadataValue;
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"data", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "rate-key-123456789".to_string(),
+            "user:rate".to_string(),
+        ));
+
+        let rate_limiter = Arc::new(RateLimiter::new(
+            RateLimitConfig::new().with_max_blob_ops(1),
+        ));
+
+        let config = ServerConfig::new().with_auth(auth_config);
+        let service = BlobServiceImpl::with_full_config(
+            Arc::clone(&blob_store),
+            &config,
+            Some(rate_limiter),
+            None,
+            None,
+        );
+
+        // First request should succeed
+        let mut request = Request::new(BlobDownloadRequest {
+            artifact_id: artifact_id.clone(),
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("rate-key-123456789"),
+        );
+        let result = service.download(request).await;
+        assert!(result.is_ok());
+
+        // Second request should be rate limited
+        let mut request = Request::new(BlobDownloadRequest { artifact_id });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("rate-key-123456789"),
+        );
+        let result = service.download(request).await;
+        assert!(result.is_err());
+        if let Err(status) = result {
+            assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        }
+    }
+
+    // === Audit Logging Tests ===
+
+    #[tokio::test]
+    async fn test_download_with_audit_logging() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::config::{ApiKey, AuthConfig};
+        use tonic::metadata::MetadataValue;
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put(
+                    "test.txt",
+                    b"audit data",
+                    tensor_blob::PutOptions::default(),
+                )
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "audit-key-12345678".to_string(),
+            "user:audit".to_string(),
+        ));
+
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+        let config = ServerConfig::new().with_auth(auth_config);
+
+        let service = BlobServiceImpl::with_full_config(
+            Arc::clone(&blob_store),
+            &config,
+            None,
+            Some(audit_logger),
+            None,
+        );
+
+        let mut request = Request::new(BlobDownloadRequest { artifact_id });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("audit-key-12345678"),
+        );
+
+        let result = service.download(request).await;
+        assert!(result.is_ok());
+        // Audit logger would have recorded the download event
+    }
+
+    #[tokio::test]
+    async fn test_delete_with_audit_logging() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::config::{ApiKey, AuthConfig};
+        use tonic::metadata::MetadataValue;
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put(
+                    "audit_delete.txt",
+                    b"delete me",
+                    tensor_blob::PutOptions::default(),
+                )
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "audit-del-key-1234".to_string(),
+            "user:audit_del".to_string(),
+        ));
+
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+        let config = ServerConfig::new().with_auth(auth_config);
+
+        let service = BlobServiceImpl::with_full_config(
+            Arc::clone(&blob_store),
+            &config,
+            None,
+            Some(audit_logger),
+            None,
+        );
+
+        let mut request = Request::new(BlobDeleteRequest { artifact_id });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("audit-del-key-1234"),
+        );
+
+        let result = service.delete(request).await;
+        assert!(result.is_ok());
+    }
+
+    // === All Components Together ===
+
+    #[tokio::test]
+    async fn test_all_components_together() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::config::{ApiKey, AuthConfig};
+        use crate::metrics::ServerMetrics;
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+        use tonic::metadata::MetadataValue;
+
+        let blob_store = create_test_blob_store().await;
+
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put(
+                    "full_test.txt",
+                    b"full test",
+                    tensor_blob::PutOptions::default(),
+                )
+                .await
+                .unwrap()
+        };
+
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "full-key-1234567890".to_string(),
+            "user:full".to_string(),
+        ));
+
+        let rate_limiter = Arc::new(RateLimiter::new(RateLimitConfig::default()));
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let config = ServerConfig::new().with_auth(auth_config);
+
+        let service = BlobServiceImpl::with_full_config(
+            Arc::clone(&blob_store),
+            &config,
+            Some(rate_limiter),
+            Some(audit_logger),
+            Some(metrics),
+        );
+
+        let mut request = Request::new(BlobDownloadRequest { artifact_id });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("full-key-1234567890"),
+        );
+
+        let result = service.download(request).await;
+        assert!(result.is_ok());
+    }
 }

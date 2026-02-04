@@ -1088,4 +1088,300 @@ mod tests {
         assert!(state.0.contains("Nothing to display"));
         assert!(state.0.contains("[ ]"));
     }
+
+    // ========== Additional tests for improved coverage ==========
+
+    #[test]
+    fn test_page_header_without_description() {
+        let header = page_header("TEST TITLE", None);
+        assert!(header.0.contains("TEST TITLE"));
+        assert!(!header.0.contains("text-phosphor-dim font-terminal mt-1"));
+    }
+
+    #[test]
+    fn test_page_header_with_description() {
+        let header = page_header("MAIN", Some("This is a description"));
+        assert!(header.0.contains("MAIN"));
+        assert!(header.0.contains("This is a description"));
+    }
+
+    #[test]
+    fn test_terminal_panel() {
+        let content = html! { p { "Inner content" } };
+        let panel = terminal_panel("PANEL TITLE", content);
+        assert!(panel.0.contains("terminal-panel"));
+        assert!(panel.0.contains("PANEL TITLE"));
+        assert!(panel.0.contains("Inner content"));
+    }
+
+    #[test]
+    fn test_terminal_panel_rust() {
+        let content = html! { p { "Rust content" } };
+        let panel = terminal_panel_rust("RUST PANEL", content);
+        assert!(panel.0.contains("terminal-panel-rust"));
+        assert!(panel.0.contains("RUST PANEL"));
+    }
+
+    #[test]
+    fn test_engine_section_empty() {
+        let items: Vec<(String, String)> = vec![];
+        let section = engine_section("EMPTY SECTION", "relational", &items);
+        assert!(section.0.contains("NO DATA"));
+        assert!(section.0.contains("border-l-2 border-amber-glow"));
+    }
+
+    #[test]
+    fn test_engine_section_with_items() {
+        let items = vec![
+            ("Item1".to_string(), "10".to_string()),
+            ("Item2".to_string(), "20".to_string()),
+        ];
+        let section = engine_section("ITEMS SECTION", "vector", &items);
+        assert!(section.0.contains("Item1"));
+        assert!(section.0.contains("10"));
+        assert!(section.0.contains("Item2"));
+        assert!(section.0.contains("20"));
+        assert!(section.0.contains("border-l-2 border-rust-blood"));
+    }
+
+    #[test]
+    fn test_engine_section_graph() {
+        let items = vec![("Nodes".to_string(), "100".to_string())];
+        let section = engine_section("GRAPH DATA", "graph", &items);
+        assert!(section.0.contains("border-l-2 border-phosphor"));
+    }
+
+    #[test]
+    fn test_engine_section_unknown_engine() {
+        let items = vec![("Data".to_string(), "42".to_string())];
+        let section = engine_section("UNKNOWN", "unknown", &items);
+        // Should not have any border-l-2 class for unknown engines
+        assert!(!section.0.contains("border-amber-glow"));
+        assert!(!section.0.contains("border-rust-blood"));
+    }
+
+    #[test]
+    fn test_btn_terminal_with_href() {
+        let btn = btn_terminal("[ CLICK ME ]", Some("/test"));
+        assert!(btn.0.contains("href=\"/test\""));
+        assert!(btn.0.contains("CLICK ME"));
+        assert!(btn.0.contains("<a "));
+    }
+
+    #[test]
+    fn test_btn_terminal_without_href() {
+        let btn = btn_terminal("[ SUBMIT ]", None);
+        assert!(btn.0.contains("<button"));
+        assert!(btn.0.contains("SUBMIT"));
+        assert!(btn.0.contains("type=\"submit\""));
+    }
+
+    #[test]
+    fn test_table_header_single_column() {
+        let header = table_header(&["ID"]);
+        assert!(header.0.contains("<th>"));
+        assert!(header.0.contains("ID"));
+    }
+
+    #[test]
+    fn test_table_header_multiple_columns() {
+        let header = table_header(&["ID", "NAME", "VALUE"]);
+        assert!(header.0.contains("ID"));
+        assert!(header.0.contains("NAME"));
+        assert!(header.0.contains("VALUE"));
+    }
+
+    #[test]
+    fn test_expandable_text_short() {
+        let text = expandable_text("Short text", 50, "text-phosphor");
+        assert!(text.0.contains("Short text"));
+        assert!(!text.0.contains("[MORE]"));
+    }
+
+    #[test]
+    fn test_expandable_text_long() {
+        let long_text = "a".repeat(100);
+        let text = expandable_text(&long_text, 20, "text-phosphor");
+        assert!(text.0.contains("[MORE]"));
+        assert!(text.0.contains("[LESS]"));
+        assert!(text.0.contains("..."));
+    }
+
+    #[test]
+    fn test_expandable_string_short() {
+        let text = expandable_string("Hello", 50);
+        // Maud escapes quotes as HTML entities
+        assert!(text.0.contains("Hello"));
+        assert!(!text.0.contains("[MORE]"));
+    }
+
+    #[test]
+    fn test_expandable_string_long() {
+        let long_text = "a".repeat(100);
+        let text = expandable_string(&long_text, 20);
+        assert!(text.0.contains("[MORE]"));
+        assert!(text.0.contains("..."));
+    }
+
+    #[test]
+    fn test_expandable_json_short() {
+        let json = r#"{"key": "value"}"#;
+        let text = expandable_json(json, 50);
+        assert!(text.0.contains("key"));
+        assert!(!text.0.contains("[MORE]"));
+    }
+
+    #[test]
+    fn test_expandable_json_long() {
+        let long_json = format!("{{\"data\": \"{}\"}}", "x".repeat(100));
+        let text = expandable_json(&long_json, 20);
+        assert!(text.0.contains("[MORE]"));
+        assert!(text.0.contains("[LESS]"));
+    }
+
+    #[test]
+    fn test_expandable_vector_short() {
+        let vec = vec![1.0, 2.0, 3.0];
+        let result = expandable_vector(&vec, 10);
+        assert!(result.0.contains("1.000000"));
+        assert!(result.0.contains("2.000000"));
+        assert!(result.0.contains("3.000000"));
+        assert!(!result.0.contains("[SHOW ALL"));
+    }
+
+    #[test]
+    fn test_expandable_vector_long() {
+        let vec: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let result = expandable_vector(&vec, 10);
+        assert!(result.0.contains("[SHOW ALL 100]"));
+        assert!(result.0.contains("DIMENSIONS"));
+        assert!(result.0.contains("[COPY]"));
+    }
+
+    #[test]
+    fn test_expandable_payload_preview_few_items() {
+        let items = vec![
+            ("name".to_string(), "Alice".to_string()),
+            ("age".to_string(), "30".to_string()),
+        ];
+        let result = expandable_payload_preview(&items, 5);
+        assert!(result.0.contains("name"));
+        assert!(result.0.contains("Alice"));
+        assert!(!result.0.contains("[+"));
+    }
+
+    #[test]
+    fn test_expandable_payload_preview_many_items() {
+        let items: Vec<_> = (0..10)
+            .map(|i| (format!("key{i}"), format!("value{i}")))
+            .collect();
+        let result = expandable_payload_preview(&items, 3);
+        assert!(result.0.contains("[+7 MORE]"));
+    }
+
+    #[test]
+    fn test_loading_indicator() {
+        let loading = loading_indicator("Loading...");
+        assert!(loading.0.contains("Loading..."));
+        assert!(loading.0.contains("loading-terminal"));
+    }
+
+    #[test]
+    fn test_progress_bar_zero() {
+        let bar = progress_bar(0);
+        assert!(bar.0.contains("--------------------"));
+        assert!(bar.0.contains("0%"));
+    }
+
+    #[test]
+    fn test_progress_bar_full() {
+        let bar = progress_bar(100);
+        assert!(bar.0.contains("####################"));
+        assert!(bar.0.contains("100%"));
+    }
+
+    #[test]
+    fn test_progress_bar_quarter() {
+        let bar = progress_bar(25);
+        assert!(bar.0.contains("#####---------------"));
+        assert!(bar.0.contains("25%"));
+    }
+
+    #[test]
+    fn test_format_number_edge_cases() {
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1001), "1.0K");
+        assert_eq!(format_number(999_999), "1000.0K");
+        assert_eq!(format_number(10_000_000), "10.0M");
+    }
+
+    #[test]
+    fn test_breadcrumb_single_item() {
+        let bc = breadcrumb(&[("", "CURRENT")]);
+        assert!(bc.0.contains("CURRENT"));
+    }
+
+    #[test]
+    fn test_breadcrumb_three_items() {
+        let bc = breadcrumb(&[("/", "HOME"), ("/level1", "LEVEL1"), ("", "CURRENT")]);
+        assert!(bc.0.contains("HOME"));
+        assert!(bc.0.contains("LEVEL1"));
+        assert!(bc.0.contains("CURRENT"));
+    }
+
+    #[test]
+    fn test_nav_item_active() {
+        let item = nav_item("/test", "T", "TEST", true);
+        assert!(item.0.contains("active"));
+        assert!(item.0.contains("TEST"));
+        assert!(item.0.contains("/test"));
+    }
+
+    #[test]
+    fn test_nav_item_inactive() {
+        let item = nav_item("/test", "T", "TEST", false);
+        // Should not contain "active" as a class (but might contain in other contexts)
+        let html = item.0;
+        assert!(html.contains("TEST"));
+    }
+
+    #[test]
+    fn test_mobile_nav_item_active() {
+        let item = mobile_nav_item("/test", "T", true);
+        assert!(item.0.contains("phosphor-glow-subtle"));
+        assert!(item.0.contains("[T]"));
+    }
+
+    #[test]
+    fn test_mobile_nav_item_inactive() {
+        let item = mobile_nav_item("/test", "T", false);
+        assert!(item.0.contains("text-phosphor-dim"));
+        assert!(item.0.contains("[T]"));
+    }
+
+    #[test]
+    fn test_stat_card_unknown_engine() {
+        let card = stat_card("Test", "42", "units", "unknown");
+        assert!(card.0.contains("stat-card"));
+        assert!(card.0.contains("Test"));
+        assert!(card.0.contains("42"));
+        assert!(card.0.contains("units"));
+    }
+
+    #[test]
+    fn test_layout_different_nav_items() {
+        let content = html! { p { "Test" } };
+
+        // Test Graph nav item
+        let result = layout("Test", NavItem::Graph, content.clone());
+        assert!(result.0.contains("GRAPH"));
+
+        // Test Vector nav item
+        let result = layout("Test", NavItem::Vector, content.clone());
+        assert!(result.0.contains("VECTOR"));
+
+        // Test Relational nav item
+        let result = layout("Test", NavItem::Relational, content);
+        assert!(result.0.contains("RELATIONAL"));
+    }
 }

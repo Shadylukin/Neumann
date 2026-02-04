@@ -511,9 +511,9 @@ mod tests {
     #[test]
     fn test_floats() {
         assert_eq!(
-            tokens("3.14 0.5 10.0"),
+            tokens("3.15 0.5 10.0"),
             vec![
-                TokenKind::Float(3.14),
+                TokenKind::Float(3.15),
                 TokenKind::Float(0.5),
                 TokenKind::Float(10.0),
                 TokenKind::Eof

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Benchmarks for the web admin UI performance.
+// criterion_group! and criterion_main! macros generate items without documentation.
+// This allow is required because we cannot add doc comments to macro-generated code.
 #![allow(missing_docs)]
-#![allow(clippy::unwrap_used)]
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use std::collections::HashMap;

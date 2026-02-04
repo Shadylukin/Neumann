@@ -3,9 +3,9 @@ name = "stress_tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 repository.workspace = true
 description = "Performance and concurrency stress tests for Neumann"
-publish = false
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }
