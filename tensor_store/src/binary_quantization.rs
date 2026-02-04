@@ -296,7 +296,7 @@ mod tests {
         let b = BinaryVector::from_raw(vec![0b1111_1111], 8);
 
         let sim = a.similarity(&b);
-        assert!(sim >= 0.0 && sim <= 1.0);
+        assert!((0.0..=1.0).contains(&sim));
         // 4 bits differ out of 8, so similarity = 1 - 4/8 = 0.5
         assert!((sim - 0.5).abs() < f32::EPSILON);
     }

@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn test_public_api_tokenize() {
         let tokens = tokenize("SELECT * FROM users");
-        assert!(tokens.len() > 0);
+        assert!(!tokens.is_empty());
         assert!(matches!(tokens[0].kind, TokenKind::Select));
     }
 
@@ -225,7 +225,7 @@ mod tests {
         let StatementKind::Select(select) = stmt.kind else {
             panic!("expected SELECT")
         };
-        assert!(select.distinct == false);
+        assert!(!select.distinct);
         assert!(select.from.is_some());
         assert!(select.where_clause.is_some());
         assert!(!select.group_by.is_empty());

@@ -234,7 +234,7 @@ async fn test_checkpoint_with_multiple_keys() {
     for i in 0..10 {
         let mut data = TensorData::new();
         data.set("id", TensorValue::Scalar(ScalarValue::Int(i)));
-        store.put(&format!("item:{i}"), data).unwrap();
+        store.put(format!("item:{i}"), data).unwrap();
     }
 
     // Create checkpoint

@@ -1055,7 +1055,7 @@ mod tests {
         let tiered: TieredError = mmap_err.into();
         assert!(matches!(tiered, TieredError::Mmap(_)));
 
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "io error");
+        let io_err = std::io::Error::other("io error");
         let tiered: TieredError = io_err.into();
         assert!(matches!(tiered, TieredError::Io(_)));
     }
@@ -1093,7 +1093,7 @@ mod tests {
         let debug = format!("{:?}", mmap_err);
         assert!(debug.contains("Mmap"));
 
-        let io_err = TieredError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test error"));
+        let io_err = TieredError::Io(std::io::Error::other("test error"));
         let debug = format!("{:?}", io_err);
         assert!(debug.contains("Io"));
 

@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // In a pure graph DB, this would be a neighbor lookup.
     // Neumann does both in one pass.
 
-    let _query_vec = vec![1.0, 1.0, 0.0, 0.0];
+    let _query_vec = [1.0, 1.0, 0.0, 0.0];
 
     // Note: create_entity internally updates the HNSW index.
     // We perform the search.

@@ -85,7 +85,7 @@ fn stress_graph_algorithms_40_threads() {
                 })) {
                     // Validate results
                     let mut valid = true;
-                    for (_, score) in &result.scores {
+                    for score in result.scores.values() {
                         if !score.is_finite() || *score < 0.0 {
                             valid = false;
                             break;
@@ -147,7 +147,7 @@ fn stress_graph_algorithms_40_threads() {
                 })) {
                     // Validate: all scores should be finite and non-negative
                     let mut valid = true;
-                    for (_, score) in &result.scores {
+                    for score in result.scores.values() {
                         if !score.is_finite() || *score < 0.0 {
                             valid = false;
                             break;

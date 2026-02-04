@@ -5284,16 +5284,14 @@ mod tests {
                 let eng = Arc::clone(&engine);
                 let s = Arc::clone(&success);
                 let e = Arc::clone(&error);
-                thread::spawn(move || {
-                    match eng.delete_embedding("to_delete") {
-                        Ok(()) => {
-                            s.fetch_add(1, Ordering::SeqCst);
-                        },
-                        Err(VectorError::NotFound(_)) => {
-                            e.fetch_add(1, Ordering::SeqCst);
-                        },
-                        Err(err) => panic!("unexpected error: {err:?}"),
-                    };
+                thread::spawn(move || match eng.delete_embedding("to_delete") {
+                    Ok(()) => {
+                        s.fetch_add(1, Ordering::SeqCst);
+                    },
+                    Err(VectorError::NotFound(_)) => {
+                        e.fetch_add(1, Ordering::SeqCst);
+                    },
+                    Err(err) => panic!("unexpected error: {err:?}"),
                 })
             })
             .collect();
@@ -5761,7 +5759,7 @@ mod tests {
     // ========== Scale Tests ==========
 
     #[test]
-    #[ignore] // Run with: cargo test --release -- --ignored
+    #[ignore = "Run with: cargo test --release -- --ignored"]
     fn scale_100k_vector_search() {
         let engine = VectorEngine::new();
         let dim = 128;
@@ -6519,7 +6517,7 @@ mod tests {
         let value = engine.get_metadata_field("key", "score").unwrap();
         match value {
             Some(TensorValue::Scalar(ScalarValue::Float(f))) => {
-                assert!((f - 0.95).abs() < f64::EPSILON)
+                assert!((f - 0.95).abs() < f64::EPSILON);
             },
             _ => panic!("Expected float value"),
         }
@@ -6611,7 +6609,7 @@ mod tests {
         }
         match retrieved.get("float_field") {
             Some(TensorValue::Scalar(ScalarValue::Float(f))) => {
-                assert!((*f - 3.14).abs() < f64::EPSILON)
+                assert!((*f - 3.14).abs() < f64::EPSILON);
             },
             _ => panic!("Expected float"),
         }
@@ -8110,7 +8108,7 @@ mod tests {
             .with_metric(DistanceMetric::Euclidean)
             .with_auto_index(500);
 
-        engine.create_collection("custom", config.clone()).unwrap();
+        engine.create_collection("custom", config).unwrap();
         engine
             .store_in_collection("custom", "vec1", vec![1.0; 128])
             .unwrap();
@@ -8151,7 +8149,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("invalid.bin");
 
-        fs::write(&path, &[0xFF, 0xFF, 0xFF]).unwrap();
+        fs::write(&path, [0xFF, 0xFF, 0xFF]).unwrap();
 
         let engine = VectorEngine::new();
         let result = engine.load_index_binary(&path);
@@ -9248,7 +9246,7 @@ mod tests {
         let (index, keys) = engine.build_ivf_index(options).unwrap();
 
         assert_eq!(keys.len(), 20);
-        assert!(index.len() > 0);
+        assert!(!index.is_empty());
     }
 
     #[test]
@@ -9264,7 +9262,7 @@ mod tests {
         let (index, keys) = engine.build_ivf_index_default().unwrap();
 
         assert_eq!(keys.len(), 10);
-        assert!(index.len() > 0);
+        assert!(!index.is_empty());
     }
 
     #[test]

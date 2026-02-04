@@ -139,7 +139,7 @@ fn test_coordinator_crash_during_commit_recovery() {
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
-            .put(&format!("_dtx:coordinator:{}:state", node_id), data)
+            .put(format!("_dtx:coordinator:{}:state", node_id), data)
             .unwrap();
 
         tx.tx_id
@@ -189,7 +189,7 @@ fn test_coordinator_crash_with_timeout_recovery() {
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
-            .put(&format!("_dtx:coordinator:{}:state", node_id), data)
+            .put(format!("_dtx:coordinator:{}:state", node_id), data)
             .unwrap();
 
         tx.tx_id
@@ -339,7 +339,7 @@ fn test_coordinator_and_participant_crash_recovery() {
                 }],
                 delta_embedding: {
                     let mut v = vec![0.0; 2];
-                    v[shard as usize] = 1.0;
+                    v[shard] = 1.0;
                     SparseVector::from_dense(&v)
                 },
                 timeout_ms: 5000,
@@ -634,7 +634,7 @@ fn test_coordinator_recovery_during_committing_resends_commit() {
             tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(bytes)),
         );
         store
-            .put(&format!("_dtx:coordinator:{}:state", node_id), data)
+            .put(format!("_dtx:coordinator:{}:state", node_id), data)
             .unwrap();
 
         tx.tx_id
@@ -975,7 +975,7 @@ fn test_mixed_transaction_states_recovery() {
             tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(bytes)),
         );
         store
-            .put(&format!("_dtx:coordinator:{}:state", node_id), data)
+            .put(format!("_dtx:coordinator:{}:state", node_id), data)
             .unwrap();
 
         (tx1.tx_id, tx2.tx_id, tx3.tx_id)

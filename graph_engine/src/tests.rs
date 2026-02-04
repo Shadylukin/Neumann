@@ -679,7 +679,7 @@ fn delete_high_degree_node_parallel() {
     // Create 150 leaf nodes connected to the hub
     for i in 0..150 {
         let leaf = engine
-            .create_node(&format!("leaf{}", i), HashMap::new())
+            .create_node(format!("leaf{}", i), HashMap::new())
             .unwrap();
         engine
             .create_edge(hub, leaf, "CONNECTS", HashMap::new(), true)
@@ -3462,9 +3462,7 @@ fn find_all_paths_max_paths_limit() {
     let c = engine.create_node("C", HashMap::new()).unwrap();
 
     for i in 0..10 {
-        let b = engine
-            .create_node(&format!("B{i}"), HashMap::new())
-            .unwrap();
+        let b = engine.create_node(format!("B{i}"), HashMap::new()).unwrap();
         engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
         engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
     }
@@ -3485,9 +3483,7 @@ fn find_all_paths_max_parents_limit() {
     let c = engine.create_node("C", HashMap::new()).unwrap();
 
     for i in 0..10 {
-        let b = engine
-            .create_node(&format!("B{i}"), HashMap::new())
-            .unwrap();
+        let b = engine.create_node(format!("B{i}"), HashMap::new()).unwrap();
         engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
         engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
     }
@@ -3725,7 +3721,7 @@ fn all_paths_complex_grid() {
     for i in 0..3 {
         for j in 0..3 {
             nodes[i][j] = engine
-                .create_node(&format!("N{i}{j}"), HashMap::new())
+                .create_node(format!("N{i}{j}"), HashMap::new())
                 .unwrap();
         }
     }
@@ -3996,9 +3992,7 @@ fn variable_paths_max_paths_limit() {
 
     // Create 10 intermediate nodes, each connecting A to Z
     for i in 0..10 {
-        let n = engine
-            .create_node(&format!("N{i}"), HashMap::new())
-            .unwrap();
+        let n = engine.create_node(format!("N{i}"), HashMap::new()).unwrap();
         engine.create_edge(a, n, "E", HashMap::new(), true).unwrap();
         engine.create_edge(n, z, "E", HashMap::new(), true).unwrap();
     }
@@ -4020,9 +4014,7 @@ fn variable_paths_memory_budget() {
 
     // Create many intermediate nodes for exponential paths
     for i in 0..20 {
-        let n = engine
-            .create_node(&format!("N{i}"), HashMap::new())
-            .unwrap();
+        let n = engine.create_node(format!("N{i}"), HashMap::new()).unwrap();
         engine.create_edge(a, n, "E", HashMap::new(), true).unwrap();
         engine.create_edge(n, z, "E", HashMap::new(), true).unwrap();
     }
@@ -4057,7 +4049,7 @@ fn variable_paths_cycle_detection() {
     let config = VariableLengthConfig::with_hops(1, 5).allow_cycles(true);
     let result = engine.find_variable_paths(a, c, config).unwrap();
     // Could find A->B->C and A->B->C->A->B->C, etc.
-    assert!(result.paths.len() >= 1);
+    assert!(!result.paths.is_empty());
 }
 
 #[test]
@@ -5730,7 +5722,7 @@ fn all_nodes_paginated_basic() {
     let engine = GraphEngine::new();
     for i in 0..5 {
         engine
-            .create_node(&format!("Label{i}"), HashMap::new())
+            .create_node(format!("Label{i}"), HashMap::new())
             .unwrap();
     }
 
@@ -5745,7 +5737,7 @@ fn all_nodes_paginated_skip() {
     let engine = GraphEngine::new();
     for i in 0..5 {
         engine
-            .create_node(&format!("Label{i}"), HashMap::new())
+            .create_node(format!("Label{i}"), HashMap::new())
             .unwrap();
     }
 
@@ -5813,7 +5805,7 @@ fn all_edges_paginated_basic() {
 
     for i in 0..5 {
         engine
-            .create_edge(n1, n2, &format!("REL{i}"), HashMap::new(), true)
+            .create_edge(n1, n2, format!("REL{i}"), HashMap::new(), true)
             .unwrap();
     }
 
@@ -5975,7 +5967,7 @@ fn neighbors_paginated_basic() {
 
     for i in 0..8 {
         let neighbor = engine
-            .create_node(&format!("Neighbor{i}"), HashMap::new())
+            .create_node(format!("Neighbor{i}"), HashMap::new())
             .unwrap();
         engine
             .create_edge(center, neighbor, "CONNECTED", HashMap::new(), true)
@@ -6326,17 +6318,13 @@ fn neighbors_paginated_edge_type_filter() {
     let center = engine.create_node("Center", HashMap::new()).unwrap();
 
     for i in 0..5 {
-        let neighbor = engine
-            .create_node(&format!("N{i}"), HashMap::new())
-            .unwrap();
+        let neighbor = engine.create_node(format!("N{i}"), HashMap::new()).unwrap();
         engine
             .create_edge(center, neighbor, "KNOWS", HashMap::new(), true)
             .unwrap();
     }
     for i in 5..10 {
-        let neighbor = engine
-            .create_node(&format!("N{i}"), HashMap::new())
-            .unwrap();
+        let neighbor = engine.create_node(format!("N{i}"), HashMap::new()).unwrap();
         engine
             .create_edge(center, neighbor, "LIKES", HashMap::new(), true)
             .unwrap();
@@ -6360,9 +6348,7 @@ fn neighbors_paginated_incoming_direction() {
     let center = engine.create_node("Center", HashMap::new()).unwrap();
 
     for i in 0..5 {
-        let neighbor = engine
-            .create_node(&format!("N{i}"), HashMap::new())
-            .unwrap();
+        let neighbor = engine.create_node(format!("N{i}"), HashMap::new()).unwrap();
         engine
             .create_edge(neighbor, center, "KNOWS", HashMap::new(), true)
             .unwrap();
@@ -11330,7 +11316,7 @@ fn test_concurrent_pagerank_during_writes_16_threads() {
                     edge_type: None,
                 })) {
                     // Verify no NaN or infinite values
-                    for (_, score) in &result.scores {
+                    for score in result.scores.values() {
                         assert!(score.is_finite(), "score must be finite");
                     }
                     cnt.fetch_add(1, Ordering::Relaxed);
@@ -12243,7 +12229,7 @@ fn test_similarity_node_link_prediction() {
     let result = engine
         .jaccard_similarity(n1, n2, &SimilarityConfig::default())
         .unwrap();
-    assert!(result >= 0.0 && result <= 1.0);
+    assert!((0.0..=1.0).contains(&result));
 }
 
 // Edge property index tests
@@ -14885,7 +14871,7 @@ fn test_local_clustering_coefficient() {
 
     let config = TriangleConfig::default();
     let result = engine.local_clustering_coefficient(n1, &config).unwrap();
-    assert!(result >= 0.0 && result <= 1.0);
+    assert!((0.0..=1.0).contains(&result));
 }
 
 // Test global clustering coefficient
@@ -14911,7 +14897,7 @@ fn test_global_clustering_coefficient() {
 
     let config = TriangleConfig::default();
     let coeff = engine.global_clustering_coefficient(&config).unwrap();
-    assert!(coeff >= 0.0 && coeff <= 1.0);
+    assert!((0.0..=1.0).contains(&coeff));
 }
 
 // Test find common neighbors
@@ -14985,7 +14971,7 @@ fn test_jaccard_similarity() {
 
     let config = SimilarityConfig::default();
     let sim = engine.jaccard_similarity(n1, n2, &config).unwrap();
-    assert!(sim >= 0.0 && sim <= 1.0);
+    assert!((0.0..=1.0).contains(&sim));
 }
 
 // Test preferential attachment
@@ -15872,7 +15858,7 @@ fn test_cosine_similarity_direct() {
 
     let config = SimilarityConfig::default();
     let result = engine.cosine_similarity(n1, n2, &config).unwrap();
-    assert!(result >= 0.0 && result <= 1.0);
+    assert!((0.0..=1.0).contains(&result));
 }
 
 // Test PropertyValue from string that looks like JSON but isn't valid PropertyValue JSON
@@ -16316,7 +16302,7 @@ fn test_mst_forest_isolated_nodes() {
     let forests = engine.minimum_spanning_forest("weight").unwrap();
 
     // Should have multiple trees: one for the connected pair, plus isolated nodes
-    assert!(forests.len() >= 1);
+    assert!(!forests.is_empty());
 
     // Check that isolated nodes are represented
     let all_nodes: Vec<u64> = forests.iter().flat_map(|f| f.nodes.clone()).collect();
@@ -16385,21 +16371,21 @@ fn test_scan_nodes_where_label() {
     let nodes =
         engine.scan_nodes_where("_label", RangeOp::Lt, &PropertyValue::String("Beta".into()));
     // Alpha should match
-    assert!(nodes.len() >= 1);
+    assert!(!nodes.is_empty());
 
     let nodes = engine.scan_nodes_where(
         "_label",
         RangeOp::Ge,
         &PropertyValue::String("Gamma".into()),
     );
-    assert!(nodes.len() >= 1);
+    assert!(!nodes.is_empty());
 
     let nodes = engine.scan_nodes_where(
         "_label",
         RangeOp::Le,
         &PropertyValue::String("Alpha".into()),
     );
-    assert!(nodes.len() >= 1);
+    assert!(!nodes.is_empty());
 }
 
 // Test building node index on a custom property (not _label since it's auto-indexed)

@@ -450,9 +450,9 @@ mod tests {
         let theme = Theme::plain();
         let icons = Icons::ASCII;
         let result = format_path(&[1, 2, 3], &theme, &icons);
-        assert!(result.contains("1"));
-        assert!(result.contains("2"));
-        assert!(result.contains("3"));
+        assert!(result.contains('1'));
+        assert!(result.contains('2'));
+        assert!(result.contains('3'));
         assert!(result.contains("->"));
     }
 
@@ -522,7 +522,7 @@ mod tests {
         let theme = Theme::plain();
         let result = format_aggregate(&AggregateResultValue::Min(1.0), &theme);
         assert!(result.contains("Min"));
-        assert!(result.contains("1"));
+        assert!(result.contains('1'));
     }
 
     #[test]

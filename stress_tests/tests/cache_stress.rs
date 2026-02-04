@@ -456,7 +456,7 @@ fn stress_cache_memory_stability() {
                 let value = format!("value with some padding to simulate real data {}", i);
 
                 // Mix of writes and reads
-                if i % 3 == 0 {
+                if i.is_multiple_of(3) {
                     let _ = cache.put_simple(&key, &value);
                 } else {
                     let _ = cache.get_simple(&key);
@@ -466,7 +466,7 @@ fn stress_cache_memory_stability() {
                 i += 1;
 
                 // Periodic stats check
-                if i % 10_000 == 0 {
+                if i.is_multiple_of(10_000) {
                     let stats = cache.stats_snapshot();
                     let _ = stats.total_entries(); // Access stats
                 }

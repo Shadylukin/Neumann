@@ -172,7 +172,7 @@ mod tests {
         let result = CheckResult::healthy("Test", "OK").with_details("More info");
         let line = format_check_result(&result, &test_theme(), test_icons());
         assert!(line.contains("More info"));
-        assert!(line.contains("("));
-        assert!(line.contains(")"));
+        assert!(line.contains('('));
+        assert!(line.contains(')'));
     }
 }

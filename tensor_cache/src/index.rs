@@ -466,8 +466,7 @@ mod tests {
     fn normalize(v: &[f32]) -> Vec<f32> {
         SparseVector::from_dense(v)
             .normalize()
-            .map(|sv| sv.to_dense())
-            .unwrap_or_else(|| v.to_vec())
+            .map_or_else(|| v.to_vec(), |sv| sv.to_dense())
     }
 
     #[test]
@@ -542,7 +541,7 @@ mod tests {
 
         for i in 0..100 {
             let v = create_test_vector(64, i);
-            index.insert(&format!("key{}", i), &v).unwrap();
+            index.insert(&format!("key{i}"), &v).unwrap();
         }
 
         assert_eq!(index.len(), 100);
@@ -643,7 +642,7 @@ mod tests {
             similarity: 0.95,
             metric_used: DistanceMetric::Cosine,
         };
-        let cloned = result.clone();
+        let cloned = result;
         assert_eq!(cloned.key, "test");
         assert_eq!(cloned.similarity, 0.95);
         assert_eq!(cloned.metric_used, DistanceMetric::Cosine);

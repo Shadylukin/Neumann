@@ -120,7 +120,7 @@ fn test_snapshot_during_writes() {
     // Verify snapshot is valid and loadable
     let restored = TensorStore::load_snapshot(&snapshot_path).unwrap();
     // At least some entries should exist (snapshot taken mid-write)
-    assert!(restored.len() > 0);
+    assert!(!restored.is_empty());
 }
 
 #[test]

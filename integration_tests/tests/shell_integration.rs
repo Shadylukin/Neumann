@@ -51,13 +51,10 @@ fn test_shell_help_command() {
 
     let result = shell.execute("help");
 
-    match result {
-        CommandResult::Help(help_text) => {
-            // Help should contain usage information
-            assert!(!help_text.is_empty());
-            assert!(help_text.contains("SELECT") || help_text.contains("select"));
-        },
-        _ => {},
+    if let CommandResult::Help(help_text) = result {
+        // Help should contain usage information
+        assert!(!help_text.is_empty());
+        assert!(help_text.contains("SELECT") || help_text.contains("select"));
     }
 }
 
@@ -67,11 +64,8 @@ fn test_shell_empty_command() {
 
     let result = shell.execute("");
 
-    match result {
-        CommandResult::Empty => {
-            // Empty input should return Empty result
-        },
-        _ => {},
+    if result == CommandResult::Empty {
+        // Empty input should return Empty result
     }
 }
 
@@ -81,11 +75,8 @@ fn test_shell_whitespace_command() {
 
     let result = shell.execute("   ");
 
-    match result {
-        CommandResult::Empty => {
-            // Whitespace-only should return Empty
-        },
-        _ => {},
+    if result == CommandResult::Empty {
+        // Whitespace-only should return Empty
     }
 }
 
@@ -95,11 +86,8 @@ fn test_shell_exit_command() {
 
     let result = shell.execute("exit");
 
-    match result {
-        CommandResult::Exit => {
-            // exit should return Exit
-        },
-        _ => {},
+    if result == CommandResult::Exit {
+        // exit should return Exit
     }
 }
 
@@ -109,11 +97,8 @@ fn test_shell_quit_command() {
 
     let result = shell.execute("quit");
 
-    match result {
-        CommandResult::Exit => {
-            // quit should also return Exit
-        },
-        _ => {},
+    if result == CommandResult::Exit {
+        // quit should also return Exit
     }
 }
 
@@ -124,12 +109,9 @@ fn test_shell_node_commands() {
     // Create node
     let result = shell.execute("NODE CREATE user name='Test'");
 
-    match result {
-        CommandResult::Output(output) => {
-            // Should output node ID
-            assert!(!output.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Output(output) = result {
+        // Should output node ID
+        assert!(!output.is_empty());
     }
 }
 
@@ -143,12 +125,9 @@ fn test_shell_embed_commands() {
     // Get embedding
     let result = shell.execute("EMBED GET 'key1'");
 
-    match result {
-        CommandResult::Output(output) => {
-            // Should show embedding
-            assert!(!output.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Output(output) = result {
+        // Should show embedding
+        assert!(!output.is_empty());
     }
 }
 
@@ -164,11 +143,8 @@ fn test_shell_similar_command() {
     // Find similar
     let result = shell.execute("SIMILAR doc1 TOP 2");
 
-    match result {
-        CommandResult::Output(_output) => {
-            // Should contain similarity results
-        },
-        _ => {},
+    if let CommandResult::Output(_output) = result {
+        // Should contain similarity results
     }
 }
 
@@ -179,12 +155,9 @@ fn test_shell_error_handling() {
     // Invalid command
     let result = shell.execute("INVALID_COMMAND xyz");
 
-    match result {
-        CommandResult::Error(e) => {
-            // Should return error
-            assert!(!e.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Error(e) = result {
+        // Should return error
+        assert!(!e.is_empty());
     }
 }
 
@@ -199,11 +172,8 @@ fn test_shell_case_insensitivity() {
 
     // All should work
     let result = shell.execute("SHOW TABLES");
-    match result {
-        CommandResult::Output(_output) => {
-            // Should show all tables
-        },
-        _ => {},
+    if let CommandResult::Output(_output) = result {
+        // Should show all tables
     }
 }
 
@@ -234,10 +204,7 @@ fn test_shell_multiline_support() {
 
     let result = shell.execute(query);
 
-    match result {
-        CommandResult::Output(_) => {},
-        _ => {},
-    }
+    if let CommandResult::Output(_) = result {}
 }
 
 #[test]
@@ -250,12 +217,9 @@ fn test_shell_show_tables() {
 
     let result = shell.execute("SHOW TABLES");
 
-    match result {
-        CommandResult::Output(output) => {
-            // Should list tables
-            assert!(output.contains("table1") || output.contains("table2") || !output.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Output(output) = result {
+        // Should list tables
+        assert!(output.contains("table1") || output.contains("table2") || !output.is_empty());
     }
 }
 
@@ -269,12 +233,9 @@ fn test_shell_describe_command() {
     // Describe it
     let result = shell.execute("DESCRIBE TABLE described");
 
-    match result {
-        CommandResult::Output(output) => {
-            // Should show schema
-            assert!(!output.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Output(output) = result {
+        // Should show schema
+        assert!(!output.is_empty());
     }
 }
 
@@ -288,12 +249,9 @@ fn test_shell_count_embeddings() {
 
     let result = shell.execute("COUNT EMBEDDINGS");
 
-    match result {
-        CommandResult::Output(output) => {
-            // Should show count
-            assert!(!output.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Output(output) = result {
+        // Should show count
+        assert!(!output.is_empty());
     }
 }
 
@@ -307,11 +265,8 @@ fn test_shell_find_command() {
 
     let result = shell.execute("FIND NODE person");
 
-    match result {
-        CommandResult::Output(_output) => {
-            // Should show found nodes
-        },
-        _ => {},
+    if let CommandResult::Output(_output) = result {
+        // Should show found nodes
     }
 }
 
@@ -322,19 +277,13 @@ fn test_shell_entity_commands() {
     // Entity create
     let result = shell.execute("ENTITY CREATE 'user:1' { name: 'Test' }");
 
-    match result {
-        CommandResult::Output(_output) => {},
-        _ => {},
-    }
+    if let CommandResult::Output(_output) = result {}
 
     // Entity connect
     shell.execute("ENTITY CREATE 'user:2' { name: 'Other' }");
     let connect_result = shell.execute("ENTITY CONNECT 'user:1' -> 'user:2' : knows");
 
-    match connect_result {
-        CommandResult::Output(_) => {},
-        _ => {},
-    }
+    if let CommandResult::Output(_) = connect_result {}
 }
 
 #[test]
@@ -344,11 +293,8 @@ fn test_shell_vault_commands_without_init() {
     // Vault not initialized - should error gracefully
     let result = shell.execute("VAULT GET 'key'");
 
-    match result {
-        CommandResult::Error(_) => {
-            // Expected
-        },
-        _ => {},
+    if let CommandResult::Error(_) = result {
+        // Expected
     }
 }
 
@@ -373,11 +319,8 @@ fn test_shell_embed_batch() {
 
     let result = shell.execute("EMBED BATCH [('batch:1', [1.0, 0.0]), ('batch:2', [0.0, 1.0])]");
 
-    match result {
-        CommandResult::Output(_output) => {
-            // Should show count of stored embeddings
-        },
-        _ => {},
+    if let CommandResult::Output(_output) = result {
+        // Should show count of stored embeddings
     }
 }
 
@@ -392,11 +335,8 @@ fn test_shell_neighbors_command() {
 
     let result = shell.execute("NEIGHBORS 1 OUT");
 
-    match result {
-        CommandResult::Output(_output) => {
-            // Should show neighbor IDs
-        },
-        _ => {},
+    if let CommandResult::Output(_output) = result {
+        // Should show neighbor IDs
     }
 }
 
@@ -413,11 +353,8 @@ fn test_shell_path_command() {
 
     let result = shell.execute("PATH 1 -> 3");
 
-    match result {
-        CommandResult::Output(_output) => {
-            // Should show path
-        },
-        _ => {},
+    if let CommandResult::Output(_output) = result {
+        // Should show path
     }
 }
 
@@ -448,11 +385,8 @@ fn test_shell_preserves_state() {
     // State should be preserved
     let result = shell.execute("SELECT * FROM state_test");
 
-    match result {
-        CommandResult::Output(output) => {
-            // Should show both rows
-            assert!(!output.is_empty());
-        },
-        _ => {},
+    if let CommandResult::Output(output) = result {
+        // Should show both rows
+        assert!(!output.is_empty());
     }
 }

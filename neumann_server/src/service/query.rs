@@ -1366,4 +1366,280 @@ mod tests {
     }
 
     use tokio_stream::StreamExt;
+
+    // === Service Builder Tests ===
+
+    #[test]
+    fn test_with_full_config_all_parameters() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::metrics::ServerMetrics;
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = create_test_router();
+        let auth_config = AuthConfig::new().with_anonymous(false);
+        let health_state = Arc::new(HealthState::new());
+        let rate_limiter = Arc::new(RateLimiter::new(RateLimitConfig::default()));
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            64,
+            Arc::clone(&health_state),
+            Some(Arc::clone(&rate_limiter)),
+            Some(Arc::clone(&audit_logger)),
+            Some(Arc::clone(&metrics)),
+        );
+
+        assert!(service.auth_config.is_some());
+        assert_eq!(service.stream_channel_capacity, 64);
+        assert!(service.health_state.is_some());
+        assert!(service.rate_limiter.is_some());
+        assert!(service.audit_logger.is_some());
+        assert!(service.metrics.is_some());
+    }
+
+    #[test]
+    fn test_with_full_config_minimal_parameters() {
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+
+        let service =
+            QueryServiceImpl::with_full_config(router, None, 32, health_state, None, None, None);
+
+        assert!(service.auth_config.is_none());
+        assert_eq!(service.stream_channel_capacity, 32);
+        assert!(service.health_state.is_some());
+        assert!(service.rate_limiter.is_none());
+        assert!(service.audit_logger.is_none());
+        assert!(service.metrics.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_audit_logger_integration() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::config::ApiKey;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "test-audit-key-123456".to_string(),
+            "user:audit_test".to_string(),
+        ));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            None,
+            Some(Arc::clone(&audit_logger)),
+            None,
+        );
+
+        // Execute a query with valid auth
+        let mut request = Request::new(QueryRequest {
+            query: "CREATE TABLE audit_test (x:int)".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("test-audit-key-123456"),
+        );
+
+        let response = service.execute(request).await;
+        assert!(response.is_ok());
+
+        // Audit log should have recorded the query
+        // (In production, you'd verify the audit log contents)
+    }
+
+    #[tokio::test]
+    async fn test_invalid_api_key() {
+        use crate::config::ApiKey;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "valid-key-123456789".to_string(),
+                "user:valid".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            None,
+            None,
+            None,
+        );
+
+        // Execute with invalid API key
+        let mut request = Request::new(QueryRequest {
+            query: "CREATE TABLE invalid_auth (x:int)".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("wrong-key-000000000"),
+        );
+
+        let response = service.execute(request).await;
+        assert!(response.is_err());
+        assert_eq!(response.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_missing_api_key_when_required() {
+        use crate::config::ApiKey;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "required-key-123456".to_string(),
+                "user:required".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            None,
+            None,
+            None,
+        );
+
+        // Execute without API key when it's required
+        let request = Request::new(QueryRequest {
+            query: "CREATE TABLE missing_auth (x:int)".to_string(),
+            identity: None,
+        });
+
+        let response = service.execute(request).await;
+        assert!(response.is_err());
+        assert_eq!(response.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_enforcement() {
+        use crate::config::ApiKey;
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use std::time::Duration;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "rate-limit-key-123456".to_string(),
+            "user:ratelimit".to_string(),
+        ));
+
+        // Very restrictive rate limit
+        let rate_limiter = Arc::new(RateLimiter::new(
+            RateLimitConfig::new()
+                .with_max_queries(2)
+                .with_window(Duration::from_secs(60)),
+        ));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            Some(rate_limiter),
+            None,
+            None,
+        );
+
+        // First two requests should succeed
+        for i in 0..2 {
+            let mut request = Request::new(QueryRequest {
+                query: format!("CREATE TABLE rate{i} (x:int)"),
+                identity: None,
+            });
+            request.metadata_mut().insert(
+                "x-api-key",
+                MetadataValue::from_static("rate-limit-key-123456"),
+            );
+            let response = service.execute(request).await;
+            assert!(response.is_ok(), "Request {i} should succeed");
+        }
+
+        // Third request should be rate limited
+        let mut request = Request::new(QueryRequest {
+            query: "CREATE TABLE rate_exceeded (x:int)".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("rate-limit-key-123456"),
+        );
+        let response = service.execute(request).await;
+        assert!(response.is_err());
+        assert_eq!(response.unwrap_err().code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[tokio::test]
+    async fn test_all_components_together() {
+        use crate::audit::{AuditConfig, AuditLogger};
+        use crate::config::ApiKey;
+        use crate::metrics::ServerMetrics;
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "integrated-key-123456".to_string(),
+            "user:integrated".to_string(),
+        ));
+        let rate_limiter = Arc::new(RateLimiter::new(RateLimitConfig::default()));
+        let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            Some(rate_limiter),
+            Some(audit_logger),
+            Some(metrics),
+        );
+
+        // Execute with all components active
+        let mut request = Request::new(QueryRequest {
+            query: "CREATE TABLE integrated_test (x:int)".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("integrated-key-123456"),
+        );
+
+        let response = service.execute(request).await;
+        assert!(response.is_ok());
+    }
 }

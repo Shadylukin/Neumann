@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! gRPC integration tests for CollectionsService.
+//! gRPC integration tests for `CollectionsService`.
 //!
 //! These tests verify actual gRPC behavior for vector collection management by starting
 //! a server and connecting with gRPC clients.

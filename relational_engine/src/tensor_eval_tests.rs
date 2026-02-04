@@ -328,10 +328,7 @@ fn test_concurrent_index_add_remove() {
                     );
                 }
                 // Delete some existing rows
-                let _ = eng.delete_rows(
-                    "test",
-                    Condition::Eq("val".to_string(), Value::Int(i64::from(i))),
-                );
+                let _ = eng.delete_rows("test", Condition::Eq("val".to_string(), Value::Int(i)));
             })
         })
         .collect();
@@ -559,7 +556,7 @@ fn test_config_accessor_methods() {
     assert_eq!(config.max_query_timeout_ms, Some(60000));
     assert_eq!(config.max_btree_entries, 5_000_000);
 
-    let engine = RelationalEngine::with_config(config.clone());
+    let engine = RelationalEngine::with_config(config);
     let engine_config = engine.config();
     assert_eq!(engine_config.max_tables, Some(100));
 }
@@ -575,7 +572,7 @@ fn test_table_count_tracking() {
     engine.create_table("t1", schema.clone()).unwrap();
     assert_eq!(engine.table_count(), 1);
 
-    engine.create_table("t2", schema.clone()).unwrap();
+    engine.create_table("t2", schema).unwrap();
     assert_eq!(engine.table_count(), 2);
 
     engine.drop_table("t1").unwrap();

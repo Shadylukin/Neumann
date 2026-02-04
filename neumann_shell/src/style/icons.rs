@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_icons_debug() {
         let icons = Icons::ASCII;
-        let debug_str = format!("{:?}", icons);
+        let debug_str = format!("{icons:?}");
         assert!(debug_str.contains("Icons"));
     }
 

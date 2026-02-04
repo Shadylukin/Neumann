@@ -371,9 +371,9 @@ mod tests {
     fn test_highlight_brackets() {
         let highlighter = NeumannHighlighter::new(Theme::plain());
         let result = highlighter.highlight_line("(1, 2, 3)");
-        assert!(result.contains("1"));
-        assert!(result.contains("2"));
-        assert!(result.contains("3"));
+        assert!(result.contains('1'));
+        assert!(result.contains('2'));
+        assert!(result.contains('3'));
     }
 
     #[test]
@@ -414,8 +414,8 @@ mod tests {
     fn test_highlight_operators() {
         let highlighter = NeumannHighlighter::new(Theme::plain());
         let result = highlighter.highlight_line("a = b");
-        assert!(result.contains("a"));
-        assert!(result.contains("b"));
+        assert!(result.contains('a'));
+        assert!(result.contains('b'));
     }
 
     #[test]

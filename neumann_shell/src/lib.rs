@@ -1558,7 +1558,7 @@ mod tests {
 
         let result = shell.execute("SELECT * FROM test_users");
         if let CommandResult::Output(text) = result {
-            assert!(text.contains("Alice") || text.contains("1"));
+            assert!(text.contains("Alice") || text.contains('1'));
         }
     }
 
@@ -2049,7 +2049,7 @@ mod tests {
     fn test_vault_init_valid_key() {
         let shell = Shell::new();
         // Set a valid base64 encoded 32-byte key
-        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 32]);
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 32]);
         std::env::set_var("NEUMANN_VAULT_KEY", &key);
         let result = shell.handle_vault_init();
         std::env::remove_var("NEUMANN_VAULT_KEY");
@@ -2114,7 +2114,7 @@ mod tests {
         shell.execute("CREATE TABLE wal_test (id INT)");
 
         // Save snapshot
-        let result = shell.execute(&format!("SAVE '{}'", snapshot_str));
+        let result = shell.execute(&format!("SAVE '{snapshot_str}'"));
         assert!(
             matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
         );
@@ -2509,7 +2509,7 @@ mod tests {
         shell.execute("INSERT INTO cycle_test VALUES (2, 'Bob')");
 
         // Save
-        let save_result = shell.execute(&format!("SAVE '{}'", path_str));
+        let save_result = shell.execute(&format!("SAVE '{path_str}'"));
         assert!(
             matches!(save_result, CommandResult::Output(_)),
             "Save should succeed"
@@ -2517,7 +2517,7 @@ mod tests {
 
         // Create a new shell and load
         let mut shell2 = Shell::new();
-        let load_result = shell2.execute(&format!("LOAD '{}'", path_str));
+        let load_result = shell2.execute(&format!("LOAD '{path_str}'"));
         // Load may succeed or fail based on file system permissions
         let loaded = matches!(load_result, CommandResult::Output(_));
 
@@ -2544,7 +2544,7 @@ mod tests {
         shell.execute("INSERT INTO compress_test VALUES (1)");
 
         // Save compressed
-        let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path_str));
+        let result = shell.execute(&format!("SAVE COMPRESSED '{path_str}'"));
         let saved = matches!(result, CommandResult::Output(_));
 
         // Clean up
@@ -2563,10 +2563,10 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // Save to create a snapshot
-        shell.execute(&format!("SAVE '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
 
         // Load to activate WAL
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Check WAL status
         let result = shell.execute("WAL STATUS");
@@ -2593,8 +2593,8 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // Save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Execute write command
         let result = shell.execute("CREATE TABLE wal_write_test (id INT)");
@@ -2706,7 +2706,7 @@ mod tests {
 
         // Create data and save snapshot
         shell.execute("CREATE TABLE load_replay_test (id INT)");
-        shell.execute(&format!("SAVE '{}'", snap_str));
+        shell.execute(&format!("SAVE '{snap_str}'"));
 
         // Create a WAL file with additional commands
         {
@@ -2715,7 +2715,7 @@ mod tests {
         }
 
         // Load should replay the WAL
-        let result = shell.handle_load(&format!("LOAD '{}'", snap_str));
+        let result = shell.handle_load(&format!("LOAD '{snap_str}'"));
         // Should succeed and replay the WAL
         assert!(matches!(result, CommandResult::Output(_)));
 
@@ -2735,7 +2735,7 @@ mod tests {
         let snap_str = snap_path.to_string_lossy().to_string();
 
         // Save snapshot
-        shell.execute(&format!("SAVE '{}'", snap_str));
+        shell.execute(&format!("SAVE '{snap_str}'"));
 
         // Create a WAL file with invalid command
         {
@@ -2744,7 +2744,7 @@ mod tests {
         }
 
         // Load in strict mode should fail
-        let result = shell.handle_load(&format!("LOAD '{}'", snap_str));
+        let result = shell.handle_load(&format!("LOAD '{snap_str}'"));
         assert!(matches!(result, CommandResult::Error(_)));
         if let CommandResult::Error(msg) = result {
             assert!(msg.contains("WAL replay failed"));
@@ -2767,7 +2767,7 @@ mod tests {
         let snap_str = snap_path.to_string_lossy().to_string();
 
         // Save snapshot
-        shell.execute(&format!("SAVE '{}'", snap_str));
+        shell.execute(&format!("SAVE '{snap_str}'"));
 
         // Create a WAL file with invalid command
         {
@@ -2778,7 +2778,7 @@ mod tests {
         }
 
         // Load with RECOVER should succeed but report skipped entries
-        let result = shell.handle_load(&format!("LOAD '{}' RECOVER", snap_str));
+        let result = shell.handle_load(&format!("LOAD '{snap_str}' RECOVER"));
         assert!(matches!(result, CommandResult::Output(_)));
         if let CommandResult::Output(msg) = &result {
             assert!(msg.contains("Loaded snapshot") || msg.contains("Skipped"));
@@ -2797,8 +2797,8 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // Save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Add some WAL entries
         shell.execute("CREATE TABLE truncate_test (id INT)");
@@ -2823,8 +2823,8 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // Save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Add some WAL entries
         shell.execute("CREATE TABLE status_test (id INT)");
@@ -2848,15 +2848,15 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // First save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Add WAL entries
         shell.execute("CREATE TABLE truncate_on_save_test (id INT)");
         shell.execute("INSERT INTO truncate_on_save_test VALUES (1)");
 
         // Save should truncate WAL
-        let result = shell.execute(&format!("SAVE '{}'", path_str));
+        let result = shell.execute(&format!("SAVE '{path_str}'"));
         assert!(matches!(result, CommandResult::Output(_)));
 
         // Clean up
@@ -2872,14 +2872,14 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // First save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Add WAL entries
         shell.execute("CREATE TABLE compressed_wal_test (id INT)");
 
         // Save compressed should truncate WAL
-        let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path_str));
+        let result = shell.execute(&format!("SAVE COMPRESSED '{path_str}'"));
         assert!(
             matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
         );
@@ -3360,7 +3360,7 @@ mod tests {
                     "entity{i}"
                 ))),
             );
-            store.put(&format!("scalar:{i}"), data).unwrap();
+            store.put(format!("scalar:{i}"), data).unwrap();
         }
 
         // Add one with vector
@@ -3628,8 +3628,8 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // Save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Execute a write command that should be logged to WAL
         let result = shell.execute("CREATE TABLE wal_log_test (id INT)");
@@ -4201,8 +4201,8 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         // Save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Now writes should be logged
         shell.execute("CREATE TABLE wal_exec_log_test (id INT)");
@@ -4265,7 +4265,7 @@ mod tests {
             no_boot: true,
             quiet: true,
         };
-        let shell = Shell::with_config(config.clone());
+        let shell = Shell::with_config(config);
         assert_eq!(shell.config.history_size, 2000);
         assert!(shell.config.quiet);
     }
@@ -4384,9 +4384,9 @@ mod tests {
 
         // Verify all variants are different
         assert_ne!(empty, exit);
-        assert_ne!(empty, output.clone());
-        assert_ne!(empty, error.clone());
-        assert_ne!(empty, help.clone());
+        assert_ne!(empty, output);
+        assert_ne!(empty, error);
+        assert_ne!(empty, help);
     }
 
     #[test]
@@ -4428,11 +4428,11 @@ mod tests {
         shell.execute("EMBED STORE 'cycle:key' [0.1, 0.2, 0.3, 0.4]");
 
         // Save snapshot
-        let result = shell.execute(&format!("SAVE '{}'", path_str));
+        let result = shell.execute(&format!("SAVE '{path_str}'"));
         assert!(matches!(result, CommandResult::Output(_)));
 
         // Load snapshot
-        let result = shell.execute(&format!("LOAD '{}'", path_str));
+        let result = shell.execute(&format!("LOAD '{path_str}'"));
         assert!(matches!(result, CommandResult::Output(_)));
 
         // Verify data exists
@@ -4457,7 +4457,7 @@ mod tests {
         shell.execute("EMBED STORE 'comp:2' [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]");
 
         // Save compressed
-        let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path_str));
+        let result = shell.execute(&format!("SAVE COMPRESSED '{path_str}'"));
         assert!(
             matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
         );
@@ -4486,10 +4486,10 @@ mod tests {
         let path_str = snapshot_path.to_string_lossy().to_string();
 
         // Save
-        shell.execute(&format!("SAVE '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
 
         // Load - should activate WAL
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // WAL status should show active
         let result = shell.execute("WAL STATUS");
@@ -4510,8 +4510,8 @@ mod tests {
         let path_str = snapshot_path.to_string_lossy().to_string();
 
         // Save and load to activate WAL
-        shell.execute(&format!("SAVE '{}'", path_str));
-        shell.execute(&format!("LOAD '{}'", path_str));
+        shell.execute(&format!("SAVE '{path_str}'"));
+        shell.execute(&format!("LOAD '{path_str}'"));
 
         // Truncate WAL
         let result = shell.execute("WAL TRUNCATE");

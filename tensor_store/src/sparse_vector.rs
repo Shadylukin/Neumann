@@ -1303,7 +1303,7 @@ mod tests {
         // Identical vectors should give exactly 1.0 (not 1.0000001 due to floating point)
         let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
         let result = a.cosine_similarity(&a);
-        assert!(result >= -1.0 && result <= 1.0);
+        assert!((-1.0..=1.0).contains(&result));
         assert!((result - 1.0).abs() < 1e-6);
     }
 
@@ -1313,7 +1313,7 @@ mod tests {
         let b = SparseVector::from_dense(&[-1.0, 0.0, 0.0]);
 
         let result = a.cosine_similarity(&b);
-        assert!(result >= -1.0 && result <= 1.0);
+        assert!((-1.0..=1.0).contains(&result));
         assert!((result - (-1.0)).abs() < 1e-6);
     }
 
@@ -1343,7 +1343,7 @@ mod tests {
         let dense = vec![1.0, 0.0, 0.0];
 
         let result = sparse.cosine_distance_dense(&dense);
-        assert!(result >= 0.0 && result <= 2.0);
+        assert!((0.0..=2.0).contains(&result));
         assert!(result < 1e-6); // Should be ~0 for identical vectors
     }
 
@@ -1666,7 +1666,7 @@ mod tests {
         let b = SparseVector::from_dense(&[0.0, 2.0, 4.0, 0.0]);
         // This exercises all branches in weighted_jaccard merge loop
         let result = a.weighted_jaccard(&b);
-        assert!(result >= 0.0 && result <= 1.0);
+        assert!((0.0..=1.0).contains(&result));
     }
 
     #[test]
@@ -1675,7 +1675,7 @@ mod tests {
         let a = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
         let b = SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]);
         let result = a.weighted_jaccard(&b);
-        assert!(result >= 0.0 && result <= 1.0);
+        assert!((0.0..=1.0).contains(&result));
     }
 
     #[test]

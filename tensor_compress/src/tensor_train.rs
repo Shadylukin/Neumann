@@ -735,8 +735,7 @@ mod tests {
 
         assert!(
             rel_error < 0.1,
-            "Relative reconstruction error too high: {}",
-            rel_error
+            "Relative reconstruction error too high: {rel_error}"
         );
     }
 
@@ -751,7 +750,7 @@ mod tests {
 
         // TT norm should approximate dense norm
         let rel_error = (tt_norm_val - dense_norm).abs() / dense_norm;
-        assert!(rel_error < 0.5, "Norm error too high: {}", rel_error);
+        assert!(rel_error < 0.5, "Norm error too high: {rel_error}");
     }
 
     #[test]
@@ -768,7 +767,7 @@ mod tests {
 
         // Should be reasonably close
         let rel_error = (tt_dot - dense_dot).abs() / dense_dot.abs().max(1.0);
-        assert!(rel_error < 0.5, "Dot product error: {}", rel_error);
+        assert!(rel_error < 0.5, "Dot product error: {rel_error}");
     }
 
     #[test]
@@ -782,7 +781,7 @@ mod tests {
 
         let sim = tt_cosine_similarity(&tt1, &tt2).unwrap();
         // Same vector should have similarity close to 1.0
-        assert!(sim > 0.9, "Self-similarity should be ~1.0, got {}", sim);
+        assert!(sim > 0.9, "Self-similarity should be ~1.0, got {sim}");
     }
 
     #[test]
@@ -798,7 +797,7 @@ mod tests {
         // Scaling by 2 should double the norm
         let expected = norm_orig * 2.0;
         let rel_error = (norm_scaled - expected).abs() / expected;
-        assert!(rel_error < 0.1, "Scale error: {}", rel_error);
+        assert!(rel_error < 0.1, "Scale error: {rel_error}");
     }
 
     #[test]
@@ -810,11 +809,7 @@ mod tests {
 
         let ratio = tt.compression_ratio();
         // With max_rank=8 and shape [8,8,8,8], expect significant compression
-        assert!(
-            ratio > 2.0,
-            "Expected compression ratio > 2.0, got {}",
-            ratio
-        );
+        assert!(ratio > 2.0, "Expected compression ratio > 2.0, got {ratio}");
     }
 
     #[test]
@@ -851,9 +846,7 @@ mod tests {
         let expected = 8.0; // sqrt(64 * 1^2) = 8
         assert!(
             (dist - expected).abs() < 2.0,
-            "Distance error: expected ~{}, got {}",
-            expected,
-            dist
+            "Distance error: expected ~{expected}, got {dist}"
         );
     }
 
@@ -882,8 +875,7 @@ mod tests {
         let ratio = tt.compression_ratio();
         assert!(
             ratio > 5.0,
-            "Constant vector should compress >5x, got {:.2}x",
-            ratio
+            "Constant vector should compress >5x, got {ratio:.2}x"
         );
 
         // Reconstruction should be accurate
@@ -894,8 +886,7 @@ mod tests {
             .fold(0.0, f32::max);
         assert!(
             max_error < 0.1,
-            "Constant vector reconstruction error: {}",
-            max_error
+            "Constant vector reconstruction error: {max_error}"
         );
     }
 
@@ -911,8 +902,7 @@ mod tests {
         // Should reconstruct to near-zero
         assert!(
             max_val < 1e-6,
-            "Zero vector should reconstruct to zeros, got max {}",
-            max_val
+            "Zero vector should reconstruct to zeros, got max {max_val}"
         );
     }
 
@@ -930,8 +920,7 @@ mod tests {
         let spike_val = reconstructed[128];
         assert!(
             spike_val > 0.5,
-            "Spike should be preserved, got {}",
-            spike_val
+            "Spike should be preserved, got {spike_val}"
         );
     }
 
@@ -957,8 +946,7 @@ mod tests {
         // At least 80% of signs should be correct
         assert!(
             correct_signs > 200,
-            "Only {}/256 signs correct for alternating",
-            correct_signs
+            "Only {correct_signs}/256 signs correct for alternating"
         );
     }
 
@@ -973,8 +961,7 @@ mod tests {
         // Linear functions should compress well
         assert!(
             ratio > 2.0,
-            "Linear ramp should compress >2x, got {:.2}x",
-            ratio
+            "Linear ramp should compress >2x, got {ratio:.2}x"
         );
 
         let reconstructed = tt_reconstruct(&tt);
@@ -984,14 +971,14 @@ mod tests {
             .map(|(a, b)| (a - b).powi(2))
             .sum::<f32>()
             / vector.len() as f32;
-        assert!(mse < 0.01, "Linear ramp MSE too high: {}", mse);
+        assert!(mse < 0.01, "Linear ramp MSE too high: {mse}");
     }
 
     #[test]
     fn test_tt_random_dense() {
         // Pseudo-random dense vector - typical neural embedding
         let vector: Vec<f32> = (0..256)
-            .map(|i| ((i as f32 * 1.618).sin() + (i as f32 * 2.718).cos()) / 2.0)
+            .map(|i| f32::midpoint((i as f32 * 1.618).sin(), (i as f32 * 2.718).cos()))
             .collect();
         let config = TTConfig::for_dim(256).unwrap();
 
@@ -1005,8 +992,7 @@ mod tests {
         let cosine = dot / (norm_orig * norm_recon);
         assert!(
             cosine > 0.9,
-            "Random vector cosine similarity too low: {}",
-            cosine
+            "Random vector cosine similarity too low: {cosine}"
         );
     }
 
@@ -1061,8 +1047,7 @@ mod tests {
             .fold(0.0, f32::max);
         assert!(
             max_rel_error < 0.5,
-            "Large values reconstruction error: {}",
-            max_rel_error
+            "Large values reconstruction error: {max_rel_error}"
         );
     }
 
@@ -1088,9 +1073,7 @@ mod tests {
             };
             assert!(
                 rel_error < 0.5,
-                "Sparse non-zero at {} has error {}",
-                i,
-                rel_error
+                "Sparse non-zero at {i} has error {rel_error}"
             );
         }
     }
@@ -1119,10 +1102,7 @@ mod tests {
             let individual = tt_cosine_similarity(&query_tt, &targets[i]).unwrap();
             assert!(
                 (sim - individual).abs() < 1e-6,
-                "batch[{}]={} != individual={}",
-                i,
-                sim,
-                individual
+                "batch[{i}]={sim} != individual={individual}"
             );
         }
     }
@@ -1149,10 +1129,7 @@ mod tests {
             let individual = tt_dot_product(&query_tt, &targets[i]).unwrap();
             assert!(
                 (dot - individual).abs() < 1e-3,
-                "batch[{}]={} != individual={}",
-                i,
-                dot,
-                individual
+                "batch[{i}]={dot} != individual={individual}"
             );
         }
     }
@@ -1179,10 +1156,7 @@ mod tests {
             let individual = tt_euclidean_distance(&query_tt, &targets[i]).unwrap();
             assert!(
                 (dist - individual).abs() < 1e-3,
-                "batch[{}]={} != individual={}",
-                i,
-                dist,
-                individual
+                "batch[{i}]={dist} != individual={individual}"
             );
         }
     }
@@ -1194,7 +1168,7 @@ mod tests {
         let vectors: Vec<Vec<f32>> = (0..8)
             .map(|i| (0..64).map(|j| ((i * 10 + j) as f32 * 0.1).sin()).collect())
             .collect();
-        let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+        let refs: Vec<&[f32]> = vectors.iter().map(std::vec::Vec::as_slice).collect();
 
         let batch_results = tt_decompose_batch(&refs, &config).unwrap();
         assert_eq!(batch_results.len(), 8);
@@ -1214,7 +1188,7 @@ mod tests {
         let vectors: Vec<Vec<f32>> = (0..2)
             .map(|i| (0..64).map(|j| ((i * 10 + j) as f32 * 0.1).cos()).collect())
             .collect();
-        let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+        let refs: Vec<&[f32]> = vectors.iter().map(std::vec::Vec::as_slice).collect();
 
         let batch_results = tt_decompose_batch(&refs, &config).unwrap();
         assert_eq!(batch_results.len(), 2);
@@ -1263,7 +1237,7 @@ mod tests {
         for dim in [384, 768, 1024, 1536, 2048, 3072, 8192] {
             let config = TTConfig::for_dim(dim).unwrap();
             let product: usize = config.shape.iter().product();
-            assert_eq!(product, dim, "Shape product mismatch for dim {}", dim);
+            assert_eq!(product, dim, "Shape product mismatch for dim {dim}");
         }
     }
 

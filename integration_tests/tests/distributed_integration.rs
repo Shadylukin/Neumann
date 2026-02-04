@@ -374,7 +374,7 @@ fn test_full_flow_workspace_to_commit() {
     assert_eq!(tx_state.phase, TxPhase::Preparing);
 
     // 2. Each shard prepares with its operations
-    let operations = vec![
+    let operations = [
         vec![Transaction::Put {
             key: "users:1".to_string(),
             data: b"alice".to_vec(),

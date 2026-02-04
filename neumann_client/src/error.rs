@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn test_error_debug() {
         let err = ClientError::Query("test".to_string());
-        let debug = format!("{:?}", err);
+        let debug = format!("{err:?}");
         assert!(debug.contains("Query"));
         assert!(debug.contains("test"));
     }

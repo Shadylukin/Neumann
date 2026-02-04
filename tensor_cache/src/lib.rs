@@ -943,8 +943,8 @@ mod tests {
         let exact_count = cache.store.scan(prefixes::EXACT).len();
         let semantic_count = cache.store.scan(prefixes::SEMANTIC).len();
 
-        eprintln!("exact_count from scan: {}", exact_count);
-        eprintln!("semantic_count from scan: {}", semantic_count);
+        eprintln!("exact_count from scan: {exact_count}");
+        eprintln!("semantic_count from scan: {semantic_count}");
 
         assert!(exact_count > 0, "Expected scan to find exact entries");
     }
@@ -958,8 +958,7 @@ mod tests {
     fn normalize(v: &[f32]) -> Vec<f32> {
         SparseVector::from_dense(v)
             .normalize()
-            .map(|sv| sv.to_dense())
-            .unwrap_or_else(|| v.to_vec())
+            .map_or_else(|| v.to_vec(), |sv| sv.to_dense())
     }
 
     #[test]
@@ -1042,13 +1041,7 @@ mod tests {
 
         for i in 0..10 {
             cache
-                .put(
-                    &format!("prompt{}", i),
-                    &embedding,
-                    "response",
-                    "gpt-4",
-                    None,
-                )
+                .put(&format!("prompt{i}"), &embedding, "response", "gpt-4", None)
                 .unwrap();
         }
 
@@ -1129,7 +1122,7 @@ mod tests {
             .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
 
-        assert!(cache.len() > 0);
+        assert!(!cache.is_empty());
         assert!(!cache.is_empty());
     }
 

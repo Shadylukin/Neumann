@@ -66,15 +66,15 @@ mod tests {
     #[test]
     fn test_quorum_calculation() {
         // With 3 nodes, quorum is 2
-        assert!(2 >= (3 / 2) + 1);
+        assert!(2 > (3 / 2));
 
         // With 5 nodes, quorum is 3
-        assert!(3 >= (5 / 2) + 1);
+        assert!(3 > (5 / 2));
 
         // With 2 nodes, quorum is 2
-        assert!(2 >= (2 / 2) + 1);
+        assert!(2 > (2 / 2));
 
         // With 1 node, quorum is 1
-        assert!(1 >= (1 / 2) + 1);
+        assert!(1 >= 1);
     }
 }

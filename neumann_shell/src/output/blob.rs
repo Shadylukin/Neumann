@@ -259,7 +259,7 @@ mod tests {
         let data: Vec<u8> = (0..16).collect();
         let result = format_hex_dump(&data, 32, &theme);
         assert!(result.contains("00000000"));
-        assert!(result.contains("|"));
+        assert!(result.contains('|'));
     }
 
     #[test]

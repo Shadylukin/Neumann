@@ -307,7 +307,7 @@ fn load_docs_recursive(
 
         if path.is_dir() {
             load_docs_recursive(base_path, &path, docs)?;
-        } else if path.extension().map_or(false, |ext| ext == "md") {
+        } else if path.extension().is_some_and(|ext| ext == "md") {
             if let Some(doc) = load_markdown_file(base_path, &path)? {
                 docs.push(doc);
             }

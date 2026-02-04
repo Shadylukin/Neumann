@@ -2357,7 +2357,7 @@ mod tests {
     #[test]
     fn test_blob_result_large() {
         let large_blob = vec![42u8; 1024 * 1024]; // 1MB
-        let result = QueryResult::Blob(large_blob.clone());
+        let result = QueryResult::Blob(large_blob);
         let proto = query_result_to_proto(result);
         match proto.result {
             Some(proto::query_response::Result::Blob(b)) => {

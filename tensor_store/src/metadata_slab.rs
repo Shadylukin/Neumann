@@ -945,12 +945,12 @@ mod tests {
     fn test_scan_count_no_upper_bound() {
         let slab = MetadataSlab::new();
         // Create a key that ends with 0xFF bytes (no upper bound case)
-        let high_key = format!("prefix\u{ff}\u{ff}");
+        let high_key = "prefix\u{ff}\u{ff}".to_string();
         slab.set(&high_key, TensorData::new());
         slab.set("prefix_normal", TensorData::new());
 
         // Scan with prefix that has no computable upper bound
-        let prefix = format!("prefix\u{ff}");
+        let prefix = "prefix\u{ff}".to_string();
         let count = slab.scan_count(&prefix);
         // Should find the key with 0xFF0xFF suffix
         assert_eq!(count, 1);

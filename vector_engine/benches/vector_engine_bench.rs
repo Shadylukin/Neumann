@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Benchmarks for vector_engine performance testing.
+//! Benchmarks for `vector_engine` performance testing.
 //!
 //! Measures embedding storage, similarity search, and HNSW index operations.
 
@@ -27,7 +27,7 @@ fn bench_store_embedding(c: &mut Criterion) {
             b.iter(|| {
                 let i = counter.fetch_add(1, Ordering::Relaxed);
                 engine
-                    .store_embedding(&format!("key{}", i), black_box(vector.clone()))
+                    .store_embedding(&format!("key{i}"), black_box(vector.clone()))
                     .unwrap();
             });
         });
@@ -43,12 +43,12 @@ fn bench_search_similar(c: &mut Criterion) {
         let engine = VectorEngine::new();
         for i in 0..count {
             engine
-                .store_embedding(&format!("v{}", i), random_vector(dim))
+                .store_embedding(&format!("v{i}"), random_vector(dim))
                 .unwrap();
         }
 
         let query = random_vector(dim);
-        let label = format!("{}x{}", count, dim);
+        let label = format!("{count}x{dim}");
 
         group.bench_with_input(BenchmarkId::new("top10", &label), &query, |b, query| {
             b.iter(|| engine.search_similar(black_box(query), 10).unwrap());
@@ -77,7 +77,7 @@ fn bench_get_embedding(c: &mut Criterion) {
     let engine = VectorEngine::new();
     for i in 0..1000 {
         engine
-            .store_embedding(&format!("v{}", i), random_vector(768))
+            .store_embedding(&format!("v{i}"), random_vector(768))
             .unwrap();
     }
 
@@ -129,7 +129,7 @@ fn bench_hnsw_search(c: &mut Criterion) {
         }
 
         let query = random_vector(dim);
-        let label = format!("{}x{}", count, dim);
+        let label = format!("{count}x{dim}");
 
         group.bench_with_input(BenchmarkId::new("top10", &label), &query, |b, query| {
             b.iter(|| index.search(black_box(query), 10));
@@ -148,7 +148,7 @@ fn bench_hnsw_vs_brute_force(c: &mut Criterion) {
     let engine = VectorEngine::new();
     for i in 0..count {
         engine
-            .store_embedding(&format!("v{}", i), random_vector(dim))
+            .store_embedding(&format!("v{i}"), random_vector(dim))
             .unwrap();
     }
 

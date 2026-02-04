@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Benchmarks for tensor_cache.
+//! Benchmarks for `tensor_cache`.
 #![allow(missing_docs)]
 
 use std::time::Duration;
@@ -45,9 +45,9 @@ fn bench_exact_lookup(c: &mut Criterion) {
         let embedding = normalize(&create_test_vector(128, i));
         cache
             .put(
-                &format!("prompt {}", i),
+                &format!("prompt {i}"),
                 &embedding,
-                &format!("response {}", i),
+                &format!("response {i}"),
                 "gpt-4",
                 None,
             )
@@ -55,11 +55,11 @@ fn bench_exact_lookup(c: &mut Criterion) {
     }
 
     c.bench_function("exact_lookup_hit", |b| {
-        b.iter(|| black_box(cache.get("prompt 500", None)))
+        b.iter(|| black_box(cache.get("prompt 500", None)));
     });
 
     c.bench_function("exact_lookup_miss", |b| {
-        b.iter(|| black_box(cache.get("nonexistent prompt", None)))
+        b.iter(|| black_box(cache.get("nonexistent prompt", None)));
     });
 }
 
@@ -74,9 +74,9 @@ fn bench_semantic_lookup(c: &mut Criterion) {
         let embedding = normalize(&create_test_vector(128, i));
         cache
             .put(
-                &format!("prompt {}", i),
+                &format!("prompt {i}"),
                 &embedding,
-                &format!("response {}", i),
+                &format!("response {i}"),
                 "gpt-4",
                 None,
             )
@@ -86,7 +86,7 @@ fn bench_semantic_lookup(c: &mut Criterion) {
     let query_embedding = normalize(&create_test_vector(128, 500));
 
     c.bench_function("semantic_lookup_hit", |b| {
-        b.iter(|| black_box(cache.get("different prompt", Some(&query_embedding))))
+        b.iter(|| black_box(cache.get("different prompt", Some(&query_embedding))));
     });
 }
 
@@ -98,7 +98,7 @@ fn bench_put(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("put");
 
-    for size in [100, 1000, 10000].iter() {
+    for size in &[100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let cache = Cache::with_config(config.clone()).unwrap();
 
@@ -107,9 +107,9 @@ fn bench_put(c: &mut Criterion) {
                 let embedding = normalize(&create_test_vector(128, i));
                 cache
                     .put(
-                        &format!("prompt {}", i),
+                        &format!("prompt {i}"),
                         &embedding,
-                        &format!("response {}", i),
+                        &format!("response {i}"),
                         "gpt-4",
                         None,
                     )
@@ -120,7 +120,7 @@ fn bench_put(c: &mut Criterion) {
 
             b.iter(|| {
                 let _ = cache.put("new prompt", &new_embedding, "new response", "gpt-4", None);
-            })
+            });
         });
     }
 
@@ -136,7 +136,7 @@ fn bench_embedding_cache(c: &mut Criterion) {
         cache
             .put_embedding(
                 "doc",
-                &format!("content {}", i),
+                &format!("content {i}"),
                 create_test_vector(1536, i),
                 "text-embedding-3-small",
             )
@@ -144,11 +144,11 @@ fn bench_embedding_cache(c: &mut Criterion) {
     }
 
     c.bench_function("embedding_lookup_hit", |b| {
-        b.iter(|| black_box(cache.get_embedding("doc", "content 500")))
+        b.iter(|| black_box(cache.get_embedding("doc", "content 500")));
     });
 
     c.bench_function("embedding_lookup_miss", |b| {
-        b.iter(|| black_box(cache.get_embedding("doc", "nonexistent")))
+        b.iter(|| black_box(cache.get_embedding("doc", "nonexistent")));
     });
 }
 
@@ -156,7 +156,7 @@ fn bench_eviction(c: &mut Criterion) {
     let mut group = c.benchmark_group("eviction");
     group.measurement_time(Duration::from_secs(10));
 
-    for size in [1000, 5000, 10000].iter() {
+    for size in &[1000, 5000, 10000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let mut config = CacheConfig::default();
             config.embedding_dim = 64;
@@ -169,16 +169,16 @@ fn bench_eviction(c: &mut Criterion) {
                 let embedding = normalize(&create_test_vector(64, i));
                 cache
                     .put(
-                        &format!("prompt {}", i),
+                        &format!("prompt {i}"),
                         &embedding,
-                        &format!("response {}", i),
+                        &format!("response {i}"),
                         "gpt-4",
                         None,
                     )
                     .unwrap();
             }
 
-            b.iter(|| black_box(cache.evict(100)))
+            b.iter(|| black_box(cache.evict(100)));
         });
     }
 
@@ -196,19 +196,19 @@ fn bench_distance_metrics(c: &mut Criterion) {
     let sv2 = SparseVector::from_dense(&v2);
 
     group.bench_function("cosine_similarity", |b| {
-        b.iter(|| black_box(sv1.cosine_similarity(&sv2)))
+        b.iter(|| black_box(sv1.cosine_similarity(&sv2)));
     });
 
     group.bench_function("jaccard_index", |b| {
-        b.iter(|| black_box(sv1.jaccard_index(&sv2)))
+        b.iter(|| black_box(sv1.jaccard_index(&sv2)));
     });
 
     group.bench_function("euclidean_distance", |b| {
-        b.iter(|| black_box(sv1.euclidean_distance(&sv2)))
+        b.iter(|| black_box(sv1.euclidean_distance(&sv2)));
     });
 
     group.bench_function("angular_distance", |b| {
-        b.iter(|| black_box(sv1.angular_distance(&sv2)))
+        b.iter(|| black_box(sv1.angular_distance(&sv2)));
     });
 
     group.finish();
@@ -223,8 +223,8 @@ fn bench_semantic_with_metrics(c: &mut Criterion) {
         ("euclidean", DistanceMetric::Euclidean),
     ];
 
-    for (name, metric) in metrics.iter() {
-        group.bench_function(format!("lookup_{}", name), |b| {
+    for (name, metric) in &metrics {
+        group.bench_function(format!("lookup_{name}"), |b| {
             let mut config = CacheConfig::default();
             config.embedding_dim = 128;
             config.semantic_threshold = 0.3; // Lower for non-cosine metrics
@@ -237,9 +237,9 @@ fn bench_semantic_with_metrics(c: &mut Criterion) {
                 let embedding = normalize(&create_test_vector(128, i));
                 cache
                     .put(
-                        &format!("prompt {}", i),
+                        &format!("prompt {i}"),
                         &embedding,
-                        &format!("response {}", i),
+                        &format!("response {i}"),
                         "gpt-4",
                         None,
                     )
@@ -248,7 +248,7 @@ fn bench_semantic_with_metrics(c: &mut Criterion) {
 
             let query = normalize(&create_test_vector(128, 500));
 
-            b.iter(|| black_box(cache.get_with_metric("different", Some(&query), Some(metric))))
+            b.iter(|| black_box(cache.get_with_metric("different", Some(&query), Some(metric))));
         });
     }
 
@@ -269,9 +269,9 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
             let embedding = normalize(&create_test_vector(128, i));
             cache
                 .put(
-                    &format!("prompt {}", i),
+                    &format!("prompt {i}"),
                     &embedding,
-                    &format!("response {}", i),
+                    &format!("response {i}"),
                     "gpt-4",
                     None,
                 )
@@ -279,7 +279,7 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
         }
 
         let query = normalize(&create_test_vector(128, 500));
-        b.iter(|| black_box(cache.get("different", Some(&query))))
+        b.iter(|| black_box(cache.get("different", Some(&query))));
     });
 
     // Sparse embeddings (80% zeros)
@@ -293,9 +293,9 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
             let embedding = create_sparse_vector(128, 0.8, i);
             cache
                 .put(
-                    &format!("prompt {}", i),
+                    &format!("prompt {i}"),
                     &embedding,
-                    &format!("response {}", i),
+                    &format!("response {i}"),
                     "gpt-4",
                     None,
                 )
@@ -303,7 +303,7 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
         }
 
         let query = create_sparse_vector(128, 0.8, 500);
-        b.iter(|| black_box(cache.get("different", Some(&query))))
+        b.iter(|| black_box(cache.get("different", Some(&query))));
     });
 
     group.finish();
@@ -315,7 +315,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
     group.bench_function("sparsity_check", |b| {
         let v = normalize(&create_test_vector(128, 1));
         let sv = SparseVector::from_dense(&v);
-        b.iter(|| black_box(sv.sparsity()))
+        b.iter(|| black_box(sv.sparsity()));
     });
 
     group.bench_function("auto_select_dense", |b| {
@@ -328,9 +328,9 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
             let embedding = normalize(&create_test_vector(128, i));
             cache
                 .put(
-                    &format!("prompt {}", i),
+                    &format!("prompt {i}"),
                     &embedding,
-                    &format!("response {}", i),
+                    &format!("response {i}"),
                     "gpt-4",
                     None,
                 )
@@ -338,7 +338,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
         }
 
         let query = normalize(&create_test_vector(128, 50));
-        b.iter(|| black_box(cache.get("different", Some(&query))))
+        b.iter(|| black_box(cache.get("different", Some(&query))));
     });
 
     group.bench_function("auto_select_sparse", |b| {
@@ -352,9 +352,9 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
             let embedding = create_sparse_vector(128, 0.8, i);
             cache
                 .put(
-                    &format!("prompt {}", i),
+                    &format!("prompt {i}"),
                     &embedding,
-                    &format!("response {}", i),
+                    &format!("response {i}"),
                     "gpt-4",
                     None,
                 )
@@ -362,7 +362,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
         }
 
         let query = create_sparse_vector(128, 0.8, 50);
-        b.iter(|| black_box(cache.get("different", Some(&query))))
+        b.iter(|| black_box(cache.get("different", Some(&query))));
     });
 
     group.finish();
@@ -379,7 +379,7 @@ fn bench_invalidation(c: &mut Criterion) {
         let cache = Cache::with_config(config).unwrap();
 
         for i in 0..1000 {
-            let _ = cache.put_simple(&format!("key_{}", i), &format!("value_{}", i));
+            let _ = cache.put_simple(&format!("key_{i}"), &format!("value_{i}"));
         }
 
         let mut counter = 0;
@@ -389,7 +389,7 @@ fn bench_invalidation(c: &mut Criterion) {
             // Re-add to keep cache populated
             let _ = cache.put_simple(&key, "new_value");
             counter += 1;
-        })
+        });
     });
 
     // Invalidate by version (scans semantic entries)
@@ -402,15 +402,15 @@ fn bench_invalidation(c: &mut Criterion) {
         for i in 0..1000 {
             let embedding = normalize(&create_test_vector(64, i));
             let _ = cache.put(
-                &format!("prompt_{}", i),
+                &format!("prompt_{i}"),
                 &embedding,
-                &format!("response_{}", i),
+                &format!("response_{i}"),
                 "model",
                 None,
             );
         }
 
-        b.iter(|| black_box(cache.invalidate_version("nonexistent_version")))
+        b.iter(|| black_box(cache.invalidate_version("nonexistent_version")));
     });
 
     // Invalidate embeddings by source
@@ -420,13 +420,13 @@ fn bench_invalidation(c: &mut Criterion) {
         for i in 0..1000 {
             let _ = cache.put_embedding(
                 &format!("source_{}", i % 10),
-                &format!("content_{}", i),
+                &format!("content_{i}"),
                 create_test_vector(1536, i),
                 "model",
             );
         }
 
-        b.iter(|| black_box(cache.invalidate_embeddings("nonexistent_source")))
+        b.iter(|| black_box(cache.invalidate_embeddings("nonexistent_source")));
     });
 
     group.finish();
@@ -436,7 +436,7 @@ fn bench_cleanup_expired(c: &mut Criterion) {
     let mut group = c.benchmark_group("cleanup_expired");
     group.measurement_time(Duration::from_secs(5));
 
-    for size in [100, 500, 1000].iter() {
+    for size in &[100, 500, 1000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let mut config = CacheConfig::default();
             config.embedding_dim = 64;
@@ -450,9 +450,9 @@ fn bench_cleanup_expired(c: &mut Criterion) {
             for i in 0..size {
                 let embedding = normalize(&create_test_vector(64, i));
                 let _ = cache.put(
-                    &format!("prompt_{}", i),
+                    &format!("prompt_{i}"),
                     &embedding,
-                    &format!("response_{}", i),
+                    &format!("response_{i}"),
                     "model",
                     None,
                 );
@@ -468,7 +468,7 @@ fn bench_cleanup_expired(c: &mut Criterion) {
                     for i in 0..cleaned.min(10) {
                         let embedding = normalize(&create_test_vector(64, i));
                         let _ = cache.put(
-                            &format!("new_prompt_{}", i),
+                            &format!("new_prompt_{i}"),
                             &embedding,
                             "response",
                             "model",
@@ -476,7 +476,7 @@ fn bench_cleanup_expired(c: &mut Criterion) {
                         );
                     }
                 }
-            })
+            });
         });
     }
 
@@ -503,28 +503,28 @@ fn bench_eviction_strategies(c: &mut Criterion) {
         ),
     ];
 
-    for (name, strategy) in strategies.iter() {
+    for (name, strategy) in &strategies {
         group.bench_function(*name, |b| {
             let mut config = CacheConfig::default();
             config.embedding_dim = 64;
             config.exact_capacity = 2000;
             config.semantic_capacity = 2000;
-            config.eviction_strategy = strategy.clone();
+            config.eviction_strategy = *strategy;
             let cache = Cache::with_config(config).unwrap();
 
             // Pre-populate
             for i in 0..1000 {
                 let embedding = normalize(&create_test_vector(64, i));
                 let _ = cache.put(
-                    &format!("prompt_{}", i),
+                    &format!("prompt_{i}"),
                     &embedding,
-                    &format!("response_{}", i),
+                    &format!("response_{i}"),
                     "model",
                     None,
                 );
             }
 
-            b.iter(|| black_box(cache.evict(50)))
+            b.iter(|| black_box(cache.evict(50)));
         });
     }
 
@@ -535,8 +535,8 @@ fn bench_capacity_pressure(c: &mut Criterion) {
     let mut group = c.benchmark_group("capacity_pressure");
 
     // Benchmark at different fill levels
-    for fill_pct in [50, 90, 99].iter() {
-        group.bench_function(format!("fill_{}pct", fill_pct), |b| {
+    for fill_pct in &[50, 90, 99] {
+        group.bench_function(format!("fill_{fill_pct}pct"), |b| {
             let capacity = 1000;
             let fill_count = capacity * fill_pct / 100;
 
@@ -547,13 +547,13 @@ fn bench_capacity_pressure(c: &mut Criterion) {
 
             // Fill to target percentage
             for i in 0..fill_count {
-                let _ = cache.put_simple(&format!("key_{}", i), &format!("value_{}", i));
+                let _ = cache.put_simple(&format!("key_{i}"), &format!("value_{i}"));
             }
 
             let mut counter = fill_count;
             b.iter(|| {
                 // Try to add one more (may fail if at capacity)
-                let key = format!("key_{}", counter);
+                let key = format!("key_{counter}");
                 let result = cache.put_simple(&key, "value");
                 if result.is_ok() {
                     // Remove it to maintain fill level
@@ -561,7 +561,7 @@ fn bench_capacity_pressure(c: &mut Criterion) {
                 }
                 counter += 1;
                 black_box(result)
-            })
+            });
         });
     }
 
@@ -580,7 +580,7 @@ fn bench_concurrent_workload(c: &mut Criterion) {
 
     // Pre-populate
     for i in 0..1000 {
-        let _ = cache.put_simple(&format!("key_{}", i), &format!("value_{}", i));
+        let _ = cache.put_simple(&format!("key_{i}"), &format!("value_{i}"));
     }
 
     group.bench_function("read_heavy_4_readers", |b| {
@@ -589,7 +589,7 @@ fn bench_concurrent_workload(c: &mut Criterion) {
             for i in 0..100 {
                 let _ = black_box(cache.get_simple(&format!("key_{}", i % 1000)));
             }
-        })
+        });
     });
 
     group.bench_function("write_heavy_4_writers", |b| {
@@ -601,7 +601,7 @@ fn bench_concurrent_workload(c: &mut Criterion) {
                 let _ = black_box(cache.put_simple(&key, "value"));
                 counter += 1;
             }
-        })
+        });
     });
 
     group.bench_function("mixed_read_write", |b| {
@@ -617,7 +617,7 @@ fn bench_concurrent_workload(c: &mut Criterion) {
                     counter += 1;
                 }
             }
-        })
+        });
     });
 
     group.finish();

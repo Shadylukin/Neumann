@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_banner_ascii_art() {
-        assert!(BANNER.contains("Neumann") || BANNER.contains("|"));
+        assert!(BANNER.contains("Neumann") || BANNER.contains('|'));
     }
 
     #[test]

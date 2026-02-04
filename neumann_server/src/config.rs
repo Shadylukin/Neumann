@@ -1252,7 +1252,9 @@ mod tests {
         where
             F: FnOnce() -> R,
         {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = ENV_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             // Save and set env vars
             let saved: Vec<_> = vars
@@ -1281,7 +1283,9 @@ mod tests {
         where
             F: FnOnce() -> R,
         {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = ENV_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             // Save and remove env vars
             let saved: Vec<_> = keys

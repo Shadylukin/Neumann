@@ -349,7 +349,7 @@ impl NeumannClient {
     }
 
     /// Create a client in an invalid state for testing defensive code paths.
-    /// This simulates a scenario where connected=true but grpc_client=None.
+    /// This simulates a scenario where connected=true but `grpc_client=None`.
     #[cfg(all(test, feature = "remote"))]
     fn test_invalid_remote_state() -> Self {
         Self {
@@ -1218,7 +1218,7 @@ mod tests {
             tls: true,
             timeout_ms: 60_000,
         };
-        let debug = format!("{:?}", config);
+        let debug = format!("{config:?}");
         assert!(debug.contains("localhost:9200"));
         assert!(debug.contains("tls: true"));
     }
@@ -1231,7 +1231,7 @@ mod tests {
             tls: true,
             timeout_ms: 45_000,
         };
-        let config2 = config1.clone();
+        let config2 = config1;
         assert_eq!(config2.address, "server:9200");
         assert_eq!(config2.api_key, Some("key".to_string()));
         assert!(config2.tls);
@@ -1377,7 +1377,7 @@ mod tests {
             error: None,
         };
         let result = RemoteQueryResult(response);
-        let debug = format!("{:?}", result);
+        let debug = format!("{result:?}");
         assert!(debug.contains("RemoteQueryResult"));
     }
 
@@ -1473,7 +1473,7 @@ mod tests {
             Err(ClientError::InvalidArgument(msg)) => {
                 assert!(msg.contains("embedded"));
             },
-            other => panic!("Expected InvalidArgument, got {:?}", other),
+            other => panic!("Expected InvalidArgument, got {other:?}"),
         }
     }
 
@@ -1491,7 +1491,7 @@ mod tests {
     #[test]
     fn test_query_chunk_debug() {
         let chunk = QueryChunk::BlobData(vec![1, 2, 3]);
-        let debug = format!("{:?}", chunk);
+        let debug = format!("{chunk:?}");
         assert!(debug.contains("BlobData"));
     }
 
@@ -1504,7 +1504,7 @@ mod tests {
             values: vec![],
         };
         let chunk = QueryChunk::Row(row);
-        assert!(format!("{:?}", chunk).contains("Row"));
+        assert!(format!("{chunk:?}").contains("Row"));
 
         // Test Node variant
         let node = proto::Node {
@@ -1513,7 +1513,7 @@ mod tests {
             properties: std::collections::HashMap::new(),
         };
         let chunk = QueryChunk::Node(node);
-        assert!(format!("{:?}", chunk).contains("Node"));
+        assert!(format!("{chunk:?}").contains("Node"));
 
         // Test Edge variant
         let edge = proto::Edge {
@@ -1523,7 +1523,7 @@ mod tests {
             label: "KNOWS".to_string(),
         };
         let chunk = QueryChunk::Edge(edge);
-        assert!(format!("{:?}", chunk).contains("Edge"));
+        assert!(format!("{chunk:?}").contains("Edge"));
 
         // Test SimilarItem variant
         let item = proto::SimilarItem {
@@ -1531,7 +1531,7 @@ mod tests {
             score: 0.95,
         };
         let chunk = QueryChunk::SimilarItem(item);
-        assert!(format!("{:?}", chunk).contains("SimilarItem"));
+        assert!(format!("{chunk:?}").contains("SimilarItem"));
     }
 
     #[cfg(all(feature = "embedded", feature = "remote"))]
@@ -1546,7 +1546,7 @@ mod tests {
             Err(ClientError::InvalidArgument(msg)) => {
                 assert!(msg.contains("Streaming not supported"));
             },
-            other => panic!("Expected InvalidArgument, got {:?}", other),
+            other => panic!("Expected InvalidArgument, got {other:?}"),
         }
     }
 
@@ -1609,7 +1609,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty row")),
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -1644,7 +1644,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty node")),
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -1680,7 +1680,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty edge")),
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -1714,7 +1714,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty similar")),
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -1732,7 +1732,7 @@ mod tests {
         assert!(result.is_ok());
         match result.unwrap() {
             QueryChunk::BlobData(data) => assert_eq!(data, vec![1, 2, 3, 4]),
-            other => panic!("Expected BlobData, got {:?}", other),
+            other => panic!("Expected BlobData, got {other:?}"),
         }
     }
 
@@ -1754,7 +1754,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(ClientError::Query(msg)) => assert_eq!(msg, "Test error"),
-            other => panic!("Expected Query error, got {:?}", other),
+            other => panic!("Expected Query error, got {other:?}"),
         }
     }
 
@@ -1770,7 +1770,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty chunk")),
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -1862,7 +1862,7 @@ mod tests {
             Err(ClientError::Connection(msg)) => {
                 assert!(msg.contains("Failed to connect"));
             },
-            Err(e) => panic!("Expected Connection error, got {:?}", e),
+            Err(e) => panic!("Expected Connection error, got {e:?}"),
             Ok(_) => panic!("Expected error, got Ok"),
         }
     }
@@ -1970,7 +1970,7 @@ mod tests {
                 assert_eq!(info.items_sent, 25);
                 assert!(info.total_count.is_none());
             },
-            other => panic!("Expected CursorInfo, got {:?}", other),
+            other => panic!("Expected CursorInfo, got {other:?}"),
         }
     }
 
@@ -1982,7 +1982,7 @@ mod tests {
             items_sent: 10,
             total_count: None,
         });
-        let debug = format!("{:?}", chunk);
+        let debug = format!("{chunk:?}");
         assert!(debug.contains("CursorInfo"));
         assert!(debug.contains("test-cursor"));
     }
@@ -2072,7 +2072,7 @@ mod tests {
             page_size: 10,
         };
         let result = PaginatedQueryResult(response);
-        let debug = format!("{:?}", result);
+        let debug = format!("{result:?}");
         assert!(debug.contains("PaginatedQueryResult"));
     }
 
@@ -2088,7 +2088,7 @@ mod tests {
             Err(ClientError::InvalidArgument(msg)) => {
                 assert!(msg.contains("Paginated"));
             },
-            other => panic!("Expected InvalidArgument error, got {:?}", other),
+            other => panic!("Expected InvalidArgument error, got {other:?}"),
         }
     }
 
@@ -2123,7 +2123,7 @@ mod tests {
             Err(ClientError::InvalidArgument(msg)) => {
                 assert!(msg.contains("Cursor"));
             },
-            other => panic!("Expected InvalidArgument error, got {:?}", other),
+            other => panic!("Expected InvalidArgument error, got {other:?}"),
         }
     }
 
@@ -2159,7 +2159,7 @@ mod tests {
             Err(ClientError::Internal(msg)) => {
                 assert!(msg.contains("gRPC client not initialized"));
             },
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -2174,7 +2174,7 @@ mod tests {
             Err(ClientError::Internal(msg)) => {
                 assert!(msg.contains("gRPC client not initialized"));
             },
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -2189,7 +2189,7 @@ mod tests {
             Err(ClientError::Internal(msg)) => {
                 assert!(msg.contains("gRPC client not initialized"));
             },
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -2204,7 +2204,7 @@ mod tests {
             Err(ClientError::Internal(msg)) => {
                 assert!(msg.contains("gRPC client not initialized"));
             },
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 
@@ -2219,7 +2219,7 @@ mod tests {
             Err(ClientError::Internal(msg)) => {
                 assert!(msg.contains("gRPC client not initialized"));
             },
-            other => panic!("Expected Internal error, got {:?}", other),
+            other => panic!("Expected Internal error, got {other:?}"),
         }
     }
 }

@@ -380,7 +380,7 @@ fn test_version_with_special_characters() {
     for (i, value) in values.iter().enumerate() {
         vault
             .set(Vault::ROOT, "special", value)
-            .expect(&format!("Failed to set value {}", i));
+            .unwrap_or_else(|_| panic!("Failed to set value {}", i));
     }
 
     // Verify all versions are retrievable

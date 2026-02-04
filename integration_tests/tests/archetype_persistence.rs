@@ -120,7 +120,7 @@ fn test_registry_persistence_with_discovered_archetypes() {
     // Load and verify
     {
         let restored = ArchetypeRegistry::load_from_store(&store, 256).unwrap();
-        assert!(restored.len() > 0);
+        assert!(!restored.is_empty());
 
         // Verify encoding still works with loaded archetypes
         let test_vec = make_clustered_embedding(0, 0, 32);

@@ -7320,7 +7320,7 @@ mod tests {
 
         graph
             .edges_of(id, Direction::Both)
-            .map_or(false, |edges| !edges.is_empty())
+            .is_ok_and(|edges| !edges.is_empty())
     }
 
     // ========== Basic Routing Tests ==========
@@ -11907,11 +11907,8 @@ mod tests {
         // After authentication, operations should work
         router.set_identity("user:test");
         let result = router.execute_parsed("CACHE STATS");
-        match result {
-            Err(RouterError::AuthenticationRequired) => {
-                panic!("Should not get AuthenticationRequired after set_identity")
-            },
-            _ => {},
+        if let Err(RouterError::AuthenticationRequired) = result {
+            panic!("Should not get AuthenticationRequired after set_identity")
         }
     }
 
@@ -11933,11 +11930,8 @@ mod tests {
         // After authentication, operations should work
         router.set_identity("user:test");
         let result = router.execute_parsed("BLOB INIT");
-        match result {
-            Err(RouterError::AuthenticationRequired) => {
-                panic!("Should not get AuthenticationRequired after set_identity")
-            },
-            _ => {},
+        if let Err(RouterError::AuthenticationRequired) = result {
+            panic!("Should not get AuthenticationRequired after set_identity")
         }
     }
 
@@ -11959,11 +11953,8 @@ mod tests {
         // After authentication, operations should work
         router.set_identity("user:test");
         let result = router.execute_parsed("BLOBS");
-        match result {
-            Err(RouterError::AuthenticationRequired) => {
-                panic!("Should not get AuthenticationRequired after set_identity")
-            },
-            _ => {},
+        if let Err(RouterError::AuthenticationRequired) = result {
+            panic!("Should not get AuthenticationRequired after set_identity")
         }
     }
 
@@ -11985,11 +11976,8 @@ mod tests {
         // After authentication, operations should work
         router.set_identity("user:test");
         let result = router.execute_parsed("CHAIN HEIGHT");
-        match result {
-            Err(RouterError::AuthenticationRequired) => {
-                panic!("Should not get AuthenticationRequired after set_identity")
-            },
-            _ => {},
+        if let Err(RouterError::AuthenticationRequired) = result {
+            panic!("Should not get AuthenticationRequired after set_identity")
         }
     }
 

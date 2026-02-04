@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn test_snapshot_version_clone() {
         let v2 = SnapshotVersion::V2;
-        let cloned = v2.clone();
+        let cloned = v2;
         assert_eq!(v2, cloned);
     }
 

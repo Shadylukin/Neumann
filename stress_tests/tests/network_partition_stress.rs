@@ -91,7 +91,7 @@ fn count_leaders(nodes: &[Arc<RaftNode>]) -> usize {
 }
 
 /// Get current leader if exactly one exists.
-fn get_leader<'a>(nodes: &'a [Arc<RaftNode>]) -> Option<&'a Arc<RaftNode>> {
+fn get_leader(nodes: &[Arc<RaftNode>]) -> Option<&Arc<RaftNode>> {
     let leaders: Vec<_> = nodes
         .iter()
         .filter(|n| n.state() == RaftState::Leader)
@@ -330,11 +330,10 @@ async fn stress_message_throughput_under_partition() {
     let done_clone = done.clone();
     let receiver_handle = tokio::spawn(async move {
         while !done_clone.load(Ordering::Relaxed) {
-            match tokio::time::timeout(Duration::from_millis(10), t2_clone.recv()).await {
-                Ok(Ok(_)) => {
-                    received_clone.fetch_add(1, Ordering::Relaxed);
-                },
-                _ => {},
+            if let Ok(Ok(_)) =
+                tokio::time::timeout(Duration::from_millis(10), t2_clone.recv()).await
+            {
+                received_clone.fetch_add(1, Ordering::Relaxed);
             }
         }
     });
@@ -345,7 +344,7 @@ async fn stress_message_throughput_under_partition() {
     // Send messages for 3 seconds, toggling partition every 500ms
     while start.elapsed() < Duration::from_secs(3) {
         // Toggle partition every 500ms
-        if start.elapsed().as_millis() / 500 % 2 == 0 {
+        if (start.elapsed().as_millis() / 500).is_multiple_of(2) {
             if partitioned {
                 t1.heal(&"node2".to_string());
                 partitioned = false;

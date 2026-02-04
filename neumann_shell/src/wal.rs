@@ -241,7 +241,7 @@ mod tests {
             replayed: 10,
             errors: vec![WalReplayError::new(1, "cmd", "err".to_string())],
         };
-        let cloned = result.clone();
+        let cloned = result;
         assert_eq!(cloned.replayed, 10);
         assert_eq!(cloned.errors.len(), 1);
     }
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn test_wal_replay_error_clone() {
         let error = WalReplayError::new(7, "cmd", "error".to_string());
-        let cloned = error.clone();
+        let cloned = error;
         assert_eq!(cloned.line, 7);
         assert_eq!(cloned.command, "cmd");
     }

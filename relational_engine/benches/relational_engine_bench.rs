@@ -19,11 +19,11 @@ fn create_users_schema() -> Schema {
 
 fn create_user_values(id: i64) -> HashMap<String, Value> {
     let mut values = HashMap::new();
-    values.insert("name".to_string(), Value::String(format!("User{}", id)));
+    values.insert("name".to_string(), Value::String(format!("User{id}")));
     values.insert("age".to_string(), Value::Int(20 + (id % 50)));
     values.insert(
         "email".to_string(),
-        Value::String(format!("user{}@example.com", id)),
+        Value::String(format!("user{id}@example.com")),
     );
     values.insert("score".to_string(), Value::Float(id as f64 * 0.1));
     values
@@ -32,7 +32,7 @@ fn create_user_values(id: i64) -> HashMap<String, Value> {
 fn bench_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter(|| {
@@ -41,7 +41,7 @@ fn bench_insert(c: &mut Criterion) {
 
                 for i in 0..size {
                     engine
-                        .insert("users", create_user_values(i as i64))
+                        .insert("users", create_user_values(i64::from(i)))
                         .unwrap();
                 }
                 black_box(&engine);
@@ -55,11 +55,13 @@ fn bench_insert(c: &mut Criterion) {
 fn bench_batch_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_insert");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             // Pre-create the rows vector outside the benchmark loop
-            let rows: Vec<_> = (0..size).map(|i| create_user_values(i as i64)).collect();
+            let rows: Vec<_> = (0..size)
+                .map(|i| create_user_values(i64::from(i)))
+                .collect();
 
             b.iter(|| {
                 let engine = RelationalEngine::new();
@@ -76,12 +78,12 @@ fn bench_batch_insert(c: &mut Criterion) {
 fn bench_select_full_scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("select_full_scan");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         let engine = RelationalEngine::new();
         engine.create_table("users", create_users_schema()).unwrap();
         for i in 0..*size {
             engine
-                .insert("users", create_user_values(i as i64))
+                .insert("users", create_user_values(i64::from(i)))
                 .unwrap();
         }
 
@@ -104,7 +106,7 @@ fn bench_select_filtered(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..5000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 
@@ -149,7 +151,7 @@ fn bench_select_by_id(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..5000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 
@@ -176,7 +178,7 @@ fn bench_update(c: &mut Criterion) {
                 engine.create_table("users", create_users_schema()).unwrap();
                 for i in 0..1000 {
                     engine
-                        .insert("users", create_user_values(i as i64))
+                        .insert("users", create_user_values(i64::from(i)))
                         .unwrap();
                 }
                 engine
@@ -211,7 +213,7 @@ fn bench_delete(c: &mut Criterion) {
                 engine.create_table("users", create_users_schema()).unwrap();
                 for i in 0..1000 {
                     engine
-                        .insert("users", create_user_values(i as i64))
+                        .insert("users", create_user_values(i64::from(i)))
                         .unwrap();
                 }
                 engine
@@ -252,7 +254,7 @@ fn bench_join(c: &mut Criterion) {
 
         for i in 1..=num_users {
             let mut user_values = HashMap::new();
-            user_values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            user_values.insert("name".to_string(), Value::String(format!("User{i}")));
             user_values.insert("age".to_string(), Value::Int(20 + i));
             engine.insert("users", user_values).unwrap();
 
@@ -261,7 +263,7 @@ fn bench_join(c: &mut Criterion) {
                 post_values.insert("user_id".to_string(), Value::Int(i));
                 post_values.insert(
                     "title".to_string(),
-                    Value::String(format!("Post {} by User {}", j, i)),
+                    Value::String(format!("Post {j} by User {i}")),
                 );
                 post_values.insert("views".to_string(), Value::Int(j * 10));
                 engine.insert("posts", post_values).unwrap();
@@ -313,12 +315,12 @@ fn bench_join(c: &mut Criterion) {
 fn bench_row_count(c: &mut Criterion) {
     let mut group = c.benchmark_group("row_count");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         let engine = RelationalEngine::new();
         engine.create_table("users", create_users_schema()).unwrap();
         for i in 0..*size {
             engine
-                .insert("users", create_user_values(i as i64))
+                .insert("users", create_user_values(i64::from(i)))
                 .unwrap();
         }
 
@@ -340,7 +342,7 @@ fn bench_indexed_select(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..5000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine.create_index("users", "age").unwrap();
@@ -363,7 +365,7 @@ fn bench_indexed_select(c: &mut Criterion) {
         .unwrap();
     for i in 0..5000 {
         engine_no_idx
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 
@@ -388,7 +390,7 @@ fn bench_indexed_select_by_id(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..5000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine.create_index("users", "_id").unwrap();
@@ -410,7 +412,7 @@ fn bench_indexed_select_by_id(c: &mut Criterion) {
         .unwrap();
     for i in 0..5000 {
         engine_no_idx
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 
@@ -430,7 +432,7 @@ fn bench_indexed_select_by_id(c: &mut Criterion) {
 fn bench_create_index(c: &mut Criterion) {
     let mut group = c.benchmark_group("create_index");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
                 || {
@@ -438,13 +440,14 @@ fn bench_create_index(c: &mut Criterion) {
                     engine.create_table("users", create_users_schema()).unwrap();
                     for i in 0..size {
                         engine
-                            .insert("users", create_user_values(i as i64))
+                            .insert("users", create_user_values(i64::from(i)))
                             .unwrap();
                     }
                     engine
                 },
                 |engine| {
-                    black_box(engine.create_index("users", "age").unwrap());
+                    let _: () = engine.create_index("users", "age").unwrap();
+                    black_box(());
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -462,7 +465,7 @@ fn bench_btree_indexed_range(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..5000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine.create_btree_index("users", "age").unwrap();
@@ -496,7 +499,7 @@ fn bench_btree_indexed_range(c: &mut Criterion) {
         .unwrap();
     for i in 0..5000 {
         engine_no_idx
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 
@@ -531,7 +534,7 @@ fn bench_btree_compound_range(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..5000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine.create_btree_index("users", "age").unwrap();
@@ -552,7 +555,7 @@ fn bench_btree_compound_range(c: &mut Criterion) {
         .unwrap();
     for i in 0..5000 {
         engine_no_idx
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 
@@ -570,7 +573,7 @@ fn bench_btree_compound_range(c: &mut Criterion) {
 fn bench_create_btree_index(c: &mut Criterion) {
     let mut group = c.benchmark_group("create_btree_index");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
                 || {
@@ -578,13 +581,14 @@ fn bench_create_btree_index(c: &mut Criterion) {
                     engine.create_table("users", create_users_schema()).unwrap();
                     for i in 0..size {
                         engine
-                            .insert("users", create_user_values(i as i64))
+                            .insert("users", create_user_values(i64::from(i)))
                             .unwrap();
                     }
                     engine
                 },
                 |engine| {
-                    black_box(engine.create_btree_index("users", "age").unwrap());
+                    let _: () = engine.create_btree_index("users", "age").unwrap();
+                    black_box(());
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -597,12 +601,12 @@ fn bench_create_btree_index(c: &mut Criterion) {
 fn bench_columnar_vs_row_full_scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("columnar_vs_row_full_scan");
 
-    for size in [1000, 5000, 10000].iter() {
+    for size in &[1000, 5000, 10000] {
         let engine = RelationalEngine::new();
         engine.create_table("users", create_users_schema()).unwrap();
         for i in 0..*size {
             engine
-                .insert("users", create_user_values(i as i64))
+                .insert("users", create_user_values(i64::from(i)))
                 .unwrap();
         }
         // Materialize columns for columnar scan
@@ -643,7 +647,7 @@ fn bench_columnar_vs_row_filtered(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..10000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine.materialize_columns("users", &["age"]).unwrap();
@@ -741,7 +745,7 @@ fn bench_columnar_projection(c: &mut Criterion) {
     engine.create_table("users", create_users_schema()).unwrap();
     for i in 0..10000 {
         engine
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine
@@ -799,7 +803,7 @@ fn bench_columnar_projection(c: &mut Criterion) {
 fn bench_materialize_columns(c: &mut Criterion) {
     let mut group = c.benchmark_group("materialize_columns");
 
-    for size in [1000, 5000, 10000].iter() {
+    for size in &[1000, 5000, 10000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
                 || {
@@ -807,17 +811,16 @@ fn bench_materialize_columns(c: &mut Criterion) {
                     engine.create_table("users", create_users_schema()).unwrap();
                     for i in 0..size {
                         engine
-                            .insert("users", create_user_values(i as i64))
+                            .insert("users", create_user_values(i64::from(i)))
                             .unwrap();
                     }
                     engine
                 },
                 |engine| {
-                    black_box(
-                        engine
-                            .materialize_columns("users", &["name", "age", "email", "score"])
-                            .unwrap(),
-                    );
+                    let _: () = engine
+                        .materialize_columns("users", &["name", "age", "email", "score"])
+                        .unwrap();
+                    black_box(());
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -837,7 +840,7 @@ fn bench_pure_columnar_vs_row(c: &mut Criterion) {
         .unwrap();
     for i in 0..10000 {
         engine_columnar
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
     engine_columnar
@@ -851,7 +854,7 @@ fn bench_pure_columnar_vs_row(c: &mut Criterion) {
         .unwrap();
     for i in 0..10000 {
         engine_row
-            .insert("users", create_user_values(i as i64))
+            .insert("users", create_user_values(i64::from(i)))
             .unwrap();
     }
 

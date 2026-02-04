@@ -661,7 +661,7 @@ mod tests {
         let snapshot = tracker.snapshot();
         // total_reads scales back up by sample_rate
         let total = snapshot.total_reads();
-        assert!(total >= 80 && total <= 120);
+        assert!((80..=120).contains(&total));
     }
 
     #[test]

@@ -16,7 +16,7 @@ fn main() {
     for i in 0..iterations {
         let mut data = TensorData::new();
         data.set("value", TensorValue::Scalar(ScalarValue::Int(i as i64)));
-        store.put(&format!("key:{}", i), data).unwrap();
+        store.put(format!("key:{}", i), data).unwrap();
     }
     let store_put = start.elapsed();
 

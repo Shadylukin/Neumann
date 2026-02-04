@@ -429,17 +429,17 @@ mod tests {
     use tempfile::TempDir;
 
     fn create_test_docs(dir: &Path) {
-        let doc1 = r#"# Introduction
+        let doc1 = r"# Introduction
 
 This is the introduction to Neumann.
 
 See [overview](architecture/overview.md) for more details.
-"#;
+";
 
-        let doc2 = r#"# Architecture Overview
+        let doc2 = r"# Architecture Overview
 
 The architecture of Neumann is based on tensors.
-"#;
+";
 
         fs::write(dir.join("introduction.md"), doc1).unwrap();
         fs::create_dir_all(dir.join("architecture")).unwrap();

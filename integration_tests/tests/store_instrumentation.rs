@@ -65,7 +65,7 @@ fn test_hot_shards_tracking() {
 
     // Add some cold keys
     for i in 0..10 {
-        store.put(&format!("cold:{}", i), make_data(i)).unwrap();
+        store.put(format!("cold:{}", i), make_data(i)).unwrap();
     }
 
     // Check hot shards
@@ -83,7 +83,7 @@ fn test_access_distribution() {
 
     // Write to many keys to distribute across shards
     for i in 0..100 {
-        store.put(&format!("key:{}", i), make_data(i)).unwrap();
+        store.put(format!("key:{}", i), make_data(i)).unwrap();
     }
 
     // Read some keys
@@ -115,8 +115,8 @@ fn test_sampling_rate_effect() {
 
     // Same operations on both
     for i in 0..100 {
-        store_sparse.put(&format!("k:{}", i), make_data(i)).unwrap();
-        store_dense.put(&format!("k:{}", i), make_data(i)).unwrap();
+        store_sparse.put(format!("k:{}", i), make_data(i)).unwrap();
+        store_dense.put(format!("k:{}", i), make_data(i)).unwrap();
     }
 
     let sparse_snapshot = store_sparse.access_snapshot().unwrap();
@@ -197,14 +197,14 @@ fn test_instrumentation_snapshot_isolation() {
 
     // First batch of operations
     for i in 0..50 {
-        store.put(&format!("batch1:{}", i), make_data(i)).unwrap();
+        store.put(format!("batch1:{}", i), make_data(i)).unwrap();
     }
 
     let snapshot1 = store.access_snapshot().unwrap();
 
     // Second batch of operations
     for i in 0..50 {
-        store.put(&format!("batch2:{}", i), make_data(i)).unwrap();
+        store.put(format!("batch2:{}", i), make_data(i)).unwrap();
     }
 
     let snapshot2 = store.access_snapshot().unwrap();
@@ -224,7 +224,7 @@ fn test_cold_shards_detection() {
 
     // Create data in all shards
     for i in 0..1000 {
-        store.put(&format!("data:{}", i), make_data(i)).unwrap();
+        store.put(format!("data:{}", i), make_data(i)).unwrap();
     }
 
     // Create a hotspot on specific keys
@@ -253,7 +253,7 @@ fn test_instrumentation_with_deletes() {
 
     // Add keys
     for i in 0..20 {
-        store.put(&format!("key:{}", i), make_data(i)).unwrap();
+        store.put(format!("key:{}", i), make_data(i)).unwrap();
     }
 
     // Delete some keys
@@ -345,7 +345,7 @@ fn test_hot_shards_limit() {
 
     // Create some activity
     for i in 0..100 {
-        store.put(&format!("key:{}", i), make_data(i)).unwrap();
+        store.put(format!("key:{}", i), make_data(i)).unwrap();
         let _ = store.get(&format!("key:{}", i));
     }
 

@@ -331,7 +331,11 @@ mod tests {
         let now = Instant::now();
 
         // Add an already-expired entry
-        tracker.add_with_expiration("user:alice", "api_key", now - Duration::from_secs(1));
+        tracker.add_with_expiration(
+            "user:alice",
+            "api_key",
+            now.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
 
         // Add a not-yet-expired entry
         tracker.add_with_expiration("user:bob", "api_key", now + Duration::from_secs(60));
@@ -360,9 +364,21 @@ mod tests {
         let now = Instant::now();
 
         // Add entries in non-chronological order
-        tracker.add_with_expiration("user:later", "key", now - Duration::from_secs(1));
-        tracker.add_with_expiration("user:earliest", "key", now - Duration::from_secs(3));
-        tracker.add_with_expiration("user:middle", "key", now - Duration::from_secs(2));
+        tracker.add_with_expiration(
+            "user:later",
+            "key",
+            now.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
+        tracker.add_with_expiration(
+            "user:earliest",
+            "key",
+            now.checked_sub(Duration::from_secs(3)).unwrap(),
+        );
+        tracker.add_with_expiration(
+            "user:middle",
+            "key",
+            now.checked_sub(Duration::from_secs(2)).unwrap(),
+        );
 
         let expired = tracker.get_expired();
 
@@ -416,7 +432,11 @@ mod tests {
         let tracker = GrantTTLTracker::new();
         let now = Instant::now();
 
-        tracker.add_with_expiration("user:expired", "key", now - Duration::from_secs(1));
+        tracker.add_with_expiration(
+            "user:expired",
+            "key",
+            now.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
         tracker.add_with_expiration("user:valid", "key", now + Duration::from_secs(60));
 
         assert!(tracker.is_expired("user:expired", "key"));
@@ -454,7 +474,11 @@ mod tests {
         let now = Instant::now();
 
         // Same entity, different secrets, different expiration
-        tracker.add_with_expiration("user:alice", "key1", now - Duration::from_secs(1));
+        tracker.add_with_expiration(
+            "user:alice",
+            "key1",
+            now.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
         tracker.add_with_expiration("user:alice", "key2", now + Duration::from_secs(60));
 
         let expired = tracker.get_expired();
@@ -498,7 +522,11 @@ mod tests {
         let now = Instant::now();
 
         // Add expired and valid grants
-        tracker.add_with_expiration("user:expired", "key", now - Duration::from_secs(1));
+        tracker.add_with_expiration(
+            "user:expired",
+            "key",
+            now.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
         tracker.add_with_expiration("user:valid", "key", now + Duration::from_secs(3600));
 
         assert_eq!(tracker.len(), 2);

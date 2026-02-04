@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Integration tests for neumann_client connecting to neumann_server.
+//! Integration tests for `neumann_client` connecting to `neumann_server`.
 //!
 //! These tests require the "full" feature (both embedded and remote).
 
@@ -191,7 +191,7 @@ async fn test_remote_connection_refused() {
     assert!(result.is_err());
     match &result {
         Err(ClientError::Connection(_)) => {},
-        Err(e) => panic!("Expected Connection error, got {}", e),
+        Err(e) => panic!("Expected Connection error, got {e}"),
         Ok(_) => panic!("Expected error, got Ok"),
     }
 }
@@ -305,7 +305,7 @@ async fn test_remote_not_connected_error() {
         Err(ClientError::Connection(msg)) => {
             assert!(msg.contains("Not connected"));
         },
-        other => panic!("Expected Connection error, got {:?}", other),
+        other => panic!("Expected Connection error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -329,7 +329,7 @@ async fn test_remote_batch_not_connected_error() {
         Err(ClientError::Connection(msg)) => {
             assert!(msg.contains("Not connected"));
         },
-        other => panic!("Expected Connection error, got {:?}", other),
+        other => panic!("Expected Connection error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -510,7 +510,7 @@ async fn test_remote_with_invalid_api_key_format() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("Invalid API key format"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -534,7 +534,7 @@ async fn test_remote_batch_with_invalid_api_key_format() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("Invalid API key format"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -558,7 +558,7 @@ async fn test_remote_stream_with_invalid_api_key_format() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("Invalid API key format"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -580,7 +580,7 @@ async fn test_remote_execute_sync_returns_error() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("remote mode") || msg.contains("execute()"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -603,7 +603,7 @@ async fn test_streaming_query_result_debug() {
     let stream_result = client.execute_stream("SELECT debug_stream_test").await;
     if let Ok(stream) = stream_result {
         // Test Debug format
-        let debug_str = format!("{:?}", stream);
+        let debug_str = format!("{stream:?}");
         assert!(debug_str.contains("StreamingQueryResult"));
     }
 
@@ -664,7 +664,7 @@ async fn test_remote_execute_sync_with_identity_returns_error() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("remote mode") || msg.contains("execute()"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -690,7 +690,7 @@ async fn test_streaming_empty_table() {
         // Try to get next - should return None (empty result)
         let first = stream.next().await;
         // Either None (empty) or Some with final marker
-        assert!(first.is_none() || matches!(first, Some(Ok(_)) | Some(Err(_))));
+        assert!(first.is_none() || matches!(first, Some(Ok(_) | Err(_))));
     }
 
     drop(shutdown);
@@ -739,7 +739,7 @@ async fn test_remote_execute_paginated() {
     // Create table with many rows
     let _ = client.execute("CREATE TABLE page_test (x:int)").await;
     for i in 0..25 {
-        let _ = client.execute(&format!("INSERT page_test x={}", i)).await;
+        let _ = client.execute(&format!("INSERT page_test x={i}")).await;
     }
 
     // Execute paginated query
@@ -895,7 +895,7 @@ async fn test_remote_paginated_with_invalid_api_key_format() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("Invalid API key format"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -918,7 +918,7 @@ async fn test_remote_close_cursor_with_invalid_api_key_format() {
         Err(ClientError::InvalidArgument(msg)) => {
             assert!(msg.contains("Invalid API key format"));
         },
-        other => panic!("Expected InvalidArgument error, got {:?}", other),
+        other => panic!("Expected InvalidArgument error, got {other:?}"),
     }
 
     drop(shutdown);
@@ -942,7 +942,7 @@ async fn test_remote_execute_paginated_with_valid_api_key() {
     match &result {
         Ok(_) => {},
         Err(ClientError::Query(_)) => {},
-        Err(e) => panic!("Unexpected error type: {:?}", e),
+        Err(e) => panic!("Unexpected error type: {e:?}"),
     }
 
     drop(shutdown);
@@ -964,7 +964,7 @@ async fn test_remote_close_cursor_with_valid_api_key() {
     match &result {
         Ok(_) => {},
         Err(ClientError::Query(_)) => {},
-        Err(e) => panic!("Unexpected error type: {:?}", e),
+        Err(e) => panic!("Unexpected error type: {e:?}"),
     }
 
     drop(shutdown);

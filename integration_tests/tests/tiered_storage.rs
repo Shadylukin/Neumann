@@ -265,7 +265,7 @@ fn test_cold_shards_tracking() {
 
     // Should have some cold shards (not all were accessed recently)
     // Note: exact count depends on hash distribution
-    assert!(cold_shards.len() > 0 || store.hot_len() <= 10);
+    assert!(!cold_shards.is_empty() || store.hot_len() <= 10);
 }
 
 #[test]

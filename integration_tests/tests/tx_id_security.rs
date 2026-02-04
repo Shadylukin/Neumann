@@ -20,11 +20,7 @@ fn test_transaction_workspace_uses_secure_ids() {
 
     // Check that consecutive IDs are not sequential (differ by more than 1)
     for window in ids.windows(2) {
-        let diff = if window[1] > window[0] {
-            window[1] - window[0]
-        } else {
-            window[0] - window[1]
-        };
+        let diff = window[1].abs_diff(window[0]);
         // With 32 bits of randomness, sequential IDs would differ by exactly 1
         assert!(
             diff > 1,
@@ -47,11 +43,7 @@ fn test_distributed_tx_uses_secure_ids() {
 
     // Check that IDs are not sequential
     for window in ids.windows(2) {
-        let diff = if window[1] > window[0] {
-            window[1] - window[0]
-        } else {
-            window[0] - window[1]
-        };
+        let diff = window[1].abs_diff(window[0]);
         assert!(
             diff > 1,
             "Distributed TX IDs appear sequential: {} and {}",
@@ -164,11 +156,7 @@ fn test_ids_unpredictable() {
 
     // Check no two random portions differ by exactly 1 (sequential pattern)
     for window in random_portions.windows(2) {
-        let diff = if window[1] > window[0] {
-            window[1] - window[0]
-        } else {
-            window[0] - window[1]
-        };
+        let diff = window[1].abs_diff(window[0]);
         assert_ne!(diff, 1, "Sequential pattern in random portion");
     }
 }

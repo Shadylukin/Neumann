@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! gRPC integration tests for PointsService.
+//! gRPC integration tests for `PointsService`.
 //!
 //! These tests verify actual gRPC behavior for vector point operations by starting
 //! a server and connecting with gRPC clients.
@@ -650,7 +650,7 @@ async fn test_points_operation_after_collection_delete() {
         .await
         .unwrap()
         .into_inner();
-    assert!(before_delete.results.len() > 0);
+    assert!(!before_delete.results.is_empty());
 
     // Delete collection
     use neumann_server::proto::vector::DeleteCollectionRequest;

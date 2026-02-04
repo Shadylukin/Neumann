@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_scroll_request_defaults() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let request: ScrollRequest = serde_json::from_str(json).unwrap();
 
         assert!(request.offset_id.is_none());

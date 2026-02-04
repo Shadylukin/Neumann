@@ -1345,7 +1345,7 @@ mod tests {
     fn test_case_bad_structure_error() {
         let err = parse_err("CASE END");
         // Error will be about expecting an expression or WHEN
-        assert!(err.to_string().len() > 0);
+        assert!(!err.to_string().is_empty());
     }
 
     // Coverage: simple CASE (with operand)

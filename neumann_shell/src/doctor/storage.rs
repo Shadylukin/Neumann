@@ -79,7 +79,7 @@ pub fn format_bytes(bytes: u64) -> String {
 /// Checks disk usage status based on percentage.
 #[must_use]
 #[cfg(test)]
-pub fn disk_status(used_percent: u64) -> CheckStatus {
+pub const fn disk_status(used_percent: u64) -> CheckStatus {
     if used_percent >= DISK_ERROR_PERCENT {
         CheckStatus::Error
     } else if used_percent >= DISK_WARNING_PERCENT {

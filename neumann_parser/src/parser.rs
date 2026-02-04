@@ -4318,8 +4318,7 @@ mod tests {
         };
         assert!(create.columns[0]
             .constraints
-            .iter()
-            .any(|c| *c == ColumnConstraint::NotNull));
+            .contains(&ColumnConstraint::NotNull));
     }
 
     #[test]

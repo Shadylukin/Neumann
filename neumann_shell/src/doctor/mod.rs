@@ -42,7 +42,7 @@ impl<'a, W: WalInfo> DiagnosticContext<'a, W> {
     /// Sets a custom latency threshold.
     #[must_use]
     #[cfg(test)]
-    pub fn with_latency_threshold(mut self, threshold_ms: u64) -> Self {
+    pub const fn with_latency_threshold(mut self, threshold_ms: u64) -> Self {
         self.latency_threshold_ms = threshold_ms;
         self
     }
@@ -74,21 +74,21 @@ impl DoctorReport {
     /// Returns true if all non-skipped checks are healthy.
     #[must_use]
     #[cfg(test)]
-    pub fn is_healthy(&self) -> bool {
+    pub const fn is_healthy(&self) -> bool {
         self.summary.errors == 0 && self.summary.warnings == 0
     }
 
     /// Returns true if there are any errors.
     #[must_use]
     #[cfg(test)]
-    pub fn has_errors(&self) -> bool {
+    pub const fn has_errors(&self) -> bool {
         self.summary.errors > 0
     }
 
     /// Returns true if there are any warnings.
     #[must_use]
     #[cfg(test)]
-    pub fn has_warnings(&self) -> bool {
+    pub const fn has_warnings(&self) -> bool {
         self.summary.warnings > 0
     }
 }
@@ -328,7 +328,7 @@ mod tests {
             errors: 3,
             skipped: 4,
         };
-        let debug = format!("{:?}", summary);
+        let debug = format!("{summary:?}");
         assert!(debug.contains("ReportSummary"));
     }
 
@@ -340,7 +340,7 @@ mod tests {
             errors: 3,
             skipped: 4,
         };
-        let cloned = summary.clone();
+        let cloned = summary;
         assert_eq!(cloned.healthy, 1);
         assert_eq!(cloned.warnings, 2);
         assert_eq!(cloned.errors, 3);
@@ -353,7 +353,7 @@ mod tests {
             results: vec![CheckResult::healthy("Test", "OK")],
             summary: ReportSummary::default(),
         };
-        let debug = format!("{:?}", report);
+        let debug = format!("{report:?}");
         assert!(debug.contains("DoctorReport"));
     }
 
@@ -368,7 +368,7 @@ mod tests {
                 skipped: 0,
             },
         };
-        let cloned = report.clone();
+        let cloned = report;
         assert_eq!(cloned.results.len(), 1);
         assert_eq!(cloned.summary.healthy, 1);
     }

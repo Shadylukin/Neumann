@@ -273,14 +273,14 @@ mod tests {
     #[test]
     fn test_theme_clone() {
         let theme = Theme::dark();
-        let cloned = theme.clone();
+        let cloned = theme;
         let _ = cloned.success;
     }
 
     #[test]
     fn test_theme_debug() {
         let theme = Theme::dark();
-        let debug = format!("{:?}", theme);
+        let debug = format!("{theme:?}");
         assert!(debug.contains("Theme"));
     }
 

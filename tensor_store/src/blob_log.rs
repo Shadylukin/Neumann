@@ -588,7 +588,7 @@ mod tests {
         // deduplicated when multiple threads check simultaneously. Allow for this.
         let count = log.chunk_count();
         assert!(
-            count >= 380 && count <= 400,
+            (380..=400).contains(&count),
             "Expected ~400 chunks, got {}",
             count
         );

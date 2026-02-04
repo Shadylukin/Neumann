@@ -15,7 +15,7 @@ fn bench_delta_compress(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("compress_ids_10k_sequential", |b| {
-        b.iter(|| compress_ids(black_box(&ids)))
+        b.iter(|| compress_ids(black_box(&ids)));
     });
     println!(
         "  compress_ids_10k peak RAM: {:.1} KB",
@@ -29,7 +29,7 @@ fn bench_delta_decompress(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("decompress_ids_10k_sequential", |b| {
-        b.iter(|| decompress_ids(black_box(&compressed)))
+        b.iter(|| decompress_ids(black_box(&compressed)));
     });
     println!(
         "  decompress_ids_10k peak RAM: {:.1} KB",
@@ -42,7 +42,7 @@ fn bench_rle_encode(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("rle_encode_100k_values", |b| {
-        b.iter(|| rle_encode(black_box(&data)))
+        b.iter(|| rle_encode(black_box(&data)));
     });
     println!(
         "  rle_encode_100k peak RAM: {:.1} KB",
@@ -56,7 +56,7 @@ fn bench_rle_decode(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("rle_decode_100k_values", |b| {
-        b.iter(|| rle_decode(black_box(&encoded)))
+        b.iter(|| rle_decode(black_box(&encoded)));
     });
     println!(
         "  rle_decode_100k peak RAM: {:.1} KB",
@@ -66,13 +66,14 @@ fn bench_rle_decode(c: &mut Criterion) {
 
 // Tensor Train (TT) decomposition benchmarks
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_decompose_256d(c: &mut Criterion) {
     let vector: Vec<f32> = (0..256).map(|i| (i as f32).sin()).collect();
     let config = TTConfig::for_dim(256).unwrap();
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("tt_decompose_256d", |b| {
-        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)))
+        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)));
     });
     println!(
         "\n  tt_decompose_256d peak RAM: {:.1} KB",
@@ -80,13 +81,14 @@ fn bench_tt_decompose_256d(c: &mut Criterion) {
     );
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_decompose_1024d(c: &mut Criterion) {
     let vector: Vec<f32> = (0..1024).map(|i| (i as f32).sin()).collect();
     let config = TTConfig::for_dim(1024).unwrap();
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("tt_decompose_1024d", |b| {
-        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)))
+        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)));
     });
     println!(
         "  tt_decompose_1024d peak RAM: {:.1} KB",
@@ -94,13 +96,14 @@ fn bench_tt_decompose_1024d(c: &mut Criterion) {
     );
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_decompose_4096d(c: &mut Criterion) {
     let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("tt_decompose_4096d", |b| {
-        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)))
+        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)));
     });
     println!(
         "  tt_decompose_4096d peak RAM: {:.1} KB",
@@ -108,6 +111,7 @@ fn bench_tt_decompose_4096d(c: &mut Criterion) {
     );
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_reconstruct_4096d(c: &mut Criterion) {
     let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
@@ -115,7 +119,7 @@ fn bench_tt_reconstruct_4096d(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("tt_reconstruct_4096d", |b| {
-        b.iter(|| tt_reconstruct(black_box(&tt)))
+        b.iter(|| tt_reconstruct(black_box(&tt)));
     });
     println!(
         "  tt_reconstruct_4096d peak RAM: {:.1} KB",
@@ -123,6 +127,7 @@ fn bench_tt_reconstruct_4096d(c: &mut Criterion) {
     );
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_dot_product_4096d(c: &mut Criterion) {
     let v1: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
     let v2: Vec<f32> = (0..4096).map(|i| (i as f32).cos()).collect();
@@ -132,7 +137,7 @@ fn bench_tt_dot_product_4096d(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("tt_dot_product_4096d", |b| {
-        b.iter(|| tt_dot_product(black_box(&tt1), black_box(&tt2)))
+        b.iter(|| tt_dot_product(black_box(&tt1), black_box(&tt2)));
     });
     println!(
         "  tt_dot_product_4096d peak RAM: {:.1} KB",
@@ -140,6 +145,7 @@ fn bench_tt_dot_product_4096d(c: &mut Criterion) {
     );
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_cosine_similarity_4096d(c: &mut Criterion) {
     let v1: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
     let v2: Vec<f32> = (0..4096).map(|i| (i as f32).cos()).collect();
@@ -149,7 +155,7 @@ fn bench_tt_cosine_similarity_4096d(c: &mut Criterion) {
 
     PEAK_ALLOC.reset_peak_usage();
     c.bench_function("tt_cosine_similarity_4096d", |b| {
-        b.iter(|| tt_cosine_similarity(black_box(&tt1), black_box(&tt2)))
+        b.iter(|| tt_cosine_similarity(black_box(&tt1), black_box(&tt2)));
     });
     println!(
         "  tt_cosine_similarity_4096d peak RAM: {:.1} KB",
@@ -157,6 +163,7 @@ fn bench_tt_cosine_similarity_4096d(c: &mut Criterion) {
     );
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn bench_tt_compression_ratio(c: &mut Criterion) {
     let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
     let config = TTConfig::for_dim(4096).unwrap();
@@ -166,7 +173,7 @@ fn bench_tt_compression_ratio(c: &mut Criterion) {
             let tt = tt_decompose(black_box(&vector), black_box(&config)).unwrap();
             let ratio = tt.compression_ratio();
             black_box(ratio)
-        })
+        });
     });
 }
 

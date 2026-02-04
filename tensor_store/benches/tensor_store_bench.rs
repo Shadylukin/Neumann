@@ -333,7 +333,7 @@ fn bench_sparse_lookups(c: &mut Criterion) {
     group.bench_function("sparse_workload_no_bloom", |b| {
         let mut i = 0u64;
         b.iter(|| {
-            let key = if i % 10 == 0 {
+            let key = if i.is_multiple_of(10) {
                 // 10% hits
                 format!("key:{}", i % num_existing as u64)
             } else {
@@ -349,7 +349,7 @@ fn bench_sparse_lookups(c: &mut Criterion) {
     group.bench_function("sparse_workload_with_bloom", |b| {
         let mut i = 0u64;
         b.iter(|| {
-            let key = if i % 10 == 0 {
+            let key = if i.is_multiple_of(10) {
                 format!("key:{}", i % num_existing as u64)
             } else {
                 format!("key:{}", 1_000_000 + i)
@@ -1644,9 +1644,7 @@ fn bench_hnsw_insert_dense(c: &mut Criterion) {
     let mut group = c.benchmark_group("hnsw/insert/dense");
 
     for &count in &[100, 500, 1000] {
-        let vectors: Vec<Vec<f32>> = (0..count)
-            .map(|i| generate_random_vector(768, i as u64))
-            .collect();
+        let vectors: Vec<Vec<f32>> = (0..count).map(|i| generate_random_vector(768, i)).collect();
 
         group.throughput(Throughput::Elements(count));
         group.bench_with_input(BenchmarkId::from_parameter(count), &vectors, |b, vecs| {
@@ -1667,9 +1665,7 @@ fn bench_hnsw_insert_tt(c: &mut Criterion) {
     let config = TTConfig::for_dim(768).unwrap();
 
     for &count in &[100, 500, 1000] {
-        let vectors: Vec<Vec<f32>> = (0..count)
-            .map(|i| generate_random_vector(768, i as u64))
-            .collect();
+        let vectors: Vec<Vec<f32>> = (0..count).map(|i| generate_random_vector(768, i)).collect();
 
         group.throughput(Throughput::Elements(count));
         group.bench_with_input(BenchmarkId::from_parameter(count), &vectors, |b, vecs| {
@@ -1689,9 +1685,7 @@ fn bench_hnsw_insert_batch_tt(c: &mut Criterion) {
     let config = TTConfig::for_dim(768).unwrap();
 
     for &count in &[100, 500, 1000] {
-        let vectors: Vec<Vec<f32>> = (0..count)
-            .map(|i| generate_random_vector(768, i as u64))
-            .collect();
+        let vectors: Vec<Vec<f32>> = (0..count).map(|i| generate_random_vector(768, i)).collect();
 
         group.throughput(Throughput::Elements(count));
         group.bench_with_input(BenchmarkId::from_parameter(count), &vectors, |b, vecs| {

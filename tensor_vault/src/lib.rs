@@ -1738,12 +1738,7 @@ mod tests {
         let graph = Arc::new(GraphEngine::new());
 
         // Short key works - Argon2id derives a proper key
-        let result = Vault::new(
-            b"short",
-            graph.clone(),
-            store.clone(),
-            VaultConfig::default(),
-        );
+        let result = Vault::new(b"short", graph.clone(), store, VaultConfig::default());
         assert!(result.is_ok());
 
         // Even empty key works with Argon2id
@@ -2155,14 +2150,12 @@ mod tests {
             // Edge target should NOT contain plaintext secret name
             assert!(
                 !to.contains("my_api_key"),
-                "Secret name should be obfuscated in graph: found {}",
-                to
+                "Secret name should be obfuscated in graph: found {to}"
             );
             // But should still have the vault_secret prefix
             assert!(
                 to.starts_with("vault_secret:"),
-                "Edge should point to vault secret node: {}",
-                to
+                "Edge should point to vault secret node: {to}"
             );
         }
 

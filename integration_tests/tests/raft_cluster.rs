@@ -28,7 +28,7 @@ fn create_test_block(height: u64, proposer: &str) -> Block {
 
 /// Create a connected 3-node cluster with memory transport.
 fn create_3_node_cluster() -> (Arc<RaftNode>, Arc<RaftNode>, Arc<RaftNode>) {
-    let peers = vec![
+    let peers = [
         "node1".to_string(),
         "node2".to_string(),
         "node3".to_string(),

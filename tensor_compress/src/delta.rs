@@ -194,7 +194,7 @@ mod tests {
         let original_bytes = ids.len() * 8;
         let compressed_bytes = compressed.len();
         let ratio = original_bytes as f64 / compressed_bytes as f64;
-        assert!(ratio > 4.0, "Expected >4x compression, got {:.2}x", ratio);
+        assert!(ratio > 4.0, "Expected >4x compression, got {ratio:.2}x");
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
         let ratio = original_bytes as f64 / compressed_bytes as f64;
 
         // Sequential should give ~8x compression (1 byte per delta)
-        assert!(ratio > 7.0, "Expected ~8x compression, got {:.2}x", ratio);
+        assert!(ratio > 7.0, "Expected ~8x compression, got {ratio:.2}x");
     }
 
     #[test]

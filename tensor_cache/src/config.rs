@@ -203,7 +203,7 @@ mod tests {
         assert!(config.validate().is_err());
 
         config.embedding_dim = 1536;
-        config.default_ttl = Duration::from_secs(100000);
+        config.default_ttl = Duration::from_secs(100_000);
         assert!(config.validate().is_err());
     }
 

@@ -310,7 +310,7 @@ mod tests {
         let level_info = level_progress(150);
         let html = xp_bar(&level_info).into_string();
         assert!(html.contains("XP Progress"));
-        assert!(html.contains("%"));
+        assert!(html.contains('%'));
     }
 
     #[test]

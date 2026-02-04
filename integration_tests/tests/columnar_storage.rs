@@ -96,7 +96,7 @@ fn test_load_column_data() {
     for i in 0..column_data.row_ids.len() {
         if let Some(Value::Int(v)) = column_data.get_value(i) {
             assert_eq!(v % 5, 0, "Score should be multiple of 5");
-            assert!(v >= 0 && v < 100, "Score should be in range 0..100");
+            assert!((0..100).contains(&v), "Score should be in range 0..100");
             values_found += 1;
         }
     }

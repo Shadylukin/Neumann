@@ -327,11 +327,11 @@ mod tests {
     fn test_streaming_roundtrip() {
         let cursor = Cursor::new(Vec::new());
         let config = CompressionConfig::default();
-        let mut writer = StreamingWriter::new(cursor, config.clone()).unwrap();
+        let mut writer = StreamingWriter::new(cursor, config).unwrap();
 
         // Write multiple entries
         for i in 0..10 {
-            let entry = make_test_entry(&format!("key{}", i), i);
+            let entry = make_test_entry(&format!("key{i}"), i);
             writer.write_entry(&entry).unwrap();
         }
 
@@ -355,7 +355,7 @@ mod tests {
 
         for i in 0..5 {
             writer
-                .write_entry(&make_test_entry(&format!("k{}", i), i))
+                .write_entry(&make_test_entry(&format!("k{i}"), i))
                 .unwrap();
         }
 
@@ -472,7 +472,7 @@ mod tests {
         // Write 1000 entries
         for i in 0..1000 {
             writer
-                .write_entry(&make_test_entry(&format!("key_{}", i), i))
+                .write_entry(&make_test_entry(&format!("key_{i}"), i))
                 .unwrap();
         }
 

@@ -38,7 +38,7 @@ fn create_cluster(node_ids: &[&str]) -> Vec<Arc<RaftNode>> {
 
     node_ids
         .iter()
-        .zip(transports.into_iter())
+        .zip(transports)
         .map(|(id, transport)| {
             let peers: Vec<String> = node_ids.iter().filter(|p| *p != id).cloned().collect();
             Arc::new(RaftNode::new(id.clone(), peers, transport, config.clone()))

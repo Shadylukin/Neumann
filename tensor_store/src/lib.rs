@@ -3499,7 +3499,7 @@ mod tests {
         // Shards not accessed in 1000ms - most should be cold
         let very_cold = store.cold_shards(1).unwrap();
         // At least some shards should be cold (never accessed)
-        assert!(very_cold.len() >= 1);
+        assert!(!very_cold.is_empty());
     }
 
     #[test]

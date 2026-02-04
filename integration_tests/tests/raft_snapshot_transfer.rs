@@ -159,7 +159,7 @@ fn test_install_snapshot_updates_state() {
     let node = create_node_with_config("follower", vec!["leader".to_string()], config);
 
     // Create snapshot data with log entries
-    let entries: Vec<LogEntry> = (1..=10).map(|i| create_test_log_entry(i)).collect();
+    let entries: Vec<LogEntry> = (1..=10).map(create_test_log_entry).collect();
     let data = bitcode::serialize(&entries).unwrap();
 
     // Note: last_included_term must match the term in the log entries (which is 1)
@@ -199,7 +199,7 @@ fn test_snapshot_install_validates_data() {
     assert!(result.is_err());
 
     // Mismatched index
-    let entries: Vec<LogEntry> = (1..=3).map(|i| create_test_log_entry(i)).collect();
+    let entries: Vec<LogEntry> = (1..=3).map(create_test_log_entry).collect();
     let data = bitcode::serialize(&entries).unwrap();
     let wrong_metadata = SnapshotMetadata::new(
         10, // Claims index 10, but data only has up to 3

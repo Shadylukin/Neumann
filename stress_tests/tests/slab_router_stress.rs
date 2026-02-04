@@ -81,7 +81,7 @@ fn create_test_data(size: usize) -> TensorData {
     );
     data.set("count", TensorValue::Scalar(ScalarValue::Int(size as i64)));
     // Add embedding to increase data size
-    if size % 10 == 0 {
+    if size.is_multiple_of(10) {
         let embedding: Vec<f32> = (0..384).map(|i| (i + size) as f32 * 0.01).collect();
         data.set("_embedding", TensorValue::Vector(embedding));
     }

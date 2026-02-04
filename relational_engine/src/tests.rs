@@ -51,7 +51,7 @@ fn insert_1000_rows_select_with_condition() {
 
     for i in 0..1000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 50)));
         engine.insert("users", values).unwrap();
     }
@@ -76,7 +76,7 @@ fn select_with_range_condition() {
 
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -95,7 +95,7 @@ fn select_with_compound_condition() {
 
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -115,7 +115,7 @@ fn join_two_tables() {
 
     for i in 1..=5 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -155,7 +155,7 @@ fn update_modifies_correct_rows() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -191,7 +191,7 @@ fn delete_removes_correct_rows() {
 
     for i in 0..20 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -335,7 +335,7 @@ fn or_condition() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -354,7 +354,7 @@ fn row_id_in_condition() {
 
     for i in 0..5 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -372,31 +372,31 @@ fn row_id_in_condition() {
 #[test]
 fn error_display_all_variants() {
     let e1 = RelationalError::TableNotFound("test".into());
-    assert!(format!("{}", e1).contains("test"));
+    assert!(format!("{e1}").contains("test"));
 
     let e2 = RelationalError::TableAlreadyExists("test".into());
-    assert!(format!("{}", e2).contains("test"));
+    assert!(format!("{e2}").contains("test"));
 
     let e3 = RelationalError::ColumnNotFound("col".into());
-    assert!(format!("{}", e3).contains("col"));
+    assert!(format!("{e3}").contains("col"));
 
     let e4 = RelationalError::TypeMismatch {
         column: "age".into(),
         expected: ColumnType::Int,
     };
-    assert!(format!("{}", e4).contains("age"));
+    assert!(format!("{e4}").contains("age"));
 
     let e5 = RelationalError::NullNotAllowed("name".into());
-    assert!(format!("{}", e5).contains("name"));
+    assert!(format!("{e5}").contains("name"));
 
     let e6 = RelationalError::StorageError("disk full".into());
-    assert!(format!("{}", e6).contains("disk full"));
+    assert!(format!("{e6}").contains("disk full"));
 }
 
 #[test]
 fn error_is_error_trait() {
     let err: &dyn std::error::Error = &RelationalError::TableNotFound("x".into());
-    assert!(err.to_string().contains("x"));
+    assert!(err.to_string().contains('x'));
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn condition_ne() {
 
     for i in 0..5 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -445,7 +445,7 @@ fn condition_le() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -463,7 +463,7 @@ fn condition_gt() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -485,8 +485,8 @@ fn float_comparisons() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
-        values.insert("score".to_string(), Value::Float(i as f64 * 0.5));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("score".to_string(), Value::Float(f64::from(i) * 0.5));
         engine.insert("scores", values).unwrap();
     }
 
@@ -702,7 +702,7 @@ fn value_from_bytes_scalar() {
 #[test]
 fn condition_debug() {
     let c = Condition::True;
-    let debug_str = format!("{:?}", c);
+    let debug_str = format!("{c:?}");
     assert!(debug_str.contains("True"));
 }
 
@@ -712,7 +712,7 @@ fn row_debug_and_clone() {
     let row = Row { id: 1, values };
     let cloned = row.clone();
     assert_eq!(cloned.id, 1);
-    let debug_str = format!("{:?}", row);
+    let debug_str = format!("{row:?}");
     assert!(debug_str.contains("Row"));
 }
 
@@ -721,7 +721,7 @@ fn column_debug_and_clone() {
     let col = Column::new("test", ColumnType::Int);
     let cloned = col.clone();
     assert_eq!(cloned.name, "test");
-    let debug_str = format!("{:?}", col);
+    let debug_str = format!("{col:?}");
     assert!(debug_str.contains("Column"));
 }
 
@@ -730,7 +730,7 @@ fn schema_debug_and_clone() {
     let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
     let cloned = schema.clone();
     assert_eq!(cloned.columns.len(), 1);
-    let debug_str = format!("{:?}", schema);
+    let debug_str = format!("{schema:?}");
     assert!(debug_str.contains("Schema"));
 }
 
@@ -860,14 +860,14 @@ fn row_counter_initialization_on_insert() {
 #[test]
 fn value_debug() {
     let v = Value::Int(42);
-    let debug_str = format!("{:?}", v);
+    let debug_str = format!("{v:?}");
     assert!(debug_str.contains("Int"));
 }
 
 #[test]
 fn column_type_debug() {
     let ct = ColumnType::Float;
-    let debug_str = format!("{:?}", ct);
+    let debug_str = format!("{ct:?}");
     assert!(debug_str.contains("Float"));
 }
 
@@ -881,18 +881,18 @@ fn condition_clone() {
     let c6 = Condition::Ge("col".into(), Value::Int(6));
     let c7 = Condition::True;
 
-    let _ = c1.clone();
-    let _ = c2.clone();
-    let _ = c3.clone();
-    let _ = c4.clone();
-    let _ = c5.clone();
-    let _ = c6.clone();
-    let _ = c7.clone();
+    let _ = c1;
+    let _ = c2;
+    let _ = c3;
+    let _ = c4;
+    let _ = c5;
+    let _ = c6;
+    let _ = c7;
 
     let c8 = Condition::And(Box::new(Condition::True), Box::new(Condition::True));
     let c9 = Condition::Or(Box::new(Condition::True), Box::new(Condition::True));
-    let _ = c8.clone();
-    let _ = c9.clone();
+    let _ = c8;
+    let _ = c9;
 }
 
 #[test]
@@ -1042,7 +1042,7 @@ fn create_and_use_index() {
     // Insert some data
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 10)));
         engine.insert("users", values).unwrap();
     }
@@ -1066,7 +1066,7 @@ fn index_accelerates_select() {
     // Insert 1000 rows
     for i in 0..1000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 50)));
         engine.insert("users", values).unwrap();
     }
@@ -1092,7 +1092,7 @@ fn index_on_id_column() {
 
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -1163,7 +1163,7 @@ fn index_maintained_on_insert() {
     // Then insert data
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -1183,7 +1183,7 @@ fn index_maintained_on_update() {
     // Insert data
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -1223,7 +1223,7 @@ fn index_maintained_on_delete() {
     // Insert data
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -1284,7 +1284,7 @@ fn index_with_compound_condition() {
     // Insert data
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 10)));
         engine.insert("users", values).unwrap();
     }
@@ -1324,13 +1324,13 @@ fn index_error_display() {
         table: "users".into(),
         column: "age".into(),
     };
-    assert_eq!(format!("{}", err1), "Index already exists on users.age");
+    assert_eq!(format!("{err1}"), "Index already exists on users.age");
 
     let err2 = RelationalError::IndexNotFound {
         table: "users".into(),
         column: "age".into(),
     };
-    assert_eq!(format!("{}", err2), "Index not found on users.age");
+    assert_eq!(format!("{err2}"), "Index not found on users.age");
 }
 
 #[test]
@@ -1364,8 +1364,8 @@ fn btree_index_accelerates_range_query() {
     // Insert 100 rows
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
-        values.insert("age".to_string(), Value::Int(i as i64));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("age".to_string(), Value::Int(i64::from(i)));
         engine.insert("users", values).unwrap();
     }
 
@@ -1409,8 +1409,8 @@ fn btree_index_maintained_on_insert() {
     // Insert rows after index creation
     for i in 0..50 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
-        values.insert("age".to_string(), Value::Int(i as i64));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("age".to_string(), Value::Int(i64::from(i)));
         engine.insert("users", values).unwrap();
     }
 
@@ -1429,8 +1429,8 @@ fn btree_index_maintained_on_update() {
     // Insert initial data
     for i in 0..20 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
-        values.insert("age".to_string(), Value::Int(i as i64));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("age".to_string(), Value::Int(i64::from(i)));
         engine.insert("users", values).unwrap();
     }
 
@@ -1469,8 +1469,8 @@ fn btree_index_maintained_on_delete() {
     // Insert data
     for i in 0..30 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
-        values.insert("age".to_string(), Value::Int(i as i64));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("age".to_string(), Value::Int(i64::from(i)));
         engine.insert("users", values).unwrap();
     }
 
@@ -1509,7 +1509,7 @@ fn btree_index_with_negative_numbers() {
     // Insert with negative ages
     for i in -50..50 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -1617,7 +1617,7 @@ fn batch_insert_multiple_rows() {
     let rows: Vec<HashMap<String, Value>> = (0..100)
         .map(|i| {
             let mut values = HashMap::new();
-            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("name".to_string(), Value::String(format!("User{i}")));
             values.insert("age".to_string(), Value::Int(20 + i));
             values
         })
@@ -1682,7 +1682,7 @@ fn batch_insert_with_indexes() {
     let rows: Vec<HashMap<String, Value>> = (0..50)
         .map(|i| {
             let mut values = HashMap::new();
-            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("name".to_string(), Value::String(format!("User{i}")));
             values.insert("age".to_string(), Value::Int(25)); // All same age
             values
         })
@@ -1709,8 +1709,8 @@ fn batch_insert_with_btree_index() {
     let rows: Vec<HashMap<String, Value>> = (0..100)
         .map(|i| {
             let mut values = HashMap::new();
-            values.insert("name".to_string(), Value::String(format!("User{}", i)));
-            values.insert("age".to_string(), Value::Int(i as i64));
+            values.insert("name".to_string(), Value::String(format!("User{i}")));
+            values.insert("age".to_string(), Value::Int(i64::from(i)));
             values
         })
         .collect();
@@ -1788,7 +1788,7 @@ fn materialize_int_column() {
 
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 50)));
         engine.insert("users", values).unwrap();
     }
@@ -1835,7 +1835,7 @@ fn select_columnar_with_vectorized_filter() {
 
     for i in 0..1000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i % 100));
         engine.insert("users", values).unwrap();
     }
@@ -1865,11 +1865,11 @@ fn select_columnar_with_projection() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         values.insert(
             "email".to_string(),
-            Value::String(format!("user{}@test.com", i)),
+            Value::String(format!("user{i}@test.com")),
         );
         engine.insert("users", values).unwrap();
     }
@@ -1905,7 +1905,7 @@ fn select_columnar_compound_condition() {
 
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -1938,7 +1938,7 @@ fn select_columnar_fallback_to_row_based() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2150,7 +2150,7 @@ fn pure_columnar_select_all_columns_materialized() {
 
     for i in 0..20 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2187,7 +2187,7 @@ fn select_columnar_with_true_condition() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2213,7 +2213,7 @@ fn select_columnar_with_and_condition() {
 
     for i in 0..50 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -2241,7 +2241,7 @@ fn select_columnar_with_or_condition() {
 
     for i in 0..50 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -2269,7 +2269,7 @@ fn select_columnar_ne_condition() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -2303,7 +2303,7 @@ fn select_columnar_le_condition() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2333,7 +2333,7 @@ fn select_with_projection_filters() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2385,7 +2385,7 @@ fn columnar_scan_options_debug_clone() {
     let cloned = options.clone();
     assert_eq!(cloned.projection, options.projection);
     assert_eq!(cloned.prefer_columnar, options.prefer_columnar);
-    let debug = format!("{:?}", options);
+    let debug = format!("{options:?}");
     assert!(debug.contains("ColumnarScanOptions"));
 }
 
@@ -2399,7 +2399,7 @@ fn column_data_debug_clone() {
     };
     let cloned = col.clone();
     assert_eq!(cloned.name, col.name);
-    let debug = format!("{:?}", col);
+    let debug = format!("{col:?}");
     assert!(debug.contains("ColumnData"));
 }
 
@@ -2443,7 +2443,7 @@ fn materialize_columns_with_bool_type() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("Item{}", i)));
+        values.insert("name".to_string(), Value::String(format!("Item{i}")));
         values.insert("active".to_string(), Value::Bool(i % 2 == 0));
         engine.insert("flags", values).unwrap();
     }
@@ -2462,12 +2462,12 @@ fn materialize_columns_with_null_values() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         if i % 2 == 0 {
             values.insert(
                 "email".to_string(),
-                Value::String(format!("user{}@test.com", i)),
+                Value::String(format!("user{i}@test.com")),
             );
         } else {
             values.insert("email".to_string(), Value::Null);
@@ -2500,7 +2500,7 @@ fn select_columnar_type_mismatch() {
 
     for i in 0..5 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2587,7 +2587,7 @@ fn parallel_select_large_dataset() {
     // Insert enough rows to trigger parallel execution
     for i in 0..2000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 50)));
         engine.insert("users", values).unwrap();
     }
@@ -2605,7 +2605,7 @@ fn parallel_update_large_dataset() {
 
     for i in 0..2000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -2629,7 +2629,7 @@ fn parallel_delete_large_dataset() {
 
     for i in 0..2000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert(
             "age".to_string(),
             Value::Int(if i % 2 == 0 { 25 } else { 30 }),
@@ -2651,15 +2651,15 @@ fn parallel_join_large_dataset() {
 
     for i in 0..500 {
         let mut user_values = HashMap::new();
-        user_values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        user_values.insert("name".to_string(), Value::String(format!("User{i}")));
         user_values.insert("age".to_string(), Value::Int(20 + (i % 50)));
         engine.insert("users", user_values).unwrap();
     }
 
     for i in 0..1000 {
         let mut post_values = HashMap::new();
-        post_values.insert("user_id".to_string(), Value::Int((i % 500) as i64 + 1));
-        post_values.insert("title".to_string(), Value::String(format!("Post{}", i)));
+        post_values.insert("user_id".to_string(), Value::Int((i % 500) + 1));
+        post_values.insert("title".to_string(), Value::String(format!("Post{i}")));
         post_values.insert("views".to_string(), Value::Int(i * 10));
         engine.insert("posts", post_values).unwrap();
     }
@@ -2675,7 +2675,7 @@ fn btree_index_on_id_column() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2698,7 +2698,7 @@ fn hash_index_on_id_column() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2719,7 +2719,7 @@ fn btree_range_query_no_matches() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2740,7 +2740,7 @@ fn update_with_btree_index() {
 
     for i in 0..20 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -2772,7 +2772,7 @@ fn select_columnar_empty_result() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2801,7 +2801,7 @@ fn select_columnar_no_projection_with_filter() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2836,8 +2836,8 @@ fn materialize_columns_float_type() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
-        values.insert("score".to_string(), Value::Float(i as f64 * 1.5));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
+        values.insert("score".to_string(), Value::Float(f64::from(i) * 1.5));
         engine.insert("scores", values).unwrap();
     }
 
@@ -2868,7 +2868,7 @@ fn insert_and_update_with_id_index() {
 
     for i in 0..10 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -2895,15 +2895,15 @@ fn large_parallel_join() {
     // Insert many users and posts to trigger parallel join
     for i in 0..1000 {
         let mut user_values = HashMap::new();
-        user_values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        user_values.insert("name".to_string(), Value::String(format!("User{i}")));
         user_values.insert("age".to_string(), Value::Int(20 + (i % 50)));
         engine.insert("users", user_values).unwrap();
     }
 
     for i in 0..2000 {
         let mut post_values = HashMap::new();
-        post_values.insert("user_id".to_string(), Value::Int((i % 1000) as i64 + 1));
-        post_values.insert("title".to_string(), Value::String(format!("Post{}", i)));
+        post_values.insert("user_id".to_string(), Value::Int((i % 1000) + 1));
+        post_values.insert("title".to_string(), Value::String(format!("Post{i}")));
         post_values.insert("views".to_string(), Value::Int(i * 10));
         engine.insert("posts", post_values).unwrap();
     }
@@ -2919,7 +2919,7 @@ fn select_with_condition_returning_none() {
 
     for i in 0..100 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 10)));
         engine.insert("users", values).unwrap();
     }
@@ -2941,7 +2941,7 @@ fn btree_index_range_le() {
 
     for i in 0..50 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -2961,7 +2961,7 @@ fn btree_index_range_ge() {
 
     for i in 0..50 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(i));
         engine.insert("users", values).unwrap();
     }
@@ -2981,7 +2981,7 @@ fn update_large_dataset_with_index() {
 
     for i in 0..1000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(25));
         engine.insert("users", values).unwrap();
     }
@@ -3008,7 +3008,7 @@ fn delete_large_dataset_with_index() {
 
     for i in 0..1000 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert(
             "age".to_string(),
             Value::Int(if i % 2 == 0 { 25 } else { 30 }),
@@ -3649,7 +3649,7 @@ fn test_transaction_multiple_inserts_rollback() {
 
     for i in 0..5 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.tx_insert(tx, "users", values).unwrap();
     }
@@ -3826,7 +3826,7 @@ fn test_tx_select() {
     // Insert some rows
     for i in 0..3 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users", values).unwrap();
     }
@@ -4076,31 +4076,31 @@ fn test_name_at_max_length_succeeds() {
 
 #[test]
 fn test_simd_filter_lt_f64() {
-    let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+    let values: Vec<f64> = (0..10).map(f64::from).collect();
     let mut result = vec![0u64; 1];
     simd::filter_lt_f64(&values, 5.0, &mut result);
 
     // Values 0,1,2,3,4 < 5.0
     for i in 0..5 {
-        assert!((result[0] & (1u64 << i)) != 0, "Expected bit {} set", i);
+        assert!((result[0] & (1u64 << i)) != 0, "Expected bit {i} set");
     }
     for i in 5..10 {
-        assert!((result[0] & (1u64 << i)) == 0, "Expected bit {} unset", i);
+        assert!((result[0] & (1u64 << i)) == 0, "Expected bit {i} unset");
     }
 }
 
 #[test]
 fn test_simd_filter_gt_f64() {
-    let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+    let values: Vec<f64> = (0..10).map(f64::from).collect();
     let mut result = vec![0u64; 1];
     simd::filter_gt_f64(&values, 5.0, &mut result);
 
     // Values 6,7,8,9 > 5.0
     for i in 0..6 {
-        assert!((result[0] & (1u64 << i)) == 0, "Expected bit {} unset", i);
+        assert!((result[0] & (1u64 << i)) == 0, "Expected bit {i} unset");
     }
     for i in 6..10 {
-        assert!((result[0] & (1u64 << i)) != 0, "Expected bit {} set", i);
+        assert!((result[0] & (1u64 << i)) != 0, "Expected bit {i} set");
     }
 }
 
@@ -4121,7 +4121,7 @@ fn test_simd_filter_eq_f64() {
 #[test]
 fn test_simd_filter_lt_f64_non_aligned() {
     // Test with non-4-aligned length to cover remainder loop
-    let values: Vec<f64> = (0..7).map(|i| i as f64).collect();
+    let values: Vec<f64> = (0..7).map(f64::from).collect();
     let mut result = vec![0u64; 1];
     simd::filter_lt_f64(&values, 3.0, &mut result);
 
@@ -4132,7 +4132,7 @@ fn test_simd_filter_lt_f64_non_aligned() {
 
 #[test]
 fn test_simd_filter_gt_f64_non_aligned() {
-    let values: Vec<f64> = (0..5).map(|i| i as f64).collect();
+    let values: Vec<f64> = (0..5).map(f64::from).collect();
     let mut result = vec![0u64; 1];
     simd::filter_gt_f64(&values, 2.0, &mut result);
 
@@ -4191,10 +4191,10 @@ fn test_value_sortable_key() {
     assert_eq!(null_key, "0");
 
     let int_key = Value::Int(100).sortable_key();
-    assert!(int_key.starts_with("i"));
+    assert!(int_key.starts_with('i'));
 
     let float_key = Value::Float(1.5).sortable_key();
-    assert!(float_key.starts_with("f"));
+    assert!(float_key.starts_with('f'));
 
     let string_key = Value::String("abc".to_string()).sortable_key();
     assert_eq!(string_key, "sabc");
@@ -4259,19 +4259,19 @@ fn test_value_matches_type() {
 #[test]
 fn test_error_display_table_not_found() {
     let err = RelationalError::TableNotFound("users".to_string());
-    assert_eq!(format!("{}", err), "Table not found: users");
+    assert_eq!(format!("{err}"), "Table not found: users");
 }
 
 #[test]
 fn test_error_display_table_already_exists() {
     let err = RelationalError::TableAlreadyExists("users".to_string());
-    assert_eq!(format!("{}", err), "Table already exists: users");
+    assert_eq!(format!("{err}"), "Table already exists: users");
 }
 
 #[test]
 fn test_error_display_column_not_found() {
     let err = RelationalError::ColumnNotFound("age".to_string());
-    assert_eq!(format!("{}", err), "Column not found: age");
+    assert_eq!(format!("{err}"), "Column not found: age");
 }
 
 #[test]
@@ -4280,13 +4280,13 @@ fn test_error_display_type_mismatch() {
         column: "age".to_string(),
         expected: ColumnType::Int,
     };
-    assert!(format!("{}", err).contains("Type mismatch"));
+    assert!(format!("{err}").contains("Type mismatch"));
 }
 
 #[test]
 fn test_error_display_null_not_allowed() {
     let err = RelationalError::NullNotAllowed("name".to_string());
-    assert!(format!("{}", err).contains("Null not allowed"));
+    assert!(format!("{err}").contains("Null not allowed"));
 }
 
 #[test]
@@ -4295,7 +4295,7 @@ fn test_error_display_index_already_exists() {
         table: "users".to_string(),
         column: "email".to_string(),
     };
-    assert!(format!("{}", err).contains("Index already exists"));
+    assert!(format!("{err}").contains("Index already exists"));
 }
 
 #[test]
@@ -4304,25 +4304,25 @@ fn test_error_display_index_not_found() {
         table: "users".to_string(),
         column: "email".to_string(),
     };
-    assert!(format!("{}", err).contains("Index not found"));
+    assert!(format!("{err}").contains("Index not found"));
 }
 
 #[test]
 fn test_error_display_storage_error() {
     let err = RelationalError::StorageError("disk full".to_string());
-    assert!(format!("{}", err).contains("Storage error"));
+    assert!(format!("{err}").contains("Storage error"));
 }
 
 #[test]
 fn test_error_display_transaction_not_found() {
     let err = RelationalError::TransactionNotFound(123);
-    assert!(format!("{}", err).contains("Transaction not found: 123"));
+    assert!(format!("{err}").contains("Transaction not found: 123"));
 }
 
 #[test]
 fn test_error_display_transaction_inactive() {
     let err = RelationalError::TransactionInactive(456);
-    assert!(format!("{}", err).contains("Transaction not active: 456"));
+    assert!(format!("{err}").contains("Transaction not active: 456"));
 }
 
 #[test]
@@ -4333,7 +4333,7 @@ fn test_error_display_lock_conflict() {
         table: "users".to_string(),
         row_id: 100,
     };
-    assert!(format!("{}", err).contains("Lock conflict"));
+    assert!(format!("{err}").contains("Lock conflict"));
 }
 
 #[test]
@@ -4343,7 +4343,7 @@ fn test_error_display_lock_timeout() {
         table: "users".to_string(),
         row_ids: vec![1, 2, 3],
     };
-    assert!(format!("{}", err).contains("Lock timeout"));
+    assert!(format!("{err}").contains("Lock timeout"));
 }
 
 #[test]
@@ -4352,7 +4352,7 @@ fn test_error_display_rollback_failed() {
         tx_id: 1,
         reason: "storage failure".to_string(),
     };
-    assert!(format!("{}", err).contains("Rollback failed"));
+    assert!(format!("{err}").contains("Rollback failed"));
 }
 
 #[test]
@@ -4362,7 +4362,7 @@ fn test_error_display_result_too_large() {
         actual: 2_000_000,
         max: 1_000_000,
     };
-    let msg = format!("{}", err);
+    let msg = format!("{err}");
     assert!(msg.contains("CROSS JOIN"));
     assert!(msg.contains("2000000"));
     assert!(msg.contains("1000000"));
@@ -4373,7 +4373,7 @@ fn test_error_display_index_corrupted() {
     let err = RelationalError::IndexCorrupted {
         reason: "ID list has 7 bytes, expected multiple of 8".to_string(),
     };
-    let msg = format!("{}", err);
+    let msg = format!("{err}");
     assert!(msg.contains("Index data corrupted"));
     assert!(msg.contains("7 bytes"));
 }
@@ -5169,7 +5169,7 @@ fn test_select_float_le_condition() {
         engine
             .insert(
                 "floats",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -5193,7 +5193,7 @@ fn test_select_float_ge_condition() {
         engine
             .insert(
                 "floats",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -5697,7 +5697,7 @@ fn test_index_on_id_column() {
         engine
             .insert(
                 "id_idx",
-                HashMap::from([("name".to_string(), Value::String(format!("user{}", i)))]),
+                HashMap::from([("name".to_string(), Value::String(format!("user{i}")))]),
             )
             .unwrap();
     }
@@ -5720,7 +5720,7 @@ fn test_btree_index_on_id_column() {
         engine
             .insert(
                 "btree_id",
-                HashMap::from([("name".to_string(), Value::String(format!("user{}", i)))]),
+                HashMap::from([("name".to_string(), Value::String(format!("user{i}")))]),
             )
             .unwrap();
     }
@@ -6047,7 +6047,7 @@ fn test_parallel_avg_threshold() {
         engine
             .insert(
                 "pavg",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -6236,7 +6236,7 @@ fn test_slab_vectorized_filter_float_lt() {
         engine
             .insert(
                 "slab_flt_lt",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -6260,7 +6260,7 @@ fn test_slab_vectorized_filter_float_gt() {
         engine
             .insert(
                 "slab_flt_gt",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -6284,7 +6284,7 @@ fn test_slab_vectorized_filter_float_eq() {
         engine
             .insert(
                 "slab_flt_eq",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -6516,7 +6516,7 @@ fn test_sum_with_float_values() {
         engine
             .insert(
                 "sum_float",
-                HashMap::from([("val".to_string(), Value::Float(i as f64 * 1.5))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i) * 1.5))]),
             )
             .unwrap();
     }
@@ -7126,7 +7126,7 @@ fn test_result_too_large_error_display() {
         actual: 2000000,
         max: 1000000,
     };
-    let display = format!("{}", err);
+    let display = format!("{err}");
     assert!(display.contains("CROSS JOIN"));
     assert!(display.contains("2000000"));
     assert!(display.contains("1000000"));
@@ -7634,7 +7634,7 @@ fn test_simd_filter_float_non_aligned_lt() {
         engine
             .insert(
                 "simd_fna_lt",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -7658,7 +7658,7 @@ fn test_simd_filter_float_non_aligned_gt() {
         engine
             .insert(
                 "simd_fna_gt",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -7682,7 +7682,7 @@ fn test_simd_filter_float_non_aligned_eq() {
         engine
             .insert(
                 "simd_fna_eq",
-                HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("val".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -7699,7 +7699,7 @@ fn test_simd_filter_float_non_aligned_eq() {
 #[test]
 fn test_invalid_name_error_display() {
     let err = RelationalError::InvalidName("test message".to_string());
-    let display = format!("{}", err);
+    let display = format!("{err}");
     assert!(display.contains("Invalid name"));
     assert!(display.contains("test message"));
 }
@@ -7785,7 +7785,7 @@ fn test_concurrent_create_table_same_name() {
                         e.fetch_add(1, Ordering::SeqCst);
                     },
                     Err(err) => panic!("unexpected error: {err:?}"),
-                };
+                }
             })
         })
         .collect();
@@ -8228,7 +8228,7 @@ fn test_concurrent_index_operations_with_lock_striping() {
                         "name".to_string(),
                         Value::String(format!("thread_{t}_user_{i}")),
                     );
-                    values.insert("age".to_string(), Value::Int((t * 1000 + i) as i64));
+                    values.insert("age".to_string(), Value::Int(i64::from(t * 1000 + i)));
                     eng.insert("users", values).unwrap();
                 }
             })
@@ -8269,7 +8269,7 @@ fn test_btree_index_lock_ordering_no_deadlock() {
         let eng = Arc::clone(&engine);
         handles.push(thread::spawn(move || {
             for i in 0..50 {
-                let val = (t * 1000 + i) as i64;
+                let val = i64::from(t * 1000 + i);
                 let mut values = HashMap::new();
                 values.insert("value".to_string(), Value::Int(val));
                 let _ = eng.insert("lock_test", values);
@@ -8300,8 +8300,7 @@ fn test_btree_index_lock_ordering_no_deadlock() {
     // If this takes more than 10 seconds, likely deadlock (test should complete in < 1s)
     assert!(
         elapsed < Duration::from_secs(10),
-        "Possible deadlock: took {:?}",
-        elapsed
+        "Possible deadlock: took {elapsed:?}"
     );
 }
 
@@ -8597,7 +8596,7 @@ fn test_error_display_too_many_tables() {
     };
     let msg = err.to_string();
     assert!(msg.contains("10"));
-    assert!(msg.contains("5"));
+    assert!(msg.contains('5'));
     assert!(msg.contains("Too many tables"));
 }
 
@@ -8610,8 +8609,8 @@ fn test_error_display_too_many_indexes() {
     };
     let msg = err.to_string();
     assert!(msg.contains("users"));
-    assert!(msg.contains("8"));
-    assert!(msg.contains("5"));
+    assert!(msg.contains('8'));
+    assert!(msg.contains('5'));
 }
 
 #[test]
@@ -9273,7 +9272,7 @@ fn test_select_iter_basic() {
     // Collect all rows
     let rows: Vec<_> = cursor.collect();
     assert_eq!(rows.len(), 10);
-    assert!(rows.iter().all(|r| r.is_ok()));
+    assert!(rows.iter().all(std::result::Result::is_ok));
 }
 
 #[test]
@@ -9384,7 +9383,7 @@ fn test_row_cursor_debug() {
         .select_iter("test", Condition::True, CursorOptions::default())
         .unwrap();
 
-    let debug_str = format!("{:?}", cursor);
+    let debug_str = format!("{cursor:?}");
     assert!(debug_str.contains("RowCursor"));
     assert!(debug_str.contains("rows_processed"));
     assert!(debug_str.contains("total_rows"));
@@ -9447,7 +9446,7 @@ fn test_ordered_key_from_sortable_key_float_positive() {
     if let Some(OrderedKey::Float(f)) = parsed {
         assert!((f.0 - 1.0).abs() < f64::EPSILON);
     } else {
-        panic!("expected Float, got {:?}", parsed);
+        panic!("expected Float, got {parsed:?}");
     }
 }
 
@@ -9496,9 +9495,7 @@ fn test_ordered_key_parsing_consistent() {
         assert_eq!(
             parsed,
             Some(expected.clone()),
-            "parsing failed for {:?} -> expected {:?}",
-            sortable,
-            expected
+            "parsing failed for {sortable:?} -> expected {expected:?}"
         );
     }
 }
@@ -9542,7 +9539,7 @@ fn test_json_column_type_roundtrip() {
     let json_val = serde_json::json!({"key": "value", "nested": {"num": 42}});
     let mut row = HashMap::new();
     row.insert("id".to_string(), Value::Int(1));
-    row.insert("metadata".to_string(), Value::Json(json_val.clone()));
+    row.insert("metadata".to_string(), Value::Json(json_val));
     engine.insert("test_json", row).unwrap();
 
     let rows = engine.select("test_json", Condition::True).unwrap();
@@ -9612,7 +9609,7 @@ fn test_bytes_value_sortable_key() {
     let v2 = Value::Bytes(vec![0x01, 0x03]);
     let key1 = v1.sortable_key();
     let key2 = v2.sortable_key();
-    assert!(key1.starts_with("y"));
+    assert!(key1.starts_with('y'));
     assert!(key1 < key2);
 }
 
@@ -9620,7 +9617,7 @@ fn test_bytes_value_sortable_key() {
 fn test_json_value_sortable_key() {
     let v = Value::Json(serde_json::json!({"a": 1}));
     let key = v.sortable_key();
-    assert!(key.starts_with("j"));
+    assert!(key.starts_with('j'));
 }
 
 #[test]
@@ -11836,7 +11833,7 @@ fn test_basic_table_metadata_recovery() {
 
     // Verify we can scan for tables
     let table_keys = recovered.store().scan("_meta:table:");
-    eprintln!("Recovered table keys: {:?}", table_keys);
+    eprintln!("Recovered table keys: {table_keys:?}");
 
     // Verify schema exists after recovery
     let schema_result = recovered.get_schema("test_table");
@@ -13544,7 +13541,7 @@ fn test_slab_vectorized_filter_float_conditions() {
 
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss)]
-        let f = i as f64;
+        let f = f64::from(i);
         engine
             .insert(
                 "test",
@@ -14566,7 +14563,7 @@ fn test_slab_vectorized_filter_float_le_ge() {
 
     for i in 0..20 {
         #[allow(clippy::cast_precision_loss)]
-        let f = i as f64;
+        let f = f64::from(i);
         engine
             .insert(
                 "test_fleg",
@@ -14612,7 +14609,7 @@ fn test_slab_vectorized_filter_float_ne() {
 
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss)]
-        let f = i as f64;
+        let f = f64::from(i);
         engine
             .insert(
                 "test_fne",
@@ -15097,7 +15094,7 @@ fn test_column_values_len() {
     engine.create_table("test_cvl_float", schema_float).unwrap();
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss)]
-        let f = i as f64;
+        let f = f64::from(i);
         engine
             .insert(
                 "test_cvl_float",
@@ -15152,9 +15149,8 @@ fn test_vectorized_filter_column_not_found() {
         },
     );
     // Either returns error or empty result
-    match result {
-        Ok(rows) => assert!(rows.is_empty() || !rows.is_empty()),
-        Err(_) => (),
+    if let Ok(rows) = result {
+        assert!(rows.is_empty() || !rows.is_empty());
     }
 }
 
@@ -15669,7 +15665,7 @@ fn test_slab_filter_rows_lt_float() {
         engine
             .insert(
                 "test_sfrlf",
-                HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("value".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -15699,7 +15695,7 @@ fn test_slab_filter_rows_gt_float() {
         engine
             .insert(
                 "test_sfrgf",
-                HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("value".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -15729,7 +15725,7 @@ fn test_slab_filter_rows_eq_float() {
         engine
             .insert(
                 "test_sfref",
-                HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("value".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -16060,7 +16056,7 @@ fn test_slab_filter_rows_le_float() {
         engine
             .insert(
                 "test_sfrlef",
-                HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("value".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -16089,7 +16085,7 @@ fn test_slab_filter_rows_ge_float() {
         engine
             .insert(
                 "test_sfrgef",
-                HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("value".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -16119,7 +16115,7 @@ fn test_slab_filter_rows_ne_float() {
         engine
             .insert(
                 "test_sfrnef",
-                HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                HashMap::from([("value".to_string(), Value::Float(f64::from(i)))]),
             )
             .unwrap();
     }
@@ -18010,7 +18006,7 @@ fn test_columnar_float_filters() {
     for i in 0..5 {
         let mut values = HashMap::new();
         values.insert("name".to_string(), Value::String(format!("User{i}")));
-        values.insert("score".to_string(), Value::Float(i as f64 * 1.5));
+        values.insert("score".to_string(), Value::Float(f64::from(i) * 1.5));
         engine.insert("scores", values).unwrap();
     }
 
@@ -21359,7 +21355,7 @@ fn test_select_columnar_int_eq() {
 
     for i in 0..20 {
         let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + (i % 5)));
         engine.insert("users_col", values).unwrap();
     }
@@ -21701,7 +21697,7 @@ fn test_select_columnar_with_projection_simd() {
     for i in 0..10 {
         let mut values = HashMap::new();
         values.insert("id".to_string(), Value::Int(i));
-        values.insert("name".to_string(), Value::String(format!("User{}", i)));
+        values.insert("name".to_string(), Value::String(format!("User{i}")));
         values.insert("age".to_string(), Value::Int(20 + i));
         engine.insert("users_proj_simd", values).unwrap();
     }
@@ -21812,7 +21808,7 @@ fn test_select_columnar_string_condition_fallback() {
     for i in 0..5 {
         let mut values = HashMap::new();
         values.insert("id".to_string(), Value::Int(i));
-        values.insert("name".to_string(), Value::String(format!("Item{}", i)));
+        values.insert("name".to_string(), Value::String(format!("Item{i}")));
         engine.insert("str_cond", values).unwrap();
     }
 
@@ -22065,7 +22061,10 @@ fn test_avg_float_column() {
     for i in 0..4 {
         let mut values = HashMap::new();
         values.insert("id".to_string(), Value::Int(i));
-        values.insert("score".to_string(), Value::Float(10.0 + i as f64 * 5.0));
+        values.insert(
+            "score".to_string(),
+            Value::Float((i as f64).mul_add(5.0, 10.0)),
+        );
         engine.insert("float_avg", values).unwrap();
     }
 
@@ -24168,7 +24167,7 @@ fn test_select_distinct_duplicates() {
             .unwrap();
     }
 
-    let cols = vec!["id".to_string()];
+    let cols = ["id".to_string()];
     let rows = engine
         .select_distinct("distopt", Condition::True, Some(&cols[..]))
         .unwrap();
@@ -28644,7 +28643,7 @@ fn test_select_grouped_with_having_and() {
     for (group, count) in [("A", 1), ("B", 2), ("C", 3), ("D", 4)] {
         for i in 0..count {
             let mut values = HashMap::new();
-            values.insert("id".to_string(), Value::Int(i as i64));
+            values.insert("id".to_string(), Value::Int(i64::from(i)));
             values.insert("group".to_string(), Value::String(group.to_string()));
             engine.insert("data", values).unwrap();
         }
@@ -28684,7 +28683,7 @@ fn test_select_grouped_with_having_or() {
     for (cat, count) in [("X", 1), ("Y", 2), ("Z", 5)] {
         for i in 0..count {
             let mut values = HashMap::new();
-            values.insert("id".to_string(), Value::Int(i as i64));
+            values.insert("id".to_string(), Value::Int(i64::from(i)));
             values.insert("category".to_string(), Value::String(cat.to_string()));
             engine.insert("products", values).unwrap();
         }

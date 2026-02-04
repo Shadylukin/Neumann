@@ -132,7 +132,7 @@ mod tests {
         builder.add_row(vec!["Test".to_string()]);
         let theme = Theme::plain();
         let result = builder.build_with_count(&theme, 1, "row");
-        assert!(result.contains("1"));
+        assert!(result.contains('1'));
         assert!(result.contains("row"));
     }
 }

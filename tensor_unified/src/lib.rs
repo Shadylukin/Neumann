@@ -3879,7 +3879,7 @@ mod tests {
         for i in 0..10 {
             let spoke = engine
                 .graph()
-                .create_node(&format!("spoke{i}"), HashMap::new())
+                .create_node(format!("spoke{i}"), HashMap::new())
                 .unwrap();
             engine
                 .graph()

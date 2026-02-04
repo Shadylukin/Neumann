@@ -149,14 +149,14 @@ mod tests {
     #[test]
     fn test_check_result_debug() {
         let result = CheckResult::healthy("Test", "OK");
-        let debug = format!("{:?}", result);
+        let debug = format!("{result:?}");
         assert!(debug.contains("CheckResult"));
     }
 
     #[test]
     fn test_check_result_clone() {
         let result = CheckResult::healthy("Test", "OK").with_details("Details");
-        let cloned = result.clone();
+        let cloned = result;
         assert_eq!(cloned.name, "Test");
         assert_eq!(cloned.message, "OK");
         assert_eq!(cloned.details, Some("Details".to_string()));

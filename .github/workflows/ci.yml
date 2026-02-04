@@ -113,6 +113,8 @@ jobs:
         uses: taiki-e/install-action@735e5933943122c5ac182670a935f54a949265c1 # v2.52.4
         with:
           tool: cargo-llvm-cov
+      - name: Clean coverage artifacts
+        run: cargo llvm-cov clean --workspace
       - name: Generate and verify coverage (95% threshold)
         run: |
           cargo llvm-cov --workspace \

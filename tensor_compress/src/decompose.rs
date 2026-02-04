@@ -654,9 +654,7 @@ mod tests {
                 let actual = reconstructed.get(i, j);
                 assert!(
                     (expected - actual).abs() < 0.1,
-                    "Reconstruction error at ({}, {})",
-                    i,
-                    j
+                    "Reconstruction error at ({i}, {j})"
                 );
             }
         }
@@ -732,12 +730,8 @@ mod tests {
         let stddev = variance.sqrt();
 
         // Mean should be close to 0, stddev close to 1
-        assert!(mean.abs() < 0.2, "Mean {} too far from 0", mean);
-        assert!(
-            (stddev - 1.0).abs() < 0.3,
-            "Stddev {} too far from 1",
-            stddev
-        );
+        assert!(mean.abs() < 0.2, "Mean {mean} too far from 0");
+        assert!((stddev - 1.0).abs() < 0.3, "Stddev {stddev} too far from 1");
     }
 
     #[test]
@@ -769,17 +763,12 @@ mod tests {
                 if i == j {
                     assert!(
                         (dot_ij - 1.0).abs() < 1e-5,
-                        "Column {} not unit norm: {}",
-                        i,
-                        dot_ij
+                        "Column {i} not unit norm: {dot_ij}"
                     );
                 } else {
                     assert!(
                         dot_ij.abs() < 1e-5,
-                        "Columns {} and {} not orthogonal: {}",
-                        i,
-                        j,
-                        dot_ij
+                        "Columns {i} and {j} not orthogonal: {dot_ij}"
                     );
                 }
             }
@@ -816,7 +805,7 @@ mod tests {
         let data: Vec<f32> = (0..rows * cols)
             .map(|i| ((i * 7 + 3) % 101) as f32 / 50.0 - 1.0)
             .collect();
-        let m = Matrix::new(data.clone(), rows, cols).unwrap();
+        let m = Matrix::new(data, rows, cols).unwrap();
 
         let svd = svd_truncated(&m, 8, 1e-4).unwrap();
 
@@ -861,8 +850,7 @@ mod tests {
         let rel_error = error_sq.sqrt() / orig_norm;
         assert!(
             rel_error < 0.5,
-            "Reconstruction error too high: {}",
-            rel_error
+            "Reconstruction error too high: {rel_error}"
         );
     }
 
@@ -892,7 +880,7 @@ mod tests {
         let mut rng = Lcg::new(12345);
         for _ in 0..1000 {
             let f = rng.next_f32();
-            assert!(f >= 0.0 && f < 1.0, "f32 {} out of range [0, 1)", f);
+            assert!((0.0..1.0).contains(&f), "f32 {f} out of range [0, 1)");
         }
     }
 }

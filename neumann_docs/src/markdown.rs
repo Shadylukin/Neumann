@@ -133,10 +133,10 @@ mod tests {
 
     #[test]
     fn test_extract_links() {
-        let content = r#"
+        let content = r"
 See [overview](architecture/overview.md) and [concepts](./concepts/intro.md).
 Also check [external](https://example.com/doc.md) which is ignored.
-"#;
+";
         let links = extract_links(content);
         assert_eq!(links.len(), 2);
         assert!(links.contains(&"architecture/overview.md".to_string()));

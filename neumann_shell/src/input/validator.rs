@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_validator_default() {
-        let validator = NeumannValidator::default();
+        let validator = NeumannValidator;
         let result = validator.validate_input("SELECT 1");
         assert!(matches!(result, ValidationResult::Valid(_)));
     }

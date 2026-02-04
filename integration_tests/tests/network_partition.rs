@@ -252,7 +252,7 @@ async fn test_leader_isolation_triggers_new_election() {
 
     // At least one of the non-partitioned nodes should have higher term
     // (indicating they started an election after losing contact with leader)
-    let terms = vec![
+    let terms = [
         node1.current_term(),
         node2.current_term(),
         node3.current_term(),

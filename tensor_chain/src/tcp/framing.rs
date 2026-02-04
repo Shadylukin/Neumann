@@ -640,7 +640,7 @@ mod tests {
             _cx: &mut Context<'_>,
             _buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "boom")))
+            Poll::Ready(Err(io::Error::other("boom")))
         }
     }
 

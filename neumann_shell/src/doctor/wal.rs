@@ -106,7 +106,7 @@ mod tests {
 
     impl WalInfo for FailingWal {
         fn wal_size(&self) -> std::io::Result<u64> {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "mock error"))
+            Err(std::io::Error::other("mock error"))
         }
     }
 

@@ -88,7 +88,7 @@ fn test_create_batch() {
     assert!(batch.is_some());
 
     let batch = batch.unwrap();
-    assert!(batch.len() > 0);
+    assert!(!batch.is_empty());
 }
 
 #[test]

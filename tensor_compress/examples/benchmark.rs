@@ -7,6 +7,7 @@ use tensor_compress::{
     tt_reconstruct, TTConfig,
 };
 
+#[allow(clippy::cast_precision_loss)]
 fn main() {
     let dims = [64, 256, 768, 1536, 4096];
 
@@ -31,7 +32,7 @@ fn main() {
         for _ in 0..iterations {
             tt = Some(tt_decompose(&vector, &config).unwrap());
         }
-        let decompose_us = start.elapsed().as_micros() as f64 / iterations as f64;
+        let decompose_us = start.elapsed().as_micros() as f64 / f64::from(iterations);
         let tt = tt.unwrap();
 
         // Benchmark reconstruct
@@ -39,7 +40,7 @@ fn main() {
         for _ in 0..iterations {
             let _ = tt_reconstruct(&tt);
         }
-        let reconstruct_us = start.elapsed().as_micros() as f64 / iterations as f64;
+        let reconstruct_us = start.elapsed().as_micros() as f64 / f64::from(iterations);
 
         // Benchmark similarity
         let tt2 = tt_decompose(&vector, &config).unwrap();
@@ -47,13 +48,12 @@ fn main() {
         for _ in 0..iterations {
             let _ = tt_cosine_similarity(&tt, &tt2);
         }
-        let similarity_us = start.elapsed().as_micros() as f64 / iterations as f64;
+        let similarity_us = start.elapsed().as_micros() as f64 / f64::from(iterations);
 
         let ratio = tt.compression_ratio();
 
         println!(
-            "{:>8} {:>10.1} µs {:>10.1} µs {:>10.1} µs {:>9.1}x",
-            dim, decompose_us, reconstruct_us, similarity_us, ratio
+            "{dim:>8} {decompose_us:>10.1} µs {reconstruct_us:>10.1} µs {similarity_us:>10.1} µs {ratio:>9.1}x"
         );
     }
 
@@ -64,7 +64,7 @@ fn main() {
         .map(|i| (0..dim).map(|j| ((i * j) as f32 * 0.01).sin()).collect())
         .collect();
     let config = TTConfig::for_dim(dim).unwrap();
-    let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+    let refs: Vec<&[f32]> = vectors.iter().map(std::vec::Vec::as_slice).collect();
 
     let start = Instant::now();
     let tts = tt_decompose_batch(&refs, &config).unwrap();
@@ -100,6 +100,6 @@ fn main() {
     let elapsed = start.elapsed().as_secs_f64();
     println!(
         "Decomposition throughput (768-dim): {:.0} vectors/sec",
-        count as f64 / elapsed
+        f64::from(count) / elapsed
     );
 }

@@ -1334,8 +1334,9 @@ fn bench_snapshot_operations(c: &mut Criterion) {
                 joint: None,
                 config_index: 0,
             },
-            created_at: 1700000000,
+            created_at: 1_700_000_000,
             size: 1024,
+            codebook: None,
         }
     }
 

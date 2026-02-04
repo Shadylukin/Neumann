@@ -258,7 +258,7 @@ async fn test_blob_graceful_shutdown() {
     }
 
     // Verify data was stored
-    assert!(blob.store().len() > 0);
+    assert!(!blob.store().is_empty());
 
     // Verify we can still read the artifacts
     for id in &ids {

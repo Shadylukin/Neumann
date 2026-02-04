@@ -286,4 +286,257 @@ mod tests {
 
         assert_eq!(manager.config().drain_timeout, Duration::from_secs(45));
     }
+
+    // === Concurrent Stream Tests ===
+
+    #[tokio::test]
+    async fn test_concurrent_stream_registrations() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::default();
+        let manager = Arc::new(ShutdownManager::new(config, health_state));
+
+        // Spawn 100 tasks that each register and unregister a stream
+        let mut handles = vec![];
+        for _ in 0..100 {
+            let manager_clone = Arc::clone(&manager);
+            handles.push(tokio::spawn(async move {
+                manager_clone.stream_started();
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                manager_clone.stream_finished();
+            }));
+        }
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            handle.await.expect("task should complete");
+        }
+
+        // All streams should be finished
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_stream_registrations_during_drain() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::new().with_drain_timeout(Duration::from_secs(1));
+        let manager = Arc::new(ShutdownManager::new(config, health_state));
+
+        // Start some initial streams
+        for _ in 0..5 {
+            manager.stream_started();
+        }
+
+        let manager_clone = Arc::clone(&manager);
+        let drain_handle = tokio::spawn(async move { manager_clone.wait_for_drain().await });
+
+        // While draining, finish streams one by one
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..5 {
+            manager.stream_finished();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let result = drain_handle.await.expect("drain should complete");
+        assert!(result);
+    }
+
+    // === Partial Stream Completion Tests ===
+
+    #[tokio::test]
+    async fn test_drain_with_partial_completion() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::new().with_drain_timeout(Duration::from_millis(200));
+        let manager = Arc::new(ShutdownManager::new(config, health_state));
+
+        // Start 10 streams
+        for _ in 0..10 {
+            manager.stream_started();
+        }
+
+        // Finish only 5 streams
+        let manager_clone = Arc::clone(&manager);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            for _ in 0..5 {
+                manager_clone.stream_finished();
+            }
+        });
+
+        // Should timeout because 5 streams remain
+        let result = manager.wait_for_drain().await;
+        assert!(!result);
+        assert_eq!(manager.active_count(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_drain_with_slow_completion() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::new().with_drain_timeout(Duration::from_secs(1));
+        let manager = Arc::new(ShutdownManager::new(config, health_state));
+
+        // Start 3 streams
+        for _ in 0..3 {
+            manager.stream_started();
+        }
+
+        // Finish streams slowly but within timeout
+        let manager_clone = Arc::clone(&manager);
+        tokio::spawn(async move {
+            for _ in 0..3 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                manager_clone.stream_finished();
+            }
+        });
+
+        let result = manager.wait_for_drain().await;
+        assert!(result);
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    // === Multiple Subscribers Tests ===
+
+    #[tokio::test]
+    async fn test_multiple_shutdown_subscribers() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::default();
+        let manager = Arc::new(ShutdownManager::new(config, health_state));
+
+        // Create 5 subscribers
+        let mut receivers = vec![];
+        for _ in 0..5 {
+            receivers.push(manager.subscribe());
+        }
+
+        // Verify all start with false
+        for rx in &receivers {
+            assert!(!*rx.borrow());
+        }
+
+        // Trigger shutdown
+        manager.trigger_shutdown();
+
+        // All receivers should be notified
+        for rx in receivers {
+            assert!(rx.has_changed().is_ok());
+            assert!(*rx.borrow());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_after_shutdown_triggered() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::default();
+        let manager = ShutdownManager::new(config, health_state);
+
+        // Trigger shutdown first
+        manager.trigger_shutdown();
+
+        // Subscribe after shutdown is triggered
+        let rx = manager.subscribe();
+
+        // Should immediately see shutdown state
+        assert!(*rx.borrow());
+    }
+
+    // === Grace Period Tests ===
+
+    #[test]
+    fn test_grace_period_in_config() {
+        let config = ShutdownConfig::new()
+            .with_drain_timeout(Duration::from_secs(30))
+            .with_grace_period(Duration::from_secs(10));
+
+        assert_eq!(config.grace_period, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_zero_grace_period() {
+        let config = ShutdownConfig::new().with_grace_period(Duration::from_secs(0));
+
+        assert_eq!(config.grace_period, Duration::from_secs(0));
+    }
+
+    // === Stream Count Edge Cases ===
+
+    #[test]
+    fn test_stream_underflow_protection() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::default();
+        let manager = ShutdownManager::new(config, health_state);
+
+        // Finish a stream that was never started (underflow)
+        // AtomicU32 wraps on underflow, so this tests that behavior
+        manager.stream_finished();
+
+        // The count should wrap to u32::MAX
+        assert_eq!(manager.active_count(), u32::MAX);
+    }
+
+    #[test]
+    fn test_stream_count_large_values() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::default();
+        let manager = ShutdownManager::new(config, health_state);
+
+        // Add a large number of streams
+        for _ in 0..1000 {
+            manager.stream_started();
+        }
+
+        assert_eq!(manager.active_count(), 1000);
+
+        // Remove them all
+        for _ in 0..1000 {
+            manager.stream_finished();
+        }
+
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    // === Shutdown State Tests ===
+
+    #[test]
+    fn test_shutdown_state_idempotent() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::default();
+        let manager = ShutdownManager::new(config, health_state);
+
+        // Trigger shutdown multiple times
+        manager.trigger_shutdown();
+        manager.trigger_shutdown();
+        manager.trigger_shutdown();
+
+        // Should still be shutting down (idempotent)
+        assert!(manager.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn test_drain_immediate_return_when_no_streams() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::new().with_drain_timeout(Duration::from_secs(10));
+        let manager = ShutdownManager::new(config, health_state);
+
+        let start = std::time::Instant::now();
+        let result = manager.wait_for_drain().await;
+        let elapsed = start.elapsed();
+
+        // Should complete immediately (much less than 10s timeout)
+        assert!(result);
+        assert!(elapsed < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn test_drain_with_zero_timeout() {
+        let health_state = Arc::new(HealthState::new());
+        let config = ShutdownConfig::new().with_drain_timeout(Duration::from_millis(0));
+        let manager = ShutdownManager::new(config, health_state);
+
+        manager.stream_started();
+
+        let result = manager.wait_for_drain().await;
+
+        // Should timeout immediately since timeout is 0
+        assert!(!result);
+        assert_eq!(manager.active_count(), 1);
+    }
 }
