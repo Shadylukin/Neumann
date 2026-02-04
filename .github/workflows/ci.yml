@@ -124,7 +124,18 @@ jobs:
             --exclude neumann_docs \
             --all-features \
             --fail-under-lines 95 \
-            --html --output-dir target/llvm-cov/html \
+            --html --output-dir target/llvm-cov/html
+      - name: Generate codecov report
+        run: |
+          cargo llvm-cov --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --exclude integration_tests \
+            --exclude stress_tests \
+            --exclude examples \
+            --exclude neumann_docs \
+            --all-features \
+            --no-run \
             --codecov --output-path codecov.json
       - name: Upload coverage HTML
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
