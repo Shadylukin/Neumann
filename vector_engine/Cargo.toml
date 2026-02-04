@@ -21,7 +21,7 @@ tensor_store = { path = "../tensor_store" }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
+bitcode = { version = "0.6", features = ["serde"] }
 tracing = "0.1"
 parking_lot = "0.12"
 

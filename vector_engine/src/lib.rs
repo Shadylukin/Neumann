@@ -266,7 +266,7 @@ impl SearchResult {
 }
 
 /// Distance metric for similarity search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, bitcode::Encode, bitcode::Decode)]
 pub enum DistanceMetric {
     /// Cosine similarity: measures angle between vectors (default).
     #[default]
@@ -440,7 +440,7 @@ impl FilteredSearchConfig {
 // ========== Collection Types ==========
 
 /// Configuration for a vector collection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bitcode::Encode, bitcode::Decode)]
 pub struct VectorCollectionConfig {
     /// Expected embedding dimension (enforced on insert if set).
     pub dimension: Option<usize>,
@@ -494,7 +494,7 @@ impl VectorCollectionConfig {
 /// This captures the essential data needed to restore a collection:
 /// vectors, their keys, and configuration. HNSW indices can be rebuilt
 /// from this data since the vectors contain all necessary information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bitcode::Encode, bitcode::Decode)]
 pub struct PersistentVectorIndex {
     /// Collection this index belongs to ("default" for non-collection embeddings).
     pub collection: String,
@@ -509,7 +509,7 @@ pub struct PersistentVectorIndex {
 }
 
 /// A single vector entry in the persistent index.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bitcode::Encode, bitcode::Decode)]
 pub struct VectorEntry {
     /// The embedding key.
     pub key: String,
@@ -520,7 +520,7 @@ pub struct VectorEntry {
 }
 
 /// Metadata value for serialization (simplified from TensorValue).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bitcode::Encode, bitcode::Decode)]
 pub enum MetadataValue {
     /// Null value.
     Null,
@@ -3504,13 +3504,12 @@ impl VectorEngine {
 
     /// Save a collection's index to a file in compact binary format.
     ///
-    /// Uses bincode for efficient serialization. The file can be loaded
+    /// Uses bitcode for efficient serialization. The file can be loaded
     /// with `load_index_binary()`.
     #[instrument(skip(self, path), fields(collection = %collection))]
     pub fn save_index_binary(&self, collection: &str, path: impl AsRef<Path>) -> Result<()> {
         let index = self.snapshot_collection(collection);
-        let bytes = bincode::serialize(&index)
-            .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+        let bytes = bitcode::encode(&index);
         fs::write(path, bytes)?;
         Ok(())
     }
@@ -3573,7 +3572,7 @@ impl VectorEngine {
         }
 
         let bytes = fs::read(path)?;
-        let index: PersistentVectorIndex = bincode::deserialize(&bytes)
+        let index: PersistentVectorIndex = bitcode::decode(&bytes)
             .map_err(|e| VectorError::SerializationError(e.to_string()))?;
 
         // Check entry count after deserialization
