@@ -2387,8 +2387,12 @@ describe('Validation Utilities', () => {
       expect(() => validateIntValue(Number.MIN_SAFE_INTEGER - 1)).toThrow(InvalidArgumentError);
     });
 
-    it('should include context in error message', () => {
+    it('should include context in error message for non-finite', () => {
       expect(() => validateIntValue(NaN, 'test field')).toThrow('test field');
+    });
+
+    it('should include context in error message for unsafe integer', () => {
+      expect(() => validateIntValue(Number.MAX_SAFE_INTEGER + 1, 'overflow field')).toThrow('overflow field');
     });
   });
 
