@@ -128,7 +128,7 @@ sequenceDiagram
     Store-->>Manager: Vec<u8>
     Manager->>Manager: Create CheckpointState
     Manager->>Storage: store(state, blob)
-    Storage->>Storage: bincode::serialize(state)
+    Storage->>Storage: bitcode::encode(state)
     Storage->>Blob: put(filename, data, options)
     Blob-->>Storage: artifact_id
     Storage-->>Manager: artifact_id
@@ -157,7 +157,7 @@ sequenceDiagram
     Storage->>Storage: list() and match
     Storage->>Blob: get(artifact_id)
     Blob-->>Storage: checkpoint_bytes
-    Storage->>Storage: bincode::deserialize()
+    Storage->>Storage: bitcode::decode()
     Storage-->>Manager: CheckpointState
     Manager->>Store: restore_from_bytes(state.store_snapshot)
     Store->>Store: SlabRouter::from_bytes()

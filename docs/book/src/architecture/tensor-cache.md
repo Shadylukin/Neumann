@@ -731,8 +731,8 @@ impl From<tensor_store::TensorStoreError> for CacheError {
     }
 }
 
-impl From<bincode::Error> for CacheError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for CacheError {
+    fn from(e: bitcode::Error) -> Self {
         Self::SerializationError(e.to_string())
     }
 }

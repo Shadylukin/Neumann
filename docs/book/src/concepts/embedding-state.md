@@ -198,14 +198,14 @@ if similarity.abs() < 0.1 {
 
 ## Serialization
 
-The state machine supports bincode serialization for persistence:
+The state machine supports bitcode serialization for persistence:
 
 ```rust
 // Serialize
-let bytes = bincode::serialize(&state)?;
+let bytes = bitcode::encode(&state);
 
 // Deserialize
-let restored: EmbeddingState = bincode::deserialize(&bytes)?;
+let restored: EmbeddingState = bitcode::decode(&bytes)?;
 
 // State is preserved
 assert_eq!(state.is_computed(), restored.is_computed());
