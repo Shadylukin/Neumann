@@ -46,7 +46,7 @@ urlencoding = "2"
 x509-parser = "0.16"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
 
 [dev-dependencies]
 tokio-test = "0.4"
