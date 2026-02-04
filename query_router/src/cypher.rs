@@ -125,8 +125,8 @@ pub fn exec_cypher_delete(graph: &GraphEngine, stmt: &CypherDeleteStmt) -> Resul
                     let outgoing = graph.neighbors(id, None, Direction::Outgoing, None)?;
                     for neighbor in outgoing {
                         // Delete outgoing edges
-                        if let Ok(edges) =
-                            graph.find_edges_by_property("from", &PropertyValue::Int(id.cast_signed()))
+                        if let Ok(edges) = graph
+                            .find_edges_by_property("from", &PropertyValue::Int(id.cast_signed()))
                         {
                             for edge in edges {
                                 if edge.to == neighbor.id {
@@ -139,8 +139,8 @@ pub fn exec_cypher_delete(graph: &GraphEngine, stmt: &CypherDeleteStmt) -> Resul
                     let incoming = graph.neighbors(id, None, Direction::Incoming, None)?;
                     for neighbor in incoming {
                         // Delete incoming edges
-                        if let Ok(edges) =
-                            graph.find_edges_by_property("to", &PropertyValue::Int(id.cast_signed()))
+                        if let Ok(edges) = graph
+                            .find_edges_by_property("to", &PropertyValue::Int(id.cast_signed()))
                         {
                             for edge in edges {
                                 if edge.from == neighbor.id {
@@ -465,10 +465,7 @@ fn create_pattern(
                     .and_then(|v| ctx.get_node(&v.name))
                     .ok_or_else(|| RouterError::InvalidArgument("Node not bound".to_string()))?;
 
-                let edge_type = rel
-                    .rel_types
-                    .first()
-                    .map_or("RELATED", |t| t.name.as_str());
+                let edge_type = rel.rel_types.first().map_or("RELATED", |t| t.name.as_str());
 
                 let props = rel
                     .properties
@@ -498,10 +495,7 @@ fn create_pattern(
 }
 
 fn create_node(graph: &GraphEngine, pattern: &CypherNode) -> Result<u64> {
-    let label = pattern
-        .labels
-        .first()
-        .map_or("Node", |l| l.name.as_str());
+    let label = pattern.labels.first().map_or("Node", |l| l.name.as_str());
 
     let props: HashMap<String, PropertyValue> = pattern
         .properties
@@ -647,11 +641,7 @@ fn evaluate_where_clause(graph: &GraphEngine, expr: &Expr, ctx: &BindingContext)
     }
 }
 
-fn eval_expr_value(
-    graph: &GraphEngine,
-    expr: &Expr,
-    ctx: &BindingContext,
-) -> PropertyValue {
+fn eval_expr_value(graph: &GraphEngine, expr: &Expr, ctx: &BindingContext) -> PropertyValue {
     match &expr.kind {
         ExprKind::Literal(lit) => literal_to_property_value(lit),
         ExprKind::Qualified(base, field) => {

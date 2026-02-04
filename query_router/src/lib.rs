@@ -1471,9 +1471,8 @@ impl QueryRouter {
             "SIMILAR" => self.execute_similar(command),
 
             // Parser-based execution: unified, entity, graph, constraint, batch, aggregate, cluster, show
-            "FIND" | "ENTITY" | "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" | "CLUSTER" | "SHOW" => {
-                self.execute_parsed(command)
-            }
+            "FIND" | "ENTITY" | "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" | "CLUSTER"
+            | "SHOW" => self.execute_parsed(command),
 
             _ => Err(RouterError::UnknownCommand(keyword)),
         }
@@ -1782,7 +1781,8 @@ impl QueryRouter {
                     // Execute locally
                     match self.execute_parsed_local(query) {
                         Ok(result) => {
-                            #[allow(clippy::cast_possible_truncation)] // Microseconds won't exceed u64::MAX
+                            #[allow(clippy::cast_possible_truncation)]
+                            // Microseconds won't exceed u64::MAX
                             let elapsed = start.elapsed().as_micros() as u64;
                             results.push(ShardResult::success(shard, result, elapsed));
                         },
@@ -1798,7 +1798,10 @@ impl QueryRouter {
 
                 // Get node ID for remote shard
                 let Some(n) = nodes.get(shard) else {
-                    results.push(ShardResult::error(shard, format!("Shard {shard} not found")));
+                    results.push(ShardResult::error(
+                        shard,
+                        format!("Shard {shard} not found"),
+                    ));
                     continue;
                 };
                 let node_id = n.node_id.clone();
@@ -4085,9 +4088,9 @@ impl QueryRouter {
                     _ => false,
                 }
             },
-            ExprKind::Ident(_) | ExprKind::Qualified(_, _) => self
-                .get_row_value(expr, row)
-                .is_some_and(|v| v.is_truthy()),
+            ExprKind::Ident(_) | ExprKind::Qualified(_, _) => {
+                self.get_row_value(expr, row).is_some_and(|v| v.is_truthy())
+            },
             _ => true,
         }
     }
@@ -4113,7 +4116,8 @@ impl QueryRouter {
                 let val_a = self.get_sort_value(&item.expr, a);
                 let val_b = self.get_sort_value(&item.expr, b);
 
-                let cmp = self.compare_values_with_nulls(val_a.as_ref(), val_b.as_ref(), item.nulls);
+                let cmp =
+                    self.compare_values_with_nulls(val_a.as_ref(), val_b.as_ref(), item.nulls);
                 let cmp = match item.direction {
                     SortDirection::Asc => cmp,
                     SortDirection::Desc => cmp.reverse(),
@@ -4193,9 +4197,10 @@ impl QueryRouter {
 
         for item in &select.columns {
             if let Some(agg) = self.parse_aggregate(&item.expr) {
-                let alias = item
-                    .alias
-                    .as_ref().map_or_else(|| self.aggregate_default_name(&item.expr), |a| a.name.clone());
+                let alias = item.alias.as_ref().map_or_else(
+                    || self.aggregate_default_name(&item.expr),
+                    |a| a.name.clone(),
+                );
                 aggregates.push((alias, agg));
             } else {
                 let alias = item
@@ -6272,11 +6277,7 @@ impl QueryRouter {
                 "FLOAT" | "DOUBLE" => relational_engine::ColumnType::Float,
                 "STRING" | "TEXT" => relational_engine::ColumnType::String,
                 "BOOL" | "BOOLEAN" => relational_engine::ColumnType::Bool,
-                _ => {
-                    return Err(RouterError::ParseError(format!(
-                        "Unknown type: {type_str}"
-                    )))
-                },
+                _ => return Err(RouterError::ParseError(format!("Unknown type: {type_str}"))),
             };
 
             let mut col = relational_engine::Column::new(name, col_type);

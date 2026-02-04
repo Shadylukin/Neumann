@@ -461,16 +461,18 @@ impl ResultMerger {
         // Safety: i64 to usize casts below may truncate on 32-bit systems or lose sign,
         // but aggregate results are expected to be non-negative and within usize range.
         // The len() to i64 cast may wrap if len > i64::MAX, but this is unrealistic.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_possible_wrap
+        )]
         let result = match func {
             AggregateFunction::Sum | AggregateFunction::Count => {
                 values.iter().sum::<i64>() as usize
             },
             AggregateFunction::Max => *values.iter().max().unwrap_or(&0) as usize,
             AggregateFunction::Min => *values.iter().min().unwrap_or(&0) as usize,
-            AggregateFunction::Avg => {
-                (values.iter().sum::<i64>() / (values.len() as i64)) as usize
-            },
+            AggregateFunction::Avg => (values.iter().sum::<i64>() / (values.len() as i64)) as usize,
         };
 
         QueryResult::Count(result)
@@ -822,7 +824,10 @@ mod tests {
     #[test]
     fn test_planner_extract_top_k() {
         assert_eq!(QueryPlanner::extract_top_k("SIMILAR key TOP 5"), Some(5));
-        assert_eq!(QueryPlanner::extract_top_k("SIMILAR key TOP 100"), Some(100));
+        assert_eq!(
+            QueryPlanner::extract_top_k("SIMILAR key TOP 100"),
+            Some(100)
+        );
         assert_eq!(QueryPlanner::extract_top_k("SIMILAR key"), None);
     }
 

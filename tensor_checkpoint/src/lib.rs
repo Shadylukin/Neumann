@@ -260,7 +260,7 @@ impl CheckpointManager {
                 let blob = self.blob.lock().await;
                 CheckpointStorage::delete(&id, &blob).await?;
                 Ok(())
-            }
+            },
             None => Err(CheckpointError::NotFound(id_or_name.to_string())),
         }
     }
