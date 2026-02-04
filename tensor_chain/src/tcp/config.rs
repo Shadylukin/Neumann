@@ -308,12 +308,20 @@ impl TcpTransportConfig {
     }
 
     pub fn with_security(mut self, config: SecurityConfig) -> Self {
+        // Automatically adjust require_tls based on security mode
+        if !config.mode.requires_tls() {
+            self.require_tls = false;
+        }
         self.security = config;
         self
     }
 
     pub fn with_security_mode(mut self, mode: SecurityMode) -> Self {
         self.security.mode = mode;
+        // Automatically adjust require_tls based on security mode
+        if !mode.requires_tls() {
+            self.require_tls = false;
+        }
         self
     }
 

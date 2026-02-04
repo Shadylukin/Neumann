@@ -2177,4 +2177,288 @@ mod tests {
         assert_eq!(proto.edges_evaluated, 200);
         assert!(proto.truncated);
     }
+
+    // === PagedQueryResult Tests ===
+
+    #[test]
+    fn test_paged_query_result_with_cursors() {
+        let paged = PagedQueryResult {
+            result: QueryResult::Count(42),
+            next_cursor: Some("cursor_next".to_string()),
+            prev_cursor: Some("cursor_prev".to_string()),
+            total_count: Some(100),
+            has_more: true,
+            page_size: 10,
+        };
+        let proto = paged_query_result_to_proto(paged);
+        assert_eq!(proto.next_cursor, Some("cursor_next".to_string()));
+        assert_eq!(proto.prev_cursor, Some("cursor_prev".to_string()));
+        assert_eq!(proto.total_count, Some(100));
+        assert!(proto.has_more);
+        assert_eq!(proto.page_size, 10);
+    }
+
+    #[test]
+    fn test_paged_query_result_no_cursors() {
+        let paged = PagedQueryResult {
+            result: QueryResult::Empty,
+            next_cursor: None,
+            prev_cursor: None,
+            total_count: None,
+            has_more: false,
+            page_size: 50,
+        };
+        let proto = paged_query_result_to_proto(paged);
+        assert_eq!(proto.next_cursor, None);
+        assert_eq!(proto.prev_cursor, None);
+        assert_eq!(proto.total_count, None);
+        assert!(!proto.has_more);
+        assert_eq!(proto.page_size, 50);
+    }
+
+    #[test]
+    fn test_paged_query_result_max_page_size() {
+        let paged = PagedQueryResult {
+            result: QueryResult::Count(0),
+            next_cursor: None,
+            prev_cursor: None,
+            total_count: Some(0),
+            has_more: false,
+            page_size: usize::MAX,
+        };
+        let proto = paged_query_result_to_proto(paged);
+        // page_size should be capped at u32::MAX
+        assert_eq!(proto.page_size, u32::MAX);
+    }
+
+    #[test]
+    fn test_paged_query_result_large_total_count() {
+        let paged = PagedQueryResult {
+            result: QueryResult::Count(0),
+            next_cursor: None,
+            prev_cursor: None,
+            total_count: Some(u64::MAX as usize),
+            has_more: false,
+            page_size: 10,
+        };
+        let proto = paged_query_result_to_proto(paged);
+        assert_eq!(proto.total_count, Some(u64::MAX));
+    }
+
+    // === Value Conversion Edge Cases ===
+
+    #[test]
+    fn test_value_conversion_empty_bytes() {
+        let value = RelationalValue::Bytes(vec![]);
+        let proto = value_to_proto(value);
+        match proto.kind {
+            Some(proto::value::Kind::StringValue(s)) => {
+                assert_eq!(s, ""); // Empty bytes -> empty hex string
+            },
+            _ => panic!("Expected StringValue"),
+        }
+    }
+
+    #[test]
+    fn test_value_conversion_large_bytes() {
+        let bytes = vec![0xff; 1024]; // 1KB of 0xff
+        let value = RelationalValue::Bytes(bytes);
+        let proto = value_to_proto(value);
+        match proto.kind {
+            Some(proto::value::Kind::StringValue(s)) => {
+                assert_eq!(s.len(), 2048); // 2 hex chars per byte
+                assert!(s.chars().all(|c| c == 'f'));
+            },
+            _ => panic!("Expected StringValue"),
+        }
+    }
+
+    #[test]
+    fn test_value_conversion_json_empty_object() {
+        let json = serde_json::json!({});
+        let value = RelationalValue::Json(json);
+        let proto = value_to_proto(value);
+        match proto.kind {
+            Some(proto::value::Kind::StringValue(s)) => {
+                assert_eq!(s, "{}");
+            },
+            _ => panic!("Expected StringValue"),
+        }
+    }
+
+    #[test]
+    fn test_value_conversion_json_complex() {
+        let json = serde_json::json!({
+            "name": "Alice",
+            "age": 30,
+            "tags": ["rust", "neumann"]
+        });
+        let value = RelationalValue::Json(json);
+        let proto = value_to_proto(value);
+        match proto.kind {
+            Some(proto::value::Kind::StringValue(s)) => {
+                assert!(s.contains("Alice"));
+                assert!(s.contains("rust"));
+            },
+            _ => panic!("Expected StringValue"),
+        }
+    }
+
+    // === Large Data Sets ===
+
+    #[test]
+    fn test_large_row_set_conversion() {
+        let mut rows = Vec::new();
+        for i in 0..1000u64 {
+            rows.push(RelationalRow {
+                id: i,
+                values: vec![
+                    ("id".to_string(), RelationalValue::Int(i as i64)),
+                    ("name".to_string(), RelationalValue::String(format!("user{i}"))),
+                ],
+            });
+        }
+        let result = QueryResult::Rows(rows);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Rows(r)) => {
+                assert_eq!(r.rows.len(), 1000);
+                assert_eq!(r.rows[0].id, 0);
+                assert_eq!(r.rows[999].id, 999);
+            },
+            _ => panic!("Expected Rows result"),
+        }
+    }
+
+    #[test]
+    fn test_large_similar_results() {
+        let mut items = Vec::new();
+        for i in 0..100 {
+            items.push(RouterSimilarResult {
+                key: format!("item{i}"),
+                score: 1.0 - (i as f32) / 100.0,
+            });
+        }
+        let result = QueryResult::Similar(items);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Similar(s)) => {
+                assert_eq!(s.items.len(), 100);
+                assert_eq!(s.items[0].key, "item0");
+                assert!((s.items[0].score - 1.0).abs() < 0.001);
+            },
+            _ => panic!("Expected Similar result"),
+        }
+    }
+
+    #[test]
+    fn test_blob_result_large() {
+        let large_blob = vec![42u8; 1024 * 1024]; // 1MB
+        let result = QueryResult::Blob(large_blob.clone());
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Blob(b)) => {
+                assert_eq!(b.data.len(), 1024 * 1024);
+                assert!(b.data.iter().all(|&x| x == 42));
+            },
+            _ => panic!("Expected Blob result"),
+        }
+    }
+
+    // === Integer Overflow Edge Cases ===
+
+    #[test]
+    fn test_pagerank_iterations_overflow() {
+        let result = QueryResult::PageRank(PageRankResult {
+            items: vec![],
+            iterations: usize::MAX,
+            convergence: 0.0,
+            converged: true,
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::PageRank(pr)) => {
+                assert_eq!(pr.iterations, Some(u32::MAX)); // Should cap at u32::MAX
+            },
+            _ => panic!("Expected PageRank result"),
+        }
+    }
+
+    #[test]
+    fn test_centrality_sample_count_overflow() {
+        let result = QueryResult::Centrality(CentralityResult {
+            items: vec![],
+            centrality_type: CentralityType::Eigenvector,
+            iterations: Some(usize::MAX),
+            converged: None,
+            sample_count: Some(usize::MAX),
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Centrality(c)) => {
+                assert_eq!(c.iterations, Some(u32::MAX));
+                assert_eq!(c.sample_count, Some(u32::MAX));
+            },
+            _ => panic!("Expected Centrality result"),
+        }
+    }
+
+    #[test]
+    fn test_communities_pass_count_overflow() {
+        let result = QueryResult::Communities(CommunityResult {
+            items: vec![],
+            members: HashMap::new(),
+            community_count: usize::MAX,
+            modularity: None,
+            passes: Some(usize::MAX),
+            iterations: Some(usize::MAX),
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Communities(c)) => {
+                assert_eq!(c.community_count, Some(u32::MAX));
+                assert_eq!(c.passes, Some(u32::MAX));
+                assert_eq!(c.iterations, Some(u32::MAX));
+            },
+            _ => panic!("Expected Communities result"),
+        }
+    }
+
+    // === Empty Collections Edge Cases ===
+
+    #[test]
+    fn test_empty_ids_result() {
+        let result = QueryResult::Ids(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Ids(ids)) => {
+                assert!(ids.ids.is_empty());
+            },
+            _ => panic!("Expected Ids result"),
+        }
+    }
+
+    #[test]
+    fn test_empty_path_result() {
+        let result = QueryResult::Path(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Path(p)) => {
+                assert!(p.node_ids.is_empty());
+            },
+            _ => panic!("Expected Path result"),
+        }
+    }
+
+    #[test]
+    fn test_empty_table_list() {
+        let result = QueryResult::TableList(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::TableList(t)) => {
+                assert!(t.tables.is_empty());
+            },
+            _ => panic!("Expected TableList result"),
+        }
+    }
 }

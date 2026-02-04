@@ -91,49 +91,19 @@ pub async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 mod tests {
     use super::*;
     use crate::config::TlsConfig;
-    use std::io::Write;
-    use tempfile::TempDir;
+    use std::path::PathBuf;
 
-    // Self-signed test certificate and key (for testing only)
-    const TEST_CERT: &str = r#"-----BEGIN CERTIFICATE-----
-MIIBkTCB+wIJAKHBfpfCqxEXMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnVu
-dXNlZDAeFw0yMDAxMDEwMDAwMDBaFw0zMDAxMDEwMDAwMDBaMBExDzANBgNVBAMM
-BnVudXNlZDBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC6CMe9sVq3I6q9Kt9VK5ID
-lJvKNWVpkvKhJh3gpwBPURzL9nQr8xBJSu/0HrqHFqVoFXqU0Pxe9d0PoNXNNmQH
-AgMBAAGjUDBOMB0GA1UdDgQWBBRCT0bPVXxP0hb3hE9NWkJ5bwSNsjAfBgNVHSME
-GDAWgBRCT0bPVXxP0hb3hE9NWkJ5bwSNsjAMBgNVHRMEBTADAQH/MA0GCSqGSIb3
-DQEBCwUAA0EAHEDqpH8VKkOPm3lJ2Z4U7M/9U1c2aTi9N2T8hBCprqkBqiDpJ1t+
-eDRmJpg9X9v2bqP7M7eDNfNm1f+TfyGlvQ==
------END CERTIFICATE-----"#;
-
-    const TEST_KEY: &str = r#"-----BEGIN RSA PRIVATE KEY-----
-MIIBOgIBAAJBALoIx72xWrcjqr0q31UrYgOUm8o1ZWmS8qEmHeCnAE9RHMv2dCvz
-EElK7/QeuocWpWgVepTQ/F713Q+g1c02ZAcCAwEAAQJAMdSMvqaLnGzL6O0aQSBn
-rjbR1qS4lLfC5bN8FQv2bMFmCp7Aw9F1zP9O2QpB+BLbsAq3zVDb5gZYoG3bBrxI
-wQIhAOaXF0u4wsDHyJ3GCFNBQ3XL/5S0vLvJV3B4bE3hpjlJAiEAz5zCv0LxVFnI
-M5o3bsR3C7v3FMRg2mCwYL3n9lYoSmcCIGtbKdL1MMGR0P5f/e4rD8wCvM3bpI0K
-bIhOLbLvXvmhAiEAqE4rwNQCq5jP3i2ue3bOKOVq2zS7jVLfvdxpMMfxR9ECIE2L
-P0NI2V3k6XkvKf4Js2xLbT2cKONFJv2c0p7Kbfsh
------END RSA PRIVATE KEY-----"#;
-
-    fn create_test_certs(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
-        let cert_path = dir.path().join("cert.pem");
-        let key_path = dir.path().join("key.pem");
-
-        let mut cert_file = std::fs::File::create(&cert_path).unwrap();
-        cert_file.write_all(TEST_CERT.as_bytes()).unwrap();
-
-        let mut key_file = std::fs::File::create(&key_path).unwrap();
-        key_file.write_all(TEST_KEY.as_bytes()).unwrap();
-
-        (cert_path, key_path)
+    // Use pre-generated valid certificates from fixtures directory
+    fn valid_cert_paths() -> (PathBuf, PathBuf) {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
+        (dir.join("valid_cert.pem"), dir.join("valid_key.pem"))
     }
 
     #[tokio::test]
     async fn test_sighup_handler_registration() {
-        let temp_dir = TempDir::new().unwrap();
-        let (cert_path, key_path) = create_test_certs(&temp_dir);
-
+        let (cert_path, key_path) = valid_cert_paths();
         let config = TlsConfig::new(cert_path, key_path);
         let loader = Arc::new(TlsLoader::new(config).expect("should create loader"));
 
