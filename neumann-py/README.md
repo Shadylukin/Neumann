@@ -1,6 +1,7 @@
 # Neumann Python SDK
 
-Python client library for the Neumann database - a unified tensor-based runtime for relational, graph, and vector data.
+Python client library for the Neumann database - a unified tensor-based
+runtime for relational, graph, and vector data.
 
 ## Installation
 
@@ -265,7 +266,8 @@ client = NeumannClient.embedded(path="/path/to/data")
 
 ## Type Hints
 
-The SDK is fully typed with Python type hints. Use with mypy or your IDE for better development experience:
+The SDK is fully typed with Python type hints. Use with mypy or your IDE
+for better development experience:
 
 ```python
 from neumann import NeumannClient
@@ -281,7 +283,7 @@ def get_user_names(client: NeumannClient) -> list[str]:
 ### NeumannClient
 
 | Method | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `embedded(path=None)` | Create embedded client |
 | `connect(address, api_key=None, tls=False)` | Connect to remote server |
 | `execute(query, identity=None)` | Execute single query |
@@ -292,7 +294,7 @@ def get_user_names(client: NeumannClient) -> list[str]:
 ### QueryResult
 
 | Property/Method | Description |
-|-----------------|-------------|
+| --------------- | ----------- |
 | `result_type` | Type of result (ROWS, NODES, etc.) |
 | `data` | Raw result data |
 | `rows()` | Get rows (for ROWS type) |

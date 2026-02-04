@@ -14,11 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **License**: Migrated from dual MIT/Apache-2.0 to Business Source License 1.1
-  - Free for personal use, education, evaluation, non-commercial OSS, and small businesses under $5M revenue
+- **License**: Migrated from dual MIT/Apache-2.0 to Business Source
+  License 1.1
+  - Free for personal use, education, evaluation, non-commercial OSS,
+    and small businesses under $5M revenue
   - Automatically converts to Apache-2.0 after 4 years
-  - Production use by companies with $5M+ revenue requires commercial license
-  - Contact: licensing@tensortech.dev
+  - Production use by companies with $5M+ revenue requires commercial
+    license
+  - Contact: <licensing@tensortech.dev>
 
 ## [0.1.0] - 2026-01-31
 
@@ -41,17 +44,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### Query Engines
 
-- **Relational Engine**: Tables, schemas, SQL-like operations, B-tree indexes, SIMD filtering
-- **Graph Engine**: Nodes, edges, traversals, path finding, BFS, shortest path
-- **Vector Engine**: Embedding storage, k-NN search, 15+ distance metrics
+- **Relational Engine**: Tables, schemas, SQL-like operations, B-tree
+  indexes, SIMD filtering
+- **Graph Engine**: Nodes, edges, traversals, path finding, BFS,
+  shortest path
+- **Vector Engine**: Embedding storage, k-NN search, 15+ distance
+  metrics
 
 #### Extended Modules
 
-- **Tensor Compress**: Tensor Train decomposition (10-20x compression), int8/binary quantization, delta encoding, RLE
-- **Tensor Vault**: AES-256-GCM encryption, Argon2id key derivation, graph-based access control, TTL grants, rate limiting, audit logging
-- **Tensor Cache**: Multi-layer LLM response caching (exact + semantic + embedding), tiktoken integration, cost tracking, background eviction
-- **Tensor Blob**: S3-style chunked blob storage, SHA-256 content addressing, streaming upload/download, entity linking, tagging, garbage collection
-- **Tensor Checkpoint**: Atomic snapshot/restore with retention policies and interactive confirmation
+- **Tensor Compress**: Tensor Train decomposition (10-20x compression),
+  int8/binary quantization, delta encoding, RLE
+- **Tensor Vault**: AES-256-GCM encryption, Argon2id key derivation,
+  graph-based access control, TTL grants, rate limiting, audit logging
+- **Tensor Cache**: Multi-layer LLM response caching
+  (exact + semantic + embedding), tiktoken integration, cost tracking,
+  background eviction
+- **Tensor Blob**: S3-style chunked blob storage, SHA-256 content
+  addressing, streaming upload/download, entity linking, tagging,
+  garbage collection
+- **Tensor Checkpoint**: Atomic snapshot/restore with retention policies
+  and interactive confirmation
 - **Tensor Unified**: Cross-engine unified entity operations
 
 #### Distributed Consensus (tensor_chain)

@@ -40,11 +40,13 @@ until 1.0.0 is released.
 Target: Q3 2026
 
 **Stability guarantees:**
+
 - No breaking changes to public APIs without major version bump
 - Minimum 12 months support for each major version
 - Security patches backported to supported versions
 
 **Features for 1.0:**
+
 - Stable query language syntax
 - Stable gRPC service definitions
 - Stable storage format with migration support
@@ -62,6 +64,7 @@ Target: Q3 2026
 ### v2.0.0 - Next Generation
 
 Planning phase. Potential features:
+
 - GPU-accelerated tensor operations
 - Native Python/TypeScript embedding
 - Federated learning support

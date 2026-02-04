@@ -186,7 +186,7 @@ try {
 ### NeumannClient
 
 | Method | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `connect(address, options)` | Connect via gRPC (Node.js) |
 | `connectWeb(address, options)` | Connect via gRPC-Web (browser) |
 | `execute(query, options)` | Execute a single query |
@@ -199,7 +199,7 @@ try {
 ### ConnectOptions
 
 | Option | Type | Description |
-|--------|------|-------------|
+| ------ | ---- | ----------- |
 | `apiKey` | `string` | API key for authentication |
 | `tls` | `boolean` | Enable TLS encryption |
 | `metadata` | `Record<string, string>` | Custom headers |
@@ -207,7 +207,7 @@ try {
 ### QueryOptions
 
 | Option | Type | Description |
-|--------|------|-------------|
+| ------ | ---- | ----------- |
 | `identity` | `string` | Identity for vault access |
 
 ## Requirements

@@ -135,7 +135,7 @@ Add vector similarity search with cosine metric
 
 ### Roles and Responsibilities
 
-**Maintainers**
+#### Maintainers
 
 Maintainers have commit access and are responsible for:
 
@@ -146,9 +146,10 @@ Maintainers have commit access and are responsible for:
 - Mentoring contributors
 
 Current maintainers:
+
 - Lukin Ackroyd ([@Shadylukin](https://github.com/Shadylukin)) - Project Lead
 
-**Contributors**
+#### Contributors
 
 Anyone who has had a pull request merged is a contributor. Contributors:
 
@@ -157,7 +158,7 @@ Anyone who has had a pull request merged is a contributor. Contributors:
 - Improve documentation
 - Help others in discussions
 
-**Becoming a Maintainer**
+#### Becoming a Maintainer
 
 Contributors who demonstrate sustained high-quality contributions may be
 invited to become maintainers. The decision is made by existing maintainers
@@ -178,6 +179,7 @@ Major changes require a Request for Comments (RFC):
 4. **Implementation**: If accepted, implementation begins
 
 Major changes include:
+
 - Breaking API changes
 - New crate additions
 - Architectural changes
