@@ -30,7 +30,7 @@ tracing = "0.1"
 zeroize = { version = "1.7", features = ["derive"] }
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
