@@ -91,7 +91,7 @@ codebook.update(&new_embeddings, 0.1); // EMA update
 | --- | --- | --- |
 | Cosine | Text similarity | Scale-invariant |
 | Euclidean | Spatial data | Absolute distance |
-| Angular | Normalized comparison | [0, 1] range |
+| Angular | Normalized comparison | 0 to 1 range |
 | Geodesic | Manifold data | Curvature-aware |
 
 ## Cache Semantic Search

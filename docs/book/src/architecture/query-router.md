@@ -492,8 +492,8 @@ COUNT EMBEDDINGS
 | Metric | Description | Use Case | Formula |
 | --- | --- | --- | --- |
 | `COSINE` | Cosine similarity (default) | Semantic similarity | `1 - (a.b) / (‖a‖ * ‖b‖)` |
-| `EUCLIDEAN` | Euclidean distance (L2) | Spatial distance | sqrt(sum((a[i] - b[i])^2)) |
-| `DOT_PRODUCT` | Dot product | Magnitude-aware similarity | sum(a[i] * b[i]) |
+| `EUCLIDEAN` | Euclidean distance (L2) | Spatial distance | `sqrt(sum((a_i - b_i)^2))` |
+| `DOT_PRODUCT` | Dot product | Magnitude-aware similarity | `sum(a_i * b_i)` |
 
 ### Unified Entity Operations
 

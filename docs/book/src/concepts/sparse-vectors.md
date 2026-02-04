@@ -66,10 +66,10 @@ let residual = vec.project_orthogonal(&basis);
 
 | Metric | Formula | Range |
 | --- | --- | --- |
-| Cosine | `a.b / (‖a‖ * ‖b‖)` | [-1, 1] |
-| Euclidean | `sqrt(sum((a-b)^2))` | [0, inf) |
-| Jaccard | `‖A ∩ B‖ / ‖A ∪ B‖` | [0, 1] |
-| Angular | `acos(cosine) / pi` | [0, 1] |
+| Cosine | `a.b / (‖a‖ * ‖b‖)` | -1 to 1 |
+| Euclidean | `sqrt(sum((a-b)^2))` | 0 to inf |
+| Jaccard | `‖A ∩ B‖ / ‖A ∪ B‖` | 0 to 1 |
+| Angular | `acos(cosine) / pi` | 0 to 1 |
 
 ```rust
 let sim = vec_a.cosine_similarity(&vec_b);
