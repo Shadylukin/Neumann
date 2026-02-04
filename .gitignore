@@ -33,3 +33,23 @@ fuzz/artifacts/
 # Private/experimental crates (not for public release)
 experiments/
 seed_model/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# TypeScript/JavaScript
+node_modules/
+dist/
+*.tsbuildinfo
+.vitest/
+
+# Documentation build outputs
+docs/book-output/
