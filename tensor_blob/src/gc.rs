@@ -23,6 +23,7 @@ pub struct GarbageCollector {
 }
 
 impl GarbageCollector {
+    #[must_use]
     pub fn new(store: TensorStore, config: GcConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
         Self {
@@ -33,6 +34,7 @@ impl GarbageCollector {
     }
 
     /// Start background GC task. Returns a handle to the task.
+    #[must_use]
     pub fn start(self: Arc<Self>) -> JoinHandle<()> {
         let gc = Arc::clone(&self);
         tokio::spawn(async move {
@@ -41,6 +43,7 @@ impl GarbageCollector {
     }
 
     /// Get a shutdown sender for graceful termination.
+    #[must_use]
     pub fn shutdown_sender(&self) -> broadcast::Sender<()> {
         self.shutdown_tx.clone()
     }
@@ -102,6 +105,10 @@ impl GarbageCollector {
     }
 
     /// Full GC: recount all references from scratch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if chunk deletion fails.
     pub async fn full_gc(&self) -> Result<GcStats> {
         // 1. Build reference set from all artifacts
         let mut referenced: HashSet<String> = HashSet::new();
@@ -138,6 +145,7 @@ impl GarbageCollector {
     }
 
     /// Count orphaned chunks (chunks with zero references).
+    #[must_use]
     pub fn count_orphans(&self) -> usize {
         let mut count = 0;
 
@@ -155,6 +163,10 @@ impl GarbageCollector {
 }
 
 /// Decrement chunk reference count. Used when deleting artifacts.
+///
+/// # Errors
+///
+/// Returns an error if the store operation fails.
 pub fn decrement_chunk_refs(store: &TensorStore, chunk_key: &str) -> Result<()> {
     if let Ok(mut tensor) = store.get(chunk_key) {
         let refs = get_int(&tensor, "_refs").unwrap_or(1);
@@ -169,6 +181,10 @@ pub fn decrement_chunk_refs(store: &TensorStore, chunk_key: &str) -> Result<()> 
 }
 
 /// Increment chunk reference count. Used for deduplication.
+///
+/// # Errors
+///
+/// Returns an error if the store operation fails.
 pub fn increment_chunk_refs(store: &TensorStore, chunk_key: &str) -> Result<()> {
     if let Ok(mut tensor) = store.get(chunk_key) {
         let refs = get_int(&tensor, "_refs").unwrap_or(0);

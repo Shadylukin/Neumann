@@ -37,45 +37,58 @@ impl Default for BlobConfig {
 }
 
 impl BlobConfig {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_chunk_size(mut self, size: usize) -> Self {
+    #[must_use]
+    pub const fn with_chunk_size(mut self, size: usize) -> Self {
         self.chunk_size = size;
         self
     }
 
-    pub fn with_max_artifact_size(mut self, size: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_artifact_size(mut self, size: usize) -> Self {
         self.max_artifact_size = Some(size);
         self
     }
 
-    pub fn with_max_artifacts(mut self, count: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_artifacts(mut self, count: usize) -> Self {
         self.max_artifacts = Some(count);
         self
     }
 
-    pub fn with_gc_interval(mut self, interval: Duration) -> Self {
+    #[must_use]
+    pub const fn with_gc_interval(mut self, interval: Duration) -> Self {
         self.gc_interval = interval;
         self
     }
 
-    pub fn with_gc_batch_size(mut self, size: usize) -> Self {
+    #[must_use]
+    pub const fn with_gc_batch_size(mut self, size: usize) -> Self {
         self.gc_batch_size = size;
         self
     }
 
-    pub fn with_gc_min_age(mut self, age: Duration) -> Self {
+    #[must_use]
+    pub const fn with_gc_min_age(mut self, age: Duration) -> Self {
         self.gc_min_age = age;
         self
     }
 
+    #[must_use]
     pub fn with_default_content_type(mut self, content_type: impl Into<String>) -> Self {
         self.default_content_type = content_type.into();
         self
     }
 
+    /// Validates the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if chunk_size or gc_batch_size is zero.
     pub fn validate(&self) -> Result<()> {
         if self.chunk_size == 0 {
             return Err(BlobError::InvalidConfig(

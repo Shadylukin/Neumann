@@ -10,7 +10,7 @@ use crate::{
     metadata::PutOptions,
 };
 
-/// Internal state shared between BlobWriter and the store.
+/// Internal state shared between `BlobWriter` and the store.
 pub(crate) struct WriteState {
     pub artifact_id: String,
     pub filename: String,
@@ -65,6 +65,10 @@ impl BlobWriter {
     }
 
     /// Write data to the artifact. Data is chunked and stored incrementally.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if chunk storage fails.
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -81,14 +85,14 @@ impl BlobWriter {
         while self.buffer.len() >= self.chunker.chunk_size() {
             let chunk_data: Vec<u8> = self.buffer.drain(..self.chunker.chunk_size()).collect();
             let chunk = Chunk::new(chunk_data);
-            self.store_chunk(chunk).await?;
+            self.store_chunk(chunk)?;
         }
 
         Ok(())
     }
 
     /// Store a chunk, handling deduplication.
-    async fn store_chunk(&mut self, chunk: Chunk) -> Result<()> {
+    fn store_chunk(&mut self, chunk: Chunk) -> Result<()> {
         let chunk_key = chunk.key();
 
         // Check if chunk already exists (deduplication)
@@ -105,12 +109,14 @@ impl BlobWriter {
             tensor.set("_data", TensorValue::Scalar(ScalarValue::Bytes(chunk.data)));
             tensor.set(
                 "_size",
-                TensorValue::Scalar(ScalarValue::Int(chunk.size as i64)),
+                TensorValue::Scalar(ScalarValue::Int(i64::try_from(chunk.size).unwrap_or(0))),
             );
             tensor.set("_refs", TensorValue::Scalar(ScalarValue::Int(1)));
             tensor.set(
                 "_created",
-                TensorValue::Scalar(ScalarValue::Int(current_timestamp() as i64)),
+                TensorValue::Scalar(ScalarValue::Int(
+                    i64::try_from(current_timestamp()).unwrap_or(0),
+                )),
             );
 
             self.store.put(&chunk_key, tensor)?;
@@ -121,11 +127,15 @@ impl BlobWriter {
     }
 
     /// Finalize the artifact and return its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata storage fails.
     pub async fn finish(mut self) -> Result<String> {
         // Flush remaining buffer
         if !self.buffer.is_empty() {
             let chunk = Chunk::new(std::mem::take(&mut self.buffer));
-            self.store_chunk(chunk).await?;
+            self.store_chunk(chunk)?;
         }
 
         let checksum = self.hasher.finalize();
@@ -151,7 +161,9 @@ impl BlobWriter {
         );
         tensor.set(
             "_size",
-            TensorValue::Scalar(ScalarValue::Int(self.total_size as i64)),
+            TensorValue::Scalar(ScalarValue::Int(
+                i64::try_from(self.total_size).unwrap_or(0),
+            )),
         );
         tensor.set(
             "_checksum",
@@ -159,20 +171,24 @@ impl BlobWriter {
         );
         tensor.set(
             "_chunk_size",
-            TensorValue::Scalar(ScalarValue::Int(self.chunker.chunk_size() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(
+                i64::try_from(self.chunker.chunk_size()).unwrap_or(0),
+            )),
         );
         tensor.set(
             "_chunk_count",
-            TensorValue::Scalar(ScalarValue::Int(self.chunks.len() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(
+                i64::try_from(self.chunks.len()).unwrap_or(0),
+            )),
         );
         tensor.set("_chunks", TensorValue::Pointers(self.chunks));
         tensor.set(
             "_created",
-            TensorValue::Scalar(ScalarValue::Int(now as i64)),
+            TensorValue::Scalar(ScalarValue::Int(i64::try_from(now).unwrap_or(0))),
         );
         tensor.set(
             "_modified",
-            TensorValue::Scalar(ScalarValue::Int(now as i64)),
+            TensorValue::Scalar(ScalarValue::Int(i64::try_from(now).unwrap_or(0))),
         );
         tensor.set(
             "_created_by",
@@ -207,7 +223,7 @@ impl BlobWriter {
         // Embedding with sparse detection
         if let Some((embedding, model)) = self.state.embedding {
             use tensor_store::SparseVector;
-            let storage = if crate::streaming::should_use_sparse(&embedding) {
+            let storage = if should_use_sparse(&embedding) {
                 TensorValue::Sparse(SparseVector::from_dense(&embedding))
             } else {
                 TensorValue::Vector(embedding)
@@ -226,11 +242,13 @@ impl BlobWriter {
     }
 
     /// Get the current total size written.
-    pub fn bytes_written(&self) -> usize {
+    #[must_use]
+    pub const fn bytes_written(&self) -> usize {
         self.total_size
     }
 
     /// Get the number of chunks written so far.
+    #[must_use]
     pub fn chunks_written(&self) -> usize {
         self.chunks.len()
     }
@@ -249,6 +267,11 @@ pub struct BlobReader {
 }
 
 impl BlobReader {
+    /// Creates a new reader for the specified artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact is not found.
     pub(crate) fn new(store: TensorStore, artifact_id: &str) -> Result<Self> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         let tensor = store
@@ -257,7 +280,7 @@ impl BlobReader {
 
         let chunks = get_pointers(&tensor, "_chunks")
             .ok_or_else(|| BlobError::NotFound(format!("chunks for {artifact_id}")))?;
-        let total_size = get_int(&tensor, "_size").unwrap_or(0) as usize;
+        let total_size = usize::try_from(get_int(&tensor, "_size").unwrap_or(0)).unwrap_or(0);
         let checksum = get_string(&tensor, "_checksum").unwrap_or_default();
 
         Ok(Self {
@@ -273,6 +296,10 @@ impl BlobReader {
     }
 
     /// Read the next chunk. Returns None when all chunks have been read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a chunk is missing.
     pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>> {
         if self.current_chunk >= self.chunks.len() {
             return Ok(None);
@@ -294,6 +321,10 @@ impl BlobReader {
     }
 
     /// Read all remaining data into a single buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a chunk is missing.
     pub async fn read_all(&mut self) -> Result<Vec<u8>> {
         let mut result = Vec::with_capacity(self.total_size);
 
@@ -305,10 +336,14 @@ impl BlobReader {
     }
 
     /// Read into a buffer, returning number of bytes read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a chunk is missing.
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         // Load chunk if needed
         if self.current_data.is_none()
-            || self.current_offset >= self.current_data.as_ref().map(|d| d.len()).unwrap_or(0)
+            || self.current_offset >= self.current_data.as_ref().map_or(0, Vec::len)
         {
             match self.next_chunk().await? {
                 Some(data) => {
@@ -330,6 +365,10 @@ impl BlobReader {
     }
 
     /// Verify the artifact checksum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a chunk is missing.
     pub async fn verify(&mut self) -> Result<bool> {
         let mut hasher = StreamingHasher::new();
 
@@ -346,21 +385,25 @@ impl BlobReader {
     }
 
     /// Get the expected checksum.
+    #[must_use]
     pub fn checksum(&self) -> &str {
         &self.checksum
     }
 
     /// Get total artifact size.
-    pub fn total_size(&self) -> usize {
+    #[must_use]
+    pub const fn total_size(&self) -> usize {
         self.total_size
     }
 
     /// Get bytes read so far.
-    pub fn bytes_read(&self) -> usize {
+    #[must_use]
+    pub const fn bytes_read(&self) -> usize {
         self.bytes_read
     }
 
     /// Get the number of chunks.
+    #[must_use]
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }

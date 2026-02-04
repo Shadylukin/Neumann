@@ -433,4 +433,241 @@ mod tests {
         assert!(json.contains("first_query"));
         assert!(json.contains("First Steps"));
     }
+
+    // ========== Additional tier tests ==========
+
+    #[test]
+    fn test_tier_display_name() {
+        assert_eq!(AchievementTier::Bronze.display_name(), "Bronze");
+        assert_eq!(AchievementTier::Silver.display_name(), "Silver");
+        assert_eq!(AchievementTier::Gold.display_name(), "Gold");
+        assert_eq!(AchievementTier::Platinum.display_name(), "Platinum");
+    }
+
+    #[test]
+    fn test_tier_serialization() {
+        let tier = AchievementTier::Gold;
+        let json = serde_json::to_string(&tier).expect("serialization failed");
+        assert!(json.contains("gold"));
+
+        let decoded: AchievementTier = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded, AchievementTier::Gold);
+    }
+
+    // ========== Additional category tests ==========
+
+    #[test]
+    fn test_category_serialization() {
+        let category = AchievementCategory::Performance;
+        let json = serde_json::to_string(&category).expect("serialization failed");
+        assert!(json.contains("performance"));
+
+        let decoded: AchievementCategory =
+            serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded, AchievementCategory::Performance);
+    }
+
+    #[test]
+    fn test_category_icon_all() {
+        assert_eq!(AchievementCategory::Performance.icon(), '>');
+        assert_eq!(AchievementCategory::Dedication.icon(), '*');
+    }
+
+    // ========== Achievement builder tests ==========
+
+    #[test]
+    fn test_achievement_new() {
+        let achievement = Achievement::new(
+            "test_id",
+            "Test Name",
+            "Test description",
+            AchievementTier::Silver,
+            AchievementCategory::Mastery,
+        );
+        assert_eq!(achievement.id, "test_id");
+        assert_eq!(achievement.name, "Test Name");
+        assert!(!achievement.hidden);
+        assert!(achievement.threshold.is_none());
+    }
+
+    #[test]
+    fn test_achievement_with_threshold_builder() {
+        let achievement = Achievement::new(
+            "test",
+            "Test",
+            "Test",
+            AchievementTier::Bronze,
+            AchievementCategory::Discovery,
+        )
+        .with_threshold(50);
+
+        assert_eq!(achievement.threshold, Some(50));
+    }
+
+    #[test]
+    fn test_achievement_hidden_builder() {
+        let achievement = Achievement::new(
+            "test",
+            "Test",
+            "Test",
+            AchievementTier::Bronze,
+            AchievementCategory::Discovery,
+        )
+        .hidden();
+
+        assert!(achievement.hidden);
+    }
+
+    #[test]
+    fn test_achievement_chained_builders() {
+        let achievement = Achievement::new(
+            "chained",
+            "Chained",
+            "Chained description",
+            AchievementTier::Platinum,
+            AchievementCategory::Mastery,
+        )
+        .with_threshold(1000)
+        .hidden();
+
+        assert_eq!(achievement.id, "chained");
+        assert_eq!(achievement.tier, AchievementTier::Platinum);
+        assert_eq!(achievement.threshold, Some(1000));
+        assert!(achievement.hidden);
+    }
+
+    // ========== achievements_by_* additional tests ==========
+
+    #[test]
+    fn test_achievements_by_category_all() {
+        let performance = achievements_by_category(AchievementCategory::Performance);
+        let dedication = achievements_by_category(AchievementCategory::Dedication);
+        let mastery = achievements_by_category(AchievementCategory::Mastery);
+
+        assert!(!performance.is_empty());
+        assert!(!dedication.is_empty());
+        assert!(!mastery.is_empty());
+    }
+
+    #[test]
+    fn test_achievements_by_tier_all() {
+        let silver = achievements_by_tier(AchievementTier::Silver);
+        let gold = achievements_by_tier(AchievementTier::Gold);
+        let platinum = achievements_by_tier(AchievementTier::Platinum);
+
+        assert!(!silver.is_empty());
+        assert!(!gold.is_empty());
+        assert!(!platinum.is_empty());
+    }
+
+    #[test]
+    fn test_all_achievements_have_valid_fields() {
+        for achievement in ACHIEVEMENTS {
+            assert!(!achievement.id.is_empty());
+            assert!(!achievement.name.is_empty());
+            assert!(!achievement.description.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_achievements_unique_ids() {
+        let mut seen = std::collections::HashSet::new();
+        for achievement in ACHIEVEMENTS {
+            assert!(
+                seen.insert(achievement.id),
+                "Duplicate achievement ID: {}",
+                achievement.id
+            );
+        }
+    }
+
+    // ========== Additional tier CSS tests ==========
+
+    #[test]
+    fn test_tier_css_class_all() {
+        assert_eq!(AchievementTier::Silver.css_class(), "achievement-silver");
+        assert_eq!(AchievementTier::Gold.css_class(), "achievement-gold");
+    }
+
+    // ========== Category tests ==========
+
+    #[test]
+    fn test_category_display_name_all() {
+        assert_eq!(
+            AchievementCategory::Performance.display_name(),
+            "Performance"
+        );
+        assert_eq!(AchievementCategory::Dedication.display_name(), "Dedication");
+    }
+
+    // ========== Achievement serialization test ==========
+
+    #[test]
+    fn test_achievement_full_serialization() {
+        let achievement = get_achievement("first_query").unwrap();
+        let json = serde_json::to_string(achievement).expect("serialization failed");
+        assert!(json.contains("first_query"));
+        assert!(json.contains("First Steps"));
+        assert!(json.contains("bronze"));
+        assert!(json.contains("discovery"));
+    }
+
+    #[test]
+    fn test_achievement_tier_eq() {
+        assert_eq!(AchievementTier::Bronze, AchievementTier::Bronze);
+        assert_ne!(AchievementTier::Bronze, AchievementTier::Gold);
+    }
+
+    #[test]
+    fn test_achievement_category_eq() {
+        assert_eq!(
+            AchievementCategory::Discovery,
+            AchievementCategory::Discovery
+        );
+        assert_ne!(AchievementCategory::Discovery, AchievementCategory::Mastery);
+    }
+
+    #[test]
+    fn test_achievement_clone() {
+        let achievement = get_achievement("first_query").unwrap();
+        let cloned = achievement.clone();
+        assert_eq!(cloned.id, achievement.id);
+        assert_eq!(cloned.name, achievement.name);
+    }
+
+    #[test]
+    fn test_achievement_debug() {
+        let achievement = get_achievement("first_query").unwrap();
+        let debug_str = format!("{:?}", achievement);
+        assert!(debug_str.contains("Achievement"));
+        assert!(debug_str.contains("first_query"));
+    }
+
+    #[test]
+    fn test_tier_debug() {
+        let tier = AchievementTier::Platinum;
+        let debug_str = format!("{:?}", tier);
+        assert!(debug_str.contains("Platinum"));
+    }
+
+    #[test]
+    fn test_category_debug() {
+        let category = AchievementCategory::Mastery;
+        let debug_str = format!("{:?}", category);
+        assert!(debug_str.contains("Mastery"));
+    }
+
+    #[test]
+    fn test_tier_clone() {
+        let tier = AchievementTier::Gold;
+        let cloned = tier;
+        assert_eq!(cloned, tier);
+    }
+
+    #[test]
+    fn test_category_clone() {
+        let category = AchievementCategory::Performance;
+        let cloned = category;
+        assert_eq!(cloned, category);
+    }
 }

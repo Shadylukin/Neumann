@@ -1691,6 +1691,7 @@ dependencies = [
  "dashmap 6.1.0",
  "futures",
  "graph_engine",
+ "http-body-util",
  "maud",
  "opentelemetry 0.24.0",
  "opentelemetry-otlp",

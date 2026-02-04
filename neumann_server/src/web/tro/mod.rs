@@ -318,4 +318,176 @@ mod tests {
         let decoded: Palette = serde_json::from_str(&json).expect("deserialization failed");
         assert_eq!(decoded, Palette::Amber);
     }
+
+    // ========== Additional Palette tests ==========
+
+    #[test]
+    fn test_palette_all_css_colors() {
+        let rust = Palette::Rust;
+        assert_eq!(rust.primary_css(), "#942222");
+        assert_eq!(rust.dim_css(), "#621f22");
+        assert_eq!(rust.dark_css(), "#4a2125");
+
+        let ghost = Palette::Ghost;
+        assert_eq!(ghost.primary_css(), "#00bbcc");
+        assert_eq!(ghost.dim_css(), "#007788");
+        assert_eq!(ghost.dark_css(), "#003344");
+
+        let glitch = Palette::Glitch;
+        assert_eq!(glitch.primary_css(), "#aa44aa");
+        assert_eq!(glitch.dim_css(), "#660066");
+        assert_eq!(glitch.dark_css(), "#440044");
+
+        let amber = Palette::Amber;
+        assert_eq!(amber.dim_css(), "#cc8800");
+        assert_eq!(amber.dark_css(), "#663300");
+    }
+
+    #[test]
+    fn test_palette_all_rgba() {
+        assert_eq!(Palette::Amber.primary_rgba(), (255, 182, 65, 255));
+        assert_eq!(Palette::Ghost.primary_rgba(), (0, 187, 204, 255));
+        assert_eq!(Palette::Glitch.primary_rgba(), (170, 68, 170, 255));
+    }
+
+    #[test]
+    fn test_palette_all_serialization() {
+        for palette in [
+            Palette::PhosphorGreen,
+            Palette::Amber,
+            Palette::Rust,
+            Palette::Ghost,
+            Palette::Glitch,
+        ] {
+            let json = serde_json::to_string(&palette).expect("serialization failed");
+            let decoded: Palette = serde_json::from_str(&json).expect("deserialization failed");
+            assert_eq!(decoded, palette);
+        }
+    }
+
+    // ========== Additional TroConfig tests ==========
+
+    #[test]
+    fn test_tro_config_field_access() {
+        let config = TroConfig::default();
+        assert_eq!(config.palette, Palette::PhosphorGreen);
+        assert_eq!(config.trail_length, 10);
+        assert!((config.glow_intensity - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_tro_config_minimal_fields() {
+        let config = TroConfig::minimal();
+        assert_eq!(config.palette, Palette::PhosphorGreen);
+        assert_eq!(config.trail_length, 5);
+        assert!((config.glow_intensity - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_tro_config_high_performance_fields() {
+        let config = TroConfig::high_performance();
+        assert_eq!(config.palette, Palette::PhosphorGreen);
+        assert_eq!(config.trail_length, 15);
+        assert!((config.glow_intensity - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_tro_config_clone() {
+        let config = TroConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.fps, config.fps);
+        assert_eq!(cloned.agent_count, config.agent_count);
+    }
+
+    #[test]
+    fn test_tro_config_debug() {
+        let config = TroConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("TroConfig"));
+        assert!(debug_str.contains("enabled"));
+    }
+
+    // ========== Additional PhysarumConfig tests ==========
+
+    #[test]
+    fn test_physarum_config_clone() {
+        let config = PhysarumConfig::default();
+        let cloned = config.clone();
+        assert!((cloned.sensor_angle - config.sensor_angle).abs() < f32::EPSILON);
+        assert!((cloned.decay_rate - config.decay_rate).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_physarum_config_debug() {
+        let config = PhysarumConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("PhysarumConfig"));
+        assert!(debug_str.contains("sensor_angle"));
+    }
+
+    #[test]
+    fn test_physarum_config_serialization() {
+        let config = PhysarumConfig::default();
+        let json = serde_json::to_string(&config).expect("serialization failed");
+        assert!(json.contains("sensor_angle"));
+        assert!(json.contains("decay_rate"));
+
+        let decoded: PhysarumConfig = serde_json::from_str(&json).expect("deserialization failed");
+        assert!((decoded.decay_rate - config.decay_rate).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_physarum_config_all_fields() {
+        let config = PhysarumConfig::default();
+        assert!(config.sensor_distance > 0.0);
+        assert!(config.rotation_angle > 0.0);
+        assert!(config.speed > 0.0);
+        assert!(config.deposit_amount > 0.0);
+        assert!(config.diffusion_rate > 0.0);
+        assert!(config.diffusion_rate <= 1.0);
+    }
+
+    // ========== Additional TroState tests ==========
+
+    #[test]
+    fn test_tro_state_clone() {
+        let state = TroState::new(50);
+        let cloned = state.clone();
+        assert_eq!(cloned.pheromone.len(), 50);
+        assert_eq!(cloned.activity_heat.len(), 50);
+    }
+
+    #[test]
+    fn test_tro_state_debug() {
+        let state = TroState::new(10);
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("TroState"));
+        assert!(debug_str.contains("pheromone"));
+    }
+
+    #[test]
+    fn test_tro_state_serialization() {
+        let state = TroState::new(20);
+        let json = serde_json::to_string(&state).expect("serialization failed");
+        assert!(json.contains("pheromone"));
+        assert!(json.contains("frame"));
+
+        let decoded: TroState = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded.pheromone.len(), 20);
+        assert_eq!(decoded.frame, 0);
+    }
+
+    #[test]
+    fn test_tro_state_empty() {
+        let state = TroState::new(0);
+        assert!(state.pheromone.is_empty());
+        assert!(state.activity_heat.is_empty());
+    }
+
+    #[test]
+    fn test_tro_state_large() {
+        let state = TroState::new(10000);
+        assert_eq!(state.pheromone.len(), 10000);
+        assert!(state.pheromone.iter().all(|&v| v == 0.0));
+    }
 }

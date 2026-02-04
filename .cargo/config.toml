@@ -1,8 +1,10 @@
 # Workspace cargo configuration
 
 [alias]
-# Strict clippy check
-lint = "clippy --all-targets --all-features -- -D warnings"
+# Strict clippy check (pedantic + nursery for lib/bins only)
+lint = "clippy --lib --bins --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery"
+# Full clippy on all targets (tests allowed to use unwrap/expect/panic)
+lint-all = "clippy --all-targets --all-features -- -D warnings"
 # Full security check
 sec = ["audit", "deny check", "geiger --forbid-only"]
 

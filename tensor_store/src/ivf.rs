@@ -131,14 +131,14 @@ impl IVFConfig {
 
     /// Set the k-means configuration.
     #[must_use]
-    pub fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
+    pub const fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
         self.kmeans_config = config;
         self
     }
 
     /// Set the storage format.
     #[must_use]
-    pub fn with_storage(mut self, storage: IVFStorage) -> Self {
+    pub const fn with_storage(mut self, storage: IVFStorage) -> Self {
         self.storage = storage;
         self
     }
@@ -308,6 +308,7 @@ impl IVFIndex {
                 }
             },
         }
+        drop(list);
 
         id
     }
@@ -426,7 +427,7 @@ impl IVFIndex {
 
     /// Returns the number of clusters.
     #[must_use]
-    pub fn num_clusters(&self) -> usize {
+    pub const fn num_clusters(&self) -> usize {
         self.centroids.len()
     }
 
@@ -472,7 +473,9 @@ impl IVFIndex {
                         binary_vectors.iter().map(BinaryVector::memory_bytes).sum()
                     },
                 };
-                id_bytes + storage_bytes
+                let result = id_bytes + storage_bytes;
+                drop(list);
+                result
             })
             .sum();
 

@@ -12,7 +12,11 @@ use crate::{
 };
 
 /// Verify the integrity of an artifact by checking its checksum.
-pub async fn verify_artifact(store: &TensorStore, artifact_id: &str) -> Result<bool> {
+///
+/// # Errors
+///
+/// Returns an error if the artifact or its chunks are not found.
+pub fn verify_artifact(store: &TensorStore, artifact_id: &str) -> Result<bool> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let tensor = store
         .get(&meta_key)
@@ -42,6 +46,10 @@ pub async fn verify_artifact(store: &TensorStore, artifact_id: &str) -> Result<b
 }
 
 /// Verify a single chunk's integrity by checking its content hash matches its key.
+///
+/// # Errors
+///
+/// Returns an error if the chunk is not found or has an invalid key format.
 pub fn verify_chunk(store: &TensorStore, chunk_key: &str) -> Result<bool> {
     // Extract expected hash from key: "_blob:chunk:sha256:..."
     let expected_hash = chunk_key
@@ -60,7 +68,11 @@ pub fn verify_chunk(store: &TensorStore, chunk_key: &str) -> Result<bool> {
 }
 
 /// Repair the blob store by fixing reference counts and removing orphans.
-pub async fn repair(store: &TensorStore) -> Result<RepairStats> {
+///
+/// # Errors
+///
+/// Returns an error if store operations fail.
+pub fn repair(store: &TensorStore) -> Result<RepairStats> {
     let mut stats = RepairStats::default();
 
     // 1. Build true reference counts from all artifacts
@@ -114,6 +126,11 @@ pub async fn repair(store: &TensorStore) -> Result<RepairStats> {
 }
 
 /// Check if all chunks for an artifact exist.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found.
+#[must_use]
 pub fn check_chunks_exist(store: &TensorStore, artifact_id: &str) -> Result<Vec<String>> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let tensor = store
@@ -134,6 +151,7 @@ pub fn check_chunks_exist(store: &TensorStore, artifact_id: &str) -> Result<Vec<
 }
 
 /// Find all chunks not referenced by any artifact.
+#[must_use]
 pub fn find_orphaned_chunks(store: &TensorStore) -> Vec<String> {
     // Build set of all referenced chunks
     let mut referenced: HashSet<String> = HashSet::new();
@@ -155,6 +173,10 @@ pub fn find_orphaned_chunks(store: &TensorStore) -> Vec<String> {
 }
 
 /// Delete a specific artifact and decrement chunk references.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found or deletion fails.
 pub fn delete_artifact(store: &TensorStore, artifact_id: &str) -> Result<()> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let tensor = store
@@ -175,6 +197,10 @@ pub fn delete_artifact(store: &TensorStore, artifact_id: &str) -> Result<()> {
 }
 
 /// Update artifact metadata field.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found or update fails.
 pub fn update_artifact_field(
     store: &TensorStore,
     artifact_id: &str,
@@ -200,6 +226,10 @@ pub fn update_artifact_field(
 }
 
 /// Add a link to an artifact.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found or update fails.
 pub fn add_artifact_link(store: &TensorStore, artifact_id: &str, entity: &str) -> Result<()> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let mut tensor = store
@@ -217,6 +247,10 @@ pub fn add_artifact_link(store: &TensorStore, artifact_id: &str, entity: &str) -
 }
 
 /// Remove a link from an artifact.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found or update fails.
 pub fn remove_artifact_link(store: &TensorStore, artifact_id: &str, entity: &str) -> Result<()> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let mut tensor = store
@@ -233,6 +267,10 @@ pub fn remove_artifact_link(store: &TensorStore, artifact_id: &str, entity: &str
 }
 
 /// Add a tag to an artifact.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found or update fails.
 pub fn add_artifact_tag(store: &TensorStore, artifact_id: &str, tag: &str) -> Result<()> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let mut tensor = store
@@ -251,6 +289,10 @@ pub fn add_artifact_tag(store: &TensorStore, artifact_id: &str, tag: &str) -> Re
 }
 
 /// Remove a tag from an artifact.
+///
+/// # Errors
+///
+/// Returns an error if the artifact is not found or update fails.
 pub fn remove_artifact_tag(store: &TensorStore, artifact_id: &str, tag: &str) -> Result<()> {
     let meta_key = format!("_blob:meta:{artifact_id}");
     let mut tensor = store
@@ -321,8 +363,8 @@ mod tests {
         store.put(&meta_key, tensor).unwrap();
     }
 
-    #[tokio::test]
-    async fn test_verify_artifact_valid() {
+    #[test]
+    fn test_verify_artifact_valid() {
         let store = create_test_store();
         let data = b"test data";
         let chunk_key = store_chunk(&store, data, 1);
@@ -330,26 +372,26 @@ mod tests {
 
         store_artifact(&store, "test", vec![chunk_key], &checksum);
 
-        let valid = verify_artifact(&store, "test").await.unwrap();
+        let valid = verify_artifact(&store, "test").unwrap();
         assert!(valid);
     }
 
-    #[tokio::test]
-    async fn test_verify_artifact_invalid_checksum() {
+    #[test]
+    fn test_verify_artifact_invalid_checksum() {
         let store = create_test_store();
         let data = b"test data";
         let chunk_key = store_chunk(&store, data, 1);
 
         store_artifact(&store, "test", vec![chunk_key], "sha256:invalid");
 
-        let valid = verify_artifact(&store, "test").await.unwrap();
+        let valid = verify_artifact(&store, "test").unwrap();
         assert!(!valid);
     }
 
-    #[tokio::test]
-    async fn test_verify_artifact_not_found() {
+    #[test]
+    fn test_verify_artifact_not_found() {
         let store = create_test_store();
-        let result = verify_artifact(&store, "nonexistent").await;
+        let result = verify_artifact(&store, "nonexistent");
         assert!(matches!(result, Err(BlobError::NotFound(_))));
     }
 
@@ -406,8 +448,8 @@ mod tests {
         assert!(orphans.contains(&orphan));
     }
 
-    #[tokio::test]
-    async fn test_repair() {
+    #[test]
+    fn test_repair() {
         let store = create_test_store();
 
         // Create chunks with wrong ref counts
@@ -416,7 +458,7 @@ mod tests {
 
         store_artifact(&store, "test", vec![chunk1.clone()], "sha256:test");
 
-        let stats = repair(&store).await.unwrap();
+        let stats = repair(&store).unwrap();
 
         assert_eq!(stats.artifacts_checked, 1);
         assert!(stats.refs_fixed > 0);

@@ -205,4 +205,110 @@ mod tests {
         assert!(json.contains("level"));
         assert!(json.contains("current_xp"));
     }
+
+    // ========== Additional level_from_xp tests ==========
+
+    #[test]
+    fn test_level_from_xp_all_boundaries() {
+        assert_eq!(level_from_xp(99), 1);
+        assert_eq!(level_from_xp(249), 2);
+        assert_eq!(level_from_xp(499), 3);
+        assert_eq!(level_from_xp(999), 4);
+        assert_eq!(level_from_xp(1749), 5);
+        assert_eq!(level_from_xp(2749), 6);
+        assert_eq!(level_from_xp(3999), 7);
+        assert_eq!(level_from_xp(5499), 8);
+        assert_eq!(level_from_xp(7499), 9);
+        assert_eq!(level_from_xp(9999), 10);
+    }
+
+    #[test]
+    fn test_level_from_xp_high_levels() {
+        assert_eq!(level_from_xp(10000), 11);
+        assert_eq!(level_from_xp(13000), 12);
+        assert_eq!(level_from_xp(16500), 13);
+        assert_eq!(level_from_xp(20500), 14);
+        assert_eq!(level_from_xp(25000), 15);
+        assert_eq!(level_from_xp(30000), 16);
+        assert_eq!(level_from_xp(36000), 17);
+        assert_eq!(level_from_xp(43000), 18);
+        assert_eq!(level_from_xp(51000), 19);
+    }
+
+    // ========== Additional level_title tests ==========
+
+    #[test]
+    fn test_level_title_all() {
+        assert_eq!(level_title(2), "Data Apprentice");
+        assert_eq!(level_title(3), "Query Runner");
+        assert_eq!(level_title(4), "Graph Walker");
+        assert_eq!(level_title(5), "Vector Seeker");
+        assert_eq!(level_title(6), "Index Builder");
+        assert_eq!(level_title(7), "Schema Architect");
+        assert_eq!(level_title(8), "Query Optimizer");
+        assert_eq!(level_title(9), "Data Wrangler");
+        assert_eq!(level_title(11), "Tensor Adept");
+        assert_eq!(level_title(12), "Algorithm Sage");
+        assert_eq!(level_title(13), "Performance Tuner");
+        assert_eq!(level_title(14), "System Architect");
+        assert_eq!(level_title(15), "Data Scientist");
+        assert_eq!(level_title(16), "Graph Theorist");
+        assert_eq!(level_title(17), "Vector Mathematician");
+        assert_eq!(level_title(18), "Distributed Systems Expert");
+        assert_eq!(level_title(19), "Neumann Veteran");
+    }
+
+    #[test]
+    fn test_level_title_edge_cases() {
+        assert_eq!(level_title(0), "Unknown");
+        assert_eq!(level_title(100), "Unknown");
+    }
+
+    // ========== Additional level_progress tests ==========
+
+    #[test]
+    fn test_level_progress_mid_level() {
+        let progress = level_progress(1250); // Between level 5 (1000) and level 6 (1750)
+        assert_eq!(progress.level, 5);
+        assert_eq!(progress.xp_in_level, 250);
+        assert_eq!(progress.xp_for_level, 750);
+        assert!(progress.percentage > 30.0 && progress.percentage < 40.0);
+    }
+
+    #[test]
+    fn test_level_progress_just_over_boundary() {
+        let progress = level_progress(101);
+        assert_eq!(progress.level, 2);
+        assert_eq!(progress.xp_in_level, 1);
+    }
+
+    #[test]
+    fn test_level_progress_at_max_level() {
+        let progress = level_progress(100000);
+        assert_eq!(progress.level, 20);
+        assert!(progress.is_max_level);
+        // At max level, percentage may vary based on implementation
+        assert!(progress.percentage >= 0.0);
+    }
+
+    // ========== XpReward tests ==========
+
+    #[test]
+    fn test_xp_reward_all() {
+        assert_eq!(XpReward::QUERY_EXECUTE, 1);
+        assert_eq!(XpReward::FAST_QUERY, 5);
+        assert_eq!(XpReward::ALGORITHM_RUN, 10);
+        assert_eq!(XpReward::DAILY_FIRST, 25);
+        assert_eq!(XpReward::STREAK_BONUS, 50);
+        assert_eq!(XpReward::ACHIEVEMENT_UNLOCK, 100);
+    }
+
+    #[test]
+    fn test_level_progress_deserialization() {
+        let progress = level_progress(500);
+        let json = serde_json::to_string(&progress).expect("serialization failed");
+        let decoded: LevelProgress = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded.level, progress.level);
+        assert_eq!(decoded.current_xp, progress.current_xp);
+    }
 }

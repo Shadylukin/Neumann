@@ -2417,7 +2417,7 @@ impl QueryRouter {
                 let id = self.eval_string_expr(artifact_id)?;
                 let valid = runtime.block_on(async {
                     let blob_guard = blob.lock().await;
-                    blob_guard.verify(&id).await
+                    blob_guard.verify(&id)
                 })?;
                 Ok(QueryResult::Value(if valid {
                     "OK".to_string()
@@ -2442,7 +2442,7 @@ impl QueryRouter {
             BlobOp::Repair => {
                 let stats = runtime.block_on(async {
                     let blob_guard = blob.lock().await;
-                    blob_guard.repair().await
+                    blob_guard.repair()
                 })?;
                 Ok(QueryResult::Value(format!(
                     "Fixed {} refs, deleted {} orphans",
@@ -6948,7 +6948,7 @@ impl QueryRouter {
             BlobOp::Verify { artifact_id } => {
                 let id = self.eval_string_expr(artifact_id)?;
                 let blob_guard = blob.lock().await;
-                let valid = blob_guard.verify(&id).await?;
+                let valid = blob_guard.verify(&id)?;
                 Ok(QueryResult::Value(if valid {
                     "OK".to_string()
                 } else {
@@ -6969,7 +6969,7 @@ impl QueryRouter {
             },
             BlobOp::Repair => {
                 let blob_guard = blob.lock().await;
-                let stats = blob_guard.repair().await?;
+                let stats = blob_guard.repair()?;
                 Ok(QueryResult::Value(format!(
                     "Fixed {} refs, deleted {} orphans",
                     stats.refs_fixed, stats.orphans_deleted

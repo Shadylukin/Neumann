@@ -146,4 +146,82 @@ mod tests {
         assert!(json.contains("400"));
         assert!(json.contains("test"));
     }
+
+    #[test]
+    fn test_api_error_deserialization() {
+        let json = r#"{"status":"test_status","code":422,"message":"test message"}"#;
+        let error: ApiError = serde_json::from_str(json).unwrap();
+        assert_eq!(error.status, "test_status");
+        assert_eq!(error.code, 422);
+        assert_eq!(error.message, "test message");
+    }
+
+    #[test]
+    fn test_api_error_into_response_bad_request() {
+        let error = ApiError::bad_request("test");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_api_error_into_response_unauthorized() {
+        let error = ApiError::unauthorized("test");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_api_error_into_response_not_found() {
+        let error = ApiError::not_found("test");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_api_error_into_response_conflict() {
+        let error = ApiError::conflict("test");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn test_api_error_into_response_rate_limited() {
+        let error = ApiError::rate_limited("test");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_api_error_into_response_internal() {
+        let error = ApiError::internal("test");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_into_response_unknown_code() {
+        // Test the default case for unknown status codes
+        let error = ApiError::new("unknown", 999, "unknown error");
+        let response = error.into_response();
+        // Unknown codes should map to INTERNAL_SERVER_ERROR
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_clone() {
+        let error = ApiError::bad_request("test");
+        let cloned = error.clone();
+        assert_eq!(cloned.status, error.status);
+        assert_eq!(cloned.code, error.code);
+        assert_eq!(cloned.message, error.message);
+    }
+
+    #[test]
+    fn test_api_error_debug() {
+        let error = ApiError::bad_request("test message");
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("ApiError"));
+        assert!(debug_str.contains("bad_request"));
+        assert!(debug_str.contains("400"));
+    }
 }

@@ -1178,4 +1178,183 @@ mod tests {
 
         assert!(server.audit_logger.is_none());
     }
+
+    #[test]
+    fn test_server_config_with_all_engines() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let relational = Arc::new(RelationalEngine::new());
+        let vector = Arc::new(VectorEngine::new());
+        let graph = Arc::new(GraphEngine::new());
+
+        let server = NeumannServer::new(router, config)
+            .with_relational_engine(Arc::clone(&relational))
+            .with_vector_engine(Arc::clone(&vector))
+            .with_graph_engine(Arc::clone(&graph));
+
+        assert!(server.relational_engine.is_some());
+        assert!(server.vector_engine.is_some());
+        assert!(server.graph_engine.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_server_with_blob_and_engines() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let relational = Arc::new(RelationalEngine::new());
+        let vector = Arc::new(VectorEngine::new());
+        let graph = Arc::new(GraphEngine::new());
+
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default())
+            .await
+            .expect("should create blob store");
+
+        let server = NeumannServer::new(router, config)
+            .with_blob_store(Arc::new(Mutex::new(blob_store)))
+            .with_relational_engine(relational)
+            .with_vector_engine(vector)
+            .with_graph_engine(graph);
+
+        assert!(server.blob_store.is_some());
+        assert!(server.relational_engine.is_some());
+        assert!(server.vector_engine.is_some());
+        assert!(server.graph_engine.is_some());
+    }
+
+    #[test]
+    fn test_server_config_validate_ok() {
+        let config = ServerConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_config_validate_with_valid_auth() {
+        let mut config = ServerConfig::default();
+        config.auth = Some(AuthConfig::new().with_anonymous(true));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_config_validate_with_rate_limit() {
+        let mut config = ServerConfig::default();
+        config.rate_limit = Some(RateLimitConfig::default());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_config_validate_with_audit() {
+        let mut config = ServerConfig::default();
+        config.audit = Some(AuditConfig::default());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_with_full_config() {
+        use std::time::Duration;
+
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default()
+            .with_rate_limit(RateLimitConfig::default())
+            .with_audit(AuditConfig::default())
+            .with_shutdown(ShutdownConfig::default())
+            .with_memory_budget(MemoryBudgetConfig::default())
+            .with_max_message_size(128 * 1024 * 1024)
+            .with_blob_chunk_size(64 * 1024)
+            .with_max_concurrent_connections(500)
+            .with_max_concurrent_streams_per_connection(100)
+            .with_initial_window_size(65536)
+            .with_initial_connection_window_size(1024 * 1024)
+            .with_request_timeout(Duration::from_secs(30));
+
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.rate_limiter.is_some());
+        assert!(server.audit_logger.is_some());
+    }
+
+    #[test]
+    fn test_router_accessor_returns_same_instance() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let server = NeumannServer::new(Arc::clone(&router), config);
+
+        assert!(Arc::ptr_eq(&router, server.router()));
+    }
+
+    #[test]
+    fn test_server_multiple_blob_store_sets() {
+        // Test that with_blob_store can override previous blob store
+        use tokio::runtime::Runtime;
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let router = Arc::new(RwLock::new(QueryRouter::new()));
+            let config = ServerConfig::default();
+
+            let store1 = TensorStore::new();
+            let blob_store1 = BlobStore::new(store1, BlobConfig::default())
+                .await
+                .expect("should create blob store 1");
+
+            let store2 = TensorStore::new();
+            let blob_store2 = BlobStore::new(store2, BlobConfig::default())
+                .await
+                .expect("should create blob store 2");
+
+            let server = NeumannServer::new(router, config)
+                .with_blob_store(Arc::new(Mutex::new(blob_store1)))
+                .with_blob_store(Arc::new(Mutex::new(blob_store2)));
+
+            // The second blob store should be the one that's set
+            assert!(server.blob_store.is_some());
+        });
+    }
+
+    #[test]
+    fn test_server_builder_order_independence() {
+        // Test that builder methods can be called in any order
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default()
+            .with_rate_limit(RateLimitConfig::default())
+            .with_audit(AuditConfig::default());
+        let relational = Arc::new(RelationalEngine::new());
+        let vector = Arc::new(VectorEngine::new());
+        let graph = Arc::new(GraphEngine::new());
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        // Order 1: metrics first
+        let server1 = NeumannServer::new(Arc::clone(&router), config.clone())
+            .with_metrics(Arc::clone(&metrics))
+            .with_relational_engine(Arc::clone(&relational))
+            .with_vector_engine(Arc::clone(&vector))
+            .with_graph_engine(Arc::clone(&graph));
+
+        // Order 2: metrics last
+        let server2 = NeumannServer::new(router, config)
+            .with_relational_engine(relational)
+            .with_vector_engine(vector)
+            .with_graph_engine(graph)
+            .with_metrics(metrics);
+
+        // Both should have all components
+        assert!(server1.metrics.is_some());
+        assert!(server1.relational_engine.is_some());
+        assert!(server1.vector_engine.is_some());
+        assert!(server1.graph_engine.is_some());
+        assert!(server1.rate_limiter.is_some());
+        assert!(server1.audit_logger.is_some());
+
+        assert!(server2.metrics.is_some());
+        assert!(server2.relational_engine.is_some());
+        assert!(server2.vector_engine.is_some());
+        assert!(server2.graph_engine.is_some());
+        assert!(server2.rate_limiter.is_some());
+        assert!(server2.audit_logger.is_some());
+    }
 }

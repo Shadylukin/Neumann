@@ -1192,4 +1192,202 @@ mod tests {
         assert!(html.contains("age"));
         assert!(html.contains("30"));
     }
+
+    // ========== SearchParams tests ==========
+
+    #[test]
+    fn test_search_params_struct() {
+        let params = SearchParams {
+            vector: "1.0,2.0,3.0".to_string(),
+            k: 5,
+        };
+        assert_eq!(params.vector, "1.0,2.0,3.0");
+        assert_eq!(params.k, 5);
+    }
+
+    #[test]
+    fn test_search_params_empty_vector() {
+        let params = SearchParams {
+            vector: String::new(),
+            k: 10,
+        };
+        assert!(params.vector.is_empty());
+        assert_eq!(params.k, 10);
+    }
+
+    #[test]
+    fn test_search_params_debug() {
+        let params = SearchParams {
+            vector: "test".to_string(),
+            k: 20,
+        };
+        let debug_str = format!("{:?}", params);
+        assert!(debug_str.contains("SearchParams"));
+        assert!(debug_str.contains("test"));
+    }
+
+    // ========== default_k tests ==========
+
+    #[test]
+    fn test_default_k_value() {
+        assert_eq!(default_k(), 10);
+    }
+
+    // ========== format_tensor_value_short bytes tests ==========
+
+    #[test]
+    fn test_format_tensor_value_short_bytes_small() {
+        let value = TensorValue::Scalar(ScalarValue::Bytes(vec![1, 2, 3, 4, 5]));
+        let result = format_tensor_value_short(&value);
+        // Uses debug format for ScalarValue
+        assert!(result.contains("Bytes"));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_bytes_empty() {
+        let value = TensorValue::Scalar(ScalarValue::Bytes(vec![]));
+        let result = format_tensor_value_short(&value);
+        assert!(result.contains("Bytes"));
+    }
+
+    // ========== render_tensor_value additional tests ==========
+
+    #[test]
+    fn test_render_tensor_value_bool() {
+        let value = TensorValue::Scalar(ScalarValue::Bool(false));
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("false"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_float() {
+        let value = TensorValue::Scalar(ScalarValue::Float(3.14159));
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("3.14"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_null() {
+        let value = TensorValue::Scalar(ScalarValue::Null);
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("NULL") || html.contains("Null"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_bytes() {
+        let value = TensorValue::Scalar(ScalarValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        let html = render_tensor_value(&value).into_string();
+        // Bytes are rendered with debug format
+        assert!(html.contains("Bytes") || html.contains("222"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_pointers_empty() {
+        let value = TensorValue::Pointers(vec![]);
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("0 pointers"));
+    }
+
+    // ========== truncate_key edge cases ==========
+
+    #[test]
+    fn test_truncate_key_empty() {
+        assert_eq!(truncate_key("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_key_max_3() {
+        // Very small max length
+        assert_eq!(truncate_key("abcdef", 3), "...");
+    }
+
+    // ========== format_vector_compact edge cases ==========
+
+    #[test]
+    fn test_format_vector_compact_large() {
+        let vec: Vec<f32> = (0..100).map(|i| i as f32 * 0.1).collect();
+        let result = format_vector_compact(&vec);
+        assert!(result.starts_with('['));
+        assert!(result.ends_with(']'));
+        // Should have 100 elements
+        assert_eq!(result.matches(',').count(), 99);
+    }
+
+    // ========== render_payload_preview additional tests ==========
+
+    #[test]
+    fn test_render_payload_preview_many_items() {
+        let mut metadata = HashMap::new();
+        for i in 0..10 {
+            metadata.insert(
+                format!("key{}", i),
+                TensorValue::Scalar(ScalarValue::Int(i as i64)),
+            );
+        }
+        let html = render_payload_preview(&metadata).into_string();
+        assert!(!html.is_empty());
+    }
+
+    #[test]
+    fn test_render_payload_preview_nested_types() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "vector".to_string(),
+            TensorValue::Vector(vec![1.0, 2.0, 3.0]),
+        );
+        metadata.insert(
+            "pointer".to_string(),
+            TensorValue::Pointer("ref_id".to_string()),
+        );
+        let html = render_payload_preview(&metadata).into_string();
+        assert!(!html.is_empty());
+    }
+
+    // ========== render_payload_table additional tests ==========
+
+    #[test]
+    fn test_render_payload_table_multiple_keys() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "z_key".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(1)),
+        );
+        metadata.insert(
+            "a_key".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(2)),
+        );
+        metadata.insert(
+            "m_key".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(3)),
+        );
+        let html = render_payload_table(&metadata).into_string();
+        // All keys should be present
+        assert!(html.contains("a_key"));
+        assert!(html.contains("m_key"));
+        assert!(html.contains("z_key"));
+    }
+
+    #[test]
+    fn test_render_payload_table_various_types() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "str".to_string(),
+            TensorValue::Scalar(ScalarValue::String("text".to_string())),
+        );
+        metadata.insert("int".to_string(), TensorValue::Scalar(ScalarValue::Int(42)));
+        metadata.insert(
+            "float".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(3.14)),
+        );
+        metadata.insert(
+            "bool".to_string(),
+            TensorValue::Scalar(ScalarValue::Bool(true)),
+        );
+        metadata.insert("null".to_string(), TensorValue::Scalar(ScalarValue::Null));
+        let html = render_payload_table(&metadata).into_string();
+        assert!(html.contains("text"));
+        assert!(html.contains("42"));
+        assert!(html.contains("3.14"));
+        assert!(html.contains("true"));
+    }
 }

@@ -2272,4 +2272,305 @@ mod tests {
         let html = render_result(&result).0;
         assert!(html.contains("Showing 20 of 25 communities"));
     }
+
+    // ========== Additional tests for execute_algorithm coverage ==========
+
+    #[test]
+    fn test_execute_params_deserialization_all_fields() {
+        let json = r#"{
+            "algorithm": "variable_paths",
+            "from": "1",
+            "to": "10",
+            "min_hops": 1,
+            "max_hops": 5,
+            "max_paths": 100,
+            "direction": "both",
+            "top_k": 25,
+            "max_iterations": 200,
+            "tolerance": 0.0001,
+            "damping": 0.9,
+            "resolution": 2.0,
+            "max_passes": 15,
+            "min_k": 3,
+            "node_a": "100",
+            "node_b": "200",
+            "metric": "cosine",
+            "weight_property": "distance"
+        }"#;
+        let params: ExecuteParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.algorithm, "variable_paths");
+        assert_eq!(params.from, Some("1".to_string()));
+        assert_eq!(params.to, Some("10".to_string()));
+        assert_eq!(params.min_hops, Some(1));
+        assert_eq!(params.max_hops, Some(5));
+        assert_eq!(params.max_paths, Some(100));
+        assert_eq!(params.direction, Some("both".to_string()));
+        assert_eq!(params.top_k, Some(25));
+        assert_eq!(params.max_iterations, Some(200));
+        assert_eq!(params.tolerance, Some(0.0001));
+        assert_eq!(params.damping, Some(0.9));
+        assert_eq!(params.resolution, Some(2.0));
+        assert_eq!(params.max_passes, Some(15));
+        assert_eq!(params.min_k, Some(3));
+        assert_eq!(params.node_a, Some("100".to_string()));
+        assert_eq!(params.node_b, Some("200".to_string()));
+        assert_eq!(params.metric, Some("cosine".to_string()));
+        assert_eq!(params.weight_property, Some("distance".to_string()));
+    }
+
+    #[test]
+    fn test_result_data_serialization_all_variants() {
+        // Test Error variant
+        let error_data = ResultData::Error("test error".to_string());
+        let json = serde_json::to_string(&error_data).unwrap();
+        assert!(json.contains("test error"));
+
+        // Test Empty variant
+        let empty_data = ResultData::Empty;
+        let json = serde_json::to_string(&empty_data).unwrap();
+        assert!(json.contains("Empty") || json.contains("null"));
+
+        // Test Scores variant
+        let scores_data = ResultData::Scores(vec![(1, 0.5), (2, 0.3)]);
+        let json = serde_json::to_string(&scores_data).unwrap();
+        assert!(json.contains("0.5"));
+
+        // Test Similarity variant
+        let similarity_data = ResultData::Similarity(0.85);
+        let json = serde_json::to_string(&similarity_data).unwrap();
+        assert!(json.contains("0.85"));
+    }
+
+    #[test]
+    fn test_result_rendering_scores_with_many_results() {
+        let scores: Vec<(u64, f64)> = (0..50).map(|i| (i, 1.0 / (i as f64 + 1.0))).collect();
+        let result = AlgorithmResult {
+            algorithm: "pagerank".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 100,
+            data: ResultData::Scores(scores),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("NODE SCORES"));
+    }
+
+    #[test]
+    fn test_result_rendering_communities_without_modularity() {
+        let result = AlgorithmResult {
+            algorithm: "label_propagation".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 50,
+            data: ResultData::Communities(CommunityData {
+                count: 5,
+                modularity: None,
+                communities: vec![(1, 100), (2, 50)],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("COMMUNITY DETECTION"));
+        assert!(html.contains("COMMUNITIES:"));
+    }
+
+    #[test]
+    fn test_result_rendering_path_without_weight() {
+        let result = AlgorithmResult {
+            algorithm: "bfs".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 10,
+            data: ResultData::Path(PathData {
+                nodes: vec![1, 2, 3],
+                weight: None,
+                found: true,
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("PATH RESULT"));
+        assert!(html.contains("3 nodes"));
+    }
+
+    #[test]
+    fn test_result_rendering_structure_with_many_items() {
+        let items: Vec<(String, String)> = (0..100)
+            .map(|i| (format!("Item {}", i), format!("Value {}", i)))
+            .collect();
+        let result = AlgorithmResult {
+            algorithm: "scc".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 200,
+            data: ResultData::Structure(StructureData {
+                summary: HashMap::from([("count".to_string(), "100".to_string())]),
+                items,
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("STRUCTURE ANALYSIS"));
+    }
+
+    #[test]
+    fn test_algorithm_category_deserialization() {
+        let json = "\"centrality\"";
+        let category: AlgorithmCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(category, AlgorithmCategory::Centrality);
+
+        let json = "\"pathfinding\"";
+        let category: AlgorithmCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(category, AlgorithmCategory::Pathfinding);
+
+        let json = "\"structure\"";
+        let category: AlgorithmCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(category, AlgorithmCategory::Structure);
+
+        let json = "\"similarity\"";
+        let category: AlgorithmCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(category, AlgorithmCategory::Similarity);
+    }
+
+    #[test]
+    fn test_result_status_serialization_roundtrip() {
+        // Test that serialization produces expected JSON strings
+        let success = serde_json::to_string(&ResultStatus::Success).unwrap();
+        assert!(success.contains("success"));
+
+        let error = serde_json::to_string(&ResultStatus::Error).unwrap();
+        assert!(error.contains("error"));
+
+        let no_data = serde_json::to_string(&ResultStatus::NoData).unwrap();
+        assert!(no_data.contains("no_data"));
+    }
+
+    #[test]
+    fn test_community_data_serialization_roundtrip() {
+        let data = CommunityData {
+            count: 5,
+            modularity: Some(0.7),
+            communities: vec![(1, 100), (2, 50)],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"count\":5"));
+        assert!(json.contains("0.7"));
+        assert!(json.contains("[1,100]"));
+    }
+
+    #[test]
+    fn test_path_data_serialization_roundtrip() {
+        let data = PathData {
+            nodes: vec![1, 2, 3],
+            weight: Some(5.5),
+            found: true,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("[1,2,3]"));
+        assert!(json.contains("5.5"));
+        assert!(json.contains("true"));
+    }
+
+    #[test]
+    fn test_structure_data_serialization_roundtrip() {
+        let data = StructureData {
+            summary: HashMap::from([("key".to_string(), "value".to_string())]),
+            items: vec![("label".to_string(), "desc".to_string())],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("key"));
+        assert!(json.contains("value"));
+        assert!(json.contains("label"));
+    }
+
+    #[test]
+    fn test_algorithm_result_serialization_roundtrip() {
+        let result = AlgorithmResult {
+            algorithm: "pagerank".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 100,
+            data: ResultData::Scores(vec![(1, 0.5), (2, 0.3)]),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("pagerank"));
+        assert!(json.contains("success"));
+        assert!(json.contains("100"));
+    }
+
+    #[test]
+    fn test_render_algorithm_card_all_categories() {
+        for algo in ALGORITHMS {
+            let card = render_algorithm_card(algo);
+            let html = card.0;
+            assert!(html.contains(algo.name));
+            assert!(html.contains("CONFIGURE"));
+            // Verify category label is present
+            assert!(html.contains(algo.category.label()));
+        }
+    }
+
+    #[test]
+    fn test_algorithms_have_valid_categories() {
+        for algo in ALGORITHMS {
+            // Each algorithm should have a valid category with a label
+            let label = algo.category.label();
+            assert!(!label.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_algorithms_params_are_valid() {
+        for algo in ALGORITHMS {
+            // Each algorithm should have a valid params list (can be empty)
+            for param in algo.params {
+                assert!(!param.name.is_empty());
+                assert!(!param.label.is_empty());
+                assert!(!param.description.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_dashboard_params_category_filter() {
+        // Test filtering by centrality
+        let params: DashboardParams = serde_json::from_str(r#"{"category": "community"}"#).unwrap();
+        assert_eq!(params.category.as_deref(), Some("community"));
+
+        // Test filtering by pathfinding
+        let params: DashboardParams =
+            serde_json::from_str(r#"{"category": "pathfinding"}"#).unwrap();
+        assert_eq!(params.category.as_deref(), Some("pathfinding"));
+    }
+
+    #[test]
+    fn test_result_rendering_structure_empty_summary() {
+        let result = AlgorithmResult {
+            algorithm: "test".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 50,
+            data: ResultData::Structure(StructureData {
+                summary: HashMap::new(),
+                items: vec![("Item 1".to_string(), "Desc 1".to_string())],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("STRUCTURE ANALYSIS"));
+    }
+
+    #[test]
+    fn test_result_rendering_similarity_boundary_values() {
+        // Test similarity of 0
+        let result = AlgorithmResult {
+            algorithm: "similarity".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 10,
+            data: ResultData::Similarity(0.0),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("SIMILARITY SCORE"));
+        assert!(html.contains("0.000000"));
+
+        // Test similarity of 1
+        let result = AlgorithmResult {
+            algorithm: "similarity".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 10,
+            data: ResultData::Similarity(1.0),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("1.000000"));
+    }
 }

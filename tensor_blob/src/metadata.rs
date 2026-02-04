@@ -19,45 +19,54 @@ pub struct PutOptions {
 }
 
 impl PutOptions {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
         self.content_type = Some(content_type.into());
         self
     }
 
+    #[must_use]
     pub fn with_created_by(mut self, creator: impl Into<String>) -> Self {
         self.created_by = Some(creator.into());
         self
     }
 
+    #[must_use]
     pub fn with_link(mut self, entity: impl Into<String>) -> Self {
         self.linked_to.push(entity.into());
         self
     }
 
+    #[must_use]
     pub fn with_links(mut self, entities: Vec<String>) -> Self {
         self.linked_to.extend(entities);
         self
     }
 
+    #[must_use]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
         self
     }
 
+    #[must_use]
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags.extend(tags);
         self
     }
 
+    #[must_use]
     pub fn with_meta(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }
 
+    #[must_use]
     pub fn with_embedding(mut self, embedding: Vec<f32>, model: impl Into<String>) -> Self {
         self.embedding = Some((embedding, model.into()));
         self
@@ -111,25 +120,30 @@ pub struct MetadataUpdates {
 }
 
 impl MetadataUpdates {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
         self.filename = Some(filename.into());
         self
     }
 
+    #[must_use]
     pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
         self.content_type = Some(content_type.into());
         self
     }
 
+    #[must_use]
     pub fn set_meta(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.custom.insert(key.into(), Some(value.into()));
         self
     }
 
+    #[must_use]
     pub fn delete_meta(mut self, key: impl Into<String>) -> Self {
         self.custom.insert(key.into(), None);
         self
@@ -174,6 +188,7 @@ pub struct GcStats {
 }
 
 impl GcStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

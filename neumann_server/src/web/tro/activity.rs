@@ -336,4 +336,202 @@ mod tests {
         assert_eq!(decoded.op_type, OpType::VectorSearch);
         assert!((decoded.position - 0.75).abs() < f32::EPSILON);
     }
+
+    // ========== Additional OpType tests ==========
+
+    #[test]
+    fn test_op_type_all_intensities() {
+        assert!((OpType::Get.base_intensity() - 0.3).abs() < f32::EPSILON);
+        assert!((OpType::Put.base_intensity() - 0.6).abs() < f32::EPSILON);
+        assert!((OpType::Delete.base_intensity() - 0.8).abs() < f32::EPSILON);
+        assert!((OpType::Scan.base_intensity() - 0.4).abs() < f32::EPSILON);
+        assert!((OpType::GraphTraversal.base_intensity() - 0.5).abs() < f32::EPSILON);
+        assert!((OpType::VectorSearch.base_intensity() - 0.5).abs() < f32::EPSILON);
+        assert!((OpType::Batch.base_intensity() - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_op_type_all_spread_radii() {
+        assert_eq!(OpType::Get.spread_radius(), 10);
+        assert_eq!(OpType::Put.spread_radius(), 15);
+        assert_eq!(OpType::Delete.spread_radius(), 25);
+        assert_eq!(OpType::Scan.spread_radius(), 40);
+        assert_eq!(OpType::GraphTraversal.spread_radius(), 35);
+        assert_eq!(OpType::VectorSearch.spread_radius(), 30);
+        assert_eq!(OpType::Error.spread_radius(), 60);
+        assert_eq!(OpType::Batch.spread_radius(), 50);
+    }
+
+    #[test]
+    fn test_op_type_all_particle_counts() {
+        assert_eq!(OpType::Get.particle_count(), 3);
+        assert_eq!(OpType::Put.particle_count(), 5);
+        assert_eq!(OpType::Delete.particle_count(), 8);
+        assert_eq!(OpType::Scan.particle_count(), 10);
+        assert_eq!(OpType::GraphTraversal.particle_count(), 12);
+        assert_eq!(OpType::VectorSearch.particle_count(), 8);
+        assert_eq!(OpType::Error.particle_count(), 20);
+        assert_eq!(OpType::Batch.particle_count(), 15);
+    }
+
+    #[test]
+    fn test_op_type_all_css_classes() {
+        assert_eq!(OpType::Put.css_class(), "tro-pulse-put");
+        assert_eq!(OpType::Delete.css_class(), "tro-pulse-delete");
+        assert_eq!(OpType::Scan.css_class(), "tro-pulse-scan");
+        assert_eq!(OpType::GraphTraversal.css_class(), "tro-pulse-graph");
+        assert_eq!(OpType::VectorSearch.css_class(), "tro-pulse-vector");
+        assert_eq!(OpType::Batch.css_class(), "tro-pulse-batch");
+    }
+
+    #[test]
+    fn test_op_type_all_serialization() {
+        for op in [
+            OpType::Get,
+            OpType::Put,
+            OpType::Delete,
+            OpType::Scan,
+            OpType::GraphTraversal,
+            OpType::VectorSearch,
+            OpType::Error,
+            OpType::Batch,
+        ] {
+            let json = serde_json::to_string(&op).expect("serialization failed");
+            let decoded: OpType = serde_json::from_str(&json).expect("deserialization failed");
+            assert_eq!(decoded, op);
+        }
+    }
+
+    #[test]
+    fn test_op_type_debug() {
+        let op = OpType::GraphTraversal;
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("GraphTraversal"));
+    }
+
+    #[test]
+    fn test_op_type_clone() {
+        let op = OpType::VectorSearch;
+        let cloned = op;
+        assert_eq!(cloned, op);
+    }
+
+    // ========== Additional ActivityPulse tests ==========
+
+    #[test]
+    fn test_activity_pulse_all_op_types() {
+        for op_type in [
+            OpType::Get,
+            OpType::Put,
+            OpType::Delete,
+            OpType::Scan,
+            OpType::GraphTraversal,
+            OpType::VectorSearch,
+            OpType::Error,
+            OpType::Batch,
+        ] {
+            let pulse = ActivityPulse::new(op_type, 0.5, 1000);
+            assert_eq!(pulse.op_type, op_type);
+            assert!((pulse.intensity - op_type.base_intensity()).abs() < f32::EPSILON);
+            assert_eq!(pulse.radius, op_type.spread_radius());
+            assert_eq!(pulse.particles, op_type.particle_count());
+        }
+    }
+
+    #[test]
+    fn test_activity_pulse_with_intensity_clamped() {
+        let pulse = ActivityPulse::new(OpType::Get, 0.5, 0).with_intensity(1.5);
+        assert!((pulse.intensity - 1.0).abs() < f32::EPSILON);
+
+        let pulse2 = ActivityPulse::new(OpType::Get, 0.5, 0).with_intensity(-0.5);
+        assert!(pulse2.intensity.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_activity_pulse_clone() {
+        let pulse = ActivityPulse::new(OpType::Put, 0.3, 12345);
+        let cloned = pulse.clone();
+        assert_eq!(cloned.op_type, OpType::Put);
+        assert!((cloned.position - 0.3).abs() < f32::EPSILON);
+        assert_eq!(cloned.timestamp, 12345);
+    }
+
+    #[test]
+    fn test_activity_pulse_debug() {
+        let pulse = ActivityPulse::new(OpType::Error, 0.9, 0);
+        let debug_str = format!("{:?}", pulse);
+        assert!(debug_str.contains("ActivityPulse"));
+        assert!(debug_str.contains("Error"));
+    }
+
+    // ========== Additional TroMessage tests ==========
+
+    #[test]
+    fn test_tro_message_state_sync() {
+        let state = super::super::TroState::new(10);
+        let msg = TroMessage::StateSync(state);
+        let json = msg.to_json();
+        assert!(json.contains("state_sync"));
+        assert!(json.contains("pheromone"));
+    }
+
+    #[test]
+    fn test_tro_message_pause() {
+        let msg = TroMessage::Pause;
+        let json = msg.to_json();
+        assert!(json.contains("pause"));
+    }
+
+    #[test]
+    fn test_tro_message_resume() {
+        let msg = TroMessage::Resume;
+        let json = msg.to_json();
+        assert!(json.contains("resume"));
+    }
+
+    #[test]
+    fn test_tro_message_configure() {
+        let config = super::super::TroConfig::default();
+        let msg = TroMessage::Configure(config);
+        let json = msg.to_json();
+        assert!(json.contains("configure"));
+        assert!(json.contains("enabled"));
+    }
+
+    #[test]
+    fn test_tro_message_clone() {
+        let msg = TroMessage::glitch(100);
+        let cloned = msg.clone();
+        if let TroMessage::Glitch { duration_ms } = cloned {
+            assert_eq!(duration_ms, 100);
+        } else {
+            panic!("Expected Glitch variant");
+        }
+    }
+
+    #[test]
+    fn test_tro_message_debug() {
+        let msg = TroMessage::Pause;
+        let debug_str = format!("{:?}", msg);
+        assert!(debug_str.contains("Pause"));
+    }
+
+    #[test]
+    fn test_tro_message_all_variants_serialization() {
+        // Test each variant can be serialized
+        let messages = vec![
+            TroMessage::pulse(OpType::Get, 0.5, 1000),
+            TroMessage::glitch(200),
+            TroMessage::set_palette(super::super::Palette::Rust),
+            TroMessage::set_crt_effects(false),
+            TroMessage::Pause,
+            TroMessage::Resume,
+        ];
+
+        for msg in messages {
+            let json = msg.to_json();
+            assert!(!json.is_empty());
+            assert!(json.starts_with('{'));
+        }
+    }
 }

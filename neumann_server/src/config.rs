@@ -1579,4 +1579,149 @@ mod tests {
             assert!(ENV_MEMORY_BUDGET_MAX_BYTES.starts_with("NEUMANN_"));
         }
     }
+
+    // ========== StreamingConfig tests ==========
+
+    #[test]
+    fn test_streaming_config_default() {
+        let config = StreamingConfig::default();
+        assert_eq!(config.channel_capacity, 32);
+        assert_eq!(config.max_stream_items, 10_000);
+        assert_eq!(config.slow_consumer_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_streaming_config_new() {
+        let config = StreamingConfig::new();
+        assert_eq!(config.channel_capacity, 32);
+        assert_eq!(config.max_stream_items, 10_000);
+    }
+
+    #[test]
+    fn test_streaming_config_with_channel_capacity() {
+        let config = StreamingConfig::new().with_channel_capacity(64);
+        assert_eq!(config.channel_capacity, 64);
+    }
+
+    #[test]
+    fn test_streaming_config_with_max_stream_items() {
+        let config = StreamingConfig::new().with_max_stream_items(5000);
+        assert_eq!(config.max_stream_items, 5000);
+    }
+
+    #[test]
+    fn test_streaming_config_with_slow_consumer_timeout() {
+        let config = StreamingConfig::new().with_slow_consumer_timeout(Duration::from_secs(60));
+        assert_eq!(config.slow_consumer_timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_streaming_config_builder_chain() {
+        let config = StreamingConfig::new()
+            .with_channel_capacity(128)
+            .with_max_stream_items(20_000)
+            .with_slow_consumer_timeout(Duration::from_secs(120));
+
+        assert_eq!(config.channel_capacity, 128);
+        assert_eq!(config.max_stream_items, 20_000);
+        assert_eq!(config.slow_consumer_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_server_config_with_streaming() {
+        let streaming = StreamingConfig::new()
+            .with_channel_capacity(64)
+            .with_max_stream_items(5000);
+
+        let config = ServerConfig::new().with_streaming(streaming);
+
+        assert!(config.streaming.is_some());
+        let s = config.streaming.as_ref().unwrap();
+        assert_eq!(s.channel_capacity, 64);
+        assert_eq!(s.max_stream_items, 5000);
+    }
+
+    #[test]
+    fn test_server_config_with_rest_addr() {
+        let config = ServerConfig::new().with_rest_addr("0.0.0.0:8080".parse().unwrap());
+        assert!(config.rest_addr.is_some());
+        assert_eq!(config.rest_addr.unwrap().port(), 8080);
+    }
+
+    #[test]
+    fn test_server_config_with_web_addr() {
+        let config = ServerConfig::new().with_web_addr("0.0.0.0:9000".parse().unwrap());
+        assert!(config.web_addr.is_some());
+        assert_eq!(config.web_addr.unwrap().port(), 9000);
+    }
+
+    #[test]
+    fn test_server_config_with_max_upload_size() {
+        let config = ServerConfig::new().with_max_upload_size(1024 * 1024 * 1024);
+        assert_eq!(config.max_upload_size, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_server_config_with_stream_channel_capacity() {
+        let config = ServerConfig::new().with_stream_channel_capacity(64);
+        assert_eq!(config.stream_channel_capacity, 64);
+    }
+
+    #[test]
+    fn test_server_config_validate_stream_channel_capacity_zero() {
+        let config = ServerConfig::new().with_stream_channel_capacity(0);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_tls_config_missing_key_file() {
+        use tempfile::NamedTempFile;
+
+        let cert_file = NamedTempFile::new().unwrap();
+
+        let tls = TlsConfig::new(
+            cert_file.path().to_path_buf(),
+            PathBuf::from("/nonexistent/key.pem"),
+        );
+        assert!(tls.validate().is_err());
+    }
+
+    #[test]
+    fn test_tls_config_missing_ca_file() {
+        use tempfile::NamedTempFile;
+
+        let cert_file = NamedTempFile::new().unwrap();
+        let key_file = NamedTempFile::new().unwrap();
+
+        let tls = TlsConfig::new(
+            cert_file.path().to_path_buf(),
+            key_file.path().to_path_buf(),
+        )
+        .with_ca_cert(PathBuf::from("/nonexistent/ca.pem"));
+        assert!(tls.validate().is_err());
+    }
+
+    #[test]
+    fn test_api_key_empty() {
+        let key = ApiKey::new(String::new(), "user:test".to_string());
+        assert!(key.validate().is_err());
+    }
+
+    #[test]
+    fn test_streaming_config_debug() {
+        let config = StreamingConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("StreamingConfig"));
+        assert!(debug_str.contains("channel_capacity"));
+    }
+
+    #[test]
+    fn test_streaming_config_clone() {
+        let config = StreamingConfig::new()
+            .with_channel_capacity(100)
+            .with_max_stream_items(500);
+        let cloned = config.clone();
+        assert_eq!(cloned.channel_capacity, 100);
+        assert_eq!(cloned.max_stream_items, 500);
+    }
 }

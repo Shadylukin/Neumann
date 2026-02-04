@@ -32,16 +32,6 @@
 //! let data = store.get(&artifact_id).await?;
 //! ```
 
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-
 mod chunker;
 mod config;
 mod error;
@@ -524,13 +514,21 @@ impl BlobStore {
     // === Integrity ===
 
     /// Verify artifact integrity.
-    pub async fn verify(&self, artifact_id: &str) -> Result<bool> {
-        integrity::verify_artifact(&self.store, artifact_id).await
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact or its chunks are not found.
+    pub fn verify(&self, artifact_id: &str) -> Result<bool> {
+        integrity::verify_artifact(&self.store, artifact_id)
     }
 
     /// Repair broken references.
-    pub async fn repair(&self) -> Result<RepairStats> {
-        integrity::repair(&self.store).await
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if store operations fail.
+    pub fn repair(&self) -> Result<RepairStats> {
+        integrity::repair(&self.store)
     }
 
     // === GC ===
@@ -731,7 +729,7 @@ mod tests {
             .await
             .unwrap();
 
-        let valid = blob_store.verify(&artifact_id).await.unwrap();
+        let valid = blob_store.verify(&artifact_id).unwrap();
         assert!(valid);
     }
 

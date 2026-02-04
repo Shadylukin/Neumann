@@ -13,12 +13,14 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    #[must_use]
     pub fn new(data: Vec<u8>) -> Self {
         let hash = compute_hash(&data);
         let size = data.len();
         Self { hash, data, size }
     }
 
+    #[must_use]
     pub fn key(&self) -> String {
         format!("_blob:chunk:{}", self.hash)
     }
@@ -30,11 +32,13 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    pub fn new(chunk_size: usize) -> Self {
+    #[must_use]
+    pub const fn new(chunk_size: usize) -> Self {
         Self { chunk_size }
     }
 
-    pub fn chunk_size(&self) -> usize {
+    #[must_use]
+    pub const fn chunk_size(&self) -> usize {
         self.chunk_size
     }
 
@@ -51,7 +55,8 @@ impl Chunker {
     }
 
     /// Count how many chunks data would produce without allocating.
-    pub fn chunk_count(&self, data_len: usize) -> usize {
+    #[must_use]
+    pub const fn chunk_count(&self, data_len: usize) -> usize {
         if data_len == 0 {
             0
         } else {
@@ -61,6 +66,7 @@ impl Chunker {
 }
 
 /// Compute SHA-256 hash of data.
+#[must_use]
 pub fn compute_hash(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -69,6 +75,7 @@ pub fn compute_hash(data: &[u8]) -> String {
 }
 
 /// Compute SHA-256 hash of multiple data segments.
+#[must_use]
 pub fn compute_hash_streaming<'a>(segments: impl Iterator<Item = &'a [u8]>) -> String {
     let mut hasher = Sha256::new();
     for segment in segments {
@@ -90,6 +97,7 @@ impl Default for StreamingHasher {
 }
 
 impl StreamingHasher {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hasher: Sha256::new(),
@@ -100,6 +108,7 @@ impl StreamingHasher {
         self.hasher.update(data);
     }
 
+    #[must_use]
     pub fn finalize(self) -> String {
         let result = self.hasher.finalize();
         format!("sha256:{result:x}")

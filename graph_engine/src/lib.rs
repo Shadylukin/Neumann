@@ -444,7 +444,7 @@ pub struct BatchDeleteResult {
 
 impl BatchDeleteResult {
     #[must_use]
-    pub fn new(deleted_ids: Vec<u64>) -> Self {
+    pub const fn new(deleted_ids: Vec<u64>) -> Self {
         let count = deleted_ids.len();
         Self {
             deleted_ids,
@@ -454,7 +454,7 @@ impl BatchDeleteResult {
     }
 
     #[must_use]
-    pub fn with_failures(deleted_ids: Vec<u64>, failed: Vec<GraphBatchItemError>) -> Self {
+    pub const fn with_failures(deleted_ids: Vec<u64>, failed: Vec<GraphBatchItemError>) -> Self {
         let count = deleted_ids.len();
         Self {
             deleted_ids,
@@ -464,7 +464,7 @@ impl BatchDeleteResult {
     }
 
     #[must_use]
-    pub fn has_failures(&self) -> bool {
+    pub const fn has_failures(&self) -> bool {
         !self.failed.is_empty()
     }
 }

@@ -435,4 +435,371 @@ mod tests {
         let decoded: UserProgress = serde_json::from_str(&json).expect("deserialization failed");
         assert_eq!(decoded.xp_total, 550); // 500 + 50 from achievement
     }
+
+    // ========== is_consecutive_month tests ==========
+
+    #[test]
+    fn test_streak_consecutive_month_rollover() {
+        let mut progress = UserProgress::new();
+        // January 31
+        progress.update_streak(20240131);
+        // February 1 (should continue streak)
+        progress.update_streak(20240201);
+        assert_eq!(progress.streak_current, 2);
+    }
+
+    #[test]
+    fn test_streak_year_rollover() {
+        let mut progress = UserProgress::new();
+        // December 31
+        progress.update_streak(20231231);
+        // January 1 (should continue streak)
+        progress.update_streak(20240101);
+        assert_eq!(progress.streak_current, 2);
+    }
+
+    #[test]
+    fn test_streak_not_consecutive_month() {
+        let mut progress = UserProgress::new();
+        // January 15
+        progress.update_streak(20240115);
+        // February 1 (not consecutive, skipped days)
+        progress.update_streak(20240201);
+        assert_eq!(progress.streak_current, 1);
+    }
+
+    #[test]
+    fn test_streak_not_first_of_month() {
+        let mut progress = UserProgress::new();
+        // January 30
+        progress.update_streak(20240130);
+        // February 2 (not the 1st)
+        progress.update_streak(20240202);
+        assert_eq!(progress.streak_current, 1);
+    }
+
+    // ========== daily_goal_progress tests ==========
+
+    #[test]
+    fn test_daily_goal_progress_empty() {
+        let progress = UserProgress::new();
+        assert_eq!(progress.daily_goal_progress(), 0.0);
+    }
+
+    #[test]
+    fn test_daily_goal_progress_partial() {
+        let mut progress = UserProgress::new();
+        progress.reset_daily_goals();
+
+        // Complete one goal
+        for _ in 0..10 {
+            progress.daily_goals[0].increment();
+        }
+
+        let pct = progress.daily_goal_progress();
+        assert!(pct > 30.0 && pct < 40.0); // ~33%
+    }
+
+    #[test]
+    fn test_daily_goal_progress_all_complete() {
+        let mut progress = UserProgress::new();
+        progress.reset_daily_goals();
+
+        // Complete all goals
+        for goal in &mut progress.daily_goals {
+            for _ in 0..goal.target {
+                goal.increment();
+            }
+        }
+
+        assert_eq!(progress.daily_goal_progress(), 100.0);
+    }
+
+    // ========== level_progress tests ==========
+
+    #[test]
+    fn test_level_progress_method() {
+        let mut progress = UserProgress::new();
+        progress.award_xp(150);
+
+        let lp = progress.level_progress();
+        assert_eq!(lp.level, 2);
+        assert_eq!(lp.current_xp, 150);
+    }
+
+    // ========== achievement_count tests ==========
+
+    #[test]
+    fn test_achievement_count() {
+        let mut progress = UserProgress::new();
+        assert_eq!(progress.achievement_count(), 0);
+
+        progress.unlock_achievement("test1", AchievementTier::Bronze);
+        assert_eq!(progress.achievement_count(), 1);
+
+        progress.unlock_achievement("test2", AchievementTier::Silver);
+        assert_eq!(progress.achievement_count(), 2);
+    }
+
+    // ========== UserStats additional tests ==========
+
+    #[test]
+    fn test_user_stats_record_algorithm() {
+        let mut stats = UserStats::default();
+        stats.record_algorithm();
+        assert_eq!(stats.algorithms_run, 1);
+
+        stats.record_algorithm();
+        assert_eq!(stats.algorithms_run, 2);
+    }
+
+    #[test]
+    fn test_user_stats_record_vector_search() {
+        let mut stats = UserStats::default();
+        stats.record_vector_search();
+        assert_eq!(stats.vector_searches, 1);
+    }
+
+    #[test]
+    fn test_user_stats_record_graph_traversal() {
+        let mut stats = UserStats::default();
+        stats.record_graph_traversal();
+        assert_eq!(stats.graph_traversals, 1);
+    }
+
+    #[test]
+    fn test_user_stats_record_path_found() {
+        let mut stats = UserStats::default();
+        stats.record_path_found();
+        assert_eq!(stats.paths_found, 1);
+    }
+
+    #[test]
+    fn test_user_stats_record_community_detected() {
+        let mut stats = UserStats::default();
+        stats.record_community_detected();
+        assert_eq!(stats.communities_detected, 1);
+    }
+
+    #[test]
+    fn test_user_stats_serialization() {
+        let mut stats = UserStats::default();
+        stats.record_query(5.0);
+        stats.record_algorithm();
+
+        let json = serde_json::to_string(&stats).expect("serialization failed");
+        assert!(json.contains("queries_total"));
+        assert!(json.contains("algorithms_run"));
+    }
+
+    // ========== DailyGoal additional tests ==========
+
+    #[test]
+    fn test_daily_goal_progress_overflow() {
+        let mut goal = DailyGoal::new(GoalType::Queries, 5);
+        for _ in 0..10 {
+            goal.increment();
+        }
+        // Progress should cap at 100%
+        assert_eq!(goal.progress_percent(), 100.0);
+    }
+
+    #[test]
+    fn test_goal_type_fast_queries() {
+        assert_eq!(GoalType::FastQueries.display_name(), "Fast Queries");
+    }
+
+    #[test]
+    fn test_goal_type_serialization() {
+        let goal_type = GoalType::Algorithms;
+        let json = serde_json::to_string(&goal_type).expect("serialization failed");
+        assert!(json.contains("algorithms"));
+    }
+
+    #[test]
+    fn test_daily_goal_serialization() {
+        let goal = DailyGoal::new(GoalType::Queries, 10);
+        let json = serde_json::to_string(&goal).expect("serialization failed");
+        assert!(json.contains("goal_type"));
+        assert!(json.contains("target"));
+    }
+
+    // ========== Additional GoalType tests ==========
+
+    #[test]
+    fn test_goal_type_vector_searches() {
+        assert_eq!(GoalType::VectorSearches.display_name(), "Vector Searches");
+    }
+
+    #[test]
+    fn test_goal_type_paths_found() {
+        assert_eq!(GoalType::PathsFound.display_name(), "Find Paths");
+    }
+
+    #[test]
+    fn test_goal_type_all_serialization() {
+        for goal_type in [
+            GoalType::Queries,
+            GoalType::Algorithms,
+            GoalType::FastQueries,
+            GoalType::VectorSearches,
+            GoalType::PathsFound,
+        ] {
+            let json = serde_json::to_string(&goal_type).expect("serialization failed");
+            let decoded: GoalType = serde_json::from_str(&json).expect("deserialization failed");
+            assert_eq!(decoded, goal_type);
+        }
+    }
+
+    #[test]
+    fn test_goal_type_debug() {
+        let goal_type = GoalType::Algorithms;
+        let debug_str = format!("{:?}", goal_type);
+        assert!(debug_str.contains("Algorithms"));
+    }
+
+    // ========== Additional DailyGoal tests ==========
+
+    #[test]
+    fn test_daily_goal_zero_target() {
+        let goal = DailyGoal::new(GoalType::Queries, 0);
+        assert!(goal.is_complete());
+        assert_eq!(goal.progress_percent(), 100.0);
+    }
+
+    #[test]
+    fn test_daily_goal_increment_saturating() {
+        let mut goal = DailyGoal::new(GoalType::Queries, u32::MAX);
+        goal.current = u32::MAX - 1;
+        goal.increment();
+        assert_eq!(goal.current, u32::MAX);
+        goal.increment(); // Should not overflow
+        assert_eq!(goal.current, u32::MAX);
+    }
+
+    #[test]
+    fn test_daily_goal_clone() {
+        let goal = DailyGoal::new(GoalType::FastQueries, 20);
+        let cloned = goal.clone();
+        assert_eq!(cloned.goal_type, GoalType::FastQueries);
+        assert_eq!(cloned.target, 20);
+    }
+
+    #[test]
+    fn test_daily_goal_debug() {
+        let goal = DailyGoal::new(GoalType::Queries, 10);
+        let debug_str = format!("{:?}", goal);
+        assert!(debug_str.contains("DailyGoal"));
+        assert!(debug_str.contains("Queries"));
+    }
+
+    #[test]
+    fn test_daily_goal_deserialization() {
+        let goal = DailyGoal::new(GoalType::Algorithms, 5);
+        let json = serde_json::to_string(&goal).expect("serialization failed");
+        let decoded: DailyGoal = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded.goal_type, GoalType::Algorithms);
+        assert_eq!(decoded.target, 5);
+    }
+
+    // ========== Additional UserStats tests ==========
+
+    #[test]
+    fn test_user_stats_record_query_slow() {
+        let mut stats = UserStats::default();
+        stats.record_query(100.0); // Slow query
+        assert_eq!(stats.queries_total, 1);
+        assert_eq!(stats.queries_fast, 0);
+        assert_eq!(stats.queries_lightning, 0);
+    }
+
+    #[test]
+    fn test_user_stats_record_query_boundary() {
+        let mut stats = UserStats::default();
+        stats.record_query(10.0); // Exactly at boundary
+        assert_eq!(stats.queries_fast, 0); // < 10.0, not <= 10.0
+
+        stats.record_query(1.0); // Exactly at lightning boundary
+        assert_eq!(stats.queries_lightning, 0); // < 1.0, not <= 1.0
+    }
+
+    #[test]
+    fn test_user_stats_clone() {
+        let mut stats = UserStats::default();
+        stats.record_query(0.5);
+        stats.record_algorithm();
+        let cloned = stats.clone();
+        assert_eq!(cloned.queries_total, 1);
+        assert_eq!(cloned.algorithms_run, 1);
+    }
+
+    #[test]
+    fn test_user_stats_debug() {
+        let stats = UserStats::default();
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("UserStats"));
+        assert!(debug_str.contains("queries_total"));
+    }
+
+    #[test]
+    fn test_user_stats_deserialization() {
+        let mut stats = UserStats::default();
+        stats.record_query(5.0);
+        let json = serde_json::to_string(&stats).expect("serialization failed");
+        let decoded: UserStats = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded.queries_total, 1);
+    }
+
+    // ========== Additional UserProgress tests ==========
+
+    #[test]
+    fn test_user_progress_award_xp_overflow() {
+        let mut progress = UserProgress::new();
+        progress.xp_total = u64::MAX - 10;
+        progress.award_xp(20); // Should saturate
+        assert_eq!(progress.xp_total, u64::MAX);
+    }
+
+    #[test]
+    fn test_user_progress_clone() {
+        let mut progress = UserProgress::new();
+        progress.award_xp(100);
+        progress.unlock_achievement("test", AchievementTier::Bronze);
+        let cloned = progress.clone();
+        assert_eq!(cloned.xp_total, progress.xp_total);
+        assert!(cloned.has_achievement("test"));
+    }
+
+    #[test]
+    fn test_user_progress_debug() {
+        let progress = UserProgress::new();
+        let debug_str = format!("{:?}", progress);
+        assert!(debug_str.contains("UserProgress"));
+        assert!(debug_str.contains("xp_total"));
+    }
+
+    #[test]
+    fn test_user_progress_deserialization() {
+        let mut progress = UserProgress::new();
+        progress.award_xp(500);
+        let json = serde_json::to_string(&progress).expect("serialization failed");
+        let decoded: UserProgress = serde_json::from_str(&json).expect("deserialization failed");
+        assert_eq!(decoded.xp_total, 500);
+    }
+
+    #[test]
+    fn test_is_consecutive_month_not_first() {
+        let mut progress = UserProgress::new();
+        progress.last_activity_date = 20240130; // Jan 30
+                                                // Not first of month check
+        assert!(!progress.is_consecutive_month(20240202)); // Feb 2
+    }
+
+    #[test]
+    fn test_is_consecutive_month_different_year_non_december() {
+        let mut progress = UserProgress::new();
+        progress.last_activity_date = 20231130; // Nov 30, 2023
+                                                // Different year but not Dec->Jan
+        assert!(!progress.is_consecutive_month(20240101)); // Jan 1, 2024
+    }
 }

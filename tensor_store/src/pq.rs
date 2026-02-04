@@ -100,7 +100,7 @@ impl PQConfig {
 
     /// Set the k-means configuration.
     #[must_use]
-    pub fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
+    pub const fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
         self.kmeans_config = config;
         self
     }
