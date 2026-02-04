@@ -42,6 +42,7 @@ dev = [
     "grpc-stubs>=1.53.0.5",
     "pandas-stubs>=2.0.0",
     "numpy>=1.24.0",  # numpy includes inline types
+    "pandas>=2.0.0",  # pandas for integration tests
 ]
 pandas = [
     "pandas>=2.0.0",
