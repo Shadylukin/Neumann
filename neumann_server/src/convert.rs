@@ -2314,7 +2314,10 @@ mod tests {
                 id: i,
                 values: vec![
                     ("id".to_string(), RelationalValue::Int(i as i64)),
-                    ("name".to_string(), RelationalValue::String(format!("user{i}"))),
+                    (
+                        "name".to_string(),
+                        RelationalValue::String(format!("user{i}")),
+                    ),
                 ],
             });
         }
