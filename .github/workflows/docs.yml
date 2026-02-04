@@ -134,7 +134,7 @@ jobs:
 
       - name: Run benchmarks (quick mode)
         run: |
-          cargo bench --workspace -- --noplot
+          cargo bench --workspace --bench '*' -- --noplot
 
       - name: Generate benchmark summary
         run: |
