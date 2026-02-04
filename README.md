@@ -17,7 +17,7 @@ One query. Relational filter + vector similarity + graph traversal.
 
 [![CI](https://github.com/Shadylukin/Neumann/actions/workflows/ci.yml/badge.svg)](https://github.com/Shadylukin/Neumann/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/Shadylukin/Neumann/graph/badge.svg)](https://codecov.io/gh/Shadylukin/Neumann)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![License](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Discord](https://img.shields.io/badge/Discord-Join-7289da.svg)](https://discord.gg/uN3KbAyKvw)
 [![Sponsor](https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff)](https://github.com/sponsors/Shadylukin)
