@@ -345,6 +345,109 @@ describe('NeumannClient', () => {
       await expect(client.execute('SELECT * FROM users')).rejects.toThrow();
       client.close();
     });
+
+    it('should handle pageRank response with optional fields', async () => {
+      mockGrpcClient.Execute.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          callback(null, {
+            pageRank: {
+              items: [{ nodeId: 1, score: 0.5 }],
+              iterations: 10,
+              convergence: 0.001,
+              converged: true,
+            },
+          });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      const result = await client.execute('PAGE_RANK');
+      expect(result.type).toBe('pageRank');
+      if (result.type === 'pageRank') {
+        expect(result.iterations).toBe(10);
+        expect(result.convergence).toBe(0.001);
+        expect(result.converged).toBe(true);
+      }
+      client.close();
+    });
+
+    it('should handle centrality response with optional fields', async () => {
+      mockGrpcClient.Execute.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          callback(null, {
+            centrality: {
+              items: [{ nodeId: 1, score: 0.5 }],
+              centralityType: 'CENTRALITY_TYPE_BETWEENNESS',
+              iterations: 5,
+              converged: true,
+              sampleCount: 100,
+            },
+          });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      const result = await client.execute('CENTRALITY');
+      expect(result.type).toBe('centrality');
+      if (result.type === 'centrality') {
+        expect(result.centralityType).toBe('betweenness');
+        expect(result.iterations).toBe(5);
+        expect(result.converged).toBe(true);
+        expect(result.sampleCount).toBe(100);
+      }
+      client.close();
+    });
+
+    it('should handle communities response with optional fields', async () => {
+      mockGrpcClient.Execute.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          callback(null, {
+            communities: {
+              items: [{ nodeId: 1, communityId: 1 }],
+              communityCount: 3,
+              modularity: 0.65,
+              passes: 2,
+              iterations: 15,
+              communities: [{ communityId: 1, memberNodeIds: [1, 2, 3] }],
+            },
+          });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      const result = await client.execute('COMMUNITIES');
+      expect(result.type).toBe('communities');
+      if (result.type === 'communities') {
+        expect(result.communityCount).toBe(3);
+        expect(result.modularity).toBe(0.65);
+        expect(result.passes).toBe(2);
+        expect(result.iterations).toBe(15);
+        expect(result.communities).toHaveLength(1);
+      }
+      client.close();
+    });
+
+    it('should handle patternMatch response with optional stats', async () => {
+      mockGrpcClient.Execute.mockImplementationOnce(
+        (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+          callback(null, {
+            patternMatch: {
+              matches: [{ bindings: [] }],
+              stats: { matchesFound: 10, nodesEvaluated: 50, edgesEvaluated: 30, truncated: false },
+            },
+          });
+        }
+      );
+
+      const client = await NeumannClient.connect('localhost:50051');
+      const result = await client.execute('MATCH');
+      expect(result.type).toBe('patternMatch');
+      if (result.type === 'patternMatch') {
+        expect(result.stats).toBeDefined();
+        expect(result.stats?.matchesFound).toBe(10);
+      }
+      client.close();
+    });
   });
 
   describe('executeStream', () => {
