@@ -54,7 +54,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-peak_alloc = "0.2"
+peak_alloc = "0.3"
 
 [[bench]]
 name = "neumann_shell_bench"
