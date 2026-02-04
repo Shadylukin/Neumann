@@ -1642,4 +1642,335 @@ mod tests {
         let response = service.execute(request).await;
         assert!(response.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_paginated_query() {
+        let router = create_test_router();
+
+        // Setup: create table with data
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE paginated (name:string, val:int)")
+                .unwrap();
+            for i in 0..20 {
+                r.execute(&format!("INSERT paginated name=\"item{i}\", val={i}"))
+                    .unwrap();
+            }
+        }
+
+        let service = QueryServiceImpl::new(router);
+
+        // Test paginated query with page size 5
+        let request = Request::new(PaginatedQueryRequest {
+            query: "SELECT paginated".to_string(),
+            page_size: Some(5),
+            cursor: None,
+            identity: None,
+            count_total: None,
+            cursor_ttl_secs: None,
+        });
+
+        let response = service.execute_paginated(request).await;
+        assert!(response.is_ok());
+
+        let inner = response.unwrap().into_inner();
+        // Just verify we got a result
+        assert!(inner.result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_paginated_query_no_more_results() {
+        let router = create_test_router();
+
+        // Setup: create table with small amount of data
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE small_page (x:int)").unwrap();
+            r.execute("INSERT small_page x=1").unwrap();
+        }
+
+        let service = QueryServiceImpl::new(router);
+
+        // Test paginated query with large page size
+        let request = Request::new(PaginatedQueryRequest {
+            query: "SELECT small_page".to_string(),
+            page_size: Some(100),
+            cursor: None,
+            identity: None,
+            count_total: None,
+            cursor_ttl_secs: None,
+        });
+
+        let response = service.execute_paginated(request).await;
+        assert!(response.is_ok());
+
+        let inner = response.unwrap().into_inner();
+        // With small data and large page size, should have no more pages
+        assert!(inner.next_cursor.is_none() || !inner.has_more);
+    }
+
+    #[tokio::test]
+    async fn test_close_cursor() {
+        let router = create_test_router();
+
+        // Setup: create table with data
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE cursor_test (x:int)").unwrap();
+            for i in 0..10 {
+                r.execute(&format!("INSERT cursor_test x={i}")).unwrap();
+            }
+        }
+
+        let service = QueryServiceImpl::new(router);
+
+        // First, create a cursor via paginated query
+        let request = Request::new(PaginatedQueryRequest {
+            query: "SELECT cursor_test".to_string(),
+            page_size: Some(3),
+            cursor: None,
+            identity: None,
+            count_total: None,
+            cursor_ttl_secs: None,
+        });
+
+        let response = service.execute_paginated(request).await;
+        assert!(response.is_ok());
+
+        let inner = response.unwrap().into_inner();
+        let cursor = inner.next_cursor;
+
+        // Now close the cursor if it exists
+        if let Some(cursor_str) = cursor {
+            let close_request = Request::new(CloseCursorRequest { cursor: cursor_str });
+            let close_response = service.close_cursor(close_request).await;
+            assert!(close_response.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_close_invalid_cursor() {
+        let router = create_test_router();
+        let service = QueryServiceImpl::new(router);
+
+        // Try to close a non-existent cursor
+        let request = Request::new(CloseCursorRequest {
+            cursor: "invalid_cursor_id_12345".to_string(),
+        });
+
+        let response = service.close_cursor(request).await;
+        assert!(response.is_ok());
+
+        let inner = response.unwrap().into_inner();
+        // Invalid cursor should return success=false
+        assert!(!inner.success);
+    }
+
+    #[tokio::test]
+    async fn test_execute_stream_with_auth() {
+        use crate::config::ApiKey;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+
+        // Setup data
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE stream_auth (x:int)").unwrap();
+            r.execute("INSERT stream_auth x=1").unwrap();
+        }
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "stream-auth-key-12345".to_string(),
+                "user:stream".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = QueryServiceImpl::with_auth(router, auth_config);
+
+        // Without auth should fail
+        let request = Request::new(QueryRequest {
+            query: "SELECT stream_auth".to_string(),
+            identity: None,
+        });
+        let response = service.execute_stream(request).await;
+        assert!(response.is_err());
+
+        // With auth should succeed
+        let mut request = Request::new(QueryRequest {
+            query: "SELECT stream_auth".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("stream-auth-key-12345"),
+        );
+        let response = service.execute_stream(request).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_paginated_query_with_auth() {
+        use crate::config::ApiKey;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+
+        // Setup data
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE page_auth (x:int)").unwrap();
+            r.execute("INSERT page_auth x=1").unwrap();
+        }
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "page-auth-key-123456".to_string(),
+                "user:page".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = QueryServiceImpl::with_auth(router, auth_config);
+
+        // Without auth should fail
+        let request = Request::new(PaginatedQueryRequest {
+            query: "SELECT page_auth".to_string(),
+            page_size: Some(10),
+            cursor: None,
+            identity: None,
+            count_total: None,
+            cursor_ttl_secs: None,
+        });
+        let response = service.execute_paginated(request).await;
+        assert!(response.is_err());
+
+        // With auth should succeed
+        let mut request = Request::new(PaginatedQueryRequest {
+            query: "SELECT page_auth".to_string(),
+            page_size: Some(10),
+            cursor: None,
+            identity: None,
+            count_total: None,
+            cursor_ttl_secs: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("page-auth-key-123456"),
+        );
+        let response = service.execute_paginated(request).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_close_cursor_with_auth() {
+        use crate::config::ApiKey;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "close-auth-key-123456".to_string(),
+                "user:close".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let service = QueryServiceImpl::with_auth(router, auth_config);
+
+        // Without auth should fail
+        let request = Request::new(CloseCursorRequest {
+            cursor: "any_cursor".to_string(),
+        });
+        let response = service.close_cursor(request).await;
+        assert!(response.is_err());
+
+        // With auth should succeed
+        let mut request = Request::new(CloseCursorRequest {
+            cursor: "any_cursor".to_string(),
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("close-auth-key-123456"),
+        );
+        let response = service.close_cursor(request).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_stream_multiple_rows() {
+        let router = create_test_router();
+
+        // Setup: create table with multiple rows
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE stream_rows (name:string, value:int)")
+                .unwrap();
+            for i in 0..5 {
+                r.execute(&format!("INSERT stream_rows name=\"row{i}\", value={i}"))
+                    .unwrap();
+            }
+        }
+
+        let service = QueryServiceImpl::new(router);
+
+        let request = Request::new(QueryRequest {
+            query: "SELECT stream_rows".to_string(),
+            identity: None,
+        });
+
+        let response = service.execute_stream(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        // Collect chunks
+        let mut chunks = vec![];
+        while let Some(chunk) = stream.next().await {
+            chunks.push(chunk.unwrap());
+        }
+
+        // Should have multiple chunks
+        assert!(!chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_stream_with_filter() {
+        let router = create_test_router();
+
+        // Setup: create table with data
+        {
+            let r = router.write();
+            r.execute("CREATE TABLE filtered_stream (x:int)").unwrap();
+            for i in 0..10 {
+                r.execute(&format!("INSERT filtered_stream x={i}")).unwrap();
+            }
+        }
+
+        let service = QueryServiceImpl::new(router);
+
+        let request = Request::new(QueryRequest {
+            query: "SELECT filtered_stream WHERE x > 5".to_string(),
+            identity: None,
+        });
+
+        let response = service.execute_stream(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        // Collect chunks
+        let mut chunks = vec![];
+        while let Some(chunk) = stream.next().await {
+            chunks.push(chunk.unwrap());
+        }
+
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_default_stream_channel_capacity() {
+        assert_eq!(DEFAULT_STREAM_CHANNEL_CAPACITY, 32);
+    }
+
+    #[test]
+    fn test_failure_threshold() {
+        assert_eq!(FAILURE_THRESHOLD, 5);
+    }
 }

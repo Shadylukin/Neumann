@@ -433,7 +433,7 @@ pub struct DashboardParams {
 
 /// Algorithm execution form parameters.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ExecuteParams {
     /// Algorithm identifier.
     pub algorithm: String,
@@ -2572,5 +2572,1205 @@ mod tests {
         };
         let html = render_result(&result).0;
         assert!(html.contains("1.000000"));
+    }
+
+    // ========== Additional AlgorithmCategory tests ==========
+
+    #[test]
+    fn test_algorithm_category_equality() {
+        assert_eq!(AlgorithmCategory::Centrality, AlgorithmCategory::Centrality);
+        assert_ne!(AlgorithmCategory::Centrality, AlgorithmCategory::Community);
+    }
+
+    #[test]
+    fn test_algorithm_category_copy() {
+        let cat = AlgorithmCategory::Pathfinding;
+        let cat_copy = cat;
+        assert_eq!(cat, cat_copy);
+    }
+
+    #[test]
+    fn test_algorithm_category_debug() {
+        let cat = AlgorithmCategory::Structure;
+        let debug_str = format!("{:?}", cat);
+        assert!(debug_str.contains("Structure"));
+    }
+
+    // ========== Additional ResultStatus tests ==========
+
+    #[test]
+    fn test_result_status_debug() {
+        let status = ResultStatus::Success;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("Success"));
+    }
+
+    // ========== Additional ResultData tests ==========
+
+    #[test]
+    fn test_result_data_debug_scores() {
+        let data = ResultData::Scores(vec![(1, 0.5)]);
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Scores"));
+    }
+
+    #[test]
+    fn test_result_data_debug_communities() {
+        let data = ResultData::Communities(CommunityData {
+            count: 1,
+            modularity: None,
+            communities: vec![],
+        });
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Communities"));
+    }
+
+    #[test]
+    fn test_result_data_debug_path() {
+        let data = ResultData::Path(PathData {
+            nodes: vec![],
+            weight: None,
+            found: false,
+        });
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Path"));
+    }
+
+    #[test]
+    fn test_result_data_debug_structure() {
+        let data = ResultData::Structure(StructureData {
+            summary: HashMap::new(),
+            items: vec![],
+        });
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Structure"));
+    }
+
+    #[test]
+    fn test_result_data_debug_similarity() {
+        let data = ResultData::Similarity(0.5);
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Similarity"));
+    }
+
+    #[test]
+    fn test_result_data_debug_error() {
+        let data = ResultData::Error("test".to_string());
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Error"));
+    }
+
+    #[test]
+    fn test_result_data_debug_empty() {
+        let data = ResultData::Empty;
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Empty"));
+    }
+
+    // ========== Additional CommunityData tests ==========
+
+    #[test]
+    fn test_community_data_debug() {
+        let data = CommunityData {
+            count: 5,
+            modularity: Some(0.5),
+            communities: vec![(1, 10)],
+        };
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("count"));
+    }
+
+    // ========== Additional PathData tests ==========
+
+    #[test]
+    fn test_path_data_debug() {
+        let data = PathData {
+            nodes: vec![1, 2, 3],
+            weight: Some(5.0),
+            found: true,
+        };
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("nodes"));
+    }
+
+    // ========== Additional StructureData tests ==========
+
+    #[test]
+    fn test_structure_data_debug() {
+        let data = StructureData {
+            summary: HashMap::new(),
+            items: vec![],
+        };
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("summary"));
+    }
+
+    // ========== Additional AlgorithmResult tests ==========
+
+    #[test]
+    fn test_algorithm_result_debug() {
+        let result = AlgorithmResult {
+            algorithm: "test".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 0,
+            data: ResultData::Empty,
+        };
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("algorithm"));
+    }
+
+    // ========== Additional parse_direction tests ==========
+
+    #[test]
+    fn test_parse_direction_empty() {
+        assert!(matches!(parse_direction(""), Direction::Both));
+    }
+
+    #[test]
+    fn test_parse_direction_whitespace() {
+        assert!(matches!(parse_direction("  "), Direction::Both));
+    }
+
+    #[test]
+    fn test_parse_direction_mixed_case() {
+        assert!(matches!(parse_direction("OutGoing"), Direction::Outgoing));
+        assert!(matches!(parse_direction("InComing"), Direction::Incoming));
+    }
+
+    // ========== Additional parse_similarity_metric tests ==========
+
+    #[test]
+    fn test_parse_similarity_metric_empty() {
+        assert!(matches!(
+            parse_similarity_metric(""),
+            SimilarityMetric::Jaccard
+        ));
+    }
+
+    #[test]
+    fn test_parse_similarity_metric_whitespace() {
+        assert!(matches!(
+            parse_similarity_metric("  "),
+            SimilarityMetric::Jaccard
+        ));
+    }
+
+    #[test]
+    fn test_parse_similarity_metric_uppercase() {
+        assert!(matches!(
+            parse_similarity_metric("JACCARD"),
+            SimilarityMetric::Jaccard
+        ));
+        assert!(matches!(
+            parse_similarity_metric("COSINE"),
+            SimilarityMetric::Cosine
+        ));
+    }
+
+    // ========== Additional rendering tests ==========
+
+    #[test]
+    fn test_result_rendering_scores_single_item() {
+        let result = AlgorithmResult {
+            algorithm: "pagerank".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 10,
+            data: ResultData::Scores(vec![(1, 0.99)]),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("NODE SCORES"));
+        assert!(html.contains("0.99"));
+    }
+
+    #[test]
+    fn test_result_rendering_communities_single() {
+        let result = AlgorithmResult {
+            algorithm: "louvain".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 50,
+            data: ResultData::Communities(CommunityData {
+                count: 1,
+                modularity: Some(0.1),
+                communities: vec![(1, 5)],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("COMMUNITY DETECTION"));
+    }
+
+    #[test]
+    fn test_result_rendering_path_single_node() {
+        let result = AlgorithmResult {
+            algorithm: "bfs".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 5,
+            data: ResultData::Path(PathData {
+                nodes: vec![1],
+                weight: None,
+                found: true,
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("PATH RESULT"));
+        assert!(html.contains("1 node"));
+    }
+
+    #[test]
+    fn test_result_rendering_structure_summary_only() {
+        let result = AlgorithmResult {
+            algorithm: "kcore".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 20,
+            data: ResultData::Structure(StructureData {
+                summary: HashMap::from([
+                    ("total_nodes".to_string(), "100".to_string()),
+                    ("max_degree".to_string(), "50".to_string()),
+                ]),
+                items: vec![],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("STRUCTURE ANALYSIS"));
+    }
+
+    // ========== Additional ExecuteParams tests ==========
+
+    #[test]
+    fn test_execute_params_betweenness() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "betweenness",
+            "top_k": 15,
+            "direction": "outgoing"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "betweenness");
+        assert_eq!(params.top_k, Some(15));
+        assert_eq!(params.direction, Some("outgoing".to_string()));
+    }
+
+    #[test]
+    fn test_execute_params_closeness() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "closeness",
+            "top_k": 10,
+            "direction": "incoming"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "closeness");
+        assert_eq!(params.direction, Some("incoming".to_string()));
+    }
+
+    #[test]
+    fn test_execute_params_eigenvector() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "eigenvector",
+            "top_k": 20,
+            "max_iterations": 150,
+            "tolerance": 0.00001
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "eigenvector");
+        assert_eq!(params.max_iterations, Some(150));
+    }
+
+    #[test]
+    fn test_execute_params_label_propagation() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "label_propagation",
+            "max_iterations": 100
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "label_propagation");
+    }
+
+    #[test]
+    fn test_execute_params_scc() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "scc"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "scc");
+    }
+
+    #[test]
+    fn test_execute_params_biconnected() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "biconnected"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "biconnected");
+    }
+
+    #[test]
+    fn test_execute_params_triangles() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "triangles",
+            "top_k": 25
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "triangles");
+        assert_eq!(params.top_k, Some(25));
+    }
+
+    #[test]
+    fn test_execute_params_mst() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "mst",
+            "weight_property": "weight"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "mst");
+        assert_eq!(params.weight_property, Some("weight".to_string()));
+    }
+
+    // ========== Algorithm card rendering for all categories ==========
+
+    #[test]
+    fn test_render_algorithm_card_centrality_category() {
+        let algo = &ALGORITHMS[0]; // First algorithm is pagerank (centrality)
+        let card = render_algorithm_card(algo);
+        let html = card.0;
+        assert!(html.contains("text-phosphor"));
+        assert!(html.contains(algo.id));
+    }
+
+    #[test]
+    fn test_render_algorithm_card_with_many_params() {
+        // Find an algorithm with many parameters
+        let algo = ALGORITHMS.iter().find(|a| a.params.len() >= 3);
+        if let Some(algo) = algo {
+            let card = render_algorithm_card(algo);
+            let html = card.0;
+            assert!(html.contains(algo.name));
+        }
+    }
+
+    #[test]
+    fn test_algorithms_count_per_category() {
+        let centrality_count = ALGORITHMS
+            .iter()
+            .filter(|a| a.category == AlgorithmCategory::Centrality)
+            .count();
+        let community_count = ALGORITHMS
+            .iter()
+            .filter(|a| a.category == AlgorithmCategory::Community)
+            .count();
+        let pathfinding_count = ALGORITHMS
+            .iter()
+            .filter(|a| a.category == AlgorithmCategory::Pathfinding)
+            .count();
+        let structure_count = ALGORITHMS
+            .iter()
+            .filter(|a| a.category == AlgorithmCategory::Structure)
+            .count();
+        let similarity_count = ALGORITHMS
+            .iter()
+            .filter(|a| a.category == AlgorithmCategory::Similarity)
+            .count();
+
+        // All algorithms should be categorized
+        let total = centrality_count
+            + community_count
+            + pathfinding_count
+            + structure_count
+            + similarity_count;
+        assert_eq!(total, ALGORITHMS.len());
+    }
+
+    // ========== DashboardParams additional tests ==========
+
+    #[test]
+    fn test_dashboard_params_debug() {
+        let params = DashboardParams { category: None };
+        let debug_str = format!("{:?}", params);
+        assert!(debug_str.contains("DashboardParams"));
+    }
+
+    #[test]
+    fn test_dashboard_params_with_structure() {
+        let params: DashboardParams = serde_json::from_str(r#"{"category": "structure"}"#).unwrap();
+        assert_eq!(params.category.as_deref(), Some("structure"));
+    }
+
+    #[test]
+    fn test_dashboard_params_with_similarity() {
+        let params: DashboardParams =
+            serde_json::from_str(r#"{"category": "similarity"}"#).unwrap();
+        assert_eq!(params.category.as_deref(), Some("similarity"));
+    }
+
+    // ========== Additional ExecuteParams tests for uncovered algorithms ==========
+
+    #[test]
+    fn test_execute_params_all_pathfinding_fields() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "dijkstra",
+            "from": "source",
+            "to": "target",
+            "direction": "both",
+            "max_depth": 100,
+            "weight_property": "cost"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "dijkstra");
+        assert_eq!(params.from, Some("source".to_string()));
+        assert_eq!(params.to, Some("target".to_string()));
+        assert_eq!(params.direction, Some("both".to_string()));
+        assert_eq!(params.max_depth, Some(100));
+        assert_eq!(params.weight_property, Some("cost".to_string()));
+    }
+
+    #[test]
+    fn test_execute_params_bfs() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "bfs",
+            "from": "start",
+            "to": "end",
+            "max_depth": 10
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "bfs");
+        assert_eq!(params.max_depth, Some(10));
+    }
+
+    #[test]
+    fn test_execute_params_dijkstra() {
+        let params: ExecuteParams = serde_json::from_str(
+            r#"{
+            "algorithm": "dijkstra",
+            "from": "1",
+            "to": "100",
+            "weight_property": "distance"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(params.algorithm, "dijkstra");
+        assert_eq!(params.weight_property, Some("distance".to_string()));
+    }
+
+    // ========== Additional algorithm rendering tests ==========
+
+    #[test]
+    fn test_result_rendering_all_status_types() {
+        // Success status
+        let result = AlgorithmResult {
+            algorithm: "test".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 10,
+            data: ResultData::Scores(vec![(1, 0.5)]),
+        };
+        let html = render_result(&result).0;
+        assert!(!html.is_empty());
+
+        // Error status
+        let result = AlgorithmResult {
+            algorithm: "test".to_string(),
+            status: ResultStatus::Error,
+            elapsed_ms: 0,
+            data: ResultData::Error("failed".to_string()),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("ERROR"));
+
+        // NoData status
+        let result = AlgorithmResult {
+            algorithm: "test".to_string(),
+            status: ResultStatus::NoData,
+            elapsed_ms: 0,
+            data: ResultData::Empty,
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("NO DATA"));
+    }
+
+    #[test]
+    fn test_result_rendering_large_path() {
+        let nodes: Vec<u64> = (0..100).collect();
+        let result = AlgorithmResult {
+            algorithm: "astar".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 50,
+            data: ResultData::Path(PathData {
+                nodes,
+                weight: Some(500.0),
+                found: true,
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("PATH RESULT"));
+        assert!(html.contains("100 nodes"));
+    }
+
+    #[test]
+    fn test_result_rendering_negative_similarity() {
+        let result = AlgorithmResult {
+            algorithm: "similarity".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 5,
+            data: ResultData::Similarity(-0.5),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("-0.500000"));
+    }
+
+    // ========== Additional parsing tests ==========
+
+    #[test]
+    fn test_parse_direction_case_insensitive() {
+        assert!(matches!(parse_direction("OUTGOING"), Direction::Outgoing));
+        assert!(matches!(parse_direction("Incoming"), Direction::Incoming));
+        assert!(matches!(parse_direction("Both"), Direction::Both));
+        assert!(matches!(parse_direction("OUT"), Direction::Outgoing));
+        assert!(matches!(parse_direction("IN"), Direction::Incoming));
+    }
+
+    #[test]
+    fn test_parse_similarity_metric_case_insensitive() {
+        assert!(matches!(
+            parse_similarity_metric("JACCARD"),
+            SimilarityMetric::Jaccard
+        ));
+        assert!(matches!(
+            parse_similarity_metric("Cosine"),
+            SimilarityMetric::Cosine
+        ));
+        assert!(matches!(
+            parse_similarity_metric("ADAMIC_ADAR"),
+            SimilarityMetric::AdamicAdar
+        ));
+    }
+
+    // ========== Algorithms constant tests ==========
+
+    #[test]
+    fn test_algorithms_all_have_params() {
+        for algo in ALGORITHMS {
+            // Each algorithm should have a valid params slice (may be empty)
+            assert!(algo.params.len() <= 10, "Too many params for {}", algo.id);
+        }
+    }
+
+    #[test]
+    fn test_algorithm_def_fields_non_empty() {
+        for algo in ALGORITHMS {
+            assert!(!algo.id.is_empty());
+            assert!(!algo.name.is_empty());
+            assert!(!algo.description.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_algorithm_param_def_fields() {
+        for algo in ALGORITHMS {
+            for param in algo.params {
+                assert!(!param.name.is_empty());
+                assert!(!param.label.is_empty());
+                // Note: default can be empty for required params
+                assert!(!param.description.is_empty());
+            }
+        }
+    }
+
+    // ========== Structure data tests ==========
+
+    #[test]
+    fn test_structure_data_with_many_summary_keys() {
+        let mut summary = HashMap::new();
+        for i in 0..10 {
+            summary.insert(format!("key_{}", i), format!("value_{}", i));
+        }
+        let result = AlgorithmResult {
+            algorithm: "test".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 100,
+            data: ResultData::Structure(StructureData {
+                summary,
+                items: vec![],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("STRUCTURE ANALYSIS"));
+    }
+
+    // ========== Community data tests ==========
+
+    #[test]
+    fn test_community_data_high_modularity() {
+        let result = AlgorithmResult {
+            algorithm: "louvain".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 100,
+            data: ResultData::Communities(CommunityData {
+                count: 5,
+                modularity: Some(0.99),
+                communities: vec![(1, 100), (2, 50), (3, 30), (4, 15), (5, 5)],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("0.99"));
+    }
+
+    #[test]
+    fn test_community_data_negative_modularity() {
+        let result = AlgorithmResult {
+            algorithm: "louvain".to_string(),
+            status: ResultStatus::Success,
+            elapsed_ms: 50,
+            data: ResultData::Communities(CommunityData {
+                count: 1,
+                modularity: Some(-0.1),
+                communities: vec![(1, 10)],
+            }),
+        };
+        let html = render_result(&result).0;
+        assert!(html.contains("-0.1"));
+    }
+
+    // ========== Card rendering tests ==========
+
+    #[test]
+    fn test_render_algorithm_card_all_param_types() {
+        // Find algorithms with different param types
+        for algo in ALGORITHMS {
+            let card = render_algorithm_card(algo);
+            let html = card.0;
+            assert!(!html.is_empty());
+            assert!(html.contains(algo.name));
+        }
+    }
+
+    // ========== execute_algorithm tests with real AdminContext ==========
+
+    fn create_test_context() -> AdminContext {
+        use graph_engine::GraphEngine;
+        use relational_engine::RelationalEngine;
+        use vector_engine::VectorEngine;
+
+        AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(GraphEngine::new()),
+        )
+    }
+
+    fn create_test_context_with_graph() -> AdminContext {
+        use graph_engine::GraphEngine;
+        use relational_engine::RelationalEngine;
+        use vector_engine::VectorEngine;
+
+        let graph = GraphEngine::new();
+        // Add some test nodes and edges
+        let n1 = graph.create_node("Person", HashMap::new()).unwrap();
+        let n2 = graph.create_node("Person", HashMap::new()).unwrap();
+        let n3 = graph.create_node("Person", HashMap::new()).unwrap();
+        graph
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .ok();
+        graph
+            .create_edge(n2, n3, "KNOWS", HashMap::new(), true)
+            .ok();
+        graph
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .ok();
+
+        AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(graph),
+        )
+    }
+
+    #[test]
+    fn test_execute_algorithm_pagerank_empty_graph() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "pagerank".to_string(),
+            damping: Some(0.85),
+            tolerance: Some(1e-6),
+            max_iterations: Some(100),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "pagerank");
+        // Empty graph returns NoData
+        assert!(matches!(
+            result.status,
+            ResultStatus::NoData | ResultStatus::Success
+        ));
+    }
+
+    #[test]
+    fn test_execute_algorithm_pagerank_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "pagerank".to_string(),
+            damping: Some(0.85),
+            tolerance: Some(1e-6),
+            max_iterations: Some(100),
+            top_k: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "pagerank");
+        assert!(matches!(
+            result.status,
+            ResultStatus::Success | ResultStatus::NoData
+        ));
+    }
+
+    #[test]
+    fn test_execute_algorithm_betweenness_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "betweenness".to_string(),
+            direction: Some("both".to_string()),
+            top_k: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "betweenness");
+    }
+
+    #[test]
+    fn test_execute_algorithm_betweenness_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "betweenness".to_string(),
+            direction: Some("outgoing".to_string()),
+            top_k: Some(5),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "betweenness");
+    }
+
+    #[test]
+    fn test_execute_algorithm_closeness_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "closeness".to_string(),
+            direction: Some("incoming".to_string()),
+            top_k: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "closeness");
+    }
+
+    #[test]
+    fn test_execute_algorithm_closeness_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "closeness".to_string(),
+            direction: Some("both".to_string()),
+            top_k: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "closeness");
+    }
+
+    #[test]
+    fn test_execute_algorithm_eigenvector_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "eigenvector".to_string(),
+            max_iterations: Some(50),
+            tolerance: Some(1e-5),
+            top_k: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "eigenvector");
+    }
+
+    #[test]
+    fn test_execute_algorithm_eigenvector_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "eigenvector".to_string(),
+            max_iterations: Some(100),
+            tolerance: Some(1e-6),
+            top_k: Some(5),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "eigenvector");
+    }
+
+    #[test]
+    fn test_execute_algorithm_louvain_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "louvain".to_string(),
+            resolution: Some(1.0),
+            max_passes: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "louvain");
+    }
+
+    #[test]
+    fn test_execute_algorithm_louvain_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "louvain".to_string(),
+            resolution: Some(0.5),
+            max_passes: Some(5),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "louvain");
+    }
+
+    #[test]
+    fn test_execute_algorithm_label_propagation_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "label_propagation".to_string(),
+            max_iterations: Some(50),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "label_propagation");
+    }
+
+    #[test]
+    fn test_execute_algorithm_label_propagation_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "label_propagation".to_string(),
+            max_iterations: Some(100),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "label_propagation");
+    }
+
+    #[test]
+    fn test_execute_algorithm_connected_components_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "connected_components".to_string(),
+            direction: Some("both".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "connected_components");
+    }
+
+    #[test]
+    fn test_execute_algorithm_connected_components_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "connected_components".to_string(),
+            direction: Some("outgoing".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "connected_components");
+    }
+
+    #[test]
+    fn test_execute_algorithm_scc_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "scc".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "scc");
+    }
+
+    #[test]
+    fn test_execute_algorithm_scc_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "scc".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "scc");
+    }
+
+    #[test]
+    fn test_execute_algorithm_biconnected_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "biconnected".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "biconnected");
+    }
+
+    #[test]
+    fn test_execute_algorithm_biconnected_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "biconnected".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "biconnected");
+    }
+
+    #[test]
+    fn test_execute_algorithm_kcore_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "kcore".to_string(),
+            min_k: Some(2),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "kcore");
+    }
+
+    #[test]
+    fn test_execute_algorithm_kcore_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "kcore".to_string(),
+            min_k: Some(1),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "kcore");
+    }
+
+    #[test]
+    fn test_execute_algorithm_triangles_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "triangles".to_string(),
+            top_k: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "triangles");
+    }
+
+    #[test]
+    fn test_execute_algorithm_triangles_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "triangles".to_string(),
+            top_k: Some(5),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "triangles");
+    }
+
+    #[test]
+    fn test_execute_algorithm_mst_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "mst".to_string(),
+            weight_property: Some("weight".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "mst");
+    }
+
+    #[test]
+    fn test_execute_algorithm_mst_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "mst".to_string(),
+            weight_property: None,
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "mst");
+    }
+
+    #[test]
+    fn test_execute_algorithm_bfs_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "bfs".to_string(),
+            from: Some("1".to_string()),
+            to: Some("2".to_string()),
+            max_depth: Some(10),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "bfs");
+    }
+
+    #[test]
+    fn test_execute_algorithm_bfs_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "bfs".to_string(),
+            from: Some("1".to_string()),
+            to: Some("3".to_string()),
+            max_depth: Some(5),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "bfs");
+    }
+
+    #[test]
+    fn test_execute_algorithm_dijkstra_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "dijkstra".to_string(),
+            from: Some("1".to_string()),
+            to: Some("2".to_string()),
+            weight_property: Some("cost".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "dijkstra");
+    }
+
+    #[test]
+    fn test_execute_algorithm_dijkstra_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "dijkstra".to_string(),
+            from: Some("1".to_string()),
+            to: Some("3".to_string()),
+            weight_property: None,
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "dijkstra");
+    }
+
+    #[test]
+    fn test_execute_algorithm_astar_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "astar".to_string(),
+            from: Some("1".to_string()),
+            to: Some("2".to_string()),
+            weight_property: Some("weight".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "astar");
+    }
+
+    #[test]
+    fn test_execute_algorithm_astar_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "astar".to_string(),
+            from: Some("1".to_string()),
+            to: Some("3".to_string()),
+            weight_property: None,
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "astar");
+    }
+
+    #[test]
+    fn test_execute_algorithm_similarity_empty() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "similarity".to_string(),
+            node_a: Some("1".to_string()),
+            node_b: Some("2".to_string()),
+            metric: Some("jaccard".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "similarity");
+    }
+
+    #[test]
+    fn test_execute_algorithm_similarity_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "similarity".to_string(),
+            node_a: Some("1".to_string()),
+            node_b: Some("2".to_string()),
+            metric: Some("cosine".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "similarity");
+    }
+
+    #[test]
+    fn test_execute_algorithm_similarity_adamic_adar() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "similarity".to_string(),
+            node_a: Some("1".to_string()),
+            node_b: Some("3".to_string()),
+            metric: Some("adamic_adar".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "similarity");
+    }
+
+    #[test]
+    fn test_execute_algorithm_unknown() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "unknown_algorithm".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "unknown_algorithm");
+        assert!(matches!(result.status, ResultStatus::Error));
+    }
+
+    #[test]
+    fn test_execute_algorithm_missing_from_param() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "bfs".to_string(),
+            from: None,
+            to: Some("2".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        // Should handle missing from parameter
+        assert_eq!(result.algorithm, "bfs");
+    }
+
+    #[test]
+    fn test_execute_algorithm_missing_to_param() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "dijkstra".to_string(),
+            from: Some("1".to_string()),
+            to: None,
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        // Should handle missing to parameter
+        assert_eq!(result.algorithm, "dijkstra");
     }
 }

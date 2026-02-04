@@ -1390,4 +1390,255 @@ mod tests {
         assert!(html.contains("3.14"));
         assert!(html.contains("true"));
     }
+
+    // ========== Additional score_color edge cases ==========
+
+    #[test]
+    fn test_score_color_exact_boundaries() {
+        // Test the exact boundary values for each threshold
+        assert_eq!(score_color(0.8999999), "text-amber font-data");
+        assert_eq!(score_color(0.6999999), "text-rust-blood font-data");
+        assert_eq!(score_color(0.4999999), "text-phosphor-dim font-data");
+    }
+
+    #[test]
+    fn test_score_color_negative() {
+        // Edge case: negative scores
+        assert_eq!(score_color(-0.1), "text-phosphor-dim font-data");
+        assert_eq!(score_color(-1.0), "text-phosphor-dim font-data");
+    }
+
+    #[test]
+    fn test_score_color_over_one() {
+        // Edge case: scores > 1.0
+        assert_eq!(score_color(1.1), "text-phosphor font-data glow-phosphor");
+        assert_eq!(score_color(2.0), "text-phosphor font-data glow-phosphor");
+    }
+
+    // ========== Additional format_tensor_value_short tests ==========
+
+    #[test]
+    fn test_format_tensor_value_short_string_exactly_31_chars() {
+        let string_31 = "a".repeat(31);
+        let value = TensorValue::Scalar(ScalarValue::String(string_31));
+        let result = format_tensor_value_short(&value);
+        // Should be truncated because > 30
+        assert!(result.ends_with("...\""));
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_vector_high_dimension() {
+        let value = TensorValue::Vector(vec![0.0; 1024]);
+        assert_eq!(format_tensor_value_short(&value), "[1024d vector]");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_sparse_zero_nnz() {
+        let sparse = SparseVector::new(100);
+        let value = TensorValue::Sparse(sparse);
+        assert_eq!(format_tensor_value_short(&value), "[sparse 100d]");
+    }
+
+    #[test]
+    fn test_format_tensor_value_short_pointers_single() {
+        let value = TensorValue::Pointers(vec!["single".to_string()]);
+        assert_eq!(format_tensor_value_short(&value), "[1 pointers]");
+    }
+
+    // ========== Additional truncate_key tests ==========
+
+    #[test]
+    fn test_truncate_key_max_4() {
+        // With max_len=4, we'd have 1 char + "..."
+        assert_eq!(truncate_key("abcdefgh", 4), "a...");
+    }
+
+    #[test]
+    fn test_truncate_key_max_5() {
+        assert_eq!(truncate_key("abcdefgh", 5), "ab...");
+    }
+
+    #[test]
+    fn test_truncate_key_max_6() {
+        assert_eq!(truncate_key("abcdefgh", 6), "abc...");
+    }
+
+    #[test]
+    fn test_truncate_key_large_string() {
+        let long_string = "x".repeat(1000);
+        let result = truncate_key(&long_string, 50);
+        assert_eq!(result.len(), 50);
+        assert!(result.ends_with("..."));
+    }
+
+    // ========== Additional format_vector_compact tests ==========
+
+    #[test]
+    fn test_format_vector_compact_special_values() {
+        let result = format_vector_compact(&[f32::INFINITY, f32::NEG_INFINITY, f32::NAN]);
+        assert!(result.contains("inf") || result.contains("NaN"));
+    }
+
+    #[test]
+    fn test_format_vector_compact_very_small_values() {
+        let result = format_vector_compact(&[0.0000001, 0.0000002]);
+        assert!(result.contains("0."));
+    }
+
+    #[test]
+    fn test_format_vector_compact_very_large_values() {
+        let result = format_vector_compact(&[1000000.0, 2000000.0]);
+        assert!(result.contains("1000000"));
+    }
+
+    // ========== score_color boundary tests ==========
+
+    #[test]
+    fn test_score_color_boundary_at_seven() {
+        // Test value just at and below 0.7
+        assert_eq!(score_color(0.7), "text-amber font-data");
+        assert_eq!(score_color(0.699999), "text-rust-blood font-data");
+    }
+
+    #[test]
+    fn test_score_color_boundary_at_five() {
+        // Test value just at and below 0.5
+        assert_eq!(score_color(0.5), "text-rust-blood font-data");
+        assert_eq!(score_color(0.499999), "text-phosphor-dim font-data");
+    }
+
+    // ========== render_tensor_value additional tests ==========
+
+    #[test]
+    fn test_render_tensor_value_string_with_special_chars() {
+        let value = TensorValue::Scalar(ScalarValue::String(
+            "<script>alert('xss')</script>".to_string(),
+        ));
+        let html = render_tensor_value(&value).into_string();
+        // Should escape HTML
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;") || html.contains("script"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_vector_empty() {
+        let value = TensorValue::Vector(vec![]);
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("0d") || html.contains("empty") || html.contains("[]"));
+    }
+
+    #[test]
+    fn test_render_tensor_value_sparse_empty() {
+        let sparse = SparseVector::new(0);
+        let value = TensorValue::Sparse(sparse);
+        let html = render_tensor_value(&value).into_string();
+        assert!(html.contains("sparse") || html.contains("0d"));
+    }
+
+    // ========== render_payload_preview additional tests ==========
+
+    #[test]
+    fn test_render_payload_preview_with_long_keys() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "this_is_a_very_long_key_name_that_exceeds_normal_limits".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(1)),
+        );
+        let html = render_payload_preview(&metadata).into_string();
+        assert!(!html.is_empty());
+    }
+
+    #[test]
+    fn test_render_payload_preview_with_nested_vectors() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "embedding".to_string(),
+            TensorValue::Vector(vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+        );
+        metadata.insert(
+            "sparse_embedding".to_string(),
+            TensorValue::Sparse({
+                let mut s = SparseVector::new(100);
+                s.set(50, 1.0);
+                s
+            }),
+        );
+        let html = render_payload_preview(&metadata).into_string();
+        assert!(!html.is_empty());
+    }
+
+    // ========== render_payload_table additional tests ==========
+
+    #[test]
+    fn test_render_payload_table_all_types() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "string".to_string(),
+            TensorValue::Scalar(ScalarValue::String("hello".to_string())),
+        );
+        metadata.insert("int".to_string(), TensorValue::Scalar(ScalarValue::Int(42)));
+        metadata.insert(
+            "float".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(3.14)),
+        );
+        metadata.insert(
+            "bool".to_string(),
+            TensorValue::Scalar(ScalarValue::Bool(true)),
+        );
+        metadata.insert("null".to_string(), TensorValue::Scalar(ScalarValue::Null));
+        metadata.insert(
+            "bytes".to_string(),
+            TensorValue::Scalar(ScalarValue::Bytes(vec![1, 2, 3])),
+        );
+        metadata.insert("vector".to_string(), TensorValue::Vector(vec![1.0, 2.0]));
+        metadata.insert(
+            "pointer".to_string(),
+            TensorValue::Pointer("ref".to_string()),
+        );
+        metadata.insert(
+            "pointers".to_string(),
+            TensorValue::Pointers(vec!["a".to_string(), "b".to_string()]),
+        );
+
+        let html = render_payload_table(&metadata).into_string();
+        assert!(html.contains("table"));
+        assert!(html.contains("hello"));
+        assert!(html.contains("42"));
+    }
+
+    // ========== SearchParams additional tests ==========
+
+    #[test]
+    fn test_search_params_with_brackets() {
+        let params = SearchParams {
+            vector: "[1.0, 2.0, 3.0]".to_string(),
+            k: 10,
+        };
+        // The vector parsing should handle brackets
+        let trimmed = params.vector.trim_start_matches('[').trim_end_matches(']');
+        assert_eq!(trimmed, "1.0, 2.0, 3.0");
+    }
+
+    #[test]
+    fn test_search_params_with_whitespace() {
+        let params = SearchParams {
+            vector: "  [ 1.0 , 2.0 , 3.0 ]  ".to_string(),
+            k: 5,
+        };
+        let trimmed = params
+            .vector
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        assert_eq!(trimmed, " 1.0 , 2.0 , 3.0 ");
+    }
+
+    #[test]
+    fn test_search_params_large_k() {
+        let params = SearchParams {
+            vector: "1.0, 2.0".to_string(),
+            k: 100,
+        };
+        assert_eq!(params.k, 100);
+    }
 }

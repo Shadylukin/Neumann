@@ -1357,4 +1357,442 @@ mod tests {
         assert!(server2.rate_limiter.is_some());
         assert!(server2.audit_logger.is_some());
     }
+
+    #[test]
+    fn test_server_config_streaming_options() {
+        use crate::config::StreamingConfig;
+
+        let config = ServerConfig::default().with_streaming(StreamingConfig::default());
+
+        assert!(config.streaming.is_some());
+    }
+
+    #[test]
+    fn test_server_config_enable_options() {
+        let config = ServerConfig::default()
+            .with_grpc_web(false)
+            .with_reflection(false);
+
+        assert!(!config.enable_grpc_web);
+        assert!(!config.enable_reflection);
+    }
+
+    #[test]
+    fn test_server_config_with_tls() {
+        use std::path::PathBuf;
+
+        let tls = TlsConfig::new(
+            PathBuf::from("/tmp/cert.pem"),
+            PathBuf::from("/tmp/key.pem"),
+        );
+
+        let config = ServerConfig::default().with_tls(tls);
+
+        assert!(config.tls.is_some());
+    }
+
+    #[test]
+    fn test_server_config_with_rest_addr() {
+        use std::net::SocketAddr;
+
+        let rest_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let config = ServerConfig::default().with_rest_addr(rest_addr);
+
+        assert!(config.rest_addr.is_some());
+        assert_eq!(config.rest_addr.unwrap().port(), 8080);
+    }
+
+    #[test]
+    fn test_server_config_with_web_addr() {
+        use std::net::SocketAddr;
+
+        let web_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let config = ServerConfig::default().with_web_addr(web_addr);
+
+        assert!(config.web_addr.is_some());
+        assert_eq!(config.web_addr.unwrap().port(), 9000);
+    }
+
+    #[test]
+    fn test_server_config_channel_capacity() {
+        let config = ServerConfig::default().with_stream_channel_capacity(128);
+
+        assert_eq!(config.stream_channel_capacity, 128);
+    }
+
+    #[test]
+    fn test_server_config_clone() {
+        let config = ServerConfig::default()
+            .with_grpc_web(false)
+            .with_stream_channel_capacity(64);
+
+        let cloned = config.clone();
+
+        assert_eq!(cloned.enable_grpc_web, config.enable_grpc_web);
+        assert_eq!(
+            cloned.stream_channel_capacity,
+            config.stream_channel_capacity
+        );
+    }
+
+    #[test]
+    fn test_server_config_debug() {
+        let config = ServerConfig::default();
+        let debug_str = format!("{:?}", config);
+
+        assert!(debug_str.contains("ServerConfig"));
+    }
+
+    #[test]
+    fn test_tls_config_new() {
+        use std::path::PathBuf;
+
+        let tls = TlsConfig::new(
+            PathBuf::from("/path/to/cert.pem"),
+            PathBuf::from("/path/to/key.pem"),
+        );
+
+        assert_eq!(tls.cert_path, PathBuf::from("/path/to/cert.pem"));
+        assert_eq!(tls.key_path, PathBuf::from("/path/to/key.pem"));
+        assert!(tls.ca_cert_path.is_none());
+        assert!(!tls.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_with_client_auth() {
+        use std::path::PathBuf;
+
+        let tls = TlsConfig::new(
+            PathBuf::from("/path/to/cert.pem"),
+            PathBuf::from("/path/to/key.pem"),
+        )
+        .with_ca_cert(PathBuf::from("/path/to/ca.pem"))
+        .with_required_client_cert(true);
+
+        assert!(tls.ca_cert_path.is_some());
+        assert!(tls.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_clone() {
+        use std::path::PathBuf;
+
+        let tls = TlsConfig::new(
+            PathBuf::from("/path/to/cert.pem"),
+            PathBuf::from("/path/to/key.pem"),
+        )
+        .with_required_client_cert(true);
+
+        let cloned = tls.clone();
+
+        assert_eq!(cloned.cert_path, tls.cert_path);
+        assert_eq!(cloned.require_client_cert, tls.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_debug() {
+        use std::path::PathBuf;
+
+        let tls = TlsConfig::new(
+            PathBuf::from("/path/to/cert.pem"),
+            PathBuf::from("/path/to/key.pem"),
+        );
+
+        let debug_str = format!("{:?}", tls);
+        assert!(debug_str.contains("TlsConfig"));
+    }
+
+    #[test]
+    fn test_server_new_with_rate_limit_and_audit() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let mut config = ServerConfig::default();
+        config.rate_limit = Some(RateLimitConfig::default());
+        config.audit = Some(AuditConfig::default());
+
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.rate_limiter.is_some());
+        assert!(server.audit_logger.is_some());
+    }
+
+    #[test]
+    fn test_server_engines_none_by_default() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let server = NeumannServer::new(router, config);
+
+        assert!(server.blob_store.is_none());
+        assert!(server.relational_engine.is_none());
+        assert!(server.vector_engine.is_none());
+        assert!(server.graph_engine.is_none());
+        assert!(server.metrics.is_none());
+    }
+
+    #[test]
+    fn test_server_config_validate_anonymous_auth() {
+        let mut config = ServerConfig::default();
+        config.auth = Some(AuthConfig::new().with_anonymous(true));
+
+        // Anonymous auth should be valid
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_config_validate_no_auth() {
+        let config = ServerConfig::default();
+
+        // No auth should be valid (defaults to anonymous)
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_config_with_all_addresses() {
+        use std::net::SocketAddr;
+
+        let bind: SocketAddr = "0.0.0.0:9200".parse().unwrap();
+        let rest: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        let web: SocketAddr = "0.0.0.0:9000".parse().unwrap();
+
+        let config = ServerConfig::new()
+            .with_bind_addr(bind)
+            .with_rest_addr(rest)
+            .with_web_addr(web);
+
+        assert_eq!(config.bind_addr.port(), 9200);
+        assert_eq!(config.rest_addr.unwrap().port(), 8080);
+        assert_eq!(config.web_addr.unwrap().port(), 9000);
+    }
+
+    #[tokio::test]
+    async fn test_server_with_shared_storage_creates_all_components() {
+        let config = ServerConfig::default();
+        let server = NeumannServer::with_shared_storage(config).await.unwrap();
+
+        assert!(server.blob_store.is_some());
+        // Router should be accessible
+        let router = server.router();
+        assert!(Arc::strong_count(router) >= 1);
+    }
+
+    #[test]
+    fn test_server_config_http2_settings() {
+        let config = ServerConfig::default()
+            .with_initial_window_size(1024 * 1024)
+            .with_initial_connection_window_size(2 * 1024 * 1024)
+            .with_max_concurrent_streams_per_connection(200);
+
+        assert_eq!(config.initial_window_size, Some(1024 * 1024));
+        assert_eq!(config.initial_connection_window_size, Some(2 * 1024 * 1024));
+        assert_eq!(config.max_concurrent_streams_per_connection, Some(200));
+    }
+
+    #[test]
+    fn test_server_config_blob_settings() {
+        let config = ServerConfig::default()
+            .with_blob_chunk_size(128 * 1024)
+            .with_max_message_size(64 * 1024 * 1024);
+
+        assert_eq!(config.blob_chunk_size, 128 * 1024);
+        assert_eq!(config.max_message_size, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_server_multiple_engine_sets() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+
+        let relational1 = Arc::new(RelationalEngine::new());
+        let relational2 = Arc::new(RelationalEngine::new());
+
+        // Setting engine multiple times should use the last one
+        let server = NeumannServer::new(router, config)
+            .with_relational_engine(relational1)
+            .with_relational_engine(Arc::clone(&relational2));
+
+        assert!(server.relational_engine.is_some());
+        assert!(Arc::ptr_eq(
+            server.relational_engine.as_ref().unwrap(),
+            &relational2
+        ));
+    }
+
+    #[test]
+    fn test_server_with_vector_engine_only() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let vector = Arc::new(VectorEngine::new());
+
+        let server = NeumannServer::new(router, config).with_vector_engine(vector);
+
+        assert!(server.vector_engine.is_some());
+        assert!(server.relational_engine.is_none());
+        assert!(server.graph_engine.is_none());
+    }
+
+    #[test]
+    fn test_server_with_graph_engine_only() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let graph = Arc::new(GraphEngine::new());
+
+        let server = NeumannServer::new(router, config).with_graph_engine(graph);
+
+        assert!(server.graph_engine.is_some());
+        assert!(server.relational_engine.is_none());
+        assert!(server.vector_engine.is_none());
+    }
+
+    #[test]
+    fn test_server_config_default_bind_addr() {
+        let config = ServerConfig::default();
+        // Default binds to localhost
+        assert_eq!(config.bind_addr.port(), 9200);
+    }
+
+    #[test]
+    fn test_server_config_with_custom_bind_addr() {
+        use std::net::SocketAddr;
+
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let config = ServerConfig::default().with_bind_addr(addr);
+        assert_eq!(config.bind_addr.ip().to_string(), "127.0.0.1");
+        assert_eq!(config.bind_addr.port(), 8080);
+    }
+
+    #[test]
+    fn test_server_config_max_upload_size() {
+        let config = ServerConfig::default().with_max_upload_size(100 * 1024 * 1024);
+        assert_eq!(config.max_upload_size, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_server_config_request_timeout() {
+        use std::time::Duration;
+
+        let config = ServerConfig::default().with_request_timeout(Duration::from_secs(60));
+        assert!(config.request_timeout.is_some());
+        assert_eq!(config.request_timeout.unwrap(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_server_config_max_concurrent_connections() {
+        let config = ServerConfig::default().with_max_concurrent_connections(1000);
+        assert_eq!(config.max_concurrent_connections, Some(1000));
+    }
+
+    #[test]
+    fn test_tls_config_optional_client_cert() {
+        use std::path::PathBuf;
+
+        let tls = TlsConfig::new(
+            PathBuf::from("/path/cert.pem"),
+            PathBuf::from("/path/key.pem"),
+        )
+        .with_ca_cert(PathBuf::from("/path/ca.pem"))
+        .with_required_client_cert(false);
+
+        assert!(tls.ca_cert_path.is_some());
+        assert!(!tls.require_client_cert);
+    }
+
+    #[test]
+    fn test_server_metrics_field_access() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let server = NeumannServer::new(router, config).with_metrics(Arc::clone(&metrics));
+
+        // Verify the metrics reference
+        assert!(server.metrics.is_some());
+        let stored_metrics = server.metrics.as_ref().unwrap();
+        assert!(Arc::ptr_eq(stored_metrics, &metrics));
+    }
+
+    #[test]
+    fn test_server_rate_limiter_field_access() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let mut config = ServerConfig::default();
+        config.rate_limit = Some(RateLimitConfig::default());
+
+        let server = NeumannServer::new(router, config);
+        assert!(server.rate_limiter.is_some());
+    }
+
+    #[test]
+    fn test_server_audit_logger_field_access() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let mut config = ServerConfig::default();
+        config.audit = Some(AuditConfig::default());
+
+        let server = NeumannServer::new(router, config);
+        assert!(server.audit_logger.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_serve_validation_error() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let mut config = ServerConfig::default();
+
+        // Create an auth config that requires authentication but has no API keys
+        config.auth = Some(AuthConfig::new().with_anonymous(false));
+
+        let server = NeumannServer::new(router, config);
+        let result = server.serve().await;
+
+        // Should fail validation
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tls_config_path_accessors() {
+        use std::path::PathBuf;
+
+        let cert_path = PathBuf::from("/test/cert.pem");
+        let key_path = PathBuf::from("/test/key.pem");
+
+        let tls = TlsConfig::new(cert_path.clone(), key_path.clone());
+
+        assert_eq!(tls.cert_path, cert_path);
+        assert_eq!(tls.key_path, key_path);
+    }
+
+    #[test]
+    fn test_server_config_chained_builder() {
+        use std::net::SocketAddr;
+        use std::time::Duration;
+
+        let addr: SocketAddr = "0.0.0.0:9300".parse().unwrap();
+        let rest_addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+
+        let config = ServerConfig::new()
+            .with_bind_addr(addr)
+            .with_rest_addr(rest_addr)
+            .with_max_message_size(32 * 1024 * 1024)
+            .with_max_upload_size(16 * 1024 * 1024)
+            .with_blob_chunk_size(64 * 1024)
+            .with_stream_channel_capacity(64)
+            .with_grpc_web(true)
+            .with_reflection(true)
+            .with_rate_limit(RateLimitConfig::default())
+            .with_audit(AuditConfig::default())
+            .with_request_timeout(Duration::from_secs(30));
+
+        assert_eq!(config.bind_addr.port(), 9300);
+        assert_eq!(config.rest_addr.unwrap().port(), 8080);
+        assert_eq!(config.max_message_size, 32 * 1024 * 1024);
+        assert_eq!(config.max_upload_size, 16 * 1024 * 1024);
+        assert_eq!(config.blob_chunk_size, 64 * 1024);
+        assert_eq!(config.stream_channel_capacity, 64);
+        assert!(config.enable_grpc_web);
+        assert!(config.enable_reflection);
+        assert!(config.rate_limit.is_some());
+        assert!(config.audit.is_some());
+        assert!(config.request_timeout.is_some());
+    }
 }

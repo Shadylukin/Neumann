@@ -408,4 +408,72 @@ mod tests {
         // Should be able to access the meter for custom metrics
         let _custom_counter = metrics.meter().u64_counter("custom.counter").init();
     }
+
+    #[test]
+    fn test_record_request_blob_service() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        // Test recording blob service request
+        metrics.record_request("blob", "upload", true, 50.0);
+        metrics.record_request("blob", "download", true, 30.0);
+        metrics.record_request("blob", "delete", false, 10.0);
+    }
+
+    #[test]
+    fn test_record_request_other_service() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        // Test recording request from service that doesn't match query/blob/vector
+        metrics.record_request("health", "check", true, 1.0);
+        metrics.record_request("admin", "status", true, 2.0);
+    }
+
+    #[test]
+    fn test_metrics_handle_methods() {
+        let config = MetricsConfig::new().with_enabled(false);
+        let handle = init_metrics(&config).expect("should create disabled metrics");
+
+        // Test metrics() accessor
+        let metrics = handle.metrics();
+        metrics.record_request("test", "method", true, 1.0);
+    }
+
+    #[test]
+    fn test_metrics_config_clone() {
+        let config = MetricsConfig::new()
+            .with_enabled(true)
+            .with_service_name("test".to_string());
+        let cloned = config.clone();
+        assert_eq!(cloned.enabled, config.enabled);
+        assert_eq!(cloned.service_name, config.service_name);
+    }
+
+    #[test]
+    fn test_metrics_config_debug() {
+        let config = MetricsConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("MetricsConfig"));
+        assert!(debug_str.contains("enabled"));
+    }
+
+    #[test]
+    fn test_server_metrics_multiple_operations() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        // Mix of all operations
+        metrics.record_request("query", "execute", true, 5.0);
+        metrics.record_request("blob", "upload", true, 100.0);
+        metrics.record_request("vector", "search", true, 15.0);
+        metrics.record_query_latency("execute", 5.0);
+        metrics.record_blob_latency("upload", 100.0);
+        metrics.record_vector_latency("search", 15.0);
+        metrics.record_auth_failure("invalid_token");
+        metrics.record_rate_limited("user:bob", "search");
+    }
 }
