@@ -208,18 +208,18 @@ The module includes hardcoded optimal shapes for common embedding dimensions:
 
 | Dimension | Shape | Why |
 | --- | --- | --- |
-| 64 | [4, 4, 4] | 3 balanced factors |
-| 128 | [4, 4, 8] | Near-balanced |
-| 256 | [4, 8, 8] | Near-balanced |
-| 384 | [4, 8, 12] | all-MiniLM-L6-v2 |
-| 512 | [8, 8, 8] | Perfect cube |
-| 768 | [8, 8, 12] | BERT dimension |
-| 1024 | [8, 8, 16] | Common LLM size |
-| 1536 | [8, 12, 16] | OpenAI ada-002 |
-| 2048 | [8, 16, 16] | Near-balanced |
-| 3072 | [8, 16, 24] | Large models |
-| 4096 | [8, 8, 8, 8] | 4D balanced |
-| 8192 | [8, 8, 8, 16] | Extra large |
+| 64 | `[4, 4, 4]` | 3 balanced factors |
+| 128 | `[4, 4, 8]` | Near-balanced |
+| 256 | `[4, 8, 8]` | Near-balanced |
+| 384 | `[4, 8, 12]` | all-MiniLM-L6-v2 |
+| 512 | `[8, 8, 8]` | Perfect cube |
+| 768 | `[8, 8, 12]` | BERT dimension |
+| 1024 | `[8, 8, 16]` | Common LLM size |
+| 1536 | `[8, 12, 16]` | OpenAI ada-002 |
+| 2048 | `[8, 16, 16]` | Near-balanced |
+| 3072 | `[8, 16, 24]` | Large models |
+| 4096 | `[8, 8, 8, 8]` | 4D balanced |
+| 8192 | `[8, 8, 8, 16]` | Extra large |
 
 For non-standard dimensions, `factorize_balanced` finds factors close to the nth
 root:
@@ -249,7 +249,7 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
 | `tt_euclidean_distance` | Euclidean distance in TT space | O(n *d* r^4) |
 | `tt_euclidean_distance_batch` | Batch Euclidean distances | Parallel when >= 4 targets |
 | `tt_norm` | L2 norm of TT vector | O(n *d* r^4) |
-| `tt_scale` | Scale TT vector by constant | O(cores[0].size) |
+| `tt_scale` | Scale TT vector by constant | `O(cores[0].size)` |
 
 Where: n = number of modes, d = mode size, r = TT-rank
 
