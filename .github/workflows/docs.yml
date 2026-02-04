@@ -46,7 +46,7 @@ jobs:
       - name: Cache cargo
         # v2.7.8
         uses: >-
-          Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
       - name: Install protoc
         run: >-
@@ -131,7 +131,7 @@ jobs:
       - name: Cache cargo
         # v2.7.8
         uses: >-
-          Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
       - name: Check doc coverage
         run: |
@@ -161,7 +161,7 @@ jobs:
       - name: Cache cargo
         # v2.7.8
         uses: >-
-          Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
       - name: Install jq and protoc
         run: >-
