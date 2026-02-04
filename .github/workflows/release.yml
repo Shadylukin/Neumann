@@ -321,24 +321,16 @@ jobs:
           # Update version in pyproject.toml
           sed -i "s/^version = .*/version = \"$VERSION\"/" neumann-py/pyproject.toml
 
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64
-          args: --release --out ../dist
-          sccache: 'true'
-          manylinux: auto
-          working-directory: neumann-py/neumann-native
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out ../dist
-          working-directory: neumann-py/neumann-native
+      - name: Install maturin
+        run: pip install maturin twine
 
-      - name: Install twine
-        run: pip install twine
+      - name: Build wheel and sdist
+        run: |
+          cd neumann-py
+          maturin build --release --out dist --manylinux 2_17
 
       - name: Check package
         run: twine check neumann-py/dist/*
