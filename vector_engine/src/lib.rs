@@ -266,7 +266,18 @@ impl SearchResult {
 }
 
 /// Distance metric for similarity search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, bitcode::Encode, bitcode::Decode)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    bitcode::Encode,
+    bitcode::Decode,
+)]
 pub enum DistanceMetric {
     /// Cosine similarity: measures angle between vectors (default).
     #[default]
@@ -3572,8 +3583,8 @@ impl VectorEngine {
         }
 
         let bytes = fs::read(path)?;
-        let index: PersistentVectorIndex = bitcode::decode(&bytes)
-            .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+        let index: PersistentVectorIndex =
+            bitcode::decode(&bytes).map_err(|e| VectorError::SerializationError(e.to_string()))?;
 
         // Check entry count after deserialization
         if let Some(max_entries) = self.config.max_index_entries {
