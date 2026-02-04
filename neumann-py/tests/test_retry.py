@@ -85,13 +85,17 @@ class TestCalculateBackoff:
 
     def test_exponential_growth(self) -> None:
         """Test backoff grows exponentially."""
+        # Test without jitter interference by checking the base formula
+        # backoff = initial * (multiplier ** attempt) * jitter
+        # With jitter in [0.8, 1.2], worst case ratio between adjacent attempts:
+        # (initial * 2^n * 0.8) / (initial * 2^(n-1) * 1.2) = 2 * 0.8/1.2 = 1.33
         backoff0 = _calculate_backoff(0, 100, 10000, 2.0)
         backoff1 = _calculate_backoff(1, 100, 10000, 2.0)
         backoff2 = _calculate_backoff(2, 100, 10000, 2.0)
 
-        # Each should roughly double (with jitter variation)
-        assert backoff1 > backoff0 * 1.5
-        assert backoff2 > backoff1 * 1.5
+        # Each should roughly double (accounting for jitter worst case)
+        assert backoff1 > backoff0 * 1.3
+        assert backoff2 > backoff1 * 1.3
 
     def test_max_backoff_cap(self) -> None:
         """Test backoff is capped at max."""
