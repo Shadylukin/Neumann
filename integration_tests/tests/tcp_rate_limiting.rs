@@ -15,7 +15,7 @@ use std::{
 
 use tensor_chain::{
     tcp::{RateLimitConfig, TcpTransport, TcpTransportConfig},
-    Message, Transport,
+    Message, SecurityMode, Transport,
 };
 use tokio::time::{sleep, timeout};
 
@@ -26,8 +26,10 @@ fn test_addr(port: u16) -> SocketAddr {
 #[tokio::test]
 async fn test_rate_limit_blocks_fast_sender() {
     // Start server transport
-    let server_config =
-        TcpTransportConfig::new("server", test_addr(0)).with_rate_limit(RateLimitConfig::default());
+    let server_config = TcpTransportConfig::new("server", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(RateLimitConfig::default());
     let server = Arc::new(TcpTransport::new(server_config));
     server.start().await.unwrap();
 
@@ -35,11 +37,14 @@ async fn test_rate_limit_blocks_fast_sender() {
     sleep(Duration::from_millis(10)).await;
 
     // Create client with aggressive rate limiting (small burst, no refill)
-    let client_config = TcpTransportConfig::new("client", test_addr(0)).with_rate_limit(
-        RateLimitConfig::default()
-            .with_bucket_size(5)
-            .with_refill_rate(0.0),
-    );
+    let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(5)
+                .with_refill_rate(0.0),
+        );
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
 
@@ -78,7 +83,9 @@ async fn test_rate_limit_blocks_fast_sender() {
 #[tokio::test]
 async fn test_rate_limit_allows_sustained_traffic() {
     // Server
-    let server_config = TcpTransportConfig::new("server", test_addr(0));
+    let server_config = TcpTransportConfig::new("server", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server = Arc::new(TcpTransport::new(server_config));
     server.start().await.unwrap();
 
@@ -86,11 +93,14 @@ async fn test_rate_limit_allows_sustained_traffic() {
     sleep(Duration::from_millis(10)).await;
 
     // Client with moderate rate limiting that allows sustained traffic
-    let client_config = TcpTransportConfig::new("client", test_addr(0)).with_rate_limit(
-        RateLimitConfig::default()
-            .with_bucket_size(10)
-            .with_refill_rate(100.0), // 100 tokens/sec = 1 token per 10ms
-    );
+    let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(10)
+                .with_refill_rate(100.0), // 100 tokens/sec = 1 token per 10ms
+        );
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
 
@@ -133,7 +143,9 @@ async fn test_rate_limit_allows_sustained_traffic() {
 #[tokio::test]
 async fn test_rate_limit_recovery_after_wait() {
     // Server
-    let server_config = TcpTransportConfig::new("server", test_addr(0));
+    let server_config = TcpTransportConfig::new("server", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server = Arc::new(TcpTransport::new(server_config));
     server.start().await.unwrap();
 
@@ -141,11 +153,14 @@ async fn test_rate_limit_recovery_after_wait() {
     sleep(Duration::from_millis(10)).await;
 
     // Client with small burst but fast refill
-    let client_config = TcpTransportConfig::new("client", test_addr(0)).with_rate_limit(
-        RateLimitConfig::default()
-            .with_bucket_size(3)
-            .with_refill_rate(100.0), // 100/sec = 1 token per 10ms
-    );
+    let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(3)
+                .with_refill_rate(100.0), // 100/sec = 1 token per 10ms
+        );
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
 
@@ -189,11 +204,15 @@ async fn test_rate_limit_recovery_after_wait() {
 #[tokio::test]
 async fn test_rate_limit_per_peer_isolation() {
     // Start two servers
-    let server1_config = TcpTransportConfig::new("server1", test_addr(0));
+    let server1_config = TcpTransportConfig::new("server1", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server1 = Arc::new(TcpTransport::new(server1_config));
     server1.start().await.unwrap();
 
-    let server2_config = TcpTransportConfig::new("server2", test_addr(0));
+    let server2_config = TcpTransportConfig::new("server2", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server2 = Arc::new(TcpTransport::new(server2_config));
     server2.start().await.unwrap();
 
@@ -202,11 +221,14 @@ async fn test_rate_limit_per_peer_isolation() {
     sleep(Duration::from_millis(10)).await;
 
     // Client with small per-peer bucket
-    let client_config = TcpTransportConfig::new("client", test_addr(0)).with_rate_limit(
-        RateLimitConfig::default()
-            .with_bucket_size(3)
-            .with_refill_rate(0.0),
-    );
+    let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(3)
+                .with_refill_rate(0.0),
+        );
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
 
@@ -259,7 +281,9 @@ async fn test_rate_limit_per_peer_isolation() {
 #[tokio::test]
 async fn test_rate_limit_cleanup_on_disconnect() {
     // Server
-    let server_config = TcpTransportConfig::new("server", test_addr(0));
+    let server_config = TcpTransportConfig::new("server", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server = Arc::new(TcpTransport::new(server_config));
     server.start().await.unwrap();
 
@@ -267,11 +291,14 @@ async fn test_rate_limit_cleanup_on_disconnect() {
     sleep(Duration::from_millis(10)).await;
 
     // Client with small burst
-    let client_config = TcpTransportConfig::new("client", test_addr(0)).with_rate_limit(
-        RateLimitConfig::default()
-            .with_bucket_size(2)
-            .with_refill_rate(0.0),
-    );
+    let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(2)
+                .with_refill_rate(0.0),
+        );
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
 
@@ -329,7 +356,9 @@ async fn test_rate_limit_cleanup_on_disconnect() {
 #[tokio::test]
 async fn test_rate_limit_disabled() {
     // Server
-    let server_config = TcpTransportConfig::new("server", test_addr(0));
+    let server_config = TcpTransportConfig::new("server", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server = Arc::new(TcpTransport::new(server_config));
     server.start().await.unwrap();
 
@@ -338,6 +367,8 @@ async fn test_rate_limit_disabled() {
 
     // Client with rate limiting disabled
     let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
         .with_rate_limit(RateLimitConfig::disabled());
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
@@ -384,7 +415,9 @@ async fn test_rate_limit_config_presets() {
 #[tokio::test]
 async fn test_rate_limit_message_delivery() {
     // Verify that rate-limited messages aren't lost - they're just rejected
-    let server_config = TcpTransportConfig::new("server", test_addr(0));
+    let server_config = TcpTransportConfig::new("server", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false);
     let server = Arc::new(TcpTransport::new(server_config));
     server.start().await.unwrap();
 
@@ -392,11 +425,14 @@ async fn test_rate_limit_message_delivery() {
     sleep(Duration::from_millis(10)).await;
 
     // Client with very small bucket
-    let client_config = TcpTransportConfig::new("client", test_addr(0)).with_rate_limit(
-        RateLimitConfig::default()
-            .with_bucket_size(3)
-            .with_refill_rate(0.0),
-    );
+    let client_config = TcpTransportConfig::new("client", test_addr(0))
+        .with_security_mode(SecurityMode::Development)
+        .with_require_tls(false)
+        .with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(3)
+                .with_refill_rate(0.0),
+        );
     let client = Arc::new(TcpTransport::new(client_config));
     client.start().await.unwrap();
 
