@@ -1100,18 +1100,18 @@ RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc \
   --all-features
 ```
 
-## Online Documentation
+## Crate Documentation
 
-When deployed, the API reference is available at:
+After generating docs locally with `cargo doc`, you can browse documentation for:
 
-- [tensor_store](api/tensor_store/index.html)
-- [relational_engine](api/relational_engine/index.html)
-- [graph_engine](api/graph_engine/index.html)
-- [vector_engine](api/vector_engine/index.html)
-- [tensor_chain](api/tensor_chain/index.html)
-- [neumann_parser](api/neumann_parser/index.html)
-- [query_router](api/query_router/index.html)
-- [tensor_cache](api/tensor_cache/index.html)
-- [tensor_vault](api/tensor_vault/index.html)
-- [tensor_blob](api/tensor_blob/index.html)
-- [tensor_checkpoint](api/tensor_checkpoint/index.html)
+- `tensor_store` - Core storage layer
+- `relational_engine` - SQL-like tables
+- `graph_engine` - Graph operations
+- `vector_engine` - Vector similarity search
+- `tensor_chain` - Distributed consensus
+- `neumann_parser` - Query language parser
+- `query_router` - Unified query execution
+- `tensor_cache` - Multi-layer caching
+- `tensor_vault` - Encrypted secrets
+- `tensor_blob` - Blob storage
+- `tensor_checkpoint` - Snapshot/restore
