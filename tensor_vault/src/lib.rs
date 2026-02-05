@@ -24,29 +24,29 @@
 #![allow(clippy::format_collect)]
 
 mod access;
+mod attenuation;
 mod audit;
 mod encryption;
 mod key;
+pub mod namespaced;
 mod obfuscation;
 mod rate_limit;
+pub mod scoped;
+mod signing;
 mod ttl;
+mod vault;
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use serde::{Deserialize, Serialize};
 
 pub use access::AccessController;
+pub use attenuation::AttenuationPolicy;
 pub use audit::{AuditEntry, AuditLog, AuditOperation};
 pub use encryption::{Cipher, NONCE_SIZE};
-use graph_engine::{Direction, GraphEngine, PropertyValue};
 pub use key::{MasterKey, KEY_SIZE, SALT_SIZE};
 pub use obfuscation::{Obfuscator, PaddingSize};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
-use serde::{Deserialize, Serialize};
-use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
 pub use ttl::GrantTTLTracker;
+pub use vault::Vault;
 
 /// Permission levels for vault access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -69,8 +69,27 @@ impl Permission {
         )
     }
 
+    /// Numeric level for bottleneck flow (1=Read, 2=Write, 3=Admin).
+    pub(crate) fn to_level(self) -> i64 {
+        match self {
+            Self::Read => 1,
+            Self::Write => 2,
+            Self::Admin => 3,
+        }
+    }
+
+    /// Parse from numeric level.
+    pub(crate) fn from_level(level: i64) -> Option<Self> {
+        match level {
+            1 => Some(Self::Read),
+            2 => Some(Self::Write),
+            3 => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
     /// Get edge type suffix for this permission level.
-    fn edge_suffix(self) -> &'static str {
+    pub(crate) fn edge_suffix(self) -> &'static str {
         match self {
             Self::Read => "_READ",
             Self::Write => "_WRITE",
@@ -79,7 +98,7 @@ impl Permission {
     }
 
     /// Parse from edge type.
-    fn from_edge_type(edge_type: &str) -> Option<Self> {
+    pub(crate) fn from_edge_type(edge_type: &str) -> Option<Self> {
         if edge_type.ends_with("_READ") {
             Some(Self::Read)
         } else if edge_type.ends_with("_WRITE") {
@@ -176,6 +195,8 @@ pub struct VaultConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// Maximum number of versions to keep per secret (default: 5).
     pub max_versions: usize,
+    /// Permission attenuation policy (default: attenuate with distance).
+    pub attenuation: AttenuationPolicy,
 }
 
 impl Default for VaultConfig {
@@ -187,6 +208,7 @@ impl Default for VaultConfig {
             argon2_parallelism: 4,
             rate_limit: None,
             max_versions: 5,
+            attenuation: AttenuationPolicy::default(),
         }
     }
 }
@@ -212,6 +234,13 @@ impl VaultConfig {
         self.max_versions = max;
         self
     }
+
+    /// Create a config with a custom attenuation policy.
+    #[must_use]
+    pub fn with_attenuation(mut self, policy: AttenuationPolicy) -> Self {
+        self.attenuation = policy;
+        self
+    }
 }
 
 /// Information about a secret version.
@@ -223,1052 +252,15 @@ pub struct VersionInfo {
     pub created_at: i64,
 }
 
-/// Secure secret storage with graph-based access control.
-pub struct Vault {
-    store: TensorStore,
-    pub graph: Arc<GraphEngine>,
-    cipher: Cipher,
-    obfuscator: Obfuscator,
-    ttl_tracker: GrantTTLTracker,
-    rate_limiter: Option<RateLimiter>,
-    max_versions: usize,
-}
-
-impl Vault {
-    /// Storage key prefix for vault secrets (obfuscated).
-    const PREFIX: &'static str = "_vk:";
-    /// Node ID for the root entity with universal access.
-    pub const ROOT: &'static str = "node:root";
-    /// Edge type for access grants.
-    const ACCESS_EDGE: &'static str = "VAULT_ACCESS";
-    /// Storage key for persisted salt.
-    const SALT_KEY: &'static str = "_vault:salt";
-
-    /// Create a new vault with the given master key.
-    ///
-    /// If `config.salt` is `None`, the vault will:
-    /// 1. Try to load a previously persisted salt from storage
-    /// 2. If none exists, generate a cryptographically random salt and persist it
-    ///
-    /// This ensures consistent key derivation across vault reopens while
-    /// preventing hardcoded salt vulnerabilities.
-    pub fn new(
-        master_key: &[u8],
-        graph: Arc<GraphEngine>,
-        store: TensorStore,
-        config: VaultConfig,
-    ) -> Result<Self> {
-        // Determine the salt to use
-        let derived = if config.salt.is_some() {
-            // Explicit salt provided - use it directly
-            let (key, _) = MasterKey::derive(master_key, &config)?;
-            key
-        } else if let Some(persisted_salt) = Self::load_salt(&store) {
-            // Use persisted salt for consistency
-            MasterKey::derive_with_salt(master_key, &persisted_salt, &config)?
-        } else {
-            // Generate new random salt and persist it
-            let (key, new_salt) = MasterKey::derive(master_key, &config)?;
-            Self::save_salt(&store, new_salt)?;
-            key
-        };
-
-        let obfuscator = Obfuscator::new(&derived);
-        let cipher = Cipher::new(derived);
-
-        let rate_limiter = config.rate_limit.map(RateLimiter::new);
-        let max_versions = config.max_versions.max(1); // At least 1 version
-
-        let vault = Self {
-            store,
-            graph,
-            cipher,
-            obfuscator,
-            ttl_tracker: GrantTTLTracker::new(),
-            rate_limiter,
-            max_versions,
-        };
-
-        vault.ensure_root_exists()?;
-        Ok(vault)
-    }
-
-    fn load_salt(store: &TensorStore) -> Option<[u8; SALT_SIZE]> {
-        store.get(Self::SALT_KEY).ok().and_then(|data| {
-            if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("_salt") {
-                if bytes.len() == SALT_SIZE {
-                    let mut salt = [0u8; SALT_SIZE];
-                    salt.copy_from_slice(bytes);
-                    return Some(salt);
-                }
-            }
-            None
-        })
-    }
-
-    fn save_salt(store: &TensorStore, salt: [u8; SALT_SIZE]) -> Result<()> {
-        let mut data = TensorData::new();
-        data.set(
-            "_salt",
-            TensorValue::Scalar(ScalarValue::Bytes(salt.to_vec())),
-        );
-        store
-            .put(Self::SALT_KEY, data)
-            .map_err(|e| VaultError::StorageError(e.to_string()))
-    }
-
-    /// Create vault from NEUMANN_VAULT_KEY environment variable.
-    pub fn from_env(graph: Arc<GraphEngine>, store: TensorStore) -> Result<Self> {
-        let key = std::env::var("NEUMANN_VAULT_KEY")
-            .map_err(|_| VaultError::KeyDerivationError("NEUMANN_VAULT_KEY not set".to_string()))?;
-
-        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &key)
-            .map_err(|e| {
-                VaultError::KeyDerivationError(format!("Invalid base64 in NEUMANN_VAULT_KEY: {e}"))
-            })?;
-
-        Self::new(&decoded, graph, store, VaultConfig::default())
-    }
-
-    fn ensure_root_exists(&self) -> Result<()> {
-        // Ensure root node exists in graph
-        let _ = self.get_or_create_entity_node(Self::ROOT);
-
-        // Also store in TensorStore for backwards compatibility
-        if !self.store.exists(Self::ROOT) {
-            let mut root = TensorData::new();
-            root.set(
-                "_type",
-                TensorValue::Scalar(ScalarValue::String("vault_root".into())),
-            );
-            root.set(
-                "_label",
-                TensorValue::Scalar(ScalarValue::String("root".into())),
-            );
-            self.store
-                .put(Self::ROOT, root)
-                .map_err(|e| VaultError::StorageError(e.to_string()))?;
-        }
-        Ok(())
-    }
-
-    // ========== Node-based Graph API Helpers ==========
-    // These methods provide a string-key interface on top of the node-based graph API.
-
-    /// Get or create a graph node for an entity key.
-    /// Uses the "entity_key" property to look up existing nodes.
-    fn get_or_create_entity_node(&self, entity_key: &str) -> u64 {
-        // Try to find existing node by property
-        if let Ok(nodes) = self
-            .graph
-            .find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
-        {
-            if let Some(node) = nodes.first() {
-                return node.id;
-            }
-        }
-
-        // Create new node with entity key property
-        let mut props = HashMap::new();
-        props.insert(
-            "entity_key".to_string(),
-            graph_engine::PropertyValue::String(entity_key.to_string()),
-        );
-
-        self.graph.create_node("VaultEntity", props).unwrap_or(0)
-    }
-
-    /// Add an edge between two entity keys.
-    fn add_entity_graph_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<u64> {
-        let from_node = self.get_or_create_entity_node(from_key);
-        let to_node = self.get_or_create_entity_node(to_key);
-
-        self.graph
-            .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
-            .map_err(|e| VaultError::GraphError(e.to_string()))
-    }
-
-    /// Get outgoing edges for an entity, returning (edge_id, target_key, edge_type).
-    fn get_entity_outgoing_edges(&self, entity_key: &str) -> Vec<(u64, String, String)> {
-        let node_id = self.get_or_create_entity_node(entity_key);
-        let mut result = Vec::new();
-
-        if let Ok(edges) = self.graph.edges_of(node_id, Direction::Outgoing) {
-            for edge in edges {
-                // Get the target node's entity key
-                let target_id = if edge.from == node_id {
-                    edge.to
-                } else {
-                    edge.from
-                };
-                if let Ok(target_node) = self.graph.get_node(target_id) {
-                    if let Some(graph_engine::PropertyValue::String(key)) =
-                        target_node.properties.get("entity_key")
-                    {
-                        result.push((edge.id, key.clone(), edge.edge_type.clone()));
-                    }
-                }
-            }
-        }
-
-        result
-    }
-
-    /// Delete an edge by ID.
-    fn delete_graph_edge(&self, edge_id: u64) -> Result<()> {
-        self.graph
-            .delete_edge(edge_id)
-            .map_err(|e| VaultError::GraphError(e.to_string()))
-    }
-
-    fn vault_key(&self, secret_key: &str) -> String {
-        // Obfuscate the key using HMAC to hide the original key name
-        let obfuscated = self.obfuscator.obfuscate_key(secret_key);
-        format!("{}{}", Self::PREFIX, obfuscated)
-    }
-
-    fn blob_key(&self, secret_key: &str, nonce: &[u8]) -> String {
-        // Generate storage ID for the ciphertext blob (pointer indirection)
-        self.obfuscator.generate_storage_id(secret_key, nonce)
-    }
-
-    fn secret_node_key(&self, secret_key: &str) -> String {
-        // Use obfuscated key to hide plaintext secret names from graph
-        let obfuscated = self.obfuscator.obfuscate_key(secret_key);
-        format!("vault_secret:{obfuscated}")
-    }
-
-    fn current_timestamp() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64
-    }
-
-    /// Store a secret.
-    ///
-    /// For existing secrets, this adds a new version. Old versions are kept
-    /// up to `max_versions` limit.
-    pub fn set(&self, requester: &str, key: &str, value: &str) -> Result<()> {
-        // Rate limit check
-        self.check_rate_limit(requester, Operation::Set)?;
-
-        // For new secrets, only root can create. For existing, need Write permission.
-        let secret_node = self.secret_node_key(key);
-        let vault_storage_key = self.vault_key(key);
-        let is_update = self.store.exists(&secret_node);
-
-        if is_update {
-            self.check_access_with_permission(requester, key, Permission::Write)?;
-        } else if requester != Self::ROOT {
-            return Err(VaultError::AccessDenied(
-                "only root can create new secrets".to_string(),
-            ));
-        }
-
-        // Pad plaintext to hide length, then encrypt
-        let padded = obfuscation::pad_plaintext(value.as_bytes())?;
-        let (ciphertext, nonce) = self.cipher.encrypt(&padded)?;
-        let timestamp = Self::current_timestamp();
-
-        // Store ciphertext in separate blob for pointer indirection
-        let blob_storage_key = self.blob_key(key, &nonce);
-        let mut blob_tensor = TensorData::new();
-        blob_tensor.set("_data", TensorValue::Scalar(ScalarValue::Bytes(ciphertext)));
-        blob_tensor.set(
-            "_nonce",
-            TensorValue::Scalar(ScalarValue::Bytes(nonce.to_vec())),
-        );
-        blob_tensor.set("_ts", TensorValue::Scalar(ScalarValue::Int(timestamp)));
-        self.store
-            .put(&blob_storage_key, blob_tensor)
-            .map_err(|e| VaultError::StorageError(e.to_string()))?;
-
-        // Get or create metadata tensor
-        let mut tensor = if is_update {
-            self.store
-                .get(&vault_storage_key)
-                .map_err(|_| VaultError::NotFound(key.to_string()))?
-        } else {
-            // Encrypt the original key name for list() to work
-            let (encrypted_key, key_nonce) = self.cipher.encrypt(key.as_bytes())?;
-
-            // Encrypt metadata using AEAD
-            let creator_bytes = requester.as_bytes();
-            let obfuscated_creator = self.obfuscator.encrypt_metadata(creator_bytes)?;
-            let timestamp_bytes = timestamp.to_le_bytes();
-            let obfuscated_timestamp = self.obfuscator.encrypt_metadata(&timestamp_bytes)?;
-
-            let mut t = TensorData::new();
-            t.set(
-                "_key_enc",
-                TensorValue::Scalar(ScalarValue::Bytes(encrypted_key)),
-            );
-            t.set(
-                "_key_nonce",
-                TensorValue::Scalar(ScalarValue::Bytes(key_nonce.to_vec())),
-            );
-            t.set(
-                "_creator_obf",
-                TensorValue::Scalar(ScalarValue::Bytes(obfuscated_creator)),
-            );
-            t.set(
-                "_created_obf",
-                TensorValue::Scalar(ScalarValue::Bytes(obfuscated_timestamp)),
-            );
-            t
-        };
-
-        // Update version info
-        let mut versions = Self::get_version_blobs(&tensor);
-        versions.push(blob_storage_key.clone());
-
-        // Prune old versions if exceeding max
-        while versions.len() > self.max_versions {
-            if let Some(old_blob) = versions.first() {
-                // Old blob may not exist - delete is idempotent
-                self.store.delete(old_blob).ok();
-            }
-            versions.remove(0);
-        }
-
-        // Update tensor with new version info
-        tensor.set("_blob", TensorValue::Pointer(blob_storage_key));
-        tensor.set(
-            "_nonce",
-            TensorValue::Scalar(ScalarValue::Bytes(nonce.to_vec())),
-        );
-        tensor.set("_versions", TensorValue::Pointers(versions));
-        tensor.set(
-            "_version_count",
-            TensorValue::Scalar(ScalarValue::Int(1)), // Will be set correctly by get_version_blobs
-        );
-
-        self.store
-            .put(vault_storage_key, tensor)
-            .map_err(|e| VaultError::StorageError(e.to_string()))?;
-
-        // Create secret node for access control if it doesn't exist
-        if !is_update {
-            let mut node = TensorData::new();
-            node.set(
-                "_type",
-                TensorValue::Scalar(ScalarValue::String("vault_secret".into())),
-            );
-            node.set(
-                "_secret_key",
-                TensorValue::Scalar(ScalarValue::String(key.to_string())),
-            );
-            self.store
-                .put(&secret_node, node)
-                .map_err(|e| VaultError::StorageError(e.to_string()))?;
-
-            // Root always has Admin access to secrets it creates
-            let edge_type = format!("{}{}", Self::ACCESS_EDGE, Permission::Admin.edge_suffix());
-            self.add_entity_graph_edge(Self::ROOT, &secret_node, &edge_type)?;
-        }
-
-        // Log audit
-        self.log_operation(requester, key, &AuditOperation::Set);
-
-        Ok(())
-    }
-
-    fn get_version_blobs(tensor: &TensorData) -> Vec<String> {
-        match tensor.get("_versions") {
-            Some(TensorValue::Pointers(v)) => v.clone(),
-            _ => {
-                // Backward compatibility: single blob is version 1
-                if let Some(TensorValue::Pointer(blob)) = tensor.get("_blob") {
-                    vec![blob.clone()]
-                } else {
-                    vec![]
-                }
-            },
-        }
-    }
-
-    /// Retrieve a secret (requires graph path from requester to secret).
-    pub fn get(&self, requester: &str, key: &str) -> Result<String> {
-        // Opportunistic cleanup of expired grants
-        self.cleanup_expired_grants();
-
-        // Rate limit check
-        self.check_rate_limit(requester, Operation::Get)?;
-
-        self.check_access(requester, key)?;
-
-        let tensor = self
-            .store
-            .get(&self.vault_key(key))
-            .map_err(|_| VaultError::NotFound(key.to_string()))?;
-
-        // Follow pointer indirection to get ciphertext blob
-        let blob_key = match tensor.get("_blob") {
-            Some(TensorValue::Pointer(p)) => p.clone(),
-            _ => return Err(VaultError::NotFound(key.to_string())),
-        };
-
-        let blob_tensor = self
-            .store
-            .get(&blob_key)
-            .map_err(|_| VaultError::CryptoError("Blob not found".to_string()))?;
-
-        let ciphertext = match blob_tensor.get("_data") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-            _ => return Err(VaultError::CryptoError("Blob data missing".to_string())),
-        };
-
-        let nonce = match tensor.get("_nonce") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-            _ => return Err(VaultError::CryptoError("Missing nonce".to_string())),
-        };
-
-        // Decrypt and unpad
-        let padded = self.cipher.decrypt(&ciphertext, &nonce)?;
-        let plaintext = obfuscation::unpad_plaintext(&padded)?;
-
-        // Log audit
-        self.log_operation(requester, key, &AuditOperation::Get);
-
-        String::from_utf8(plaintext)
-            .map_err(|e| VaultError::CryptoError(format!("Invalid UTF-8: {e}")))
-    }
-
-    /// Retrieve a specific version of a secret.
-    ///
-    /// Version numbers are 1-based. Version 1 is the oldest kept version.
-    pub fn get_version(&self, requester: &str, key: &str, version: u32) -> Result<String> {
-        self.check_access(requester, key)?;
-
-        let tensor = self
-            .store
-            .get(&self.vault_key(key))
-            .map_err(|_| VaultError::NotFound(key.to_string()))?;
-
-        let versions = Self::get_version_blobs(&tensor);
-        let idx = (version as usize).saturating_sub(1);
-
-        if idx >= versions.len() {
-            return Err(VaultError::NotFound(format!(
-                "version {version} not found for '{key}'"
-            )));
-        }
-
-        let blob_key = &versions[idx];
-        let blob_tensor = self
-            .store
-            .get(blob_key)
-            .map_err(|_| VaultError::CryptoError("Blob not found".to_string()))?;
-
-        let ciphertext = match blob_tensor.get("_data") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-            _ => return Err(VaultError::CryptoError("Blob data missing".to_string())),
-        };
-
-        let nonce = match blob_tensor.get("_nonce") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-            _ => {
-                // Fallback to main tensor nonce for backward compatibility
-                match tensor.get("_nonce") {
-                    Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-                    _ => return Err(VaultError::CryptoError("Missing nonce".to_string())),
-                }
-            },
-        };
-
-        let padded = self.cipher.decrypt(&ciphertext, &nonce)?;
-        let plaintext = obfuscation::unpad_plaintext(&padded)?;
-
-        String::from_utf8(plaintext)
-            .map_err(|e| VaultError::CryptoError(format!("Invalid UTF-8: {e}")))
-    }
-
-    /// List all versions of a secret with metadata.
-    pub fn list_versions(&self, requester: &str, key: &str) -> Result<Vec<VersionInfo>> {
-        self.check_access(requester, key)?;
-
-        let tensor = self
-            .store
-            .get(&self.vault_key(key))
-            .map_err(|_| VaultError::NotFound(key.to_string()))?;
-
-        let versions = Self::get_version_blobs(&tensor);
-        let mut infos = Vec::with_capacity(versions.len());
-
-        for (idx, blob_key) in versions.iter().enumerate() {
-            let created_at = if let Ok(blob) = self.store.get(blob_key) {
-                match blob.get("_ts") {
-                    Some(TensorValue::Scalar(ScalarValue::Int(ts))) => *ts,
-                    _ => 0,
-                }
-            } else {
-                0
-            };
-
-            infos.push(VersionInfo {
-                version: (idx + 1) as u32,
-                created_at,
-            });
-        }
-
-        Ok(infos)
-    }
-
-    /// Get the current version number.
-    pub fn current_version(&self, requester: &str, key: &str) -> Result<u32> {
-        self.check_access(requester, key)?;
-
-        let tensor = self
-            .store
-            .get(&self.vault_key(key))
-            .map_err(|_| VaultError::NotFound(key.to_string()))?;
-
-        let versions = Self::get_version_blobs(&tensor);
-        Ok(versions.len() as u32)
-    }
-
-    /// Rollback to a previous version (requires Write permission).
-    ///
-    /// This creates a new version with the content from the specified version.
-    pub fn rollback(&self, requester: &str, key: &str, version: u32) -> Result<()> {
-        // Get the old version value
-        let value = self.get_version(requester, key, version)?;
-
-        // Create new version with the old value
-        // Note: This will create a new version, preserving history
-        self.set(requester, key, &value)
-    }
-
-    /// Grant access to a secret with Admin permission (backward compatible).
-    pub fn grant(&self, requester: &str, entity: &str, key: &str) -> Result<()> {
-        self.grant_with_permission(requester, entity, key, Permission::Admin)
-    }
-
-    /// Grant access to a secret with a specific permission level.
-    pub fn grant_with_permission(
-        &self,
-        requester: &str,
-        entity: &str,
-        key: &str,
-        level: Permission,
-    ) -> Result<()> {
-        // Rate limit check
-        self.check_rate_limit(requester, Operation::Grant)?;
-
-        // Requester needs Admin permission to grant access
-        self.check_access_with_permission(requester, key, Permission::Admin)?;
-
-        let secret_node = self.secret_node_key(key);
-        if !self.store.exists(&secret_node) {
-            return Err(VaultError::NotFound(key.to_string()));
-        }
-
-        // Create edge with permission level encoded in type
-        let edge_type = format!("{}{}", Self::ACCESS_EDGE, level.edge_suffix());
-        self.add_entity_graph_edge(entity, &secret_node, &edge_type)?;
-
-        // Log audit
-        self.log_operation(
-            requester,
-            key,
-            &AuditOperation::Grant {
-                to: entity.to_string(),
-                permission: format!("{level:?}").to_lowercase(),
-            },
-        );
-
-        Ok(())
-    }
-
-    /// Grant access to a secret with a TTL (time-to-live).
-    ///
-    /// The grant will automatically expire after the specified duration.
-    /// Expired grants are cleaned up opportunistically during vault operations.
-    pub fn grant_with_ttl(
-        &self,
-        requester: &str,
-        entity: &str,
-        key: &str,
-        level: Permission,
-        ttl: Duration,
-    ) -> Result<()> {
-        // First, create the grant normally
-        self.grant_with_permission(requester, entity, key, level)?;
-
-        // Then register with TTL tracker
-        self.ttl_tracker.add(entity, key, ttl);
-
-        Ok(())
-    }
-
-    /// Revoke access to a secret (requires Admin permission).
-    pub fn revoke(&self, requester: &str, entity: &str, key: &str) -> Result<()> {
-        // Only those with Admin permission can revoke access
-        self.check_access_with_permission(requester, key, Permission::Admin)?;
-
-        let secret_node = self.secret_node_key(key);
-
-        // Find and delete the access edge (handles all permission levels)
-        for (edge_id, to, edge_type) in self.get_entity_outgoing_edges(entity) {
-            if to == secret_node && edge_type.starts_with(Self::ACCESS_EDGE) {
-                self.delete_graph_edge(edge_id)?;
-            }
-        }
-
-        // Remove from TTL tracker if present
-        self.ttl_tracker.remove(entity, key);
-
-        // Log audit
-        self.log_operation(
-            requester,
-            key,
-            &AuditOperation::Revoke {
-                from: entity.to_string(),
-            },
-        );
-
-        Ok(())
-    }
-
-    /// Clean up expired grants.
-    ///
-    /// Returns the number of grants that were revoked.
-    /// This is called opportunistically during vault operations.
-    pub fn cleanup_expired_grants(&self) -> usize {
-        let expired = self.ttl_tracker.get_expired();
-        let mut revoked = 0;
-
-        for (entity, key) in expired {
-            let secret_node = self.secret_node_key(&key);
-
-            // Find and delete the access edge
-            for (edge_id, to, edge_type) in self.get_entity_outgoing_edges(&entity) {
-                if to == secret_node
-                    && edge_type.starts_with(Self::ACCESS_EDGE)
-                    && self.delete_graph_edge(edge_id).is_ok()
-                {
-                    revoked += 1;
-                }
-            }
-        }
-
-        revoked
-    }
-
-    /// Delete a secret (requires Admin permission).
-    ///
-    /// This deletes all versions of the secret.
-    pub fn delete(&self, requester: &str, key: &str) -> Result<()> {
-        self.check_access_with_permission(requester, key, Permission::Admin)?;
-
-        let vault_storage_key = self.vault_key(key);
-
-        // Delete all version blobs - blobs may not exist, delete is idempotent
-        if let Ok(tensor) = self.store.get(&vault_storage_key) {
-            for blob_key in Self::get_version_blobs(&tensor) {
-                self.store.delete(&blob_key).ok();
-            }
-        }
-
-        self.store
-            .delete(&vault_storage_key)
-            .map_err(|_| VaultError::NotFound(key.to_string()))?;
-
-        // Also clean up the secret node - may not exist, delete is idempotent
-        let secret_node = self.secret_node_key(key);
-        self.store.delete(&secret_node).ok();
-
-        // Log audit
-        self.log_operation(requester, key, &AuditOperation::Delete);
-
-        Ok(())
-    }
-
-    /// Rotate a secret value (requires Write permission).
-    ///
-    /// Creates a new version. Previous versions are kept up to `max_versions`.
-    pub fn rotate(&self, requester: &str, key: &str, new_value: &str) -> Result<()> {
-        self.check_access_with_permission(requester, key, Permission::Write)?;
-
-        let vault_storage_key = self.vault_key(key);
-
-        if !self.store.exists(&vault_storage_key) {
-            return Err(VaultError::NotFound(key.to_string()));
-        }
-
-        // Pad and encrypt new value
-        let padded = obfuscation::pad_plaintext(new_value.as_bytes())?;
-        let (ciphertext, nonce) = self.cipher.encrypt(&padded)?;
-        let timestamp = Self::current_timestamp();
-
-        // Store new ciphertext blob with version info
-        let new_blob_key = self.blob_key(key, &nonce);
-        let mut blob_tensor = TensorData::new();
-        blob_tensor.set("_data", TensorValue::Scalar(ScalarValue::Bytes(ciphertext)));
-        blob_tensor.set(
-            "_nonce",
-            TensorValue::Scalar(ScalarValue::Bytes(nonce.to_vec())),
-        );
-        blob_tensor.set("_ts", TensorValue::Scalar(ScalarValue::Int(timestamp)));
-        self.store
-            .put(&new_blob_key, blob_tensor)
-            .map_err(|e| VaultError::StorageError(e.to_string()))?;
-
-        // Get current tensor
-        let mut tensor = self
-            .store
-            .get(&vault_storage_key)
-            .map_err(|_| VaultError::NotFound(key.to_string()))?;
-
-        // Update version list
-        let mut versions = Self::get_version_blobs(&tensor);
-        versions.push(new_blob_key.clone());
-
-        // Prune old versions if exceeding max
-        while versions.len() > self.max_versions {
-            if let Some(old_blob) = versions.first() {
-                // Old blob may not exist - delete is idempotent
-                self.store.delete(old_blob).ok();
-            }
-            versions.remove(0);
-        }
-
-        // Update metadata with new blob pointer and nonce
-        tensor.set("_blob", TensorValue::Pointer(new_blob_key));
-        tensor.set(
-            "_nonce",
-            TensorValue::Scalar(ScalarValue::Bytes(nonce.to_vec())),
-        );
-        tensor.set("_versions", TensorValue::Pointers(versions));
-
-        // Encrypt rotation metadata using AEAD
-        let rotator_obf = self.obfuscator.encrypt_metadata(requester.as_bytes())?;
-        let timestamp_obf = self.obfuscator.encrypt_metadata(&timestamp.to_le_bytes())?;
-
-        tensor.set(
-            "_rotator_obf",
-            TensorValue::Scalar(ScalarValue::Bytes(rotator_obf)),
-        );
-        tensor.set(
-            "_rotated_obf",
-            TensorValue::Scalar(ScalarValue::Bytes(timestamp_obf)),
-        );
-
-        self.store
-            .put(vault_storage_key, tensor)
-            .map_err(|e| VaultError::StorageError(e.to_string()))?;
-
-        // Log audit
-        self.log_operation(requester, key, &AuditOperation::Rotate);
-
-        Ok(())
-    }
-
-    /// List secret keys matching a pattern.
-    pub fn list(&self, requester: &str, pattern: &str) -> Result<Vec<String>> {
-        // Rate limit check
-        self.check_rate_limit(requester, Operation::List)?;
-
-        let all_keys = self.store.scan(Self::PREFIX);
-
-        let mut accessible = Vec::new();
-        for vault_key in all_keys {
-            // Decrypt the original key name from stored metadata
-            if let Ok(tensor) = self.store.get(&vault_key) {
-                let original_key = self.decrypt_key_name(&tensor);
-                if let Some(key) = original_key {
-                    if Self::matches_pattern(&key, pattern) && self.has_access(requester, &key) {
-                        accessible.push(key);
-                    }
-                }
-            }
-        }
-
-        // Log audit (using pattern as key)
-        self.log_operation(requester, pattern, &AuditOperation::List);
-
-        Ok(accessible)
-    }
-
-    fn decrypt_key_name(&self, tensor: &TensorData) -> Option<String> {
-        let encrypted_key = match tensor.get("_key_enc") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-            _ => return None,
-        };
-        let key_nonce = match tensor.get("_key_nonce") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
-            _ => return None,
-        };
-
-        self.cipher
-            .decrypt(&encrypted_key, &key_nonce)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-    }
-
-    /// Create a scoped vault view for a specific entity.
-    pub fn scope(&self, entity: &str) -> ScopedVault<'_> {
-        ScopedVault {
-            vault: self,
-            entity: entity.to_string(),
-        }
-    }
-
-    /// Create a namespaced vault view for multi-tenant isolation.
-    ///
-    /// All keys accessed through the returned view are prefixed with the namespace.
-    pub fn namespace(&self, namespace: &str, identity: &str) -> NamespacedVault<'_> {
-        NamespacedVault::new(self, namespace, identity)
-    }
-
-    /// Access the underlying graph engine (for testing/benchmarking).
-    pub fn graph(&self) -> &Arc<GraphEngine> {
-        &self.graph
-    }
-
-    fn check_access(&self, requester: &str, key: &str) -> Result<()> {
-        self.check_access_with_permission(requester, key, Permission::Read)
-    }
-
-    fn check_access_with_permission(
-        &self,
-        requester: &str,
-        key: &str,
-        required: Permission,
-    ) -> Result<()> {
-        // Root always has Admin access
-        if requester == Self::ROOT {
-            return Ok(());
-        }
-
-        let secret_node = self.secret_node_key(key);
-
-        if AccessController::check_path_with_permission(
-            &self.graph,
-            requester,
-            &secret_node,
-            required,
-        ) {
-            Ok(())
-        } else {
-            // Determine if it's "no access" or "insufficient permission"
-            if AccessController::check_path(&self.graph, requester, &secret_node) {
-                Err(VaultError::InsufficientPermission(format!(
-                    "{requester} has access but not {required} permission on '{key}'"
-                )))
-            } else {
-                Err(VaultError::AccessDenied(format!(
-                    "No path from {requester} to secret '{key}'"
-                )))
-            }
-        }
-    }
-
-    fn has_access(&self, requester: &str, key: &str) -> bool {
-        // Root always has access
-        if requester == Self::ROOT {
-            return true;
-        }
-
-        // Check if path exists from requester to secret node
-        let secret_node = self.secret_node_key(key);
-
-        AccessController::check_path(&self.graph, requester, &secret_node)
-    }
-
-    fn check_rate_limit(&self, requester: &str, op: Operation) -> Result<()> {
-        // Root is not rate limited
-        if requester == Self::ROOT {
-            return Ok(());
-        }
-
-        if let Some(limiter) = &self.rate_limiter {
-            limiter
-                .check_and_record(requester, op)
-                .map_err(VaultError::RateLimited)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Get the permission level for a requester on a secret.
-    pub fn get_permission(&self, requester: &str, key: &str) -> Option<Permission> {
-        if requester == Self::ROOT {
-            return Some(Permission::Admin);
-        }
-
-        let secret_node = self.secret_node_key(key);
-        AccessController::get_permission_level(&self.graph, requester, &secret_node)
-    }
-
-    fn log_operation(&self, requester: &str, key: &str, operation: &AuditOperation) {
-        // Obfuscate secret key in audit logs to hide plaintext names
-        let obfuscated_key = self.obfuscator.obfuscate_key(key);
-        let audit_log = AuditLog::new(&self.store);
-        audit_log.record(requester, &obfuscated_key, operation);
-    }
-
-    /// Query audit entries for a specific secret.
-    pub fn audit_log(&self, key: &str) -> Vec<AuditEntry> {
-        // Use same obfuscation when querying
-        let obfuscated_key = self.obfuscator.obfuscate_key(key);
-        let audit = AuditLog::new(&self.store);
-        audit.by_secret(&obfuscated_key)
-    }
-
-    /// Query audit entries by entity (who performed operations).
-    pub fn audit_by_entity(&self, entity: &str) -> Vec<AuditEntry> {
-        let audit = AuditLog::new(&self.store);
-        audit.by_entity(entity)
-    }
-
-    /// Query audit entries since a timestamp (unix milliseconds).
-    pub fn audit_since(&self, since_millis: i64) -> Vec<AuditEntry> {
-        let audit = AuditLog::new(&self.store);
-        audit.since(since_millis)
-    }
-
-    /// Get recent audit entries.
-    pub fn audit_recent(&self, limit: usize) -> Vec<AuditEntry> {
-        let audit = AuditLog::new(&self.store);
-        audit.recent(limit)
-    }
-
-    fn matches_pattern(key: &str, pattern: &str) -> bool {
-        if pattern.is_empty() || pattern == "*" {
-            return true;
-        }
-
-        // Simple glob matching: only support trailing *
-        if let Some(prefix) = pattern.strip_suffix('*') {
-            key.starts_with(prefix)
-        } else {
-            key == pattern
-        }
-    }
-}
-
-/// A scoped view of the vault for a specific entity.
-pub struct ScopedVault<'a> {
-    vault: &'a Vault,
-    entity: String,
-}
-
-impl ScopedVault<'_> {
-    pub fn set(&self, key: &str, value: &str) -> Result<()> {
-        self.vault.set(&self.entity, key, value)
-    }
-
-    pub fn get(&self, key: &str) -> Result<String> {
-        self.vault.get(&self.entity, key)
-    }
-
-    pub fn delete(&self, key: &str) -> Result<()> {
-        self.vault.delete(&self.entity, key)
-    }
-
-    pub fn list(&self, pattern: &str) -> Result<Vec<String>> {
-        self.vault.list(&self.entity, pattern)
-    }
-}
-
-/// A namespaced view of the vault that prefixes all keys with a namespace.
-///
-/// Provides isolation between different tenants or agent contexts.
-pub struct NamespacedVault<'a> {
-    vault: &'a Vault,
-    namespace: String,
-    identity: String,
-}
-
-impl<'a> NamespacedVault<'a> {
-    /// Create a new namespaced vault view.
-    pub fn new(vault: &'a Vault, namespace: &str, identity: &str) -> Self {
-        Self {
-            vault,
-            namespace: namespace.to_string(),
-            identity: identity.to_string(),
-        }
-    }
-
-    fn prefixed_key(&self, key: &str) -> String {
-        format!("{}:{}", self.namespace, key)
-    }
-
-    fn strip_prefix<'b>(&self, key: &'b str) -> Option<&'b str> {
-        let prefix = format!("{}:", self.namespace);
-        key.strip_prefix(&prefix)
-    }
-
-    /// Store a secret in the namespace.
-    pub fn set(&self, key: &str, value: &str) -> Result<()> {
-        let prefixed = self.prefixed_key(key);
-        self.vault.set(&self.identity, &prefixed, value)
-    }
-
-    /// Retrieve a secret from the namespace.
-    pub fn get(&self, key: &str) -> Result<String> {
-        let prefixed = self.prefixed_key(key);
-        self.vault.get(&self.identity, &prefixed)
-    }
-
-    /// Delete a secret from the namespace.
-    pub fn delete(&self, key: &str) -> Result<()> {
-        let prefixed = self.prefixed_key(key);
-        self.vault.delete(&self.identity, &prefixed)
-    }
-
-    /// Rotate a secret in the namespace.
-    pub fn rotate(&self, key: &str, new_value: &str) -> Result<()> {
-        let prefixed = self.prefixed_key(key);
-        self.vault.rotate(&self.identity, &prefixed, new_value)
-    }
-
-    /// List secrets in the namespace matching a pattern.
-    ///
-    /// Only returns keys within this namespace, with the namespace prefix stripped.
-    pub fn list(&self, pattern: &str) -> Result<Vec<String>> {
-        // Prefix the pattern with namespace
-        let ns_pattern = format!("{}:{}", self.namespace, pattern);
-        let keys = self.vault.list(&self.identity, &ns_pattern)?;
-
-        // Strip namespace prefix from results
-        Ok(keys
-            .into_iter()
-            .filter_map(|k| self.strip_prefix(&k).map(String::from))
-            .collect())
-    }
-
-    /// Grant access to a secret in this namespace.
-    pub fn grant(&self, entity: &str, key: &str, level: Permission) -> Result<()> {
-        let prefixed = self.prefixed_key(key);
-        self.vault
-            .grant_with_permission(&self.identity, entity, &prefixed, level)
-    }
-
-    /// Revoke access to a secret in this namespace.
-    pub fn revoke(&self, entity: &str, key: &str) -> Result<()> {
-        let prefixed = self.prefixed_key(key);
-        self.vault.revoke(&self.identity, entity, &prefixed)
-    }
-
-    /// Get the namespace name.
-    pub fn namespace(&self) -> &str {
-        &self.namespace
-    }
-
-    /// Get the identity.
-    pub fn identity(&self) -> &str {
-        &self.identity
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use graph_engine::PropertyValue;
+    use std::{collections::HashMap, sync::Arc, time::Duration};
+
+    use graph_engine::{Direction, GraphEngine, PropertyValue};
     use serial_test::serial;
+    use tensor_store::TensorStore;
+
+    use super::*;
 
     fn create_test_vault() -> Vault {
         let store = TensorStore::new();
@@ -1299,6 +291,21 @@ mod tests {
         graph
             .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
             .ok();
+    }
+
+    /// Check whether an entity node has any outgoing VAULT_ACCESS edges.
+    fn has_access_edges(graph: &GraphEngine, entity_key: &str) -> bool {
+        let nodes = graph
+            .find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+            .unwrap_or_default();
+        let Some(node) = nodes.first() else {
+            return false;
+        };
+        graph
+            .edges_of(node.id, Direction::Outgoing)
+            .unwrap_or_default()
+            .iter()
+            .any(|e| e.edge_type.starts_with("VAULT_ACCESS"))
     }
 
     /// Helper to get outgoing edges for an entity key.
@@ -1465,6 +472,42 @@ mod tests {
     }
 
     #[test]
+    fn test_list_excludes_member_only_paths() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Alice has a MEMBER-only path to the secret node (no VAULT_ACCESS edge)
+        // This should NOT make the secret visible in list()
+        let secret_node = vault.secret_node_key("secret");
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
+        add_test_edge(&vault.graph, "team:devs", &secret_node, "MEMBER");
+
+        let alice_keys = vault.list("user:alice", "*").unwrap();
+        assert!(
+            alice_keys.is_empty(),
+            "MEMBER-only path should not leak secret names in list()"
+        );
+    }
+
+    #[test]
+    fn test_list_includes_vault_access_paths() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Alice has a proper VAULT_ACCESS path via a team
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Read)
+            .unwrap();
+
+        let alice_keys = vault.list("user:alice", "*").unwrap();
+        assert_eq!(alice_keys.len(), 1);
+        assert!(alice_keys.contains(&"secret".to_string()));
+    }
+
+    #[test]
     fn test_scoped_vault() {
         let vault = create_test_vault();
 
@@ -1494,9 +537,7 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
         // Create a chain: alice -> team -> secret
-        // Use MEMBER edge for team membership (manually, as it's not a vault operation)
         add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
-        // Use grant() to properly create the team -> secret edge with obfuscated key
         vault.grant(Vault::ROOT, "team:devs", "secret").unwrap();
 
         // Alice can access via transitive path
@@ -1506,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_access() {
-        use std::{sync::Arc, thread};
+        use std::thread;
 
         let vault = Arc::new(create_test_vault());
 
@@ -1573,15 +614,12 @@ mod tests {
     fn test_scoped_vault_set_and_delete() {
         let vault = create_test_vault();
 
-        // Grant alice permission to access secrets she creates
         let scoped = vault.scope(Vault::ROOT);
 
-        // Root creates and the scoped vault works
         scoped.set("scoped:key", "scoped_value").unwrap();
         let value = scoped.get("scoped:key").unwrap();
         assert_eq!(value, "scoped_value");
 
-        // Delete via scoped vault
         scoped.delete("scoped:key").unwrap();
         assert!(scoped.get("scoped:key").is_err());
     }
@@ -1605,7 +643,6 @@ mod tests {
         vault.set(Vault::ROOT, "exact_key", "value1").unwrap();
         vault.set(Vault::ROOT, "exact_key_extra", "value2").unwrap();
 
-        // Exact match (no glob)
         let keys = vault.list(Vault::ROOT, "exact_key").unwrap();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], "exact_key");
@@ -1635,7 +672,6 @@ mod tests {
     #[test]
     fn test_grant_on_nonexistent_secret() {
         let vault = create_test_vault();
-        // Grant on non-existent secret should fail
         let result = vault.grant(Vault::ROOT, "user:alice", "nonexistent");
         assert!(matches!(result, Err(VaultError::NotFound(_))));
     }
@@ -1667,7 +703,6 @@ mod tests {
     fn test_from_env_with_valid_key() {
         use base64::Engine;
 
-        // Set up a valid 32-byte key as base64
         let key_bytes = b"01234567890123456789012345678901";
         let encoded = base64::engine::general_purpose::STANDARD.encode(key_bytes);
         std::env::set_var("NEUMANN_VAULT_KEY", &encoded);
@@ -1676,7 +711,6 @@ mod tests {
         let graph = Arc::new(GraphEngine::new());
         let result = Vault::from_env(graph, store);
 
-        // Restore env
         std::env::remove_var("NEUMANN_VAULT_KEY");
 
         assert!(result.is_ok());
@@ -1712,10 +746,8 @@ mod tests {
     fn test_overwrite_without_access_denied() {
         let vault = create_test_vault();
 
-        // Root creates secret
         vault.set(Vault::ROOT, "protected", "initial").unwrap();
 
-        // Alice tries to overwrite without access
         let result = vault.set("user:alice", "protected", "hacked");
         assert!(matches!(result, Err(VaultError::AccessDenied(_))));
     }
@@ -1724,11 +756,9 @@ mod tests {
     fn test_overwrite_with_granted_access() {
         let vault = create_test_vault();
 
-        // Root creates secret and grants alice access
         vault.set(Vault::ROOT, "shared", "initial").unwrap();
         vault.grant(Vault::ROOT, "user:alice", "shared").unwrap();
 
-        // Alice can now overwrite
         vault.set("user:alice", "shared", "updated").unwrap();
 
         let value = vault.get(Vault::ROOT, "shared").unwrap();
@@ -1737,15 +767,12 @@ mod tests {
 
     #[test]
     fn test_short_key_still_works() {
-        // Argon2id can derive a key from any length input
         let store = TensorStore::new();
         let graph = Arc::new(GraphEngine::new());
 
-        // Short key works - Argon2id derives a proper key
         let result = Vault::new(b"short", graph.clone(), store, VaultConfig::default());
         assert!(result.is_ok());
 
-        // Even empty key works with Argon2id
         let store2 = TensorStore::new();
         let result = Vault::new(b"", graph, store2, VaultConfig::default());
         assert!(result.is_ok());
@@ -1755,12 +782,9 @@ mod tests {
     fn test_revoke_on_nonexistent_secret() {
         let vault = create_test_vault();
 
-        // Non-root user trying to revoke on non-existent secret fails with AccessDenied
-        // because check_access is called first and alice has no path to the secret
         let result = vault.revoke("user:alice", "user:bob", "nonexistent");
         assert!(matches!(result, Err(VaultError::AccessDenied(_))));
 
-        // Root can revoke on non-existent secret (succeeds but does nothing)
         let result = vault.revoke(Vault::ROOT, "user:alice", "nonexistent");
         assert!(result.is_ok());
     }
@@ -1773,12 +797,10 @@ mod tests {
 
         vault.set(Vault::ROOT, "api_key", "secret").unwrap();
 
-        // The original key should NOT appear in storage keys
         let all_keys = vault.store.scan("_vk:");
         for key in &all_keys {
             assert!(!key.contains("api_key"), "Key should be obfuscated");
         }
-        // But we should have at least one vault entry
         assert_eq!(all_keys.len(), 1);
     }
 
@@ -1788,11 +810,9 @@ mod tests {
 
         vault.set(Vault::ROOT, "my_secret", "value").unwrap();
 
-        // Check that blob storage was created with _vs: prefix
         let blob_keys = vault.store.scan("_vs:");
         assert_eq!(blob_keys.len(), 1, "Should have one blob");
 
-        // The blob should contain encrypted data
         let blob = vault.store.get(&blob_keys[0]).unwrap();
         assert!(blob.get("_data").is_some(), "Blob should have _data field");
     }
@@ -1803,11 +823,9 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Get the metadata tensor
         let all_keys = vault.store.scan("_vk:");
         let tensor = vault.store.get(&all_keys[0]).unwrap();
 
-        // Creator should be obfuscated, not plaintext
         assert!(
             tensor.get("_creator_obf").is_some(),
             "Should have obfuscated creator"
@@ -1817,7 +835,6 @@ mod tests {
             "Should NOT have plaintext creator"
         );
 
-        // Timestamp should be obfuscated
         assert!(
             tensor.get("_created_obf").is_some(),
             "Should have obfuscated timestamp"
@@ -1834,7 +851,6 @@ mod tests {
 
         vault.set(Vault::ROOT, "list_test_key", "value").unwrap();
 
-        // The encrypted key name should be stored for list() to work
         let all_keys = vault.store.scan("_vk:");
         let tensor = vault.store.get(&all_keys[0]).unwrap();
 
@@ -1844,7 +860,6 @@ mod tests {
         );
         assert!(tensor.get("_key_nonce").is_some(), "Should have key nonce");
 
-        // Verify list() can still find it
         let found = vault.list(Vault::ROOT, "list_test_*").unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0], "list_test_key");
@@ -1856,13 +871,11 @@ mod tests {
 
         vault.set(Vault::ROOT, "temp", "data").unwrap();
 
-        // Verify blob exists
         let blobs_before = vault.store.scan("_vs:");
         assert_eq!(blobs_before.len(), 1);
 
         vault.delete(Vault::ROOT, "temp").unwrap();
 
-        // Blob should be deleted
         let blobs_after = vault.store.scan("_vs:");
         assert_eq!(blobs_after.len(), 0, "Blob should be deleted");
     }
@@ -1878,32 +891,26 @@ mod tests {
 
         vault.rotate(Vault::ROOT, "rotatable", "new_value").unwrap();
 
-        // Old blob kept as version, new blob created
         let blobs_after = vault.store.scan("_vs:");
         assert_eq!(blobs_after.len(), 2, "Should have 2 versions");
 
-        // Value should be updated
         let value = vault.get(Vault::ROOT, "rotatable").unwrap();
         assert_eq!(value, "new_value");
 
-        // Old value should still be accessible via version 1
         let old_value = vault.get_version(Vault::ROOT, "rotatable", 1).unwrap();
         assert_eq!(old_value, "old_value");
     }
 
     #[test]
     fn test_padding_hides_length() {
-        // Short values should be padded to same size
         let short1 = obfuscation::pad_plaintext(b"a").unwrap();
         let short2 = obfuscation::pad_plaintext(b"abc").unwrap();
         let short3 = obfuscation::pad_plaintext(b"hello world!").unwrap();
 
-        // All short values pad to Small (256 bytes)
         assert_eq!(short1.len(), 256);
         assert_eq!(short2.len(), 256);
         assert_eq!(short3.len(), 256);
 
-        // Unpad should recover original
         assert_eq!(obfuscation::unpad_plaintext(&short1).unwrap(), b"a");
         assert_eq!(obfuscation::unpad_plaintext(&short2).unwrap(), b"abc");
     }
@@ -1912,17 +919,14 @@ mod tests {
 
     #[test]
     fn test_permission_enum_allows() {
-        // Read allows only Read
         assert!(Permission::Read.allows(Permission::Read));
         assert!(!Permission::Read.allows(Permission::Write));
         assert!(!Permission::Read.allows(Permission::Admin));
 
-        // Write allows Read and Write
         assert!(Permission::Write.allows(Permission::Read));
         assert!(Permission::Write.allows(Permission::Write));
         assert!(!Permission::Write.allows(Permission::Admin));
 
-        // Admin allows all
         assert!(Permission::Admin.allows(Permission::Read));
         assert!(Permission::Admin.allows(Permission::Write));
         assert!(Permission::Admin.allows(Permission::Admin));
@@ -1959,17 +963,12 @@ mod tests {
             .grant_with_permission(Vault::ROOT, "user:reader", "secret", Permission::Read)
             .unwrap();
 
-        // Reader can get
         assert!(vault.get("user:reader", "secret").is_ok());
-
-        // Reader can list
         assert!(vault.list("user:reader", "*").is_ok());
 
-        // Reader cannot set (requires Write)
         let result = vault.set("user:reader", "secret", "new_value");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
 
-        // Reader cannot delete (requires Admin)
         let result = vault.delete("user:reader", "secret");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
     }
@@ -1983,22 +982,17 @@ mod tests {
             .grant_with_permission(Vault::ROOT, "user:writer", "secret", Permission::Write)
             .unwrap();
 
-        // Writer can get
         assert!(vault.get("user:writer", "secret").is_ok());
 
-        // Writer can set
         vault.set("user:writer", "secret", "updated").unwrap();
         assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "updated");
 
-        // Writer can rotate
         vault.rotate("user:writer", "secret", "rotated").unwrap();
         assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "rotated");
 
-        // Writer cannot delete (requires Admin)
         let result = vault.delete("user:writer", "secret");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
 
-        // Writer cannot grant (requires Admin)
         let result = vault.grant("user:writer", "user:other", "secret");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
     }
@@ -2012,23 +1006,17 @@ mod tests {
             .grant_with_permission(Vault::ROOT, "user:admin", "secret", Permission::Admin)
             .unwrap();
 
-        // Admin can get
         assert!(vault.get("user:admin", "secret").is_ok());
-
-        // Admin can set
         vault.set("user:admin", "secret", "admin_update").unwrap();
 
-        // Admin can grant
         vault
             .grant_with_permission("user:admin", "user:reader", "secret", Permission::Read)
             .unwrap();
         assert!(vault.get("user:reader", "secret").is_ok());
 
-        // Admin can revoke
         vault.revoke("user:admin", "user:reader", "secret").unwrap();
         assert!(vault.get("user:reader", "secret").is_err());
 
-        // Admin can delete
         vault.delete("user:admin", "secret").unwrap();
         assert!(vault.get("user:admin", "secret").is_err());
     }
@@ -2039,13 +1027,11 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Root always has Admin
         assert_eq!(
             vault.get_permission(Vault::ROOT, "secret"),
             Some(Permission::Admin)
         );
 
-        // Grant different levels
         vault
             .grant_with_permission(Vault::ROOT, "user:reader", "secret", Permission::Read)
             .unwrap();
@@ -2069,7 +1055,6 @@ mod tests {
             Some(Permission::Admin)
         );
 
-        // No access
         assert_eq!(vault.get_permission("user:nobody", "secret"), None);
     }
 
@@ -2104,7 +1089,6 @@ mod tests {
             .grant_with_permission(Vault::ROOT, "user:other", "secret", Permission::Read)
             .unwrap();
 
-        // Writer cannot revoke other's access
         let result = vault.revoke("user:writer", "user:other", "secret");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
     }
@@ -2115,19 +1099,16 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Create chain: alice -> team (MEMBER) -> secret (VAULT_ACCESS_READ)
         add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
         vault
             .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Read)
             .unwrap();
 
-        // Alice gets Read through the chain
         assert_eq!(
             vault.get_permission("user:alice", "secret"),
             Some(Permission::Read)
         );
 
-        // Alice can get but not set
         assert!(vault.get("user:alice", "secret").is_ok());
         let result = vault.set("user:alice", "secret", "hack");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
@@ -2139,31 +1120,26 @@ mod tests {
 
         vault.set(Vault::ROOT, "my_api_key", "value").unwrap();
 
-        // Grant access to test that edges use obfuscated keys
         vault
             .grant(Vault::ROOT, "user:alice", "my_api_key")
             .unwrap();
 
-        // Verify that plaintext secret name is NOT in graph node keys
         let edges = get_test_outgoing_edges(&vault.graph, "user:alice");
         assert!(!edges.is_empty(), "Expected grant to create edge");
 
         for (to, edge_type) in &edges {
             assert!(edge_type.starts_with("VAULT_ACCESS"));
 
-            // Edge target should NOT contain plaintext secret name
             assert!(
                 !to.contains("my_api_key"),
                 "Secret name should be obfuscated in graph: found {to}"
             );
-            // But should still have the vault_secret prefix
             assert!(
                 to.starts_with("vault_secret:"),
                 "Edge should point to vault secret node: {to}"
             );
         }
 
-        // Access still works correctly despite obfuscation
         assert!(vault.get("user:alice", "my_api_key").is_ok());
     }
 
@@ -2184,7 +1160,6 @@ mod tests {
             )
             .unwrap();
 
-        // Alice should have access
         assert!(vault.get("user:alice", "secret").is_ok());
     }
 
@@ -2194,7 +1169,6 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Grant with 0 TTL (immediately expired)
         vault
             .grant_with_ttl(
                 Vault::ROOT,
@@ -2205,11 +1179,8 @@ mod tests {
             )
             .unwrap();
 
-        // Small delay to ensure expiration
         std::thread::sleep(Duration::from_millis(10));
 
-        // Next get() call should trigger cleanup
-        // Alice's grant is expired, so access should be denied
         let result = vault.get("user:alice", "secret");
         assert!(matches!(result, Err(VaultError::AccessDenied(_))));
     }
@@ -2220,7 +1191,6 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Grant with 0 TTL (immediately expired)
         vault
             .grant_with_ttl(
                 Vault::ROOT,
@@ -2231,14 +1201,11 @@ mod tests {
             )
             .unwrap();
 
-        // Small delay
         std::thread::sleep(Duration::from_millis(10));
 
-        // Explicit cleanup
         let revoked = vault.cleanup_expired_grants();
         assert_eq!(revoked, 1);
 
-        // Alice should no longer have access
         let result = vault.get("user:alice", "secret");
         assert!(matches!(result, Err(VaultError::AccessDenied(_))));
     }
@@ -2249,7 +1216,6 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Grant with TTL
         vault
             .grant_with_ttl(
                 Vault::ROOT,
@@ -2260,10 +1226,8 @@ mod tests {
             )
             .unwrap();
 
-        // Revoke manually
         vault.revoke(Vault::ROOT, "user:alice", "secret").unwrap();
 
-        // Cleanup should find nothing (already revoked)
         let revoked = vault.cleanup_expired_grants();
         assert_eq!(revoked, 0);
     }
@@ -2274,7 +1238,6 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Grant alice with 0 TTL (expired)
         vault
             .grant_with_ttl(
                 Vault::ROOT,
@@ -2285,7 +1248,6 @@ mod tests {
             )
             .unwrap();
 
-        // Grant bob with long TTL (not expired)
         vault
             .grant_with_ttl(
                 Vault::ROOT,
@@ -2298,11 +1260,9 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(10));
 
-        // Cleanup should only revoke alice
         let revoked = vault.cleanup_expired_grants();
         assert_eq!(revoked, 1);
 
-        // Alice denied, Bob allowed
         assert!(matches!(
             vault.get("user:alice", "secret"),
             Err(VaultError::AccessDenied(_))
@@ -2332,12 +1292,10 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
         vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
 
-        // First 3 gets should succeed
         assert!(vault.get("user:alice", "secret").is_ok());
         assert!(vault.get("user:alice", "secret").is_ok());
         assert!(vault.get("user:alice", "secret").is_ok());
 
-        // 4th should be rate limited
         let result = vault.get("user:alice", "secret");
         assert!(matches!(result, Err(VaultError::RateLimited(_))));
     }
@@ -2349,11 +1307,9 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
         vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
 
-        // First 2 lists should succeed
         assert!(vault.list("user:alice", "*").is_ok());
         assert!(vault.list("user:alice", "*").is_ok());
 
-        // 3rd should be rate limited
         let result = vault.list("user:alice", "*");
         assert!(matches!(result, Err(VaultError::RateLimited(_))));
     }
@@ -2367,11 +1323,9 @@ mod tests {
             .grant_with_permission(Vault::ROOT, "user:writer", "secret", Permission::Write)
             .unwrap();
 
-        // First 2 sets should succeed
         assert!(vault.set("user:writer", "secret", "v1").is_ok());
         assert!(vault.set("user:writer", "secret", "v2").is_ok());
 
-        // 3rd should be rate limited
         let result = vault.set("user:writer", "secret", "v3");
         assert!(matches!(result, Err(VaultError::RateLimited(_))));
     }
@@ -2383,11 +1337,9 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
         vault.grant(Vault::ROOT, "user:admin", "secret").unwrap();
 
-        // First 2 grants should succeed
         assert!(vault.grant("user:admin", "user:a", "secret").is_ok());
         assert!(vault.grant("user:admin", "user:b", "secret").is_ok());
 
-        // 3rd should be rate limited
         let result = vault.grant("user:admin", "user:c", "secret");
         assert!(matches!(result, Err(VaultError::RateLimited(_))));
     }
@@ -2398,7 +1350,6 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Root is exempt from rate limiting
         for _ in 0..10 {
             assert!(vault.get(Vault::ROOT, "secret").is_ok());
         }
@@ -2412,13 +1363,11 @@ mod tests {
         vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
         vault.grant(Vault::ROOT, "user:bob", "secret").unwrap();
 
-        // Alice uses her quota
         for _ in 0..3 {
             assert!(vault.get("user:alice", "secret").is_ok());
         }
         assert!(vault.get("user:alice", "secret").is_err());
 
-        // Bob still has his quota
         for _ in 0..3 {
             assert!(vault.get("user:bob", "secret").is_ok());
         }
@@ -2433,12 +1382,11 @@ mod tests {
 
     #[test]
     fn test_vault_without_rate_limit() {
-        let vault = create_test_vault(); // Uses default config with no rate limit
+        let vault = create_test_vault();
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
         vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
 
-        // No rate limiting - should work for many calls
         for _ in 0..100 {
             assert!(vault.get("user:alice", "secret").is_ok());
         }
@@ -2464,12 +1412,9 @@ mod tests {
 
         ns.set("api_key", "secret123").unwrap();
 
-        // The actual key in the vault should be prefixed
-        // Root can access via full prefixed key
         let value = vault.get(Vault::ROOT, "team:alpha:api_key").unwrap();
         assert_eq!(value, "secret123");
 
-        // But the short key should NOT work at root level
         let result = vault.get(Vault::ROOT, "api_key");
         assert!(matches!(result, Err(VaultError::NotFound(_))));
     }
@@ -2478,18 +1423,15 @@ mod tests {
     fn test_namespaced_vault_isolation() {
         let vault = create_test_vault();
 
-        // Two namespaces, same key name
         let ns_alpha = vault.namespace("team:alpha", Vault::ROOT);
         let ns_beta = vault.namespace("team:beta", Vault::ROOT);
 
         ns_alpha.set("api_key", "alpha_secret").unwrap();
         ns_beta.set("api_key", "beta_secret").unwrap();
 
-        // Each namespace sees its own value
         assert_eq!(ns_alpha.get("api_key").unwrap(), "alpha_secret");
         assert_eq!(ns_beta.get("api_key").unwrap(), "beta_secret");
 
-        // Root sees both with full keys
         assert_eq!(
             vault.get(Vault::ROOT, "team:alpha:api_key").unwrap(),
             "alpha_secret"
@@ -2508,10 +1450,8 @@ mod tests {
         ns.set("key1", "v1").unwrap();
         ns.set("key2", "v2").unwrap();
 
-        // Set a key outside the namespace
         vault.set(Vault::ROOT, "other_key", "other").unwrap();
 
-        // List within namespace only returns namespace keys (without prefix)
         let keys = ns.list("*").unwrap();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&"key1".to_string()));
@@ -2528,7 +1468,6 @@ mod tests {
         ns.set("openai:org", "org-1").unwrap();
         ns.set("github:token", "ghp-1").unwrap();
 
-        // Pattern matching within namespace
         let openai_keys = ns.list("openai:*").unwrap();
         assert_eq!(openai_keys.len(), 2);
         assert!(openai_keys.contains(&"openai:key".to_string()));
@@ -2546,7 +1485,6 @@ mod tests {
         let result = ns.get("api_key");
         assert!(matches!(result, Err(VaultError::NotFound(_))));
 
-        // Also gone at vault level
         let result = vault.get(Vault::ROOT, "team:alpha:api_key");
         assert!(matches!(result, Err(VaultError::NotFound(_))));
     }
@@ -2566,23 +1504,18 @@ mod tests {
     fn test_namespaced_vault_grant_revoke() {
         let vault = create_test_vault();
 
-        // Root creates a namespaced secret
         let ns_root = vault.namespace("team:alpha", Vault::ROOT);
         ns_root.set("api_key", "secret").unwrap();
 
-        // Grant alice Read access to the namespaced secret
         ns_root
             .grant("user:alice", "api_key", Permission::Read)
             .unwrap();
 
-        // Alice can access via namespace view
         let ns_alice = vault.namespace("team:alpha", "user:alice");
         assert_eq!(ns_alice.get("api_key").unwrap(), "secret");
 
-        // Revoke access
         ns_root.revoke("user:alice", "api_key").unwrap();
 
-        // Alice can no longer access
         let result = ns_alice.get("api_key");
         assert!(matches!(result, Err(VaultError::AccessDenied(_))));
     }
@@ -2591,20 +1524,16 @@ mod tests {
     fn test_namespaced_vault_permission_enforcement() {
         let vault = create_test_vault();
 
-        // Root creates a namespaced secret
         let ns_root = vault.namespace("team:alpha", Vault::ROOT);
         ns_root.set("api_key", "secret").unwrap();
 
-        // Grant alice Read-only access
         ns_root
             .grant("user:alice", "api_key", Permission::Read)
             .unwrap();
 
-        // Alice can read via namespace
         let ns_alice = vault.namespace("team:alpha", "user:alice");
         assert!(ns_alice.get("api_key").is_ok());
 
-        // Alice cannot write via namespace
         let result = ns_alice.set("api_key", "hacked");
         assert!(matches!(result, Err(VaultError::InsufficientPermission(_))));
     }
@@ -2622,16 +1551,13 @@ mod tests {
     fn test_namespaced_vault_cross_namespace_blocked() {
         let vault = create_test_vault();
 
-        // Alice creates in namespace alpha
         let ns_alpha = vault.namespace("team:alpha", Vault::ROOT);
         ns_alpha.set("secret", "alpha_data").unwrap();
 
-        // Grant alice access to alpha:secret
         ns_alpha
             .grant("user:alice", "secret", Permission::Read)
             .unwrap();
 
-        // Alice tries to access via beta namespace - should fail
         let ns_beta = vault.namespace("team:beta", "user:alice");
         let result = ns_beta.get("secret");
         assert!(matches!(
@@ -2644,7 +1570,6 @@ mod tests {
     fn test_namespace_helper_method() {
         let vault = create_test_vault();
 
-        // Use the helper method
         let ns = vault.namespace("myns", Vault::ROOT);
         ns.set("key", "value").unwrap();
 
@@ -2660,7 +1585,6 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
         vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
 
-        // Clear any initial audit entries by checking before
         let before = vault.audit_log("secret").len();
 
         vault.get("user:alice", "secret").unwrap();
@@ -2671,7 +1595,6 @@ mod tests {
             "Should have new audit entries after get"
         );
 
-        // Find the get entry
         let get_entries: Vec<_> = entries
             .iter()
             .filter(|e| matches!(e.operation, AuditOperation::Get))
@@ -2709,7 +1632,6 @@ mod tests {
             .collect();
         assert!(!grant_entries.is_empty(), "Should have Grant audit entry");
 
-        // Check grant details
         if let AuditOperation::Grant { to, permission } = &grant_entries[0].operation {
             assert_eq!(to, "user:alice");
             assert_eq!(permission, "read");
@@ -2796,7 +1718,6 @@ mod tests {
         let recent = vault.audit_recent(2);
         assert_eq!(recent.len(), 2, "Should return at most 2 entries");
 
-        // Entries should be sorted by timestamp (most recent first)
         if recent.len() >= 2 {
             assert!(recent[0].timestamp >= recent[1].timestamp);
         }
@@ -2831,10 +1752,7 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "v1").unwrap();
         vault.set(Vault::ROOT, "secret", "v2").unwrap();
 
-        // Current value should be v2
         assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "v2");
-
-        // Should have 2 versions
         assert_eq!(vault.current_version(Vault::ROOT, "secret").unwrap(), 2);
     }
 
@@ -2846,7 +1764,6 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "version_2").unwrap();
         vault.set(Vault::ROOT, "secret", "version_3").unwrap();
 
-        // Get each version
         assert_eq!(
             vault.get_version(Vault::ROOT, "secret", 1).unwrap(),
             "version_1"
@@ -2867,11 +1784,9 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "v1").unwrap();
 
-        // Version 2 doesn't exist
         let result = vault.get_version(Vault::ROOT, "secret", 2);
         assert!(matches!(result, Err(VaultError::NotFound(_))));
 
-        // Version 100 doesn't exist
         let result = vault.get_version(Vault::ROOT, "secret", 100);
         assert!(matches!(result, Err(VaultError::NotFound(_))));
     }
@@ -2890,7 +1805,6 @@ mod tests {
         assert_eq!(versions[0].version, 1);
         assert_eq!(versions[1].version, 2);
 
-        // Version 2 should have a later timestamp
         assert!(versions[1].created_at >= versions[0].created_at);
     }
 
@@ -2901,22 +1815,16 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "original").unwrap();
         vault.set(Vault::ROOT, "secret", "modified").unwrap();
 
-        // Current should be modified
         assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "modified");
 
-        // Rollback to version 1
         vault.rollback(Vault::ROOT, "secret", 1).unwrap();
 
-        // Current should now be original (but as a new version)
         assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "original");
-
-        // Should now have 3 versions
         assert_eq!(vault.current_version(Vault::ROOT, "secret").unwrap(), 3);
     }
 
     #[test]
     fn test_max_versions_pruning() {
-        // Create vault with max 3 versions
         let store = TensorStore::new();
         let graph = Arc::new(GraphEngine::new());
         let config = VaultConfig::default().with_max_versions(3);
@@ -2927,10 +1835,8 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "v3").unwrap();
         vault.set(Vault::ROOT, "secret", "v4").unwrap();
 
-        // Should only have 3 versions (v2, v3, v4)
         assert_eq!(vault.current_version(Vault::ROOT, "secret").unwrap(), 3);
 
-        // Version 1 should now be v2 (v1 was pruned)
         assert_eq!(vault.get_version(Vault::ROOT, "secret", 1).unwrap(), "v2");
         assert_eq!(vault.get_version(Vault::ROOT, "secret", 2).unwrap(), "v3");
         assert_eq!(vault.get_version(Vault::ROOT, "secret", 3).unwrap(), "v4");
@@ -2943,10 +1849,8 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "initial").unwrap();
         vault.rotate(Vault::ROOT, "secret", "rotated").unwrap();
 
-        // Should have 2 versions
         assert_eq!(vault.current_version(Vault::ROOT, "secret").unwrap(), 2);
 
-        // Can get both versions
         assert_eq!(
             vault.get_version(Vault::ROOT, "secret", 1).unwrap(),
             "initial"
@@ -2970,7 +1874,6 @@ mod tests {
 
         vault.delete(Vault::ROOT, "secret").unwrap();
 
-        // All blobs should be deleted
         let blobs_after = vault.store.scan("_vs:");
         assert_eq!(blobs_after.len(), 0);
     }
@@ -2981,14 +1884,11 @@ mod tests {
 
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
-        // Alice has no access
         let result = vault.get_version("user:alice", "secret", 1);
         assert!(matches!(result, Err(VaultError::AccessDenied(_))));
 
-        // Grant access to alice
         vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
 
-        // Now alice can access
         assert_eq!(
             vault.get_version("user:alice", "secret", 1).unwrap(),
             "value"
@@ -3015,5 +1915,894 @@ mod tests {
         let versions = vault.list_versions(Vault::ROOT, "secret").unwrap();
         assert_eq!(versions.len(), 1);
         assert!(versions[0].created_at >= before);
+    }
+
+    // === Signed Edge Tests ===
+
+    #[test]
+    fn test_signed_edge_grants_access() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+
+        // Signed edges (created by grant) should work
+        let value = vault.get("user:alice", "secret").unwrap();
+        assert_eq!(value, "value");
+
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Admin)
+        );
+    }
+
+    #[test]
+    fn test_tampered_edge_denied() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+
+        // Verify access works before tampering
+        assert!(vault.get("user:alice", "secret").is_ok());
+
+        // Find the access edge and tamper with its signature
+        let secret_node = vault.secret_node_key("secret");
+        let alice_node_id = vault.get_or_create_entity_node("user:alice");
+        let edges = vault
+            .graph
+            .edges_of(alice_node_id, Direction::Outgoing)
+            .unwrap();
+
+        for edge in edges {
+            if edge.edge_type.starts_with("VAULT_ACCESS") {
+                // Delete the edge and recreate with a tampered signature
+                vault.graph.delete_edge(edge.id).unwrap();
+
+                let target_node = vault.get_or_create_entity_node(&secret_node);
+                let mut props = HashMap::new();
+                props.insert(
+                    "vault_sig".to_string(),
+                    PropertyValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+                );
+                props.insert("vault_sig_ts".to_string(), PropertyValue::Int(12345));
+                vault
+                    .graph
+                    .create_edge(alice_node_id, target_node, &edge.edge_type, props, true)
+                    .unwrap();
+            }
+        }
+
+        // Access should be denied with tampered signature
+        let result = vault.get("user:alice", "secret");
+        assert!(
+            result.is_err(),
+            "Tampered edge signature should deny access"
+        );
+    }
+
+    #[test]
+    fn test_unsigned_legacy_edge_accepted() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Manually create an unsigned VAULT_ACCESS edge (legacy/backward-compatible)
+        let secret_node = vault.secret_node_key("secret");
+        add_test_edge(
+            &vault.graph,
+            "user:legacy",
+            &secret_node,
+            "VAULT_ACCESS_READ",
+        );
+
+        // Legacy unsigned edges should still be accepted
+        let value = vault.get("user:legacy", "secret").unwrap();
+        assert_eq!(value, "value");
+
+        assert_eq!(
+            vault.get_permission("user:legacy", "secret"),
+            Some(Permission::Read)
+        );
+    }
+
+    #[test]
+    fn test_tampered_edge_not_in_list() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+
+        // Verify secret shows in list before tampering
+        assert_eq!(vault.list("user:alice", "*").unwrap().len(), 1);
+
+        // Tamper with the edge signature
+        let secret_node = vault.secret_node_key("secret");
+        let alice_node_id = vault.get_or_create_entity_node("user:alice");
+        let edges = vault
+            .graph
+            .edges_of(alice_node_id, Direction::Outgoing)
+            .unwrap();
+
+        for edge in edges {
+            if edge.edge_type.starts_with("VAULT_ACCESS") {
+                vault.graph.delete_edge(edge.id).unwrap();
+
+                let target_node = vault.get_or_create_entity_node(&secret_node);
+                let mut props = HashMap::new();
+                props.insert(
+                    "vault_sig".to_string(),
+                    PropertyValue::Bytes(vec![0xFF; 32]),
+                );
+                props.insert("vault_sig_ts".to_string(), PropertyValue::Int(99999));
+                vault
+                    .graph
+                    .create_edge(alice_node_id, target_node, &edge.edge_type, props, true)
+                    .unwrap();
+            }
+        }
+
+        // Tampered edge should make secret invisible in list
+        let keys = vault.list("user:alice", "*").unwrap();
+        assert!(
+            keys.is_empty(),
+            "Tampered edge should hide secret from list()"
+        );
+    }
+
+    // === Attenuation Integration Tests ===
+
+    fn create_vault_with_attenuation(policy: AttenuationPolicy) -> Vault {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let config = VaultConfig::default().with_attenuation(policy);
+        Vault::new(b"test_password", graph, store, config).unwrap()
+    }
+
+    #[test]
+    fn test_attenuation_direct_admin_preserved() {
+        let vault = create_test_vault(); // default policy: admin_limit=1
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_permission(Vault::ROOT, "user:alice", "secret", Permission::Admin)
+            .unwrap();
+
+        // Direct (1 hop): Admin preserved
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Admin)
+        );
+    }
+
+    #[test]
+    fn test_attenuation_2hop_admin_attenuated_to_write() {
+        let vault = create_test_vault(); // default: admin_limit=1, write_limit=2
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // alice -> team (MEMBER, 1 hop) -> secret (VAULT_ACCESS_ADMIN, +1 = 2 hops)
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Admin)
+            .unwrap();
+
+        // 2 hops: Admin attenuated to Write
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Write)
+        );
+
+        // Can read and write but not delete (Admin required)
+        assert!(vault.get("user:alice", "secret").is_ok());
+        assert!(vault.set("user:alice", "secret", "updated").is_ok());
+        assert!(matches!(
+            vault.delete("user:alice", "secret"),
+            Err(VaultError::InsufficientPermission(_))
+        ));
+    }
+
+    #[test]
+    fn test_attenuation_3hop_attenuated_to_read() {
+        let vault = create_test_vault(); // default: admin_limit=1, write_limit=2
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // alice -> org (MEMBER) -> team (MEMBER) -> secret (VAULT_ACCESS_ADMIN)
+        // depth: 0 -> 1 -> 2 -> VAULT_ACCESS at depth 3
+        add_test_edge(&vault.graph, "user:alice", "org:eng", "MEMBER");
+        add_test_edge(&vault.graph, "org:eng", "team:devs", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Admin)
+            .unwrap();
+
+        // 3 hops: Admin attenuated to Read
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Read)
+        );
+
+        assert!(vault.get("user:alice", "secret").is_ok());
+        assert!(matches!(
+            vault.set("user:alice", "secret", "hack"),
+            Err(VaultError::InsufficientPermission(_))
+        ));
+    }
+
+    #[test]
+    fn test_attenuation_beyond_horizon_denied() {
+        // horizon=2 means BFS stops at depth 2
+        let policy = AttenuationPolicy {
+            admin_limit: 1,
+            write_limit: 1,
+            horizon: 2,
+        };
+        let vault = create_vault_with_attenuation(policy);
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // alice -> org -> team -> secret (3 MEMBER hops + VAULT_ACCESS = beyond horizon)
+        add_test_edge(&vault.graph, "user:alice", "org:eng", "MEMBER");
+        add_test_edge(&vault.graph, "org:eng", "team:devs", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Admin)
+            .unwrap();
+
+        // Beyond horizon: no access
+        assert_eq!(vault.get_permission("user:alice", "secret"), None);
+        assert!(vault.get("user:alice", "secret").is_err());
+    }
+
+    #[test]
+    fn test_no_attenuation_policy_preserves_admin_at_depth() {
+        let vault = create_vault_with_attenuation(AttenuationPolicy::none());
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Deep chain: alice -> g1 -> g2 -> g3 -> g4 -> secret
+        add_test_edge(&vault.graph, "user:alice", "group:1", "MEMBER");
+        add_test_edge(&vault.graph, "group:1", "group:2", "MEMBER");
+        add_test_edge(&vault.graph, "group:2", "group:3", "MEMBER");
+        add_test_edge(&vault.graph, "group:3", "group:4", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "group:4", "secret", Permission::Admin)
+            .unwrap();
+
+        // With no attenuation, Admin is preserved regardless of depth
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Admin)
+        );
+    }
+
+    #[test]
+    fn test_with_attenuation_config_builder() {
+        let policy = AttenuationPolicy {
+            admin_limit: 3,
+            write_limit: 5,
+            horizon: 20,
+        };
+        let config = VaultConfig::default().with_attenuation(policy);
+        assert_eq!(config.attenuation.admin_limit, 3);
+        assert_eq!(config.attenuation.write_limit, 5);
+        assert_eq!(config.attenuation.horizon, 20);
+    }
+
+    // === Bottleneck Flow Tests ===
+
+    #[test]
+    fn test_bottleneck_restricts_permission() {
+        // Grant Admin to a team lead, but team lead grants Read to member.
+        // Member should get Read (bottleneck of the edge capacity).
+        let vault = create_vault_with_attenuation(AttenuationPolicy::none());
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_permission(Vault::ROOT, "user:lead", "secret", Permission::Admin)
+            .unwrap();
+
+        // Lead grants Read to member -- the edge capacity is Read
+        vault
+            .grant_with_permission("user:lead", "user:member", "secret", Permission::Read)
+            .unwrap();
+
+        // Member gets Read (capped by edge capacity)
+        assert_eq!(
+            vault.get_permission("user:member", "secret"),
+            Some(Permission::Read)
+        );
+        assert!(vault.get("user:member", "secret").is_ok());
+        assert!(matches!(
+            vault.set("user:member", "secret", "hack"),
+            Err(VaultError::InsufficientPermission(_))
+        ));
+    }
+
+    #[test]
+    fn test_bottleneck_multiple_paths_best_wins() {
+        // Two paths with different capacities: best effective wins.
+        let vault = create_vault_with_attenuation(AttenuationPolicy::none());
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Path 1: direct Read
+        vault
+            .grant_with_permission(Vault::ROOT, "user:alice", "secret", Permission::Read)
+            .unwrap();
+
+        // Path 2: via team with Write
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Write)
+            .unwrap();
+
+        // Best of (Read, Write) = Write
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Write)
+        );
+    }
+
+    #[test]
+    fn test_bottleneck_with_attenuation() {
+        // Capacity=Admin, but 2 hops attenuate Admin->Write. Bottleneck = min(Admin, Write) = Write.
+        let vault = create_test_vault(); // default attenuation: admin_limit=1
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
+        vault
+            .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Admin)
+            .unwrap();
+
+        // 2 hops + Admin capacity: attenuation gives Write, capacity is Admin
+        // effective = min(Write, Admin) = Write
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Write)
+        );
+    }
+
+    #[test]
+    fn test_permission_to_level_roundtrip() {
+        assert_eq!(
+            Permission::from_level(Permission::Read.to_level()),
+            Some(Permission::Read)
+        );
+        assert_eq!(
+            Permission::from_level(Permission::Write.to_level()),
+            Some(Permission::Write)
+        );
+        assert_eq!(
+            Permission::from_level(Permission::Admin.to_level()),
+            Some(Permission::Admin)
+        );
+        assert_eq!(Permission::from_level(0), None);
+        assert_eq!(Permission::from_level(4), None);
+    }
+
+    // === TTL Persistence Tests ===
+
+    #[test]
+    fn test_ttl_survives_vault_reopen() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let config = VaultConfig::default().with_salt([42u8; 16]);
+
+        // Create vault and grant with TTL
+        let vault = Vault::new(
+            b"test_password",
+            graph.clone(),
+            store.clone(),
+            config.clone(),
+        )
+        .unwrap();
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_ttl(
+                Vault::ROOT,
+                "user:alice",
+                "secret",
+                Permission::Read,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+
+        // Verify TTL is tracked
+        assert!(!vault.ttl_tracker.is_empty());
+
+        // Drop vault and reopen with same store
+        drop(vault);
+        let vault2 = Vault::new(b"test_password", graph, store, config).unwrap();
+
+        // TTL should survive the reopen
+        assert!(
+            !vault2.ttl_tracker.is_empty(),
+            "TTL grants should persist across vault reopens"
+        );
+    }
+
+    // === Delete Graph Cleanup Tests ===
+
+    #[test]
+    fn test_delete_cleans_graph_edges() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let vault = Vault::new(
+            b"test_password",
+            graph.clone(),
+            store,
+            VaultConfig::default(),
+        )
+        .unwrap();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+
+        // Alice should have access
+        assert!(vault.get("user:alice", "secret").is_ok());
+
+        // Delete the secret
+        vault.delete(Vault::ROOT, "secret").unwrap();
+
+        // The secret node should be gone from the graph (use actual obfuscated key)
+        let secret_node_key = vault.secret_node_key("secret");
+        let found = graph
+            .find_nodes_by_property("entity_key", &PropertyValue::String(secret_node_key))
+            .unwrap_or_default();
+        assert!(found.is_empty(), "Secret graph node should be deleted");
+
+        // Alice's entity node should have no outgoing VAULT_ACCESS edges
+        assert!(
+            !has_access_edges(&graph, "user:alice"),
+            "Alice should have no VAULT_ACCESS edges after secret deletion"
+        );
+    }
+
+    #[test]
+    fn test_delete_cleans_ttl_entries() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let vault = Vault::new(b"test_password", graph, store, VaultConfig::default()).unwrap();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_ttl(
+                Vault::ROOT,
+                "user:alice",
+                "secret",
+                Permission::Read,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+
+        assert!(
+            !vault.ttl_tracker.is_empty(),
+            "TTL should be tracked after grant"
+        );
+
+        // Delete the secret -- TTL entries should be cleaned up
+        vault.delete(Vault::ROOT, "secret").unwrap();
+
+        assert!(
+            vault.ttl_tracker.is_empty(),
+            "TTL tracker should be empty after secret deletion"
+        );
+    }
+
+    #[test]
+    fn test_delete_cleans_edges_multiple_grantees() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let vault = Vault::new(
+            b"test_password",
+            graph.clone(),
+            store,
+            VaultConfig::default(),
+        )
+        .unwrap();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+        vault.grant(Vault::ROOT, "user:bob", "secret").unwrap();
+
+        // Both should have access
+        assert!(vault.get("user:alice", "secret").is_ok());
+        assert!(vault.get("user:bob", "secret").is_ok());
+
+        // Delete the secret
+        vault.delete(Vault::ROOT, "secret").unwrap();
+
+        // Both entities should have no VAULT_ACCESS edges
+        for entity in &["user:alice", "user:bob"] {
+            assert!(
+                !has_access_edges(&graph, entity),
+                "{entity} should have no VAULT_ACCESS edges after secret deletion"
+            );
+        }
+    }
+
+    #[test]
+    fn test_delete_then_recreate_secret() {
+        let vault = create_test_vault();
+
+        // Create, grant, delete
+        vault.set(Vault::ROOT, "secret", "v1").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+        vault.delete(Vault::ROOT, "secret").unwrap();
+
+        // Recreate the same secret
+        vault.set(Vault::ROOT, "secret", "v2").unwrap();
+
+        // Alice should NOT have access (old grant was cleaned up)
+        assert!(
+            vault.get("user:alice", "secret").is_err(),
+            "Old grant should not carry over after delete + recreate"
+        );
+
+        // Root should still work
+        let val = vault.get(Vault::ROOT, "secret").unwrap();
+        assert_eq!(val, "v2");
+
+        // Can grant again
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+        assert_eq!(vault.get("user:alice", "secret").unwrap(), "v2");
+    }
+
+    // === Master Key Rotation Tests ===
+
+    fn create_test_vault_mut() -> Vault {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        Vault::new(b"old_password", graph, store, VaultConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn test_rotate_master_key_basic() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "api_key", "sk-secret123").unwrap();
+        vault.set(Vault::ROOT, "db_pass", "pg-hunter2").unwrap();
+
+        let count = vault.rotate_master_key(b"new_password").unwrap();
+        assert_eq!(count, 2);
+
+        // Secrets accessible with new key material
+        assert_eq!(vault.get(Vault::ROOT, "api_key").unwrap(), "sk-secret123");
+        assert_eq!(vault.get(Vault::ROOT, "db_pass").unwrap(), "pg-hunter2");
+    }
+
+    #[test]
+    fn test_rotate_master_key_preserves_access() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_permission(Vault::ROOT, "user:alice", "secret", Permission::Read)
+            .unwrap();
+
+        assert!(vault.get("user:alice", "secret").is_ok());
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        // Alice can still access after rotation
+        assert_eq!(vault.get("user:alice", "secret").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_rotate_master_key_preserves_versions() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "v1").unwrap();
+        vault.set(Vault::ROOT, "secret", "v2").unwrap();
+        vault.set(Vault::ROOT, "secret", "v3").unwrap();
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "v3");
+        assert_eq!(vault.get_version(Vault::ROOT, "secret", 1).unwrap(), "v1");
+        assert_eq!(vault.get_version(Vault::ROOT, "secret", 2).unwrap(), "v2");
+        assert_eq!(vault.get_version(Vault::ROOT, "secret", 3).unwrap(), "v3");
+        assert_eq!(vault.current_version(Vault::ROOT, "secret").unwrap(), 3);
+    }
+
+    #[test]
+    fn test_rotate_master_key_old_password_fails() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let mut vault = Vault::new(
+            b"old_password",
+            graph.clone(),
+            store.clone(),
+            VaultConfig::default(),
+        )
+        .unwrap();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        // Opening with old password should produce different key material,
+        // so decryption should fail
+        let old_vault = Vault::new(b"old_password", graph, store, VaultConfig::default()).unwrap();
+        let result = old_vault.get(Vault::ROOT, "secret");
+        assert!(
+            result.is_err(),
+            "Old password should not decrypt after rotation"
+        );
+    }
+
+    #[test]
+    fn test_rotate_master_key_empty_vault() {
+        let mut vault = create_test_vault_mut();
+
+        let count = vault.rotate_master_key(b"new_password").unwrap();
+        assert_eq!(count, 0);
+
+        // Vault still works after rotating with no secrets
+        vault.set(Vault::ROOT, "new_secret", "value").unwrap();
+        assert_eq!(vault.get(Vault::ROOT, "new_secret").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_rotate_master_key_list_works() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "alpha", "a").unwrap();
+        vault.set(Vault::ROOT, "beta", "b").unwrap();
+        vault.set(Vault::ROOT, "gamma", "c").unwrap();
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        let mut keys = vault.list(Vault::ROOT, "*").unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn test_rotate_master_key_edge_signatures_valid() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_permission(Vault::ROOT, "user:alice", "secret", Permission::Admin)
+            .unwrap();
+
+        // Verify access works before rotation
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Admin)
+        );
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        // Signed edges should still verify with new key material
+        assert_eq!(
+            vault.get_permission("user:alice", "secret"),
+            Some(Permission::Admin)
+        );
+        vault.set("user:alice", "secret", "updated").unwrap();
+        assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "updated");
+    }
+
+    #[test]
+    fn test_rotate_master_key_ttl_preserved() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_ttl(
+                Vault::ROOT,
+                "user:alice",
+                "secret",
+                Permission::Read,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        // TTL grant should still work after rotation
+        assert!(vault.get("user:alice", "secret").is_ok());
+        assert!(!vault.ttl_tracker.is_empty());
+    }
+
+    #[test]
+    fn test_rotate_master_key_audit_recorded() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        let recent = vault.audit_recent(10);
+        let rotation_entries: Vec<_> = recent
+            .iter()
+            .filter(|e| matches!(e.operation, AuditOperation::RotateMasterKey { .. }))
+            .collect();
+        assert!(
+            !rotation_entries.is_empty(),
+            "Should have RotateMasterKey audit entry"
+        );
+
+        if let AuditOperation::RotateMasterKey { secrets_count } = &rotation_entries[0].operation {
+            assert_eq!(*secrets_count, 1);
+        }
+    }
+
+    #[test]
+    fn test_rotate_master_key_multiple_grants() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "s1", "v1").unwrap();
+        vault.set(Vault::ROOT, "s2", "v2").unwrap();
+
+        vault
+            .grant_with_permission(Vault::ROOT, "user:alice", "s1", Permission::Admin)
+            .unwrap();
+        vault
+            .grant_with_permission(Vault::ROOT, "user:bob", "s2", Permission::Write)
+            .unwrap();
+        vault
+            .grant_with_permission(Vault::ROOT, "user:alice", "s2", Permission::Read)
+            .unwrap();
+
+        vault.rotate_master_key(b"rotated").unwrap();
+
+        assert_eq!(vault.get("user:alice", "s1").unwrap(), "v1");
+        assert_eq!(vault.get("user:bob", "s2").unwrap(), "v2");
+        assert_eq!(vault.get("user:alice", "s2").unwrap(), "v2");
+
+        // Permission levels preserved
+        assert_eq!(
+            vault.get_permission("user:alice", "s1"),
+            Some(Permission::Admin)
+        );
+        assert_eq!(
+            vault.get_permission("user:bob", "s2"),
+            Some(Permission::Write)
+        );
+    }
+
+    #[test]
+    fn test_rotate_master_key_new_vault_instance() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let mut vault = Vault::new(
+            b"old_password",
+            graph.clone(),
+            store.clone(),
+            VaultConfig::default(),
+        )
+        .unwrap();
+
+        vault.set(Vault::ROOT, "secret", "my_value").unwrap();
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        // Create a fresh vault instance with the new password
+        let vault2 = Vault::new(b"new_password", graph, store, VaultConfig::default()).unwrap();
+        assert_eq!(vault2.get(Vault::ROOT, "secret").unwrap(), "my_value");
+    }
+
+    #[test]
+    fn test_rotate_master_key_unsigned_edges_preserved() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Create an unsigned legacy edge
+        let secret_node = vault.secret_node_key("secret");
+        add_test_edge(
+            &vault.graph,
+            "user:legacy",
+            &secret_node,
+            "VAULT_ACCESS_READ",
+        );
+
+        // Legacy user can access
+        assert!(vault.get("user:legacy", "secret").is_ok());
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        // Unsigned legacy edge should still work (not re-signed)
+        assert!(vault.get("user:legacy", "secret").is_ok());
+    }
+
+    #[test]
+    fn test_rotate_master_key_secrets_without_grants() {
+        let mut vault = create_test_vault_mut();
+
+        // Create secrets with no grants (only root access)
+        vault.set(Vault::ROOT, "lonely_secret", "alone").unwrap();
+
+        vault.rotate_master_key(b"new_password").unwrap();
+
+        assert_eq!(vault.get(Vault::ROOT, "lonely_secret").unwrap(), "alone");
+    }
+
+    #[test]
+    fn test_ttl_grant_cleaned_on_restart() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let config = VaultConfig::default().with_salt([42u8; 16]);
+
+        // Create vault, store a secret, grant with short TTL
+        let vault = Vault::new(
+            b"test_password",
+            graph.clone(),
+            store.clone(),
+            config.clone(),
+        )
+        .unwrap();
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_ttl(
+                Vault::ROOT,
+                "user:alice",
+                "secret",
+                Permission::Read,
+                Duration::from_secs(0),
+            )
+            .unwrap();
+
+        // Wait for TTL to expire, then drop (simulating process exit without cleanup)
+        std::thread::sleep(Duration::from_millis(10));
+        drop(vault);
+
+        // Reopen vault -- constructor should clean up the expired grant
+        let vault2 = Vault::new(b"test_password", graph, store, config).unwrap();
+
+        // The expired grant's graph edge should have been removed on startup
+        let result = vault2.get("user:alice", "secret");
+        assert!(
+            matches!(result, Err(VaultError::AccessDenied(_))),
+            "expired TTL grant should be revoked after restart"
+        );
+    }
+
+    #[test]
+    fn test_ttl_non_expired_survives_restart() {
+        let store = TensorStore::new();
+        let graph = Arc::new(GraphEngine::new());
+        let config = VaultConfig::default().with_salt([42u8; 16]);
+
+        let vault = Vault::new(
+            b"test_password",
+            graph.clone(),
+            store.clone(),
+            config.clone(),
+        )
+        .unwrap();
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault
+            .grant_with_ttl(
+                Vault::ROOT,
+                "user:alice",
+                "secret",
+                Permission::Read,
+                Duration::from_secs(3600),
+            )
+            .unwrap();
+
+        drop(vault);
+
+        // Reopen vault -- non-expired grant should still work
+        let vault2 = Vault::new(b"test_password", graph, store, config).unwrap();
+        assert!(
+            vault2.get("user:alice", "secret").is_ok(),
+            "non-expired TTL grant should survive restart"
+        );
+    }
+
+    #[test]
+    fn test_rotate_master_key_double_rotation() {
+        let mut vault = create_test_vault_mut();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.grant(Vault::ROOT, "user:alice", "secret").unwrap();
+
+        vault.rotate_master_key(b"password_2").unwrap();
+        vault.rotate_master_key(b"password_3").unwrap();
+
+        assert_eq!(vault.get(Vault::ROOT, "secret").unwrap(), "value");
+        assert_eq!(vault.get("user:alice", "secret").unwrap(), "value");
     }
 }
