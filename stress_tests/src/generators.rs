@@ -10,7 +10,7 @@ pub fn generate_embeddings(count: usize, dim: usize, seed: u64) -> Vec<Vec<f32>>
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     (0..count)
         .map(|_| {
-            let v: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
+            let v: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
             let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
             if norm > 0.0 {
                 v.into_iter().map(|x| x / norm).collect()
@@ -35,7 +35,7 @@ pub fn generate_sparse_embeddings(
         .map(|_| {
             let mut indices: Vec<usize> = (0..dim).collect();
             for i in 0..non_zero_count {
-                let j = rng.gen_range(i..dim);
+                let j = rng.random_range(i..dim);
                 indices.swap(i, j);
             }
             indices.truncate(non_zero_count);
@@ -43,7 +43,7 @@ pub fn generate_sparse_embeddings(
 
             let positions: Vec<u32> = indices.iter().map(|&i| i as u32).collect();
             let values: Vec<f32> = (0..non_zero_count)
-                .map(|_| rng.gen_range(-1.0..1.0))
+                .map(|_| rng.random_range(-1.0..1.0))
                 .collect();
 
             SparseVector::from_parts(dim, positions, values)

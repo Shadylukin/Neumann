@@ -404,6 +404,10 @@ pub struct RaftStats {
     pub heartbeat_successes: AtomicU64,
     /// Number of failed heartbeat attempts.
     pub heartbeat_failures: AtomicU64,
+    /// Number of backoff events triggered.
+    pub backoff_events: AtomicU64,
+    /// Number of entries skipped due to backoff.
+    pub backoff_skipped_entries: AtomicU64,
 }
 
 impl RaftStats {
@@ -467,6 +471,8 @@ impl RaftStats {
             heartbeat_failures: self.heartbeat_failures.load(Ordering::Relaxed),
             fast_path_rate: self.acceptance_rate(),
             heartbeat_success_rate: self.heartbeat_success_rate(),
+            backoff_events: self.backoff_events.load(Ordering::Relaxed),
+            backoff_skipped_entries: self.backoff_skipped_entries.load(Ordering::Relaxed),
         }
     }
 }
@@ -486,6 +492,8 @@ pub struct RaftStatsSnapshot {
     pub heartbeat_failures: u64,
     pub fast_path_rate: f32,
     pub heartbeat_success_rate: f32,
+    pub backoff_events: u64,
+    pub backoff_skipped_entries: u64,
 }
 
 /// Backward compatibility alias for `RaftStats`.
