@@ -89,9 +89,9 @@ pub fn router(ctx: Arc<AdminContext>) -> Router {
         .route("/", get(handlers::dashboard))
         // Relational engine routes
         .route("/relational", get(handlers::relational::tables_list))
-        .route("/relational/:table", get(handlers::relational::table_detail))
+        .route("/relational/{table}", get(handlers::relational::table_detail))
         .route(
-            "/relational/:table/rows",
+            "/relational/{table}/rows",
             get(handlers::relational::table_rows),
         )
         // Vector engine routes
@@ -106,7 +106,7 @@ pub fn router(ctx: Arc<AdminContext>) -> Router {
             get(handlers::vector::default_points_list),
         )
         .route(
-            "/vector/_default/points/:point_id",
+            "/vector/_default/points/{point_id}",
             get(handlers::vector::default_point_detail),
         )
         .route(
@@ -116,19 +116,19 @@ pub fn router(ctx: Arc<AdminContext>) -> Router {
         )
         // Named collection routes
         .route(
-            "/vector/:collection",
+            "/vector/{collection}",
             get(handlers::vector::collection_detail),
         )
         .route(
-            "/vector/:collection/points",
+            "/vector/{collection}/points",
             get(handlers::vector::points_list),
         )
         .route(
-            "/vector/:collection/points/:point_id",
+            "/vector/{collection}/points/{point_id}",
             get(handlers::vector::point_detail),
         )
         .route(
-            "/vector/:collection/search",
+            "/vector/{collection}/search",
             get(handlers::vector::search_form).post(handlers::vector::search_submit),
         )
         // Graph engine routes

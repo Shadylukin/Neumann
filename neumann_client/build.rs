@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Recompile if proto changes
         println!("cargo:rerun-if-changed={proto_file}");
 
-        tonic_build::configure()
+        tonic_prost_build::configure()
             .build_server(false)
             .build_client(true)
             .compile_protos(&[proto_file], &["../neumann_server/proto/"])?;

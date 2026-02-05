@@ -4,13 +4,11 @@
 //! This module provides metrics collection using OpenTelemetry with OTLP export.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use opentelemetry::metrics::{Counter, Histogram, Meter, MeterProvider};
 use opentelemetry::KeyValue;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
-use opentelemetry_sdk::runtime::Tokio;
+use opentelemetry_otlp::{MetricExporter, WithExportConfig};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use crate::error::{Result, ServerError};
 
@@ -102,42 +100,42 @@ impl ServerMetrics {
         let requests_total = meter
             .u64_counter("neumann.requests.total")
             .with_description("Total number of requests received")
-            .init();
+            .build();
 
         let requests_success = meter
             .u64_counter("neumann.requests.success")
             .with_description("Number of successful requests")
-            .init();
+            .build();
 
         let requests_error = meter
             .u64_counter("neumann.requests.error")
             .with_description("Number of failed requests")
-            .init();
+            .build();
 
         let auth_failures = meter
             .u64_counter("neumann.auth.failures")
             .with_description("Number of authentication failures")
-            .init();
+            .build();
 
         let rate_limited = meter
             .u64_counter("neumann.rate_limited")
             .with_description("Number of rate-limited requests")
-            .init();
+            .build();
 
         let query_latency = meter
             .f64_histogram("neumann.query.latency_ms")
             .with_description("Query execution latency in milliseconds")
-            .init();
+            .build();
 
         let blob_latency = meter
             .f64_histogram("neumann.blob.latency_ms")
             .with_description("Blob operation latency in milliseconds")
-            .init();
+            .build();
 
         let vector_latency = meter
             .f64_histogram("neumann.vector.latency_ms")
             .with_description("Vector operation latency in milliseconds")
-            .init();
+            .build();
 
         Self {
             meter,
@@ -245,27 +243,22 @@ pub fn init_metrics(config: &MetricsConfig) -> Result<MetricsHandle> {
     if !config.enabled {
         // Return a no-op metrics handle
         let provider = SdkMeterProvider::builder().build();
-        let meter = provider.meter(config.service_name.clone());
+        let meter = provider.meter("neumann_server");
         let metrics = Arc::new(ServerMetrics::new(meter));
         return Ok(MetricsHandle { provider, metrics });
     }
 
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
+    let exporter = MetricExporter::builder()
+        .with_tonic()
         .with_endpoint(&config.otlp_endpoint)
-        .build_metrics_exporter(
-            Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),
-            Box::new(opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector::new()),
-        )
+        .build()
         .map_err(|e| ServerError::Config(format!("failed to create OTLP exporter: {e}")))?;
 
-    let reader = PeriodicReader::builder(exporter, Tokio)
-        .with_interval(Duration::from_secs(config.export_interval_secs))
+    let provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
         .build();
 
-    let provider = SdkMeterProvider::builder().with_reader(reader).build();
-
-    let meter = provider.meter(config.service_name.clone());
+    let meter = provider.meter("neumann_server");
     let metrics = Arc::new(ServerMetrics::new(meter));
 
     tracing::info!(
@@ -406,7 +399,7 @@ mod tests {
         let metrics = ServerMetrics::new(meter);
 
         // Should be able to access the meter for custom metrics
-        let _custom_counter = metrics.meter().u64_counter("custom.counter").init();
+        let _custom_counter = metrics.meter().u64_counter("custom.counter").build();
     }
 
     #[test]
