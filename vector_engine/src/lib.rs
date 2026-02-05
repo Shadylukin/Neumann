@@ -10,7 +10,7 @@
 //! - **Multiple distance metrics**: Cosine, Euclidean, dot product, and extended metrics
 //! - **HNSW indexing**: Hierarchical Navigable Small World graphs for fast k-NN search
 //! - **Batch operations**: Parallel processing for large embedding batches
-//! - **Entity embeddings**: Associate embeddings with existing entities in TensorStore
+//! - **Entity embeddings**: Associate embeddings with existing entities in `TensorStore`
 //! - **Memory bounds**: Configurable limits for dimension and scan operations
 //!
 //! # Quick Start
@@ -64,16 +64,6 @@
 //! | Recommendation scores | `DotProduct` |
 //! | General purpose | `Cosine` (default) |
 
-// Pedantic lint configuration for vector_engine
-#![allow(clippy::cast_possible_truncation)] // Truncation from usize to f32 for ratios is intentional
-#![allow(clippy::cast_precision_loss)] // Precision loss in f32 casts is acceptable for ratios
-#![allow(clippy::needless_pass_by_value)] // Vec ownership is intentional for API design
-#![allow(clippy::missing_errors_doc)] // Error conditions are self-evident from Result types
-#![allow(clippy::uninlined_format_args)] // Keep format strings readable
-#![allow(clippy::similar_names)] // score vs store is clear in context
-#![allow(clippy::doc_markdown)] // Flexibility in doc formatting
-#![allow(clippy::must_use_candidate)] // Not all pure functions need #[must_use]
-#![allow(clippy::missing_const_for_fn)] // Some functions can't be const due to dependencies
 #![warn(missing_docs)]
 
 use std::collections::HashMap;
@@ -118,7 +108,7 @@ pub enum VectorError {
     },
     /// Empty vector provided.
     EmptyVector,
-    /// Invalid top_k value.
+    /// Invalid `top_k` value.
     InvalidTopK,
     /// Storage error from underlying tensor store.
     StorageError(String),
@@ -226,6 +216,8 @@ impl Deadline {
     fn from_duration(timeout: Option<Duration>) -> Self {
         Self {
             deadline: timeout.map(|d| Instant::now() + d),
+            // Safe: timeouts in practice won't exceed u64::MAX milliseconds
+            #[allow(clippy::cast_possible_truncation)]
             timeout_ms: timeout.map_or(0, |d| d.as_millis() as u64),
         }
     }
@@ -530,7 +522,7 @@ pub struct VectorEntry {
     pub metadata: Option<HashMap<String, MetadataValue>>,
 }
 
-/// Metadata value for serialization (simplified from TensorValue).
+/// Metadata value for serialization (simplified from `TensorValue`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bitcode::Encode, bitcode::Decode)]
 pub enum MetadataValue {
     /// Null value.
@@ -608,13 +600,13 @@ impl PersistentVectorIndex {
 
     /// Number of vectors.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.vectors.len()
     }
 
     /// Check if empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.vectors.is_empty()
     }
 }
@@ -703,6 +695,8 @@ impl VectorEngineConfig {
     }
 
     /// Validates the configuration parameters.
+    ///
+    /// # Errors
     ///
     /// Returns an error if any parameter is out of valid range.
     pub fn validate(&self) -> Result<()> {
@@ -913,7 +907,7 @@ impl HNSWBuildOptions {
 
     /// Sets the HNSW configuration.
     #[must_use]
-    pub fn with_hnsw_config(mut self, config: HNSWConfig) -> Self {
+    pub const fn with_hnsw_config(mut self, config: HNSWConfig) -> Self {
         self.hnsw_config = config;
         self
     }
@@ -923,7 +917,7 @@ impl HNSWBuildOptions {
     /// Vectors with sparsity (fraction of zeros) above this threshold
     /// will use sparse storage. Only affects `HNSWStorageStrategy::Auto`.
     #[must_use]
-    pub fn with_sparsity_threshold(mut self, threshold: f32) -> Self {
+    pub const fn with_sparsity_threshold(mut self, threshold: f32) -> Self {
         self.hnsw_config.sparsity_threshold = threshold;
         self
     }
@@ -997,7 +991,7 @@ impl IVFBuildOptions {
 
     /// Sets the storage format.
     #[must_use]
-    pub fn with_storage(mut self, storage: IVFStorage) -> Self {
+    pub const fn with_storage(mut self, storage: IVFStorage) -> Self {
         self.config.storage = storage;
         self
     }
@@ -1097,7 +1091,7 @@ pub struct PagedResult<T> {
 }
 
 impl<T> PagedResult<T> {
-    /// Creates a new paged result with the given items, total count, and has_more flag.
+    /// Creates a new paged result with the given items, total count, and `has_more` flag.
     #[must_use]
     pub const fn new(items: Vec<T>, total_count: Option<usize>, has_more: bool) -> Self {
         Self {
@@ -1153,7 +1147,7 @@ pub struct VectorEngine {
 }
 
 impl VectorEngine {
-    /// Create a new VectorEngine with a fresh TensorStore.
+    /// Create a new `VectorEngine` with a fresh `TensorStore`.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -1164,7 +1158,7 @@ impl VectorEngine {
         }
     }
 
-    /// Create a VectorEngine using an existing TensorStore.
+    /// Create a `VectorEngine` using an existing `TensorStore`.
     #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         Self {
@@ -1175,9 +1169,11 @@ impl VectorEngine {
         }
     }
 
-    /// Create a VectorEngine with custom configuration.
+    /// Create a `VectorEngine` with custom configuration.
     ///
-    /// Validates the configuration before construction.
+    /// # Errors
+    ///
+    /// Returns an error if configuration validation fails.
     pub fn with_config(config: VectorEngineConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -1188,9 +1184,11 @@ impl VectorEngine {
         })
     }
 
-    /// Create a VectorEngine with existing store and custom configuration.
+    /// Create a `VectorEngine` with existing store and custom configuration.
     ///
-    /// Validates the configuration before construction.
+    /// # Errors
+    ///
+    /// Returns an error if configuration validation fails.
     pub fn with_store_and_config(store: TensorStore, config: VectorEngineConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -1277,8 +1275,9 @@ impl VectorEngine {
         self.store.has_wal()
     }
 
-    /// Get a reference to the underlying TensorStore.
-    pub fn store(&self) -> &TensorStore {
+    /// Get a reference to the underlying `TensorStore`.
+    #[must_use]
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 
@@ -1289,11 +1288,11 @@ impl VectorEngine {
 
     /// Key prefix for embeddings.
     fn embedding_key(key: &str) -> String {
-        format!("emb:{}", key)
+        format!("emb:{key}")
     }
 
     /// Key prefix for all embeddings (for scanning).
-    fn embedding_prefix() -> &'static str {
+    const fn embedding_prefix() -> &'static str {
         "emb:"
     }
 
@@ -1301,12 +1300,12 @@ impl VectorEngine {
 
     /// Key prefix for embeddings in a named collection.
     fn collection_embedding_key(collection: &str, key: &str) -> String {
-        format!("coll:{}:emb:{}", collection, key)
+        format!("coll:{collection}:emb:{key}")
     }
 
     /// Key prefix for all embeddings in a collection (for scanning).
     fn collection_embedding_prefix(collection: &str) -> String {
-        format!("coll:{}:emb:", collection)
+        format!("coll:{collection}:emb:")
     }
 
     /// The default collection name.
@@ -1315,6 +1314,8 @@ impl VectorEngine {
     // ========== Collection Management ==========
 
     /// Create a new collection with the given configuration.
+    ///
+    /// # Errors
     ///
     /// Returns an error if a collection with the same name already exists.
     #[instrument(skip(self, config), fields(collection = %name))]
@@ -1329,6 +1330,8 @@ impl VectorEngine {
     }
 
     /// Delete a collection and all its embeddings.
+    ///
+    /// # Errors
     ///
     /// Returns an error if the collection does not exist.
     #[instrument(skip(self), fields(collection = %name))]
@@ -1379,12 +1382,20 @@ impl VectorEngine {
     /// Store embedding in a specific collection.
     ///
     /// Creates the collection with default config if it doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vector is empty, dimension mismatches, or storage fails.
     #[instrument(skip(self, vector), fields(collection = %collection, key = %key, vector_dim = vector.len()))]
     pub fn store_in_collection(&self, collection: &str, key: &str, vector: Vec<f32>) -> Result<()> {
         self.store_in_collection_with_metadata(collection, key, vector, HashMap::new())
     }
 
     /// Store embedding with metadata in a specific collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vector is empty, dimension mismatches, or storage fails.
     #[instrument(skip(self, vector, metadata), fields(collection = %collection, key = %key, vector_dim = vector.len()))]
     pub fn store_in_collection_with_metadata(
         &self,
@@ -1440,26 +1451,34 @@ impl VectorEngine {
     }
 
     /// Get embedding from a specific collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found in the collection.
     pub fn get_from_collection(&self, collection: &str, key: &str) -> Result<Vec<f32>> {
         let storage_key = Self::collection_embedding_key(collection, key);
         let tensor = self
             .store
             .get(&storage_key)
-            .map_err(|_| VectorError::NotFound(format!("{}:{}", collection, key)))?;
+            .map_err(|_| VectorError::NotFound(format!("{collection}:{key}")))?;
 
         let vector_value = tensor
             .get("vector")
-            .ok_or_else(|| VectorError::NotFound(format!("{}:{}", collection, key)))?;
+            .ok_or_else(|| VectorError::NotFound(format!("{collection}:{key}")))?;
 
         Self::extract_vector(vector_value)
-            .ok_or_else(|| VectorError::NotFound(format!("{}:{}", collection, key)))
+            .ok_or_else(|| VectorError::NotFound(format!("{collection}:{key}")))
     }
 
     /// Delete embedding from a specific collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found or deletion fails.
     pub fn delete_from_collection(&self, collection: &str, key: &str) -> Result<()> {
         let storage_key = Self::collection_embedding_key(collection, key);
         if !self.store.exists(&storage_key) {
-            return Err(VectorError::NotFound(format!("{}:{}", collection, key)));
+            return Err(VectorError::NotFound(format!("{collection}:{key}")));
         }
         self.store.delete(&storage_key)?;
         Ok(())
@@ -1482,6 +1501,10 @@ impl VectorEngine {
     }
 
     /// Get metadata for a vector in a specific collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found in the collection.
     pub fn get_collection_metadata(
         &self,
         collection: &str,
@@ -1505,6 +1528,10 @@ impl VectorEngine {
     // ========== Collection-Aware Search ==========
 
     /// Search within a specific collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, dimension mismatches, or search times out.
     #[instrument(skip(self, query), fields(collection = %collection, query_dim = query.len(), top_k))]
     pub fn search_in_collection(
         &self,
@@ -1584,6 +1611,10 @@ impl VectorEngine {
     }
 
     /// Search with filter in a specific collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, dimension mismatches, or search times out.
     #[allow(clippy::too_many_lines)]
     #[instrument(skip(self, query, filter, config), fields(collection = %collection, query_dim = query.len(), top_k))]
     pub fn search_filtered_in_collection(
@@ -1641,6 +1672,8 @@ impl VectorEngine {
                                 .unwrap_or(false)
                         })
                         .count();
+                    // Safe: selectivity ratio only needs approximate precision
+                    #[allow(clippy::cast_precision_loss)]
                     let selectivity = matches as f32 / sample_size as f32;
                     if selectivity < filter_config.selectivity_threshold {
                         FilterStrategy::PreFilter
@@ -1719,8 +1752,12 @@ impl VectorEngine {
 
     /// Store an embedding vector with the given key.
     ///
-    /// Automatically uses sparse format based on configured sparse_threshold.
+    /// Automatically uses sparse format based on configured `sparse_threshold`.
     /// Overwrites any existing embedding with the same key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vector is empty, exceeds max dimension, or storage fails.
     #[instrument(skip(self, vector), fields(key = %key, vector_dim = vector.len()))]
     pub fn store_embedding(&self, key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
@@ -1762,6 +1799,8 @@ impl VectorEngine {
             return false;
         }
         let nnz = vector.iter().filter(|&&v| v.abs() > 1e-6).count();
+        // Safe: zero ratio only needs approximate precision for threshold comparison
+        #[allow(clippy::cast_precision_loss)]
         let zero_ratio = 1.0 - (nnz as f32 / vector.len() as f32);
         zero_ratio >= threshold
     }
@@ -1769,6 +1808,10 @@ impl VectorEngine {
     /// Get an embedding by key.
     ///
     /// Returns the embedding as a dense vector regardless of storage format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found.
     #[instrument(skip(self), fields(key = %key))]
     pub fn get_embedding(&self, key: &str) -> Result<Vec<f32>> {
         let storage_key = Self::embedding_key(key);
@@ -1785,6 +1828,10 @@ impl VectorEngine {
     }
 
     /// Delete an embedding by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found or deletion fails.
     #[instrument(skip(self), fields(key = %key))]
     pub fn delete_embedding(&self, key: &str) -> Result<()> {
         let _guard = self.delete_lock.write();
@@ -1810,11 +1857,15 @@ impl VectorEngine {
         self.store.scan_count(Self::embedding_prefix())
     }
 
-    /// Search for the top_k most similar embeddings to the query vector.
+    /// Search for the `top_k` most similar embeddings to the query vector.
     ///
     /// Returns results sorted by similarity score (highest first).
     /// Uses cosine similarity with SIMD acceleration.
     /// Automatically uses parallel iteration for large datasets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search times out.
     #[instrument(skip(self, query), fields(query_dim = query.len(), top_k = top_k))]
     pub fn search_similar(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         let deadline = Deadline::from_duration(self.config.search_timeout);
@@ -1878,11 +1929,15 @@ impl VectorEngine {
         Ok(results)
     }
 
-    /// Search for the top_k most similar embeddings using the specified distance metric.
+    /// Search for the `top_k` most similar embeddings using the specified distance metric.
     ///
-    /// - Cosine: Higher scores are more similar (range -1 to 1)
-    /// - DotProduct: Higher scores are more similar (unbounded)
-    /// - Euclidean: Lower distances are more similar (converted to score via 1/(1+dist))
+    /// - `Cosine`: Higher scores are more similar (range -1 to 1)
+    /// - `DotProduct`: Higher scores are more similar (unbounded)
+    /// - `Euclidean`: Lower distances are more similar (converted to score via 1/(1+dist))
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search times out.
     #[instrument(skip(self, query), fields(query_dim = query.len(), top_k, metric = ?metric))]
     pub fn search_similar_with_metric(
         &self,
@@ -1938,7 +1993,7 @@ impl VectorEngine {
         Ok(results)
     }
 
-    /// Extract vector from TensorValue, handling both dense and sparse formats.
+    /// Extract vector from `TensorValue`, handling both dense and sparse formats.
     fn extract_vector(value: &TensorValue) -> Option<Vec<f32>> {
         match value {
             TensorValue::Vector(v) => Some(v.clone()),
@@ -1948,6 +2003,8 @@ impl VectorEngine {
     }
 
     /// Sequential similarity search (faster for small datasets)
+    // store vs stored_vec: parameter is TensorStore, local is the retrieved vector
+    #[allow(clippy::similar_names)]
     fn search_sequential(
         store: &TensorStore,
         keys: &[String],
@@ -1975,6 +2032,8 @@ impl VectorEngine {
     }
 
     /// Parallel similarity search (faster for large datasets)
+    // store vs stored_vec: parameter is TensorStore, local is the retrieved vector
+    #[allow(clippy::similar_names)]
     fn search_parallel(
         store: &TensorStore,
         keys: &[String],
@@ -2002,6 +2061,8 @@ impl VectorEngine {
     }
 
     /// Sequential similarity search with configurable metric
+    // store vs stored_vec: parameter is TensorStore, local is the retrieved vector
+    #[allow(clippy::similar_names)]
     fn search_sequential_with_metric(
         store: &TensorStore,
         keys: &[String],
@@ -2030,6 +2091,8 @@ impl VectorEngine {
     }
 
     /// Parallel similarity search with configurable metric
+    // store vs stored_vec: parameter is TensorStore, local is the retrieved vector
+    #[allow(clippy::similar_names)]
     fn search_parallel_with_metric(
         store: &TensorStore,
         keys: &[String],
@@ -2101,6 +2164,10 @@ impl VectorEngine {
     }
 
     /// Compute cosine similarity between two vectors (public helper).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vector is empty or dimensions don't match.
     pub fn compute_similarity(a: &[f32], b: &[f32]) -> Result<f32> {
         if a.is_empty() || b.is_empty() {
             return Err(VectorError::EmptyVector);
@@ -2158,6 +2225,10 @@ impl VectorEngine {
     ///
     /// Returns the number of embeddings deleted. If `max_keys_per_scan` is set
     /// and there were more embeddings than the limit, call again until 0 is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage operations fail.
     #[instrument(skip(self))]
     pub fn clear(&self) -> Result<usize> {
         let max_keys = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
@@ -2177,10 +2248,14 @@ impl VectorEngine {
 
     /// Build an HNSW index from all stored embeddings.
     ///
-    /// Returns a tuple of (index, key_mapping) where key_mapping maps node IDs to keys.
+    /// Returns a tuple of (`index`, `key_mapping`) where `key_mapping` maps node IDs to keys.
     /// Use this for fast approximate nearest neighbor search on large datasets.
     ///
     /// Validates dimension consistency across all vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no embeddings exist, dimensions are inconsistent, or storage fails.
     ///
     /// # Example
     /// ```ignore
@@ -2202,7 +2277,7 @@ impl VectorEngine {
 
     /// Build an HNSW index with configurable storage strategy.
     ///
-    /// Returns a tuple of (index, key_mapping) where key_mapping maps node IDs to keys.
+    /// Returns a tuple of (`index`, `key_mapping`) where `key_mapping` maps node IDs to keys.
     /// Use `HNSWBuildOptions` to configure both storage strategy and HNSW parameters.
     ///
     /// # Storage Strategies
@@ -2233,6 +2308,10 @@ impl VectorEngine {
     ///         .with_sparsity_threshold(0.7)
     /// )?;
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dimensions are inconsistent or storage fails.
     #[instrument(skip(self, options))]
     pub fn build_hnsw_index_with_options(
         &self,
@@ -2284,6 +2363,10 @@ impl VectorEngine {
     }
 
     /// Build an HNSW index with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dimensions are inconsistent or storage fails.
     #[instrument(skip(self))]
     pub fn build_hnsw_index_default(&self) -> Result<(HNSWIndex, Vec<String>)> {
         self.build_hnsw_index(HNSWConfig::default())
@@ -2292,6 +2375,10 @@ impl VectorEngine {
     /// Estimate memory usage for building an HNSW index.
     ///
     /// Returns estimated bytes needed based on current embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if retrieving embeddings fails.
     pub fn estimate_hnsw_memory(&self) -> Result<usize> {
         let count = self.count();
         if count == 0 {
@@ -2314,7 +2401,11 @@ impl VectorEngine {
         Ok(vector_bytes + graph_bytes + key_bytes)
     }
 
-    /// This is a convenience method that converts node IDs back to SearchResults.
+    /// This is a convenience method that converts node IDs back to `SearchResults`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search times out.
     pub fn search_with_hnsw(
         &self,
         index: &HNSWIndex,
@@ -2355,13 +2446,17 @@ impl VectorEngine {
     ///
     /// Fetches 2x candidates from HNSW, then re-ranks using the exact metric.
     /// Useful when you need more precision than HNSW's cosine-based search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query is empty, `top_k` is zero, or search times out.
     pub fn search_with_hnsw_and_metric(
         &self,
         index: &HNSWIndex,
         key_mapping: &[String],
         query: &[f32],
         top_k: usize,
-        metric: ExtendedDistanceMetric,
+        metric: &ExtendedDistanceMetric,
     ) -> Result<Vec<SearchResult>> {
         let deadline = Deadline::from_duration(self.config.search_timeout);
 
@@ -2437,6 +2532,10 @@ impl VectorEngine {
     /// // Build IVF-Flat index with 10 clusters
     /// let (index, keys) = engine.build_ivf_index(IVFBuildOptions::flat(10)).unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dimensions are inconsistent or storage fails.
     #[instrument(skip(self, options))]
     pub fn build_ivf_index(&self, options: IVFBuildOptions) -> Result<(IVFIndex, Vec<String>)> {
         let keys = self.list_keys();
@@ -2497,6 +2596,10 @@ impl VectorEngine {
     /// Build an IVF-Flat index with default settings.
     ///
     /// Uses 100 clusters and sqrt(100)=10 nprobe by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dimensions are inconsistent or storage fails.
     #[instrument(skip(self))]
     pub fn build_ivf_index_default(&self) -> Result<(IVFIndex, Vec<String>)> {
         self.build_ivf_index(IVFBuildOptions::default())
@@ -2513,6 +2616,10 @@ impl VectorEngine {
     /// * `key_mapping` - Mapping from IVF vector IDs to original keys
     /// * `query` - The query vector
     /// * `top_k` - Number of results to return
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search times out.
     #[instrument(skip(self, index, key_mapping, query))]
     pub fn search_with_ivf(
         &self,
@@ -2555,6 +2662,10 @@ impl VectorEngine {
     ///
     /// Higher nprobe values search more clusters, improving recall
     /// at the cost of speed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search times out.
     #[instrument(skip(self, index, key_mapping, query))]
     pub fn search_with_ivf_nprobe(
         &self,
@@ -2596,6 +2707,10 @@ impl VectorEngine {
     /// Estimate memory usage for building an IVF index.
     ///
     /// Returns estimated bytes based on the storage format and cluster count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if retrieving embeddings fails.
     pub fn estimate_ivf_memory(&self, options: &IVFBuildOptions) -> Result<usize> {
         let count = self.count();
         if count == 0 {
@@ -2633,7 +2748,13 @@ impl VectorEngine {
     ///
     /// Validates all inputs upfront before storing any.
     /// Uses parallel processing for batches larger than `config.batch_parallel_threshold`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any input is invalid or storage fails.
     #[instrument(skip(self, inputs), fields(count = inputs.len()))]
+    // Takes Vec for API consistency with batch operations that may need ownership
+    #[allow(clippy::needless_pass_by_value)]
     pub fn batch_store_embeddings(&self, inputs: Vec<EmbeddingInput>) -> Result<BatchResult> {
         if inputs.is_empty() {
             return Ok(BatchResult::new(Vec::new()));
@@ -2688,6 +2809,10 @@ impl VectorEngine {
     ///
     /// Returns the count of successfully deleted embeddings.
     /// Silently skips keys that don't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage operations fail.
     #[instrument(skip(self, keys), fields(count = keys.len()))]
     pub fn batch_delete_embeddings(&self, keys: Vec<String>) -> Result<usize> {
         let _guard = self.delete_lock.write();
@@ -2748,6 +2873,10 @@ impl VectorEngine {
     }
 
     /// Search for similar embeddings with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search fails.
     #[instrument(skip(self, query, pagination), fields(query_dim = query.len(), top_k))]
     pub fn search_similar_paginated(
         &self,
@@ -2783,6 +2912,10 @@ impl VectorEngine {
     }
 
     /// Search for similar entities with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search fails.
     #[instrument(skip(self, query, pagination), fields(query_dim = query.len(), top_k))]
     pub fn search_entities_paginated(
         &self,
@@ -2821,9 +2954,13 @@ impl VectorEngine {
     // These methods work with entity keys directly (e.g., "user:1") and use the
     // _embedding field, enabling cross-engine queries on shared entities.
 
-    /// Store embedding in an entity's _embedding field. Creates entity if needed.
+    /// Store embedding in an entity's `_embedding` field. Creates entity if needed.
     ///
     /// Automatically uses sparse format for vectors with >50% zeros.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vector is empty or exceeds the maximum dimension.
     #[instrument(skip(self, vector), fields(key = %entity_key, vector_dim = vector.len()))]
     pub fn set_entity_embedding(&self, entity_key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
@@ -2858,6 +2995,10 @@ impl VectorEngine {
     /// Get embedding from an entity's _embedding field.
     ///
     /// Returns the embedding as a dense vector regardless of storage format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entity or embedding is not found.
     pub fn get_entity_embedding(&self, entity_key: &str) -> Result<Vec<f32>> {
         let tensor = self
             .store
@@ -2880,6 +3021,10 @@ impl VectorEngine {
     }
 
     /// Remove embedding from an entity (keeps other entity data).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entity or embedding is not found.
     pub fn remove_entity_embedding(&self, entity_key: &str) -> Result<()> {
         let mut tensor = self
             .store
@@ -2895,6 +3040,10 @@ impl VectorEngine {
     }
 
     /// Search for similar entities using _embedding field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty, `top_k` is zero, or search times out.
     #[instrument(skip(self, query), fields(query_dim = query.len(), top_k = top_k))]
     pub fn search_entities(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         let deadline = Deadline::from_duration(self.config.search_timeout);
@@ -2992,8 +3141,8 @@ impl VectorEngine {
 
     /// Store embedding with associated metadata for filtered search.
     ///
-    /// Metadata fields are stored alongside the vector in the same TensorData,
-    /// using a "meta:" prefix to distinguish them from the vector field.
+    /// Metadata fields are stored alongside the vector in the same `TensorData`,
+    /// using a `meta:` prefix to distinguish them from the vector field.
     ///
     /// # Example
     /// ```rust,ignore
@@ -3008,6 +3157,10 @@ impl VectorEngine {
     ///
     /// engine.store_embedding_with_metadata("product1", vec![0.1, 0.2, 0.3], metadata).unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vector is empty or exceeds the maximum dimension.
     #[instrument(skip(self, vector, metadata), fields(key = %key, vector_dim = vector.len()))]
     pub fn store_embedding_with_metadata(
         &self,
@@ -3051,7 +3204,11 @@ impl VectorEngine {
     /// Retrieve metadata fields for an embedding.
     ///
     /// Returns only the metadata fields, not the vector itself.
-    /// Metadata field names are returned without the internal "meta:" prefix.
+    /// Metadata field names are returned without the internal `meta:` prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the embedding is not found.
     #[instrument(skip(self), fields(key = %key))]
     pub fn get_metadata(&self, key: &str) -> Result<HashMap<String, TensorValue>> {
         let storage_key = Self::embedding_key(key);
@@ -3074,6 +3231,8 @@ impl VectorEngine {
     ///
     /// Merges the provided metadata with existing metadata. To remove a field,
     /// use `remove_metadata_field()` instead.
+    ///
+    /// # Errors
     ///
     /// Returns an error if the embedding does not exist.
     #[instrument(skip(self, metadata), fields(key = %key))]
@@ -3099,6 +3258,10 @@ impl VectorEngine {
     }
 
     /// Remove a specific metadata field from an embedding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the embedding is not found or storage fails.
     #[instrument(skip(self), fields(key = %key, field = %field))]
     pub fn remove_metadata_field(&self, key: &str, field: &str) -> Result<()> {
         let storage_key = Self::embedding_key(key);
@@ -3122,6 +3285,10 @@ impl VectorEngine {
     }
 
     /// Get a single metadata field value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the embedding is not found.
     pub fn get_metadata_field(&self, key: &str, field: &str) -> Result<Option<TensorValue>> {
         let storage_key = Self::embedding_key(key);
         let tensor = self
@@ -3146,6 +3313,11 @@ impl VectorEngine {
     /// - **Post-filter**: Best when filter matches > 10% of embeddings.
     ///   Searches with oversample, then filters results.
     /// - **Auto**: Estimates selectivity and chooses automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query is empty, `top_k` is zero, dimension exceeds
+    /// max, or search times out.
     #[instrument(skip(self, query, filter, config), fields(query_dim = query.len(), top_k))]
     pub fn search_similar_filtered(
         &self,
@@ -3221,6 +3393,7 @@ impl VectorEngine {
             .filter(|k| self.evaluate_filter_for_key(k, filter))
             .count();
 
+        #[allow(clippy::cast_precision_loss)]
         let selectivity = matches as f32 / sample_size as f32;
 
         if selectivity < config.selectivity_threshold {
@@ -3308,7 +3481,7 @@ impl VectorEngine {
         Self::evaluate_filter(&tensor, filter)
     }
 
-    /// Evaluate a filter condition against a TensorData.
+    /// Evaluate a filter condition against a `TensorData`.
     fn evaluate_filter(tensor: &TensorData, filter: &FilterCondition) -> bool {
         match filter {
             FilterCondition::True => true,
@@ -3363,7 +3536,8 @@ impl VectorEngine {
         ordering.is_some_and(cmp)
     }
 
-    /// Compare TensorValue to FilterValue, returning ordering if compatible.
+    /// Compare `TensorValue` to `FilterValue`, returning ordering if compatible.
+    #[allow(clippy::cast_precision_loss)]
     fn compare_tensor_value_to_filter(
         tensor_val: &TensorValue,
         filter_val: &FilterValue,
@@ -3413,6 +3587,7 @@ impl VectorEngine {
     /// Estimate selectivity of a filter (fraction of embeddings that match).
     ///
     /// Returns a value between 0.0 and 1.0. This is useful for query planning.
+    #[allow(clippy::cast_precision_loss)]
     pub fn estimate_filter_selectivity(&self, filter: &FilterCondition) -> f32 {
         let count = self.count();
         if count == 0 {
@@ -3504,6 +3679,10 @@ impl VectorEngine {
     /// Save a collection's index to a file (JSON format).
     ///
     /// The file can be loaded later with `load_index()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or file I/O fails.
     #[instrument(skip(self, path), fields(collection = %collection))]
     pub fn save_index(&self, collection: &str, path: impl AsRef<Path>) -> Result<()> {
         let index = self.snapshot_collection(collection);
@@ -3517,6 +3696,10 @@ impl VectorEngine {
     ///
     /// Uses bitcode for efficient serialization. The file can be loaded
     /// with `load_index_binary()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file I/O fails.
     #[instrument(skip(self, path), fields(collection = %collection))]
     pub fn save_index_binary(&self, collection: &str, path: impl AsRef<Path>) -> Result<()> {
         let index = self.snapshot_collection(collection);
@@ -3529,6 +3712,10 @@ impl VectorEngine {
     ///
     /// Returns the collection name from the loaded index.
     /// If the collection already exists with vectors, they will be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file I/O, deserialization, or limits are exceeded.
     #[instrument(skip(self, path))]
     pub fn load_index(&self, path: impl AsRef<Path>) -> Result<String> {
         let path = path.as_ref();
@@ -3566,6 +3753,10 @@ impl VectorEngine {
     /// Load an index from a binary file and restore vectors to a collection.
     ///
     /// Returns the collection name from the loaded index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file I/O, deserialization, or limits are exceeded.
     #[instrument(skip(self, path))]
     pub fn load_index_binary(&self, path: impl AsRef<Path>) -> Result<String> {
         let path = path.as_ref();
@@ -3638,6 +3829,10 @@ impl VectorEngine {
     /// Save all collections to a directory.
     ///
     /// Creates one JSON file per collection (including default).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation or file I/O fails.
     #[instrument(skip(self, dir))]
     pub fn save_all_indices(&self, dir: impl AsRef<Path>) -> Result<Vec<String>> {
         let dir = dir.as_ref();
@@ -3657,7 +3852,7 @@ impl VectorEngine {
         for collection in self.list_collections() {
             let count = self.collection_count(&collection);
             if count > 0 {
-                let filename = format!("{}.json", collection);
+                let filename = format!("{collection}.json");
                 let path = dir.join(filename);
                 self.save_index(&collection, &path)?;
                 saved.push(collection);
@@ -3670,6 +3865,10 @@ impl VectorEngine {
     /// Load all indices from a directory.
     ///
     /// Returns the names of collections that were loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the directory fails.
     #[instrument(skip(self, dir))]
     pub fn load_all_indices(&self, dir: impl AsRef<Path>) -> Result<Vec<String>> {
         let dir = dir.as_ref();
@@ -5164,7 +5363,7 @@ mod tests {
                 &key_mapping,
                 &query,
                 5,
-                ExtendedDistanceMetric::Cosine,
+                &ExtendedDistanceMetric::Cosine,
             )
             .unwrap();
 
@@ -5189,7 +5388,7 @@ mod tests {
                 &key_mapping,
                 &[1.0, 0.0],
                 3,
-                ExtendedDistanceMetric::Euclidean,
+                &ExtendedDistanceMetric::Euclidean,
             )
             .unwrap();
 
@@ -5208,7 +5407,7 @@ mod tests {
             &key_mapping,
             &[],
             5,
-            ExtendedDistanceMetric::Cosine,
+            &ExtendedDistanceMetric::Cosine,
         );
         assert!(matches!(result, Err(VectorError::EmptyVector)));
     }
@@ -5224,7 +5423,7 @@ mod tests {
             &key_mapping,
             &[1.0],
             0,
-            ExtendedDistanceMetric::Cosine,
+            &ExtendedDistanceMetric::Cosine,
         );
         assert!(matches!(result, Err(VectorError::InvalidTopK)));
     }
@@ -5559,7 +5758,7 @@ mod tests {
                 &key_mapping,
                 &[1.0, 0.0],
                 3,
-                ExtendedDistanceMetric::Angular,
+                &ExtendedDistanceMetric::Angular,
             )
             .unwrap();
 
@@ -5583,7 +5782,7 @@ mod tests {
                 &key_mapping,
                 &[1.0, 1.0, 0.0],
                 3,
-                ExtendedDistanceMetric::Jaccard,
+                &ExtendedDistanceMetric::Jaccard,
             )
             .unwrap();
 
@@ -5606,7 +5805,7 @@ mod tests {
                 &key_mapping,
                 &[1.0, 1.0, 0.0],
                 2,
-                ExtendedDistanceMetric::Overlap,
+                &ExtendedDistanceMetric::Overlap,
             )
             .unwrap();
 
@@ -5629,7 +5828,7 @@ mod tests {
                 &key_mapping,
                 &[0.0, 0.0],
                 3,
-                ExtendedDistanceMetric::Manhattan,
+                &ExtendedDistanceMetric::Manhattan,
             )
             .unwrap();
 
@@ -8985,7 +9184,7 @@ mod tests {
                 &keys,
                 &[1.0, 0.0, 0.0],
                 3,
-                ExtendedDistanceMetric::Angular,
+                &ExtendedDistanceMetric::Angular,
             )
             .unwrap();
 
