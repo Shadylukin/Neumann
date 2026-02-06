@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for the gossip-based membership protocol.
 //!
 //! Tests:
@@ -132,6 +132,9 @@ fn test_gossip_manager_peer_tracking() {
         indirect_ping_timeout_ms: 200,
         require_signatures: false,
         max_message_age_ms: 300_000,
+        bidirectional_probe_timeout_ms: 1000,
+        require_bidirectional: false,
+        max_incarnation_delta: 100,
     };
 
     let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
