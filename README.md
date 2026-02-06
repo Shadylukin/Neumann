@@ -1,8 +1,8 @@
 <p align="center">
   <img src="images/neumann_logo.png" alt="Neumann" width="200" />
+  <br />
+  <img src="images/neumann_text.png" alt="Neumann" width="280" />
 </p>
-
-# Neumann
 
 Stop juggling five databases for one AI app.
 
