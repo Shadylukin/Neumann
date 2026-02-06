@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 /**
  * Transaction support for Neumann database.
  *
@@ -82,7 +82,9 @@ export class Transaction {
    */
   constructor(client: NeumannClient, options: TransactionOptions = {}) {
     this.client = client;
-    this.identity = options.identity;
+    if (options.identity !== undefined) {
+      this.identity = options.identity;
+    }
     this._autoCommit = options.autoCommit ?? true;
   }
 
@@ -132,7 +134,7 @@ export class Transaction {
       throw new InvalidArgumentError('Transaction already active');
     }
 
-    const result = await this.client.execute('CHAIN BEGIN', { identity: this.identity });
+    const result = await this.client.execute('CHAIN BEGIN', { ...(this.identity !== undefined && { identity: this.identity }) });
 
     if (isChainQueryResult(result)) {
       const chainResult = result.result;
@@ -158,7 +160,7 @@ export class Transaction {
       throw new InvalidArgumentError('Transaction is not active');
     }
 
-    return this.client.execute(query, { identity: this.identity });
+    return this.client.execute(query, { ...(this.identity !== undefined && { identity: this.identity }) });
   }
 
   /**
@@ -172,7 +174,7 @@ export class Transaction {
       throw new InvalidArgumentError('Transaction is not active');
     }
 
-    const result = await this.client.execute('CHAIN COMMIT', { identity: this.identity });
+    const result = await this.client.execute('CHAIN COMMIT', { ...(this.identity !== undefined && { identity: this.identity }) });
 
     if (isChainQueryResult(result)) {
       const chainResult = result.result;
@@ -200,7 +202,7 @@ export class Transaction {
       throw new InvalidArgumentError('Transaction is not active');
     }
 
-    const result = await this.client.execute('CHAIN ROLLBACK', { identity: this.identity });
+    const result = await this.client.execute('CHAIN ROLLBACK', { ...(this.identity !== undefined && { identity: this.identity }) });
 
     if (isChainQueryResult(result)) {
       const chainResult = result.result;
@@ -309,8 +311,8 @@ export class TransactionBuilder {
    */
   build(): Transaction {
     return new Transaction(this.client, {
-      identity: this.identity,
-      autoCommit: this.autoCommit,
+      ...(this.identity !== undefined && { identity: this.identity }),
+      ...(this.autoCommit !== undefined && { autoCommit: this.autoCommit }),
     });
   }
 }
