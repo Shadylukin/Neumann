@@ -61,6 +61,11 @@ x509-parser = { version = "0.16", optional = true }
 [features]
 default = ["tls"]
 tls = ["tokio-rustls", "rustls-pemfile", "x509-parser"]
+loom = ["dep:loom"]
+
+[dependencies.loom]
+version = "0.7"
+optional = true
 
 [dev-dependencies]
 criterion = "0.5"
@@ -69,6 +74,8 @@ rcgen = "0.13"
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustls = { version = "0.23", features = ["ring"] }
+proptest = "1.6"
+proptest-state-machine = "0.7"
 
 [[bench]]
 name = "tensor_chain_bench"
