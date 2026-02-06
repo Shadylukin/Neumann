@@ -148,6 +148,36 @@ Target coverage thresholds:
 - router: 92%
 - chain: 95%
 
+## Model Checking (TLA+)
+
+Distributed protocol changes must be verified against the TLA+
+specifications in `specs/tla/`:
+
+```bash
+cd specs/tla
+
+# Run TLC on all three specs
+java -XX:+UseParallelGC -Xmx4g -jar tla2tools.jar \
+  -deadlock -workers auto -config Raft.cfg Raft.tla
+
+java -XX:+UseParallelGC -Xmx4g -jar tla2tools.jar \
+  -deadlock -workers auto \
+  -config TwoPhaseCommit.cfg TwoPhaseCommit.tla
+
+java -XX:+UseParallelGC -Xmx4g -jar tla2tools.jar \
+  -deadlock -workers auto \
+  -config Membership.cfg Membership.tla
+```
+
+When modifying Raft, 2PC, or gossip protocols:
+
+1. Update the corresponding `.tla` spec
+2. Run TLC and verify zero errors
+3. Save output to `specs/tla/tlc-results/`
+
+See [Formal Verification](../concepts/formal-verification.md) for
+background on what model checking covers.
+
 ## Mocking
 
 Use trait objects for dependency injection:

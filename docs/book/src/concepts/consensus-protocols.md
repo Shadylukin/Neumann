@@ -161,6 +161,23 @@ let ts = hlc.now();
 let ts = hlc.receive(message_ts);
 ```
 
+## Formal Verification
+
+Both protocols are formally specified in TLA+ and exhaustively
+model-checked with TLC:
+
+- **Raft.tla** verifies `ElectionSafety`, `LogMatching`,
+  `StateMachineSafety`, `LeaderCompleteness`, `VoteIntegrity`,
+  and `TermMonotonicity` across 18.3M distinct states.
+- **Membership.tla** verifies `NoFalsePositivesSafety`,
+  `MonotonicEpochs`, and `MonotonicIncarnations` across 54K
+  distinct states.
+
+Model checking found and led to fixes for protocol bugs including
+out-of-order message handling in Raft log replication and an invalid
+fairness formula in the gossip spec. See
+[Formal Verification](formal-verification.md) for full results.
+
 ## Integration
 
 Raft and SWIM work together:

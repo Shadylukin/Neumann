@@ -56,6 +56,7 @@
 - [Consensus Protocols](concepts/consensus-protocols.md)
 - [Embedding State Machine](concepts/embedding-state.md)
 - [Codebook Manager](concepts/codebook-manager.md)
+- [Formal Verification](concepts/formal-verification.md)
 
 # Tutorials
 

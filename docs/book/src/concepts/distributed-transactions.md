@@ -136,6 +136,14 @@ pub struct DistributedTxConfig {
 }
 ```
 
+## Formal Verification
+
+The 2PC protocol is formally specified in `TwoPhaseCommit.tla` and
+exhaustively model-checked with TLC across 2.3M distinct states.
+The model verifies `Atomicity` (all-or-nothing), `NoOrphanedLocks`,
+`ConsistentDecision`, `VoteIrrevocability`, and `DecisionStability`.
+See [Formal Verification](formal-verification.md) for full results.
+
 ## Best Practices
 
 1. **Keep transactions short**: Long transactions increase conflict probability

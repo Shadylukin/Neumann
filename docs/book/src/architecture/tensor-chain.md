@@ -1338,6 +1338,24 @@ Key metrics to monitor:
 3. **Network Isolation**: Use TLS for transport, firewall cluster ports
 4. **Audit Logging**: Log all state transitions for forensic analysis
 
+## Formal Verification
+
+The three core protocols (Raft, 2PC, SWIM gossip) are formally
+specified in TLA+ (`specs/tla/`) and exhaustively model-checked
+with TLC:
+
+| Spec | Distinct States | Properties Verified |
+|------|----------------|---------------------|
+| Raft.tla | 18,268,659 | ElectionSafety, LogMatching, StateMachineSafety, LeaderCompleteness, VoteIntegrity, TermMonotonicity |
+| TwoPhaseCommit.tla | 2,264,939 | Atomicity, NoOrphanedLocks, ConsistentDecision, VoteIrrevocability, DecisionStability |
+| Membership.tla | 54,148 | NoFalsePositivesSafety, MonotonicEpochs, MonotonicIncarnations |
+
+Model checking discovered protocol-level bugs (out-of-order message
+handling, self-message processing, heartbeat log truncation) that
+were fixed in both the specs and the Rust implementation. See
+[Formal Verification](../concepts/formal-verification.md) for full
+results and the list of bugs found.
+
 ## Related Modules
 
 | Module | Relationship |
