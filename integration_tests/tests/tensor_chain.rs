@@ -307,7 +307,7 @@ fn test_transaction_with_codebook_quantization() {
     tx.set_before_embedding(&[0.0, 0.0, 0.0, 0.0]);
     tx.compute_delta(&[0.95, 0.05, 0.0, 0.0]); // Close to [1,0,0,0]
 
-    chain.commit(tx).unwrap();
+    chain.commit(&tx).unwrap();
 
     // Verify block has quantized codes
     let block = chain.get_tip().unwrap().unwrap();
