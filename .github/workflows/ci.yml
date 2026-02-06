@@ -95,11 +95,12 @@ jobs:
           sudo apt-get install -y protobuf-compiler
 
       - name: Run cargo check
-        run: >-
-          cargo check --workspace
-          --exclude fuzz
-          --exclude neumann-native
-          --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote
+        run: |
+          cargo check --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote
 
   clippy:
     name: Clippy
@@ -129,12 +130,13 @@ jobs:
           sudo apt-get install -y protobuf-compiler
 
       - name: Run clippy
-        run: >-
-          cargo clippy --workspace
-          --exclude fuzz
-          --exclude neumann-native
-          --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote
-          -- -D warnings
+        run: |
+          cargo clippy --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
+            -- -D warnings
 
   test:
     name: Test
@@ -163,11 +165,12 @@ jobs:
           sudo apt-get install -y protobuf-compiler
 
       - name: Run tests
-        run: >-
-          cargo test --workspace
-          --exclude fuzz
-          --exclude neumann-native
-          --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote
+        run: |
+          cargo test --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote
 
   coverage:
     name: Coverage
@@ -215,7 +218,8 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
             --html --output-dir target/llvm-cov/html
 
       - name: Generate codecov report
@@ -227,7 +231,8 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
             --no-run \
             --codecov --output-path codecov.json
 
@@ -259,7 +264,8 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
             --no-run \
             --fail-under-lines 95
 
