@@ -206,7 +206,7 @@ jobs:
       - name: Clean coverage artifacts
         run: cargo llvm-cov clean --workspace
 
-      - name: Generate and verify coverage (95% threshold)
+      - name: Generate coverage report
         run: |
           cargo llvm-cov --workspace \
             --exclude fuzz \
@@ -216,7 +216,6 @@ jobs:
             --exclude examples \
             --exclude neumann_docs \
             --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
-            --fail-under-lines 95 \
             --html --output-dir target/llvm-cov/html
 
       - name: Generate codecov report
@@ -233,6 +232,7 @@ jobs:
             --codecov --output-path codecov.json
 
       - name: Upload coverage HTML
+        if: always()
         # v4.6.2
         uses: >-
           actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -241,6 +241,7 @@ jobs:
           path: target/llvm-cov/html
 
       - name: Upload to Codecov
+        if: always()
         # v5.4.0
         uses: >-
           codecov/codecov-action@0565863a31f2c772f9f0395002a31e3f06189574
@@ -248,6 +249,19 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.json
           fail_ci_if_error: false
+
+      - name: Verify coverage threshold (95%)
+        run: |
+          cargo llvm-cov --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --exclude integration_tests \
+            --exclude stress_tests \
+            --exclude examples \
+            --exclude neumann_docs \
+            --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
+            --no-run \
+            --fail-under-lines 95
 
   doc:
     name: Documentation
