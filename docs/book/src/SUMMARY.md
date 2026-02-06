@@ -6,6 +6,8 @@
 
 - [Installation](getting-started/installation.md)
 - [Quick Start](getting-started/quick-start.md)
+- [Five-Minute Tutorial](getting-started/five-minute-tutorial.md)
+- [Use Cases](getting-started/use-cases.md)
 - [Building from Source](getting-started/building-from-source.md)
 
 # Architecture
@@ -33,6 +35,17 @@
 - [TCP Transport](architecture/tcp-transport.md)
 - [Snapshot Streaming](architecture/snapshot-streaming.md)
 - [Transaction Workspace](architecture/transaction-workspace.md)
+
+# SDKs
+
+- [Python Quickstart](sdks/python-quickstart.md)
+- [TypeScript Quickstart](sdks/typescript-quickstart.md)
+
+# Reference
+
+- [Query Language](reference/query-language.md)
+- [Data Types](reference/data-types.md)
+- [Functions](reference/functions.md)
 
 # Concepts
 

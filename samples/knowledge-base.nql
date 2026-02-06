@@ -1,0 +1,166 @@
+-- =============================================================================
+-- Neumann Sample Dataset: Engineering Team Knowledge Base
+-- =============================================================================
+-- This dataset exercises all three engines (relational, graph, vector) plus
+-- vault, blob, cache, and checkpoint features.
+--
+-- Load in the Neumann shell:
+--   neumann --wal-dir ./data
+--   \i samples/knowledge-base.nql
+--
+-- Or paste sections individually to follow along.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1. Relational: People table
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE people (
+    id INT PRIMARY KEY,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    team TEXT NOT NULL,
+    joined TEXT,
+    level INT DEFAULT 1
+);
+
+INSERT INTO people VALUES (1, 'Alice Chen', 'Staff Engineer', 'Platform', '2020-03-15', 5);
+INSERT INTO people VALUES (2, 'Bob Kim', 'Engineering Manager', 'Platform', '2019-06-01', 6);
+INSERT INTO people VALUES (3, 'Carol Reyes', 'Senior Engineer', 'ML', '2021-01-10', 4);
+INSERT INTO people VALUES (4, 'Dave Park', 'Junior Engineer', 'Platform', '2023-09-01', 2);
+INSERT INTO people VALUES (5, 'Eve Santos', 'Staff Engineer', 'ML', '2020-07-20', 5);
+INSERT INTO people VALUES (6, 'Frank Liu', 'Principal Engineer', 'Infra', '2018-02-01', 7);
+INSERT INTO people VALUES (7, 'Grace Patel', 'Engineering Manager', 'ML', '2019-11-15', 6);
+INSERT INTO people VALUES (8, 'Hiro Tanaka', 'Senior Engineer', 'Infra', '2021-04-01', 4);
+INSERT INTO people VALUES (9, 'Ivy Wong', 'Junior Engineer', 'ML', '2024-01-15', 1);
+INSERT INTO people VALUES (10, 'Jake Adams', 'Director of Engineering', 'Leadership', '2017-01-01', 8);
+
+-- Quick relational queries to try:
+-- SELECT * FROM people WHERE team = 'Platform'
+-- SELECT team, COUNT(*) AS headcount FROM people GROUP BY team ORDER BY headcount DESC
+-- SELECT name, role FROM people WHERE level >= 5 ORDER BY level DESC
+
+-- ---------------------------------------------------------------------------
+-- 2. Graph: Organizational relationships
+-- ---------------------------------------------------------------------------
+
+-- Create person nodes
+NODE CREATE person { name: 'Alice Chen', employee_id: 1 }
+NODE CREATE person { name: 'Bob Kim', employee_id: 2 }
+NODE CREATE person { name: 'Carol Reyes', employee_id: 3 }
+NODE CREATE person { name: 'Dave Park', employee_id: 4 }
+NODE CREATE person { name: 'Eve Santos', employee_id: 5 }
+NODE CREATE person { name: 'Frank Liu', employee_id: 6 }
+NODE CREATE person { name: 'Grace Patel', employee_id: 7 }
+NODE CREATE person { name: 'Hiro Tanaka', employee_id: 8 }
+NODE CREATE person { name: 'Ivy Wong', employee_id: 9 }
+NODE CREATE person { name: 'Jake Adams', employee_id: 10 }
+
+-- Note: The node IDs assigned above will be auto-generated.
+-- Use NODE LIST person to see them, then update the edge commands below
+-- with actual IDs. For demonstration, we use placeholder IDs.
+
+-- Reporting relationships (REPORTS_TO)
+-- Bob (Platform EM) reports to Jake (Director)
+-- Grace (ML EM) reports to Jake (Director)
+-- Alice reports to Bob
+-- Dave reports to Bob
+-- Carol reports to Grace
+-- Eve reports to Grace
+-- Ivy reports to Grace
+-- Frank reports to Jake
+-- Hiro reports to Frank
+
+-- Collaboration relationships (COLLABORATES_WITH)
+-- Alice and Carol collaborate on ML platform integration
+-- Eve and Frank collaborate on ML infrastructure
+-- Alice and Hiro collaborate on storage optimization
+
+-- Mentorship relationships (MENTORS)
+-- Alice mentors Dave
+-- Eve mentors Ivy
+-- Frank mentors Hiro
+
+-- Graph queries to try:
+-- NODE LIST person
+-- NEIGHBORS 'node-id' OUTGOING : reports_to
+-- PATH SHORTEST 'dave-id' TO 'jake-id'
+-- PAGERANK EDGE_TYPE reports_to
+-- LOUVAIN
+
+-- ---------------------------------------------------------------------------
+-- 3. Vector: Skill embeddings
+-- ---------------------------------------------------------------------------
+-- Each person gets a 8-dimensional skill vector encoding:
+-- [systems, ml, frontend, backend, data, security, leadership, communication]
+
+EMBED STORE 'alice' [0.9, 0.4, 0.1, 0.7, 0.6, 0.3, 0.5, 0.6]
+EMBED STORE 'bob' [0.6, 0.2, 0.1, 0.5, 0.3, 0.2, 0.9, 0.8]
+EMBED STORE 'carol' [0.3, 0.9, 0.1, 0.4, 0.8, 0.1, 0.3, 0.5]
+EMBED STORE 'dave' [0.4, 0.1, 0.2, 0.5, 0.2, 0.1, 0.1, 0.3]
+EMBED STORE 'eve' [0.5, 0.95, 0.05, 0.3, 0.9, 0.2, 0.4, 0.6]
+EMBED STORE 'frank' [0.95, 0.3, 0.05, 0.6, 0.4, 0.8, 0.6, 0.5]
+EMBED STORE 'grace' [0.3, 0.7, 0.1, 0.3, 0.5, 0.1, 0.9, 0.9]
+EMBED STORE 'hiro' [0.8, 0.2, 0.1, 0.6, 0.3, 0.7, 0.2, 0.4]
+EMBED STORE 'ivy' [0.2, 0.5, 0.1, 0.2, 0.6, 0.1, 0.1, 0.4]
+EMBED STORE 'jake' [0.5, 0.3, 0.1, 0.3, 0.3, 0.3, 0.95, 0.95]
+
+-- Vector queries to try:
+-- SIMILAR 'alice' LIMIT 3
+-- SIMILAR [0.9, 0.8, 0.1, 0.5, 0.7, 0.2, 0.3, 0.5] LIMIT 5 METRIC COSINE
+-- SHOW EMBEDDINGS
+-- COUNT EMBEDDINGS
+
+-- ---------------------------------------------------------------------------
+-- 4. Unified entities
+-- ---------------------------------------------------------------------------
+-- Create a cross-engine entity that spans relational + graph + vector
+
+ENTITY CREATE 'project_atlas' { name: 'Project Atlas', type: 'project', status: 'active', team: 'Platform' } EMBEDDING [0.8, 0.3, 0.2, 0.9, 0.5, 0.4, 0.3, 0.2]
+ENTITY CREATE 'project_nova' { name: 'Project Nova', type: 'project', status: 'active', team: 'ML' } EMBEDDING [0.2, 0.9, 0.1, 0.4, 0.8, 0.1, 0.2, 0.3]
+ENTITY CREATE 'project_shield' { name: 'Project Shield', type: 'project', status: 'planning', team: 'Infra' } EMBEDDING [0.7, 0.1, 0.05, 0.5, 0.2, 0.9, 0.4, 0.3]
+
+-- Unified queries to try:
+-- ENTITY GET 'project_atlas'
+-- FIND NODE WHERE type = 'project'
+-- SIMILAR 'project_atlas' LIMIT 2
+
+-- ---------------------------------------------------------------------------
+-- 5. Cache: Pre-warm some LLM responses
+-- ---------------------------------------------------------------------------
+
+CACHE INIT
+CACHE PUT 'who leads platform?' 'Bob Kim is the Engineering Manager for Platform team.'
+CACHE PUT 'who knows ML?' 'Carol Reyes and Eve Santos are the ML specialists.'
+CACHE PUT 'team structure' 'Three teams: Platform (Bob), ML (Grace), Infra (Frank). Jake is Director.'
+
+-- Cache queries to try:
+-- CACHE GET 'who leads platform?'
+-- CACHE STATS
+
+-- ---------------------------------------------------------------------------
+-- 6. Checkpoint: Save our work
+-- ---------------------------------------------------------------------------
+
+CHECKPOINT 'initial-dataset'
+
+-- Checkpoint queries to try:
+-- CHECKPOINTS
+-- (make changes, then) ROLLBACK TO 'initial-dataset'
+
+-- ---------------------------------------------------------------------------
+-- Cross-Engine Queries (the "wow" moment)
+-- ---------------------------------------------------------------------------
+-- These combine multiple engines in a single query:
+
+-- Find people similar to Alice's skill profile:
+-- SIMILAR 'alice' LIMIT 3
+
+-- Find all staff+ engineers and their skills:
+-- SELECT name, role, level FROM people WHERE level >= 5 ORDER BY level DESC
+
+-- Discover team structure through graph:
+-- PAGERANK EDGE_TYPE reports_to
+
+-- Community detection to find natural working groups:
+-- LOUVAIN EDGE_TYPE collaborates_with
