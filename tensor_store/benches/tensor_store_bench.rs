@@ -6,8 +6,8 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use tensor_compress::TTConfig;
 use tensor_store::{
     ArchetypeRegistry, BloomFilter, DeltaVector, HNSWIndex, KMeans, KMeansConfig, KMeansInit,
-    MetadataSlab, ScalarValue, SparseVector, TensorData, TensorStore, TensorValue, TieredConfig,
-    TieredStore,
+    MetadataSlab, MigrationStrategy, ScalarValue, SparseVector, TensorData, TensorStore,
+    TensorValue, TieredConfig, TieredStore,
 };
 
 fn create_test_tensor(id: i64) -> TensorData {
@@ -1420,6 +1420,7 @@ fn bench_tiered_vs_inmemory_put(c: &mut Criterion) {
                     cold_dir: dir.clone(),
                     cold_capacity: 64 * 1024 * 1024,
                     sample_rate: 100,
+                    migration_strategy: MigrationStrategy::default(),
                 };
                 let mut store = TieredStore::new(config).unwrap();
                 for i in 0..size {
@@ -1452,6 +1453,7 @@ fn bench_tiered_vs_inmemory_get(c: &mut Criterion) {
             cold_dir: dir.clone(),
             cold_capacity: 64 * 1024 * 1024,
             sample_rate: 100,
+            migration_strategy: MigrationStrategy::default(),
         };
         let mut tiered_store = TieredStore::new(config).unwrap();
         for i in 0..*size {
@@ -1493,6 +1495,7 @@ fn bench_tiered_cold_access(c: &mut Criterion) {
         cold_dir: dir.clone(),
         cold_capacity: 64 * 1024 * 1024,
         sample_rate: 1, // Track every access
+        migration_strategy: MigrationStrategy::default(),
     };
     let mut store = TieredStore::new(config).unwrap();
 
@@ -1556,6 +1559,7 @@ fn bench_tiered_migration(c: &mut Criterion) {
                         cold_dir: dir.clone(),
                         cold_capacity: 64 * 1024 * 1024,
                         sample_rate: 1,
+                        migration_strategy: MigrationStrategy::default(),
                     };
                     let mut store = TieredStore::new(config).unwrap();
                     for i in 0..size {
@@ -1595,6 +1599,7 @@ fn bench_tiered_preload(c: &mut Criterion) {
                     cold_dir: dir.clone(),
                     cold_capacity: 64 * 1024 * 1024,
                     sample_rate: 1,
+                    migration_strategy: MigrationStrategy::default(),
                 };
                 let mut store = TieredStore::new(config).unwrap();
                 for i in 0..100 {
