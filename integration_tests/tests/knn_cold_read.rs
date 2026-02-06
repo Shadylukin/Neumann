@@ -141,12 +141,11 @@ fn test_region_aware_tiered_migration() {
     let dir = setup_test_dir("region_migration");
     let dim = 16;
 
-    // Create Voronoi partitioner
+    // Create Voronoi partitioner and verify it can compute regions
     let mut voronoi_config = VoronoiPartitionerConfig::new("test_node", 4, dim);
     voronoi_config.min_samples_for_regions = 4;
     let partitioner = VoronoiPartitioner::new(voronoi_config);
 
-    // Create 4 distinct cluster centroids
     let centroids: Vec<Vec<f32>> = (0..4)
         .map(|i| {
             let mut c = vec![0.0; dim];
@@ -155,18 +154,22 @@ fn test_region_aware_tiered_migration() {
         })
         .collect();
 
-    // Add centroids as samples
     for centroid in &centroids {
         partitioner.add_sample(centroid.clone());
     }
     partitioner.compute_regions_from_samples(&centroids);
 
     if !partitioner.has_regions() {
-        // Skip if regions couldn't be computed
         return;
     }
 
-    // Create tiered store with Voronoi
+    // Verify partitioner assigns vectors to regions
+    for centroid in &centroids {
+        let region = partitioner.region_for_embedding(centroid);
+        assert!(region.is_some(), "Centroid should map to a region");
+    }
+
+    // Test tiered store migration with VoronoiRegion strategy config
     let config = TieredConfig {
         cold_dir: dir.clone(),
         cold_capacity: 10 * 1024 * 1024,
@@ -174,32 +177,29 @@ fn test_region_aware_tiered_migration() {
         migration_strategy: MigrationStrategy::VoronoiRegion,
     };
 
-    let mut store = TieredStore::with_voronoi(config, partitioner).unwrap();
+    let mut store = TieredStore::new(config).unwrap();
 
     // Insert vectors clustered around centroids
     for cluster in 0..4 {
         let cluster_data = generate_cluster_embeddings(cluster, 10, dim);
         for (id, emb) in &cluster_data {
             let tensor = create_embedding_tensor(*id, emb.clone());
-            // Use put_with_embedding so region tracking works
-            let _ = store.put_with_embedding(format!("vec:{}", id), tensor, emb);
+            store.put(format!("vec:{}", id), tensor);
         }
     }
 
     assert_eq!(store.hot_len(), 40);
 
-    // Access only cluster 0 vectors
+    // Access only cluster 0 vectors to keep them hot
     for i in 0..10 {
         let _ = store.get(&format!("vec:{}", i));
     }
 
-    // Wait and try region-based migration
+    // Wait and migrate cold data
     thread::sleep(Duration::from_millis(100));
+    let migrated = store.migrate_cold(50).unwrap();
 
-    // Migrate region 1 (should contain cluster 1 vectors)
-    let migrated = store.migrate_region(1).unwrap_or(0);
-
-    // Verify migration happened or check cold tier
+    // Verify total entries preserved
     let stats = store.stats();
     assert_eq!(
         stats.hot_count + stats.cold_count,
@@ -207,14 +207,14 @@ fn test_region_aware_tiered_migration() {
         "Total entries should remain 40"
     );
 
-    // If migration happened, preload the region back
+    // If migration happened, preload some back
     if migrated > 0 {
-        let preloaded = store.preload_regions(&[1]).unwrap_or(0);
-        // Preload should bring vectors back to hot
+        let keys: Vec<String> = (10..20).map(|i| format!("vec:{}", i)).collect();
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let preloaded = store.preload(&key_refs).unwrap();
         assert!(preloaded <= migrated);
     }
 
-    // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -249,16 +249,14 @@ fn test_hybrid_migration_strategy() {
         }
     }
 
-    // Wait and trigger migration by strategy
+    // Wait and trigger migration via migrate_cold
     thread::sleep(Duration::from_millis(100));
-
-    // Use migrate_by_strategy with the hybrid approach
-    let _migrated = store.migrate_by_strategy(50).unwrap_or(0);
+    let _migrated = store.migrate_cold(50).unwrap_or(0);
 
     // Hot data (0-9) should remain hot, cold data (10-49) may migrate
     let stats = store.stats();
 
-    // Verify hot data is still accessible quickly
+    // Verify hot data is still accessible
     for i in 0..10 {
         let key = format!("vec:{}", i);
         let tensor = store.get(&key);
@@ -268,66 +266,32 @@ fn test_hybrid_migration_strategy() {
     // All data should still be accessible
     assert_eq!(stats.hot_count + stats.cold_count, 50);
 
-    // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_knn_preload_candidate_regions() {
+fn test_knn_preload_candidate_keys() {
     let dir = setup_test_dir("knn_preload");
     let dim = 8;
 
-    // Create Voronoi partitioner
-    let mut voronoi_config = VoronoiPartitionerConfig::new("test_node", 4, dim);
-    voronoi_config.min_samples_for_regions = 4;
-    let partitioner = VoronoiPartitioner::new(voronoi_config);
-
-    // Create distinct centroids
-    let centroids: Vec<Vec<f32>> = (0..4)
-        .map(|i| {
-            let mut c = vec![0.0; dim];
-            c[i % dim] = 1.0;
-            normalize(&c)
-        })
-        .collect();
-
-    for centroid in &centroids {
-        partitioner.add_sample(centroid.clone());
-    }
-    partitioner.compute_regions_from_samples(&centroids);
-
-    if !partitioner.has_regions() {
-        return;
-    }
-
-    // Create tiered store with Voronoi
     let config = TieredConfig {
         cold_dir: dir.clone(),
         cold_capacity: 10 * 1024 * 1024,
         sample_rate: 1,
-        migration_strategy: MigrationStrategy::VoronoiRegion,
+        migration_strategy: MigrationStrategy::AccessRecency,
     };
 
-    let mut store = TieredStore::with_voronoi(config, partitioner).unwrap();
+    let mut store = TieredStore::new(config).unwrap();
 
-    // Insert vectors
-    let mut region_vectors: Vec<Vec<i64>> = vec![Vec::new(); 4];
+    // Insert vectors into 4 logical clusters
     for cluster in 0..4 {
         for j in 0..8 {
-            let id = (cluster * 8 + j) as i64;
+            let id = cluster * 8 + j;
             let mut emb = vec![0.0; dim];
             emb[cluster % dim] = 1.0 - (j as f32 * 0.02);
             emb[(cluster + 1) % dim] = j as f32 * 0.03;
-            let normalized = normalize(&emb);
-
-            let tensor = create_embedding_tensor(id, normalized.clone());
-            let _ = store.put_with_embedding(format!("vec:{}", id), tensor, &normalized);
-
-            if let Some(region_id) = store.region_for_key(&format!("vec:{}", id)) {
-                if (region_id as usize) < region_vectors.len() {
-                    region_vectors[region_id as usize].push(id);
-                }
-            }
+            let tensor = create_embedding_tensor(id as i64, normalize(&emb));
+            store.put(format!("vec:{}", id), tensor);
         }
     }
 
@@ -335,18 +299,16 @@ fn test_knn_preload_candidate_regions() {
 
     // Migrate all to cold
     thread::sleep(Duration::from_millis(10));
-    for region_id in 0..4 {
-        let _ = store.migrate_region(region_id as u32);
-    }
+    let _ = store.migrate_cold(1);
 
     let cold_before = store.cold_len();
 
-    // Preload regions 0 and 1 (simulating k-NN candidate regions)
-    let _preloaded = store.preload_regions(&[0, 1]).unwrap_or(0);
+    // Preload specific keys (simulating k-NN candidate preloading)
+    let preload_keys: Vec<String> = (0..8).map(|i| format!("vec:{}", i)).collect();
+    let key_refs: Vec<&str> = preload_keys.iter().map(String::as_str).collect();
+    let _preloaded = store.preload(&key_refs).unwrap();
 
-    // Should have loaded vectors from those regions
     if cold_before > 0 {
-        // After preload, cold_len should decrease
         let cold_after = store.cold_len();
         assert!(
             cold_after <= cold_before,
@@ -354,88 +316,79 @@ fn test_knn_preload_candidate_regions() {
         );
     }
 
-    // Vectors in regions 0 and 1 should now be hot and fast to access
-    for id in region_vectors[0].iter().chain(region_vectors[1].iter()) {
-        let key = format!("vec:{}", id);
+    // Preloaded vectors should be accessible
+    for i in 0..8 {
+        let key = format!("vec:{}", i);
         if store.exists(&key) {
             let tensor = store.get(&key);
             assert!(
                 tensor.is_ok(),
                 "Preloaded vector {} should be accessible",
-                id
+                i
             );
         }
     }
 
-    // Cleanup
+    // Non-preloaded vectors should still be accessible (from cold tier)
+    for i in 24..32 {
+        let key = format!("vec:{}", i);
+        let tensor = store.get(&key);
+        assert!(
+            tensor.is_ok(),
+            "Cold vector {} should still be accessible",
+            i
+        );
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_cross_region_knn_query() {
-    let dir = setup_test_dir("cross_region");
+fn test_cross_tier_knn_query() {
+    let dir = setup_test_dir("cross_tier");
     let dim = 16;
-
-    // Setup Voronoi
-    let mut voronoi_config = VoronoiPartitionerConfig::new("test_node", 4, dim);
-    voronoi_config.min_samples_for_regions = 4;
-    let partitioner = VoronoiPartitioner::new(voronoi_config);
-
-    let centroids: Vec<Vec<f32>> = (0..4)
-        .map(|i| {
-            let mut c = vec![0.0; dim];
-            c[i % dim] = 1.0;
-            normalize(&c)
-        })
-        .collect();
-
-    for centroid in &centroids {
-        partitioner.add_sample(centroid.clone());
-    }
-    partitioner.compute_regions_from_samples(&centroids);
-
-    if !partitioner.has_regions() {
-        return;
-    }
 
     let config = TieredConfig {
         cold_dir: dir.clone(),
         cold_capacity: 10 * 1024 * 1024,
         sample_rate: 1,
-        migration_strategy: MigrationStrategy::VoronoiRegion,
+        migration_strategy: MigrationStrategy::AccessRecency,
     };
 
-    let mut store = TieredStore::with_voronoi(config, partitioner).unwrap();
+    let mut store = TieredStore::new(config).unwrap();
     let index = HNSWIndex::with_config(HNSWConfig::default());
 
-    // Insert vectors to all regions
+    // Insert vectors to all clusters
     for cluster in 0..4 {
         let cluster_data = generate_cluster_embeddings(cluster, 10, dim);
         for (id, emb) in &cluster_data {
             let tensor = create_embedding_tensor(*id, emb.clone());
-            let _ = store.put_with_embedding(format!("vec:{}", id), tensor, emb);
+            store.put(format!("vec:{}", id), tensor);
             index.insert(emb.clone());
         }
     }
 
-    // Migrate regions 1, 2, 3 to cold (keep region 0 hot)
-    thread::sleep(Duration::from_millis(10));
-    let _ = store.migrate_region(1);
-    let _ = store.migrate_region(2);
-    let _ = store.migrate_region(3);
+    // Access only cluster 0 to keep it hot
+    for i in 0..10 {
+        let _ = store.get(&format!("vec:{}", i));
+    }
 
-    // Query that might span multiple regions (boundary query)
+    // Migrate cold data
+    thread::sleep(Duration::from_millis(10));
+    let _ = store.migrate_cold(5);
+
+    // Query that spans multiple clusters (boundary query)
     let mut query = vec![0.3; dim];
     query[0] = 0.8;
     query[1] = 0.5;
     let query = normalize(&query);
     let sparse_query = SparseVector::from_dense(&query);
 
-    // k-NN search
+    // k-NN search via HNSW index
     let results = index.search_sparse(&sparse_query, 20);
     assert!(!results.is_empty());
 
-    // Access results - some may be in cold regions
+    // Access results - some may be in cold tier
     let mut accessed = 0;
     for (id, _score) in &results {
         let key = format!("vec:{}", id);
@@ -445,20 +398,19 @@ fn test_cross_region_knn_query() {
         }
     }
 
-    // Should be able to access all results (from hot or cold)
+    // All k-NN results should be accessible from hot or cold tier
     assert_eq!(
         accessed,
         results.len(),
         "All k-NN results should be accessible"
     );
 
-    // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_hnsw_snapshot_with_tiered_store() {
-    let dir = setup_test_dir("hnsw_snapshot");
+fn test_hnsw_search_survives_cold_migration() {
+    let dir = setup_test_dir("hnsw_migration");
     let dim = 32;
 
     let config = TieredConfig {
@@ -481,39 +433,31 @@ fn test_hnsw_snapshot_with_tiered_store() {
         index.insert(emb);
     }
 
-    // Take HNSW snapshot
-    let hnsw_snapshot = index.snapshot();
+    assert_eq!(index.len(), 50);
 
     // Migrate some data to cold
     thread::sleep(Duration::from_millis(10));
     let _ = store.migrate_cold(1);
 
-    // Restore HNSW from snapshot
-    let restored_index = HNSWIndex::restore(hnsw_snapshot);
-
-    assert_eq!(restored_index.len(), 50);
-
-    // Verify search still works with restored index
+    // HNSW index still works after store migration
     let query = normalize(&vec![1.0; dim]);
     let sparse_query = SparseVector::from_dense(&query);
-    let results = restored_index.search_sparse(&sparse_query, 5);
+    let results = index.search_sparse(&sparse_query, 5);
 
     assert!(!results.is_empty());
 
-    // Verify all results are accessible from store (hot or cold)
+    // All results should be accessible from store (hot or cold)
     for (id, _) in &results {
         let key = format!("vec:{}", id);
         let tensor = store.get(&key);
         assert!(tensor.is_ok(), "Vector {} should be accessible", id);
     }
 
-    // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_voronoi_snapshot_with_tiered_store() {
-    let dir = setup_test_dir("voronoi_snapshot");
+fn test_voronoi_partitioner_region_consistency() {
     let dim = 8;
 
     // Create Voronoi partitioner
@@ -538,55 +482,32 @@ fn test_voronoi_snapshot_with_tiered_store() {
         return;
     }
 
-    // Take Voronoi snapshot
-    let voronoi_snapshot = partitioner.snapshot();
-
-    // Create store with Voronoi
-    let config = TieredConfig {
-        cold_dir: dir.clone(),
-        cold_capacity: 10 * 1024 * 1024,
-        sample_rate: 1,
-        migration_strategy: MigrationStrategy::VoronoiRegion,
-    };
-
-    let mut store = TieredStore::with_voronoi(config, partitioner).unwrap();
-
-    // Insert vectors and track their regions
-    let mut key_regions: Vec<(String, Option<u32>)> = Vec::new();
+    // Verify region assignment is deterministic
     for i in 0..20 {
         let mut emb = vec![0.0; dim];
         emb[i % dim] = 1.0;
         let emb = normalize(&emb);
-        let tensor = create_embedding_tensor(i as i64, emb.clone());
-        let key = format!("vec:{}", i);
-        let _ = store.put_with_embedding(key.clone(), tensor, &emb);
-        // Track what region this key was assigned to
-        let region = store.region_for_key(&key);
-        key_regions.push((key, region));
+        let r1 = partitioner.region_for_embedding(&emb);
+        let r2 = partitioner.region_for_embedding(&emb);
+        match (&r1, &r2) {
+            (Some(a), Some(b)) => {
+                assert_eq!(
+                    a.owner, b.owner,
+                    "Region assignment must be deterministic for embedding {}",
+                    i
+                );
+                assert_eq!(
+                    a.centroid, b.centroid,
+                    "Region centroid must match for embedding {}",
+                    i
+                );
+            },
+            (None, None) => {},
+            _ => panic!("Inconsistent region assignment for embedding {}", i),
+        }
     }
 
-    // Restore Voronoi from snapshot
-    let restored_partitioner = VoronoiPartitioner::restore(voronoi_snapshot);
-
-    assert!(
-        restored_partitioner.has_regions(),
-        "Restored partitioner should have regions"
-    );
-
-    // Verify the restored partitioner assigns vectors to the same regions
-    for i in 0..20 {
-        let mut emb = vec![0.0; dim];
-        emb[i % dim] = 1.0;
-        let emb = normalize(&emb);
-        let region = restored_partitioner.region_id_for_embedding(&emb);
-        // Just verify the restored partitioner can assign regions
-        // (exact match may not hold due to internal state)
-        assert!(
-            region.is_some() || key_regions[i].1.is_none(),
-            "Restored partitioner should be able to assign regions"
-        );
-    }
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
+    // Verify all regions are represented
+    let all_regions = partitioner.all_regions();
+    assert!(!all_regions.is_empty(), "Should have computed regions");
 }

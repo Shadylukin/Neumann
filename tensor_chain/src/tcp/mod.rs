@@ -83,7 +83,9 @@ pub mod tls;
 pub mod transport;
 
 // Re-exports
-pub use compression::{CompressionConfig, CompressionMethod, COMPRESSION_CAPABILITY};
+pub use compression::{
+    CompressionConfig, CompressionMethod, COMPRESSION_CAPABILITY, COMPRESSION_VERSION,
+};
 pub use config::{
     NodeIdVerification, ReconnectConfig, SecurityConfig, SecurityMode, TcpTransportConfig,
     TlsConfig,
@@ -100,4 +102,4 @@ pub use tls::{
     extract_node_id_from_cert, wrap_client, wrap_server, wrap_server_with_identity,
     ClientTlsStream, NodeIdSource, ServerTlsStream, VerifiedPeerIdentity,
 };
-pub use transport::{TcpTransport, TransportStats};
+pub use transport::{BroadcastResult, TcpTransport, TransportStats};

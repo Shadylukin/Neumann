@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Error types for tensor_chain.
+//! Error types for `tensor_chain`.
 
 use thiserror::Error;
 
@@ -9,10 +9,10 @@ use crate::raft_wal::WalError;
 use crate::snapshot_buffer::SnapshotBufferError;
 use crate::snapshot_streaming::StreamingError;
 
-/// Result type for tensor_chain operations.
+/// Result type for `tensor_chain` operations.
 pub type Result<T> = std::result::Result<T, ChainError>;
 
-/// Errors that can occur in tensor_chain operations.
+/// Errors that can occur in `tensor_chain` operations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ChainError {
@@ -110,7 +110,7 @@ pub enum ChainError {
     /// Gossip message replay detected.
     #[error("gossip replay detected: sender {sender}, sequence {sequence}")]
     GossipReplayDetected {
-        /// Sender NodeId.
+        /// Sender `NodeId`.
         sender: String,
         /// Replayed sequence number.
         sequence: u64,

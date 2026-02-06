@@ -39,7 +39,7 @@ fn test_max_concurrent_enforced_under_contention() {
             let successes = Arc::clone(&success_count);
             let failures = Arc::clone(&failure_count);
             thread::spawn(move || {
-                match coord.begin("node".to_string(), vec![0]) {
+                match coord.begin(&"node".to_string(), &[0]) {
                     Ok(_) => successes.fetch_add(1, Ordering::Relaxed),
                     Err(_) => failures.fetch_add(1, Ordering::Relaxed),
                 };
@@ -106,7 +106,7 @@ fn test_lock_manager_active_locks_via_accessor() {
     let coordinator = create_coordinator_with_limit(100);
 
     // Create a transaction and acquire locks via coordinator
-    let tx = coordinator.begin("node".to_string(), vec![0]).unwrap();
+    let tx = coordinator.begin(&"node".to_string(), &[0]).unwrap();
     coordinator
         .lock_manager()
         .try_lock(tx.tx_id, &["key_a".to_string()])
@@ -180,7 +180,7 @@ fn test_concurrent_begin_max_limit_strictly_enforced() {
             let coord = Arc::clone(&coordinator);
             let counter = Arc::clone(&success_count);
             thread::spawn(move || {
-                if coord.begin("node".to_string(), vec![0]).is_ok() {
+                if coord.begin(&"node".to_string(), &[0]).is_ok() {
                     counter.fetch_add(1, Ordering::Relaxed);
                 }
             })

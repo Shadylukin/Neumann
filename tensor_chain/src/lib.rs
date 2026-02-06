@@ -1,4 +1,4 @@
-//! TensorChain - Tensor-Native Blockchain for Neumann
+//! `TensorChain` - Tensor-Native Blockchain for Neumann
 //!
 //! A blockchain where transactions have semantic meaning:
 //! - Query chain by similarity
@@ -42,8 +42,6 @@
 //!
 //! assert_eq!(chain.height(), 1);
 //! ```
-
-#![allow(clippy::pedantic, clippy::nursery)]
 
 pub mod atomic_io;
 pub mod block;
@@ -107,7 +105,7 @@ pub use distributed_tx::{
     AbortRequest, CommitRequest, CoordinatorState, DistributedTransaction, DistributedTxConfig,
     DistributedTxCoordinator, DistributedTxStats, DistributedTxStatsSnapshot, EpochMillis, KeyLock,
     LockManager, ParticipantState, PrepareRequest, PrepareVote, PreparedTx, RecoveryStats,
-    SerializableLockState, ShardId, TxParticipant, TxPhase, TxResponse,
+    SerializableLockState, ShardId, TxParticipant, TxPhase, TxResponse, VoteRecordError,
 };
 pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
@@ -127,7 +125,7 @@ pub use message_validation::{
 };
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
-    AppendEntries, AppendEntriesResponse, BlockRequest, BlockResponse, CodebookChange,
+    AppendEntries, AppendEntriesResponse, BlockRequest, BlockResponse, ChaosStats, CodebookChange,
     ConfigChange, DataMergeRequest, DataMergeResponse, GeometricTransport, JointConfig, LogEntry,
     LogEntryData, MemoryTransport, MergeAck, MergeDeltaEntry, MergeFinalize, MergeInit,
     MergeOpType, MergeViewExchange, Message, MessageHandler, NetworkManager, PeerConfig, PreVote,

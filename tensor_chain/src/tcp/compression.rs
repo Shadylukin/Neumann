@@ -19,6 +19,19 @@ pub enum CompressionMethod {
     Lz4,
 }
 
+/// Current compression algorithm version.
+///
+/// Compression negotiation works as follows:
+/// 1. During the handshake each peer advertises its compression capability
+///    via `Handshake::with_compression()`.
+/// 2. If both peers advertise compression, the v2 frame format (with a flags
+///    byte indicating the compression method) is used.
+/// 3. `COMPRESSION_VERSION` tracks the on-wire format revision so that future
+///    algorithm changes (e.g. switching from LZ4 to zstd) can be negotiated
+///    without breaking backward compatibility.  A peer should only enable a
+///    newer algorithm when both sides advertise the same version.
+pub const COMPRESSION_VERSION: u8 = 1;
+
 /// Configuration for network message compression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionConfig {
@@ -29,6 +42,14 @@ pub struct CompressionConfig {
     /// Minimum payload size for compression (bytes).
     /// Messages smaller than this are sent uncompressed.
     pub min_size: usize,
+    /// Compression algorithm version for negotiation with peers.
+    /// Both sides must agree on the version before using compression.
+    #[serde(default = "default_compression_version")]
+    pub compression_version: u8,
+}
+
+fn default_compression_version() -> u8 {
+    COMPRESSION_VERSION
 }
 
 impl Default for CompressionConfig {
@@ -37,6 +58,7 @@ impl Default for CompressionConfig {
             enabled: true,
             method: CompressionMethod::Lz4,
             min_size: 256,
+            compression_version: COMPRESSION_VERSION,
         }
     }
 }
@@ -47,6 +69,7 @@ impl CompressionConfig {
             enabled: false,
             method: CompressionMethod::None,
             min_size: 256,
+            compression_version: COMPRESSION_VERSION,
         }
     }
 
@@ -57,6 +80,11 @@ impl CompressionConfig {
 
     pub fn with_min_size(mut self, min_size: usize) -> Self {
         self.min_size = min_size;
+        self
+    }
+
+    pub fn with_compression_version(mut self, version: u8) -> Self {
+        self.compression_version = version;
         self
     }
 }

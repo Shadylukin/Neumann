@@ -48,7 +48,7 @@ fn test_2pc_deadlock_detection_during_prepare() {
         delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
-    let vote1 = coordinator.handle_prepare(request1);
+    let vote1 = coordinator.handle_prepare(&request1);
     assert!(
         matches!(vote1, PrepareVote::Conflict { .. }),
         "TX 100 should conflict"
@@ -65,7 +65,7 @@ fn test_2pc_deadlock_detection_during_prepare() {
         delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
         timeout_ms: 5000,
     };
-    let vote2 = coordinator.handle_prepare(request2);
+    let vote2 = coordinator.handle_prepare(&request2);
     assert!(
         matches!(vote2, PrepareVote::Conflict { .. }),
         "TX 200 should conflict"

@@ -4203,14 +4203,13 @@ impl QueryRouter {
                 );
                 aggregates.push((alias, agg));
             } else {
-                let alias = item
-                    .alias
-                    .as_ref()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| {
+                let alias = item.alias.as_ref().map_or_else(
+                    || {
                         self.expr_to_column_name(&item.expr)
                             .unwrap_or_else(|_| "?".to_string())
-                    });
+                    },
+                    |a| a.name.clone(),
+                );
                 non_agg_columns.push((alias, item.expr.clone()));
             }
         }
@@ -4242,6 +4241,7 @@ impl QueryRouter {
                     } else {
                         self.relational.count(table_name, condition.clone())?
                     };
+                    #[allow(clippy::cast_possible_wrap)]
                     Value::Int(count as i64)
                 },
                 AggregateFunc::Sum(col) => {
@@ -4336,7 +4336,7 @@ impl QueryRouter {
 
             // Compute aggregates for this group
             for (alias, agg) in aggregates {
-                let val = self.compute_aggregate_for_group(agg, &group_rows)?;
+                let val = self.compute_aggregate_for_group(agg, &group_rows);
                 values.push((alias.clone(), val));
             }
 
@@ -4357,7 +4357,7 @@ impl QueryRouter {
 
     #[allow(clippy::too_many_lines)] // Aggregate computation requires handling all SQL aggregate functions
     #[allow(clippy::unused_self)] // Method signature for API consistency
-    fn compute_aggregate_for_group(&self, agg: &AggregateFunc, rows: &[&Row]) -> Result<Value> {
+    fn compute_aggregate_for_group(&self, agg: &AggregateFunc, rows: &[&Row]) -> Value {
         match agg {
             AggregateFunc::Count(col) => {
                 let count = if col.is_none() {
@@ -4371,20 +4371,22 @@ impl QueryRouter {
                         })
                         .count() as u64
                 };
-                Ok(Value::Int(count as i64))
+                #[allow(clippy::cast_possible_wrap)]
+                Value::Int(count as i64)
             },
             AggregateFunc::Sum(col) => {
                 let mut sum = 0.0;
                 for row in rows {
                     if let Some((_, val)) = row.values.iter().find(|(c, _)| c == col) {
                         match val {
+                            #[allow(clippy::cast_precision_loss)]
                             Value::Int(i) => sum += *i as f64,
                             Value::Float(f) => sum += *f,
                             _ => {},
                         }
                     }
                 }
-                Ok(Value::Float(sum))
+                Value::Float(sum)
             },
             AggregateFunc::Avg(col) => {
                 let mut sum = 0.0;
@@ -4393,7 +4395,10 @@ impl QueryRouter {
                     if let Some((_, val)) = row.values.iter().find(|(c, _)| c == col) {
                         match val {
                             Value::Int(i) => {
-                                sum += *i as f64;
+                                #[allow(clippy::cast_precision_loss)]
+                                {
+                                    sum += *i as f64;
+                                }
                                 count += 1;
                             },
                             Value::Float(f) => {
@@ -4405,9 +4410,9 @@ impl QueryRouter {
                     }
                 }
                 if count == 0 {
-                    Ok(Value::Null)
+                    Value::Null
                 } else {
-                    Ok(Value::Float(sum / count as f64))
+                    Value::Float(sum / f64::from(count))
                 }
             },
             AggregateFunc::Min(col) => {
@@ -4446,7 +4451,7 @@ impl QueryRouter {
                         });
                     }
                 }
-                Ok(min_val.unwrap_or(Value::Null))
+                min_val.unwrap_or(Value::Null)
             },
             AggregateFunc::Max(col) => {
                 let mut max_val: Option<Value> = None;
@@ -4484,7 +4489,7 @@ impl QueryRouter {
                         });
                     }
                 }
-                Ok(max_val.unwrap_or(Value::Null))
+                max_val.unwrap_or(Value::Null)
             },
         }
     }
@@ -4686,13 +4691,10 @@ impl QueryRouter {
                 let select_result = self.exec_select(select)?;
 
                 // Extract rows from the result
-                let rows = match select_result {
-                    QueryResult::Rows(rows) => rows,
-                    _ => {
-                        return Err(RouterError::ParseError(
-                            "INSERT ... SELECT query did not return rows".to_string(),
-                        ))
-                    },
+                let QueryResult::Rows(rows) = select_result else {
+                    return Err(RouterError::ParseError(
+                        "INSERT ... SELECT query did not return rows".to_string(),
+                    ));
                 };
 
                 if rows.is_empty() {
@@ -4786,9 +4788,8 @@ impl QueryRouter {
         condition: &Condition,
         limit: usize,
     ) -> (usize, Vec<String>) {
-        let rows = match self.relational.select(table, condition.clone()) {
-            Ok(rows) => rows,
-            Err(_) => return (0, vec![]),
+        let Ok(rows) = self.relational.select(table, condition.clone()) else {
+            return (0, vec![]);
         };
 
         let count = rows.len();

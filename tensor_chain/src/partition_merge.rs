@@ -417,6 +417,9 @@ pub struct MergeSession {
 
     /// Last error message (if any).
     pub last_error: Option<String>,
+
+    /// Partition generation when this session was created.
+    pub partition_generation: u64,
 }
 
 impl MergeSession {
@@ -435,6 +438,7 @@ impl MergeSession {
             remote_views: HashMap::new(),
             conflicts: Vec::new(),
             last_error: None,
+            partition_generation: 0,
         }
     }
 
@@ -495,6 +499,9 @@ pub struct PartitionMergeStats {
 
     /// Total merge duration in milliseconds.
     pub total_merge_duration_ms: AtomicU64,
+
+    /// Number of merge sessions aborted due to repartition during merge.
+    pub merge_aborted_repartition: AtomicU64,
 }
 
 impl PartitionMergeStats {
@@ -525,6 +532,11 @@ impl PartitionMergeStats {
         }
     }
 
+    pub fn record_merge_aborted_repartition(&self) {
+        self.merge_aborted_repartition
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> PartitionMergeStatsSnapshot {
         PartitionMergeStatsSnapshot {
             sessions_started: self.sessions_started.load(Ordering::Relaxed),
@@ -534,6 +546,7 @@ impl PartitionMergeStats {
             conflicts_auto_resolved: self.conflicts_auto_resolved.load(Ordering::Relaxed),
             conflicts_manual: self.conflicts_manual.load(Ordering::Relaxed),
             total_merge_duration_ms: self.total_merge_duration_ms.load(Ordering::Relaxed),
+            merge_aborted_repartition: self.merge_aborted_repartition.load(Ordering::Relaxed),
         }
     }
 }
@@ -548,6 +561,7 @@ pub struct PartitionMergeStatsSnapshot {
     pub conflicts_auto_resolved: u64,
     pub conflicts_manual: u64,
     pub total_merge_duration_ms: u64,
+    pub merge_aborted_repartition: u64,
 }
 
 impl PartitionMergeStatsSnapshot {
@@ -710,6 +724,28 @@ impl DataReconciler {
     }
 
     /// Reconcile two partition state summaries.
+    ///
+    /// # Conflict Resolution Strategy: Last-Writer-Wins (LWW)
+    ///
+    /// When two partitions have diverged, this method resolves delta conflicts
+    /// using a Last-Writer-Wins approach informed by semantic similarity of
+    /// state embeddings. The strategy works as follows:
+    ///
+    /// 1. **Identical states** (`state_matches`): No conflict -- states are equal.
+    /// 2. **One-sided embedding**: The side with data wins (trivial LWW).
+    /// 3. **Orthogonal deltas** (cosine similarity near zero): The deltas modified
+    ///    independent dimensions, so they are merged via vector addition. This is
+    ///    safe because the writes do not overlap.
+    /// 4. **Nearly identical deltas** (cosine similarity above `identical_threshold`):
+    ///    Both sides made the same write, so the local value is kept (deduplicate).
+    /// 5. **Opposite deltas** (cosine similarity below `-identical_threshold`):
+    ///    The writes cancel out, producing a zero vector.
+    /// 6. **Conflicting deltas** (all other similarities): Cannot be auto-resolved.
+    ///    Marked as `ConflictResolution::Manual` for operator intervention.
+    ///
+    /// For membership conflicts, the `MembershipReconciler` uses pure LWW-CRDT
+    /// semantics: the higher incarnation wins, with lamport timestamp as
+    /// tiebreaker when incarnations are equal.
     ///
     /// Uses semantic conflict detection based on delta vector similarity:
     /// - Orthogonal deltas (low similarity): Safe to merge via vector addition
@@ -1003,6 +1039,9 @@ pub struct PartitionMergeManager {
     tx_reconciler: TransactionReconciler,
     /// Cooldown tracking: node_id -> last merge attempt time
     cooldowns: RwLock<HashMap<NodeId, Instant>>,
+    /// Monotonic counter incremented on each new partition event.
+    #[allow(dead_code)]
+    partition_generation: std::sync::atomic::AtomicU64,
 }
 
 impl PartitionMergeManager {
@@ -1016,6 +1055,7 @@ impl PartitionMergeManager {
             data_reconciler: DataReconciler::default(),
             tx_reconciler: TransactionReconciler::default(),
             cooldowns: RwLock::new(HashMap::new()),
+            partition_generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1034,6 +1074,7 @@ impl PartitionMergeManager {
             data_reconciler,
             tx_reconciler,
             cooldowns: RwLock::new(HashMap::new()),
+            partition_generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1048,6 +1089,27 @@ impl PartitionMergeManager {
 
     fn record_merge_attempt(&self, node: &NodeId) {
         self.cooldowns.write().insert(node.clone(), Instant::now());
+    }
+
+    /// Notify the manager that a new partition event has occurred.
+    ///
+    /// Increments the partition generation counter so that active merge
+    /// sessions can detect that the topology changed underneath them.
+    pub fn notify_partition_event(&self) {
+        self.partition_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns true if the partition generation has changed since the session
+    /// was created, meaning a new partition event occurred during the merge.
+    pub fn is_repartitioned(&self, session_id: u64) -> bool {
+        let current_gen = self
+            .partition_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let sessions = self.sessions.read();
+        sessions
+            .get(&session_id)
+            .is_some_and(|s| current_gen != s.partition_generation)
     }
 
     /// Start a new merge session with healed nodes.
@@ -1084,7 +1146,10 @@ impl PartitionMergeManager {
         let session_id = self
             .next_session_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let session = MergeSession::new(session_id, eligible.clone());
+        let mut session = MergeSession::new(session_id, eligible.clone());
+        session.partition_generation = self
+            .partition_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         self.sessions.write().insert(session_id, session);
         self.stats.record_session_start();
@@ -1107,8 +1172,25 @@ impl PartitionMergeManager {
     }
 
     pub fn advance_session(&self, session_id: u64) -> Option<MergePhase> {
+        let current_gen = self
+            .partition_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
+            // Detect repartition during an active merge session
+            if current_gen != session.partition_generation {
+                tracing::warn!(
+                    session_id = session_id,
+                    session_generation = session.partition_generation,
+                    current_generation = current_gen,
+                    "Aborting merge session: new partition event detected during merge"
+                );
+                session.fail("repartition detected during merge");
+                self.stats.record_session_failed();
+                self.stats.record_merge_aborted_repartition();
+                return Some(MergePhase::Failed);
+            }
+
             let from_phase = session.phase;
             session.advance_phase();
             let to_phase = session.phase;
@@ -2826,6 +2908,42 @@ mod tests {
                 .sessions_started
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
+        );
+    }
+
+    #[test]
+    fn test_advance_session_aborts_on_repartition() {
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
+
+        // Start a merge session
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        // Verify session is active
+        assert_eq!(
+            manager.session_phase(session_id),
+            Some(MergePhase::HealDetection)
+        );
+        assert!(!manager.is_repartitioned(session_id));
+
+        // Simulate a new partition event during the merge
+        manager.notify_partition_event();
+        assert!(manager.is_repartitioned(session_id));
+
+        // Advancing should abort the session
+        let phase = manager.advance_session(session_id);
+        assert_eq!(phase, Some(MergePhase::Failed));
+
+        // Verify stats recorded the repartition abort
+        let snapshot = manager.stats_snapshot();
+        assert_eq!(snapshot.merge_aborted_repartition, 1);
+        assert_eq!(snapshot.sessions_failed, 1);
+
+        // Session should be marked as failed with the correct error
+        let session = manager.get_session(session_id).unwrap();
+        assert_eq!(
+            session.last_error.as_deref(),
+            Some("repartition detected during merge")
         );
     }
 }

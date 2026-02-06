@@ -313,7 +313,7 @@ fn test_record_vote_logs_to_wal() {
 
         // Begin a transaction
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
         tx_id = tx.tx_id;
 
@@ -330,10 +330,10 @@ fn test_record_vote_logs_to_wal() {
         };
 
         // Handle prepare to get a vote
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
 
         // Record the vote - this should log to WAL
-        coordinator.record_vote(tx_id, 0, vote);
+        let _ = coordinator.record_vote(tx_id, 0, vote);
     }
 
     // Verify WAL contains the vote entry
@@ -383,7 +383,7 @@ fn test_vote_persisted_survives_crash() {
         let coordinator = create_coordinator_with_wal(wal);
 
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
         tx_id = tx.tx_id;
 
@@ -398,7 +398,7 @@ fn test_vote_persisted_survives_crash() {
             timeout_ms: 5000,
         };
 
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
 
         // Extract lock handle from vote
         lock_handle = match &vote {
@@ -407,7 +407,7 @@ fn test_vote_persisted_survives_crash() {
         };
 
         // Record the vote
-        coordinator.record_vote(tx_id, 0, vote);
+        let _ = coordinator.record_vote(tx_id, 0, vote);
 
         // Coordinator is dropped here (simulating crash)
     }

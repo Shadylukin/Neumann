@@ -39,7 +39,7 @@ async fn test_the_neumann_protocol() {
     );
 
     // The Time Machine
-    let checkpoint_mgr = CheckpointManager::new(blob.clone(), CheckpointConfig::default()).await;
+    let checkpoint_mgr = CheckpointManager::new(blob.clone(), CheckpointConfig::default());
 
     // === STEP 1: TIME ZERO ===
     let genesis_snapshot = checkpoint_mgr

@@ -38,7 +38,7 @@ fn test_coordinator_crash_after_all_yes_votes_recovery() {
     let tx_id = {
         let coordinator = create_coordinator();
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0, 1])
+            .begin(&"coord1".to_string(), &[0, 1])
             .expect("Failed to begin transaction");
 
         // Handle prepare and record YES votes from both shards
@@ -57,8 +57,8 @@ fn test_coordinator_crash_after_all_yes_votes_recovery() {
                 },
                 timeout_ms: 5000,
             };
-            let vote = coordinator.handle_prepare(request);
-            coordinator.record_vote(tx.tx_id, shard, vote);
+            let vote = coordinator.handle_prepare(&request);
+            let _ = coordinator.record_vote(tx.tx_id, shard, vote);
         }
 
         // Verify we're in Prepared state
@@ -111,7 +111,7 @@ fn test_coordinator_crash_during_commit_recovery() {
     let tx_id = {
         let coordinator = create_coordinator();
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
 
         // Handle prepare
@@ -125,8 +125,8 @@ fn test_coordinator_crash_during_commit_recovery() {
             delta_embedding: SparseVector::from_dense(&[1.0]),
             timeout_ms: 5000,
         };
-        let vote = coordinator.handle_prepare(request);
-        coordinator.record_vote(tx.tx_id, 0, vote);
+        let vote = coordinator.handle_prepare(&request);
+        let _ = coordinator.record_vote(tx.tx_id, 0, vote);
 
         // Get current state and modify it
         let mut state = coordinator.to_state();
@@ -174,7 +174,7 @@ fn test_coordinator_crash_with_timeout_recovery() {
     let _tx_id = {
         let coordinator = create_coordinator();
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
 
         // Get current state and modify it to appear timed out
@@ -325,7 +325,7 @@ fn test_coordinator_and_participant_crash_recovery() {
         let participant1 = TxParticipant::new_in_memory();
 
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0, 1])
+            .begin(&"coord1".to_string(), &[0, 1])
             .expect("Failed to begin transaction");
 
         // Prepare on both participants
@@ -345,7 +345,7 @@ fn test_coordinator_and_participant_crash_recovery() {
                 timeout_ms: 5000,
             };
             let vote = participant.prepare(request);
-            coordinator.record_vote(tx.tx_id, shard, vote);
+            let _ = coordinator.record_vote(tx.tx_id, shard, vote);
         }
 
         // Save all state
@@ -400,13 +400,13 @@ fn test_multiple_transactions_crash_recovery() {
 
         // Transaction 1: Preparing
         let tx1 = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
         ids.push(tx1.tx_id);
 
         // Transaction 2: Prepared with all YES votes
         let tx2 = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
         let request2 = PrepareRequest {
             tx_id: tx2.tx_id,
@@ -418,8 +418,8 @@ fn test_multiple_transactions_crash_recovery() {
             delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
             timeout_ms: 5000,
         };
-        let vote2 = coordinator.handle_prepare(request2);
-        coordinator.record_vote(tx2.tx_id, 0, vote2);
+        let vote2 = coordinator.handle_prepare(&request2);
+        let _ = coordinator.record_vote(tx2.tx_id, 0, vote2);
         ids.push(tx2.tx_id);
 
         coordinator.save_to_store(node_id, &store).unwrap();
@@ -457,7 +457,7 @@ fn test_persistence_survives_multiple_restarts() {
         let participant = TxParticipant::new_in_memory();
 
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin transaction");
 
         let request = PrepareRequest {
@@ -471,7 +471,7 @@ fn test_persistence_survives_multiple_restarts() {
             timeout_ms: 5000,
         };
         let vote = participant.prepare(request.clone());
-        coordinator.record_vote(tx.tx_id, 0, vote);
+        let _ = coordinator.record_vote(tx.tx_id, 0, vote);
 
         coordinator.save_to_store(node_id, &store).unwrap();
         participant
@@ -565,7 +565,7 @@ fn test_participant_state_bincode_roundtrip() {
                 key: "key".to_string(),
                 data: vec![1, 2, 3],
             }],
-            delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+            delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
             prepared_at_ms: 1000,
             undo_log: Vec::new(),
         },
@@ -594,7 +594,7 @@ fn test_coordinator_recovery_during_committing_resends_commit() {
     let tx_id = {
         let coordinator = create_coordinator();
         let tx = coordinator
-            .begin("coord1".to_string(), vec![0, 1])
+            .begin(&"coord1".to_string(), &[0, 1])
             .expect("Failed to begin transaction");
 
         // Vote YES from both shards
@@ -613,8 +613,8 @@ fn test_coordinator_recovery_during_committing_resends_commit() {
                 },
                 timeout_ms: 5000,
             };
-            let vote = coordinator.handle_prepare(request);
-            coordinator.record_vote(tx.tx_id, shard, vote);
+            let vote = coordinator.handle_prepare(&request);
+            let _ = coordinator.record_vote(tx.tx_id, shard, vote);
         }
 
         // Transaction should be in Prepared state
@@ -924,12 +924,12 @@ fn test_mixed_transaction_states_recovery() {
 
         // Transaction 1: Still preparing (no votes received)
         let tx1 = coordinator
-            .begin("coord1".to_string(), vec![0, 1])
+            .begin(&"coord1".to_string(), &[0, 1])
             .expect("Failed to begin tx1");
 
         // Transaction 2: Fully prepared (all YES votes)
         let tx2 = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin tx2");
         let request2 = PrepareRequest {
             tx_id: tx2.tx_id,
@@ -941,12 +941,12 @@ fn test_mixed_transaction_states_recovery() {
             delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
             timeout_ms: 5000,
         };
-        let vote2 = coordinator.handle_prepare(request2);
-        coordinator.record_vote(tx2.tx_id, 0, vote2);
+        let vote2 = coordinator.handle_prepare(&request2);
+        let _ = coordinator.record_vote(tx2.tx_id, 0, vote2);
 
         // Transaction 3: In committing phase
         let tx3 = coordinator
-            .begin("coord1".to_string(), vec![0])
+            .begin(&"coord1".to_string(), &[0])
             .expect("Failed to begin tx3");
         let request3 = PrepareRequest {
             tx_id: tx3.tx_id,
@@ -958,8 +958,8 @@ fn test_mixed_transaction_states_recovery() {
             delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
             timeout_ms: 5000,
         };
-        let vote3 = coordinator.handle_prepare(request3);
-        coordinator.record_vote(tx3.tx_id, 0, vote3);
+        let vote3 = coordinator.handle_prepare(&request3);
+        let _ = coordinator.record_vote(tx3.tx_id, 0, vote3);
 
         // Get state and modify tx3 to Committing
         let mut state = coordinator.to_state();

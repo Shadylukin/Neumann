@@ -4,8 +4,8 @@
 //! Provides vector quantization for mapping continuous tensor states
 //! to a finite vocabulary of valid states:
 //!
-//! - GlobalCodebook: Static, shared across all nodes for consensus
-//! - LocalCodebook: Adaptive per domain, captures residuals via EMA
+//! - `GlobalCodebook`: Static, shared across all nodes for consensus
+//! - `LocalCodebook`: Adaptive per domain, captures residuals via EMA
 //!
 //! # Architecture
 //!
@@ -67,6 +67,7 @@ impl PartialEq for CodebookEntry {
 impl Eq for CodebookEntry {}
 
 impl CodebookEntry {
+    #[must_use]
     pub fn new(id: u32, centroid: Vec<f32>) -> Self {
         let magnitude = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
         let now = current_timestamp_millis();
@@ -82,31 +83,38 @@ impl CodebookEntry {
         }
     }
 
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
+    #[must_use]
     pub fn id(&self) -> u32 {
         self.id
     }
 
+    #[must_use]
     pub fn centroid(&self) -> &[f32] {
         &self.centroid
     }
 
+    #[must_use]
     pub fn magnitude(&self) -> f32 {
         self.magnitude
     }
 
+    #[must_use]
     pub fn access_count(&self) -> u64 {
         self.access_count
     }
 
+    #[must_use]
     pub fn last_access(&self) -> u64 {
         self.last_access
     }
 
+    #[must_use]
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
@@ -116,6 +124,7 @@ impl CodebookEntry {
         self.last_access = current_timestamp_millis();
     }
 
+    #[must_use]
     pub fn cosine_similarity(&self, query: &[f32]) -> f32 {
         if self.magnitude == 0.0 {
             return 0.0;
@@ -155,6 +164,7 @@ pub struct GlobalCodebook {
 }
 
 impl GlobalCodebook {
+    #[must_use]
     pub fn new(dimension: usize) -> Self {
         Self {
             entries: Vec::new(),
@@ -162,25 +172,33 @@ impl GlobalCodebook {
         }
     }
 
+    #[must_use]
     pub fn from_centroids(centroids: Vec<Vec<f32>>) -> Self {
-        let dimension = centroids.first().map(|v| v.len()).unwrap_or(0);
+        let dimension = centroids.first().map_or(0, Vec::len);
         let entries = centroids
             .into_iter()
             .enumerate()
-            .map(|(id, centroid)| CodebookEntry::new(id as u32, centroid))
+            .map(|(id, centroid)| {
+                #[allow(clippy::cast_possible_truncation)]
+                let entry_id = id as u32;
+                CodebookEntry::new(entry_id, centroid)
+            })
             .collect();
 
         Self { entries, dimension }
     }
 
+    #[must_use]
     pub fn from_centroids_with_labels(centroids: Vec<Vec<f32>>, labels: Vec<String>) -> Self {
-        let dimension = centroids.first().map(|v| v.len()).unwrap_or(0);
+        let dimension = centroids.first().map_or(0, Vec::len);
         let entries = centroids
             .into_iter()
             .zip(labels)
             .enumerate()
             .map(|(id, (centroid, label))| {
-                CodebookEntry::new(id as u32, centroid).with_label(label)
+                #[allow(clippy::cast_possible_truncation)]
+                let entry_id = id as u32;
+                CodebookEntry::new(entry_id, centroid).with_label(label)
             })
             .collect();
 
@@ -188,6 +206,7 @@ impl GlobalCodebook {
     }
 
     /// Initialize using k-means clustering on training data.
+    #[must_use]
     pub fn from_kmeans(vectors: &[Vec<f32>], k: usize, max_iterations: usize) -> Self {
         if vectors.is_empty() || k == 0 {
             return Self::new(0);
@@ -203,18 +222,22 @@ impl GlobalCodebook {
         Self::from_centroids(centroids)
     }
 
+    #[must_use]
     pub fn dimension(&self) -> usize {
         self.dimension
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[must_use]
     pub fn get(&self, id: u32) -> Option<&CodebookEntry> {
         self.entries.get(id as usize)
     }
@@ -222,6 +245,7 @@ impl GlobalCodebook {
     /// Find the nearest entry to a query vector.
     ///
     /// Returns None if codebook is empty or vector dimension mismatches.
+    #[must_use]
     pub fn quantize(&self, vector: &[f32]) -> Option<(u32, f32)> {
         if self.entries.is_empty() {
             return None;
@@ -246,7 +270,8 @@ impl GlobalCodebook {
         Some((best_id, best_sim))
     }
 
-    /// Compute residual: vector - nearest_centroid.
+    /// Compute residual: vector - `nearest_centroid`.
+    #[must_use]
     pub fn compute_residual(&self, vector: &[f32]) -> Option<(u32, Vec<f32>)> {
         let (id, _) = self.quantize(vector)?;
         let centroid = &self.entries[id as usize].centroid;
@@ -260,6 +285,7 @@ impl GlobalCodebook {
         Some((id, residual))
     }
 
+    #[must_use]
     pub fn is_valid_state(&self, vector: &[f32], threshold: f32) -> bool {
         if let Some((_, sim)) = self.quantize(vector) {
             sim >= threshold
@@ -273,6 +299,7 @@ impl GlobalCodebook {
     }
 
     /// Create a serializable snapshot for Raft replication.
+    #[must_use]
     pub fn to_snapshot(&self, version: u64) -> GlobalCodebookSnapshot {
         GlobalCodebookSnapshot {
             dimension: self.dimension,
@@ -282,6 +309,7 @@ impl GlobalCodebook {
     }
 
     /// Restore from a snapshot received via Raft.
+    #[must_use]
     pub fn from_snapshot(snapshot: GlobalCodebookSnapshot) -> Self {
         Self {
             dimension: snapshot.dimension,
@@ -290,7 +318,7 @@ impl GlobalCodebook {
     }
 }
 
-/// Serializable snapshot of GlobalCodebook for Raft replication.
+/// Serializable snapshot of `GlobalCodebook` for Raft replication.
 ///
 /// This struct captures the complete state of a `GlobalCodebook` at a specific
 /// version, allowing it to be replicated through Raft consensus to ensure all
@@ -306,6 +334,7 @@ pub struct GlobalCodebookSnapshot {
 }
 
 impl GlobalCodebookSnapshot {
+    #[must_use]
     pub fn new(dimension: usize, entries: Vec<CodebookEntry>, version: u64) -> Self {
         Self {
             dimension,
@@ -314,6 +343,7 @@ impl GlobalCodebookSnapshot {
         }
     }
 
+    #[must_use]
     pub fn empty(dimension: usize) -> Self {
         Self {
             dimension,
@@ -482,6 +512,7 @@ impl LocalCodebook {
         }
 
         // Create new entry
+        #[allow(clippy::cast_possible_truncation)]
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u32;
         let entry = CodebookEntry::new(id, vector.to_vec());
         entries.push(entry);
@@ -498,6 +529,7 @@ impl LocalCodebook {
             .enumerate()
             .filter(|(_, e)| e.access_count >= self.min_usage_for_prune)
             .map(|(i, e)| {
+                #[allow(clippy::cast_precision_loss)]
                 let score = match self.pruning_strategy {
                     PruningStrategy::LRU => e.last_access as f64,
                     PruningStrategy::LFU => e.access_count as f64,
@@ -508,8 +540,8 @@ impl LocalCodebook {
                         let age_secs = (now.saturating_sub(e.last_access)) / 1000;
                         let recency_score = 1.0 / (1.0 + age_secs as f64 / 60.0);
                         let frequency_score = (1.0 + e.access_count as f64).ln();
-                        recency_score * recency_weight as f64
-                            + frequency_score * frequency_weight as f64
+                        recency_score * f64::from(recency_weight)
+                            + frequency_score * f64::from(frequency_weight)
                     },
                 };
                 (i, score)
@@ -600,6 +632,7 @@ impl Default for CodebookConfig {
 }
 
 impl CodebookManager {
+    #[must_use]
     pub fn new(global: GlobalCodebook, config: CodebookConfig) -> Self {
         Self {
             global,
@@ -608,6 +641,7 @@ impl CodebookManager {
         }
     }
 
+    #[must_use]
     pub fn with_global(global: GlobalCodebook) -> Self {
         Self::new(global, CodebookConfig::default())
     }
@@ -659,6 +693,9 @@ impl CodebookManager {
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the global codebook is empty or the entry is not found.
     pub fn quantize(&self, domain: &str, vector: &[f32]) -> Result<HierarchicalQuantization> {
         // Step 1: Global quantization
         let (global_id, global_sim) = self
@@ -668,7 +705,7 @@ impl CodebookManager {
 
         // Step 2: Compute residual
         let global_entry = self.global.get(global_id).ok_or_else(|| {
-            ChainError::CodebookError(format!("global entry {} not found", global_id))
+            ChainError::CodebookError(format!("global entry {global_id} not found"))
         })?;
         let global_centroid = &global_entry.centroid;
         let residual: Vec<f32> = vector
@@ -692,9 +729,13 @@ impl CodebookManager {
             };
 
         // Build codes vector
-        let mut codes = vec![global_id as u16];
+        #[allow(clippy::cast_possible_truncation)]
+        let global_code = global_id as u16;
+        let mut codes = vec![global_code];
         if let Some(local_id) = local_entry_id {
-            codes.push(local_id as u16);
+            #[allow(clippy::cast_possible_truncation)]
+            let local_code = local_id as u16;
+            codes.push(local_code);
         }
 
         Ok(HierarchicalQuantization {
@@ -751,10 +792,12 @@ impl CodebookManager {
 // ============== Helper functions ==============
 
 fn current_timestamp_millis() -> u64 {
-    SystemTime::now()
+    #[allow(clippy::cast_possible_truncation)]
+    let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis() as u64;
+    ms
 }
 
 #[cfg(test)]

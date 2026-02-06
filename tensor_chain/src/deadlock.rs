@@ -101,7 +101,7 @@
 //!
 //! # Security Considerations
 //!
-//! - The `max_cycle_length` configuration prevents DoS via artificially long cycles
+//! - The `max_cycle_length` configuration prevents `DoS` via artificially long cycles
 //! - Detection can be disabled for testing via `DeadlockDetectorConfig::disabled()`
 //! - Statistics track detection performance for monitoring
 //!
@@ -147,6 +147,10 @@ pub struct DeadlockDetectorConfig {
     pub max_cycle_length: usize,
     /// Whether to automatically abort victim transactions.
     pub auto_abort_victim: bool,
+    /// Maximum wait-for edges a single transaction can have.
+    pub max_edges_per_tx: usize,
+    /// Edges older than this (in milliseconds) are considered stale and eligible for cleanup.
+    pub edge_ttl_ms: u64,
 }
 
 impl Default for DeadlockDetectorConfig {
@@ -157,12 +161,15 @@ impl Default for DeadlockDetectorConfig {
             victim_policy: VictimSelectionPolicy::Youngest,
             max_cycle_length: 100,
             auto_abort_victim: true,
+            max_edges_per_tx: 50,
+            edge_ttl_ms: 30_000,
         }
     }
 }
 
 impl DeadlockDetectorConfig {
     /// Create a disabled configuration.
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -171,26 +178,44 @@ impl DeadlockDetectorConfig {
     }
 
     /// Set the detection interval.
+    #[must_use]
     pub fn with_interval(mut self, ms: u64) -> Self {
         self.detection_interval_ms = ms;
         self
     }
 
     /// Set the victim selection policy.
+    #[must_use]
     pub fn with_policy(mut self, policy: VictimSelectionPolicy) -> Self {
         self.victim_policy = policy;
         self
     }
 
     /// Set the maximum cycle length.
+    #[must_use]
     pub fn with_max_cycle_length(mut self, len: usize) -> Self {
         self.max_cycle_length = len;
         self
     }
 
     /// Disable auto-abort of victim.
+    #[must_use]
     pub fn without_auto_abort(mut self) -> Self {
         self.auto_abort_victim = false;
+        self
+    }
+
+    /// Set the maximum number of wait-for edges per transaction.
+    #[must_use]
+    pub fn with_max_edges_per_tx(mut self, max: usize) -> Self {
+        self.max_edges_per_tx = max;
+        self
+    }
+
+    /// Set the edge TTL in milliseconds for stale edge cleanup.
+    #[must_use]
+    pub fn with_edge_ttl_ms(mut self, ttl_ms: u64) -> Self {
+        self.edge_ttl_ms = ttl_ms;
         self
     }
 }
@@ -230,9 +255,12 @@ pub struct DeadlockStats {
     pub detection_cycles: AtomicU64,
     /// Longest cycle detected.
     pub max_cycle_length: AtomicU64,
+    /// Number of stale transactions cleaned up by TTL-based edge cleanup.
+    pub stale_edges_cleaned: AtomicU64,
 }
 
 impl DeadlockStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -276,6 +304,7 @@ impl DeadlockStats {
             detection_time_us: self.detection_time_us.load(Ordering::Relaxed),
             detection_cycles: self.detection_cycles.load(Ordering::Relaxed),
             max_cycle_length: self.max_cycle_length.load(Ordering::Relaxed),
+            stale_edges_cleaned: self.stale_edges_cleaned.load(Ordering::Relaxed),
         }
     }
 }
@@ -288,38 +317,66 @@ pub struct DeadlockStatsSnapshot {
     pub detection_time_us: u64,
     pub detection_cycles: u64,
     pub max_cycle_length: u64,
+    pub stale_edges_cleaned: u64,
 }
 
 /// Wait-for graph for tracking transaction dependencies.
 ///
 /// Tracks which transactions are waiting for which other transactions
 /// to release locks. Used for cycle detection in deadlock scenarios.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WaitForGraph {
-    /// Maps tx_id -> set of tx_ids it is waiting for.
+    /// Maps `tx_id` -> set of `tx_ids` it is waiting for.
     edges: RwLock<HashMap<u64, HashSet<u64>>>,
-    /// Maps tx_id -> timestamp when wait started (for victim selection).
+    /// Maps `tx_id` -> timestamp when wait started (for victim selection).
     wait_started: RwLock<HashMap<u64, EpochMillis>>,
-    /// Maps tx_id -> priority (lower value = higher priority).
+    /// Maps `tx_id` -> priority (lower value = higher priority).
     priorities: RwLock<HashMap<u64, u32>>,
-    /// Reverse edges for efficient waiting_on queries.
+    /// Reverse edges for efficient `waiting_on` queries.
     reverse_edges: RwLock<HashMap<u64, HashSet<u64>>>,
+    /// Maximum wait-for edges a single transaction can have (0 = unlimited).
+    max_edges_per_tx: usize,
+}
+
+impl Default for WaitForGraph {
+    fn default() -> Self {
+        Self {
+            edges: RwLock::new(HashMap::new()),
+            wait_started: RwLock::new(HashMap::new()),
+            priorities: RwLock::new(HashMap::new()),
+            reverse_edges: RwLock::new(HashMap::new()),
+            max_edges_per_tx: 0,
+        }
+    }
 }
 
 impl WaitForGraph {
     /// Create a new empty wait-for graph.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a new wait-for graph with a per-transaction edge limit.
+    #[must_use]
+    pub fn with_max_edges_per_tx(max: usize) -> Self {
+        Self {
+            max_edges_per_tx: max,
+            ..Self::default()
+        }
     }
 
     /// Add a wait-for edge: waiter is waiting for holder.
     ///
     /// The waiter transaction is blocked waiting for holder to release locks.
+    /// If `max_edges_per_tx` is set and the waiter already has that many edges,
+    /// the new edge is silently dropped to bound memory usage.
     pub fn add_wait(&self, waiter_tx_id: u64, holder_tx_id: u64, priority: Option<u32>) {
         if waiter_tx_id == holder_tx_id {
             return; // Self-wait is invalid
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -327,7 +384,11 @@ impl WaitForGraph {
 
         {
             let mut edges = self.edges.write();
-            edges.entry(waiter_tx_id).or_default().insert(holder_tx_id);
+            let waiter_edges = edges.entry(waiter_tx_id).or_default();
+            if self.max_edges_per_tx > 0 && waiter_edges.len() >= self.max_edges_per_tx {
+                return;
+            }
+            waiter_edges.insert(holder_tx_id);
         }
 
         {
@@ -415,7 +476,7 @@ impl WaitForGraph {
 
     /// Detect cycles in the wait-for graph using DFS.
     ///
-    /// Returns all cycles found. Each cycle is a vec of tx_ids forming the cycle.
+    /// Returns all cycles found. Each cycle is a vec of `tx_ids` forming the cycle.
     pub fn detect_cycles(&self) -> Vec<Vec<u64>> {
         let edges = self.edges.read();
         let mut cycles = Vec::new();
@@ -425,7 +486,7 @@ impl WaitForGraph {
 
         for &start in edges.keys() {
             if !visited.contains(&start) {
-                self.dfs_detect(
+                dfs_detect(
                     start,
                     &edges,
                     &mut visited,
@@ -437,38 +498,6 @@ impl WaitForGraph {
         }
 
         cycles
-    }
-
-    /// Tarjan's DFS: cycle exists when we hit a node in rec_stack (back edge to ancestor).
-    /// Path tracked explicitly for victim selection.
-    fn dfs_detect(
-        &self,
-        node: u64,
-        edges: &HashMap<u64, HashSet<u64>>,
-        visited: &mut HashSet<u64>,
-        rec_stack: &mut HashSet<u64>,
-        path: &mut Vec<u64>,
-        cycles: &mut Vec<Vec<u64>>,
-    ) {
-        visited.insert(node);
-        rec_stack.insert(node);
-        path.push(node);
-
-        if let Some(neighbors) = edges.get(&node) {
-            for &neighbor in neighbors {
-                if !visited.contains(&neighbor) {
-                    self.dfs_detect(neighbor, edges, visited, rec_stack, path, cycles);
-                } else if rec_stack.contains(&neighbor) {
-                    // Found cycle - extract it from path
-                    if let Some(cycle_start) = path.iter().position(|&n| n == neighbor) {
-                        cycles.push(path[cycle_start..].to_vec());
-                    }
-                }
-            }
-        }
-
-        path.pop();
-        rec_stack.remove(&node);
     }
 
     /// Check if adding an edge would create a cycle.
@@ -515,7 +544,7 @@ impl WaitForGraph {
 
     /// Get the number of edges in the graph.
     pub fn edge_count(&self) -> usize {
-        self.edges.read().values().map(|s| s.len()).sum()
+        self.edges.read().values().map(HashSet::len).sum()
     }
 
     /// Get the number of transactions in the graph.
@@ -550,6 +579,64 @@ impl WaitForGraph {
     pub fn is_empty(&self) -> bool {
         self.edges.read().is_empty()
     }
+
+    /// Remove transactions whose wait-start time is older than `ttl_ms` milliseconds.
+    ///
+    /// Returns the number of stale transactions removed.
+    pub fn cleanup_stale_edges(&self, ttl_ms: u64) -> usize {
+        #[allow(clippy::cast_possible_truncation)]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let stale_txs: Vec<u64> = {
+            let wait_started = self.wait_started.read();
+            wait_started
+                .iter()
+                .filter(|&(_, &started)| now.saturating_sub(started) > ttl_ms)
+                .map(|(&tx_id, _)| tx_id)
+                .collect()
+        };
+
+        let count = stale_txs.len();
+        for tx_id in stale_txs {
+            self.remove_transaction(tx_id);
+        }
+
+        count
+    }
+}
+
+/// Tarjan's DFS: cycle exists when we hit a node in `rec_stack` (back edge to ancestor).
+/// Path tracked explicitly for victim selection.
+fn dfs_detect(
+    node: u64,
+    edges: &HashMap<u64, HashSet<u64>>,
+    visited: &mut HashSet<u64>,
+    rec_stack: &mut HashSet<u64>,
+    path: &mut Vec<u64>,
+    cycles: &mut Vec<Vec<u64>>,
+) {
+    visited.insert(node);
+    rec_stack.insert(node);
+    path.push(node);
+
+    if let Some(neighbors) = edges.get(&node) {
+        for &neighbor in neighbors {
+            if !visited.contains(&neighbor) {
+                dfs_detect(neighbor, edges, visited, rec_stack, path, cycles);
+            } else if rec_stack.contains(&neighbor) {
+                // Found cycle - extract it from path
+                if let Some(cycle_start) = path.iter().position(|&n| n == neighbor) {
+                    cycles.push(path[cycle_start..].to_vec());
+                }
+            }
+        }
+    }
+
+    path.pop();
+    rec_stack.remove(&node);
 }
 
 /// Deadlock detector with configurable victim selection.
@@ -560,7 +647,7 @@ pub struct DeadlockDetector {
     config: DeadlockDetectorConfig,
     /// Statistics.
     stats: DeadlockStats,
-    /// Lock count function for MostLocks policy.
+    /// Lock count function for `MostLocks` policy.
     lock_count_fn: Option<Box<dyn Fn(u64) -> usize + Send + Sync>>,
 }
 
@@ -580,9 +667,11 @@ impl std::fmt::Debug for DeadlockDetector {
 
 impl DeadlockDetector {
     /// Create a new deadlock detector with the given configuration.
+    #[must_use]
     pub fn new(config: DeadlockDetectorConfig) -> Self {
+        let graph = WaitForGraph::with_max_edges_per_tx(config.max_edges_per_tx);
         Self {
-            graph: WaitForGraph::new(),
+            graph,
             config,
             stats: DeadlockStats::new(),
             lock_count_fn: None,
@@ -590,11 +679,12 @@ impl DeadlockDetector {
     }
 
     /// Create with default configuration.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(DeadlockDetectorConfig::default())
     }
 
-    /// Set the lock count function for MostLocks victim selection.
+    /// Set the lock count function for `MostLocks` victim selection.
     pub fn set_lock_count_fn<F>(&mut self, f: F)
     where
         F: Fn(u64) -> usize + Send + Sync + 'static,
@@ -630,6 +720,7 @@ impl DeadlockDetector {
 
         let start = std::time::Instant::now();
         let cycles = self.graph.detect_cycles();
+        #[allow(clippy::cast_possible_truncation)]
         let duration_us = start.elapsed().as_micros() as u64;
 
         let mut deadlocks = Vec::new();
@@ -642,6 +733,7 @@ impl DeadlockDetector {
             self.stats.update_max_cycle(cycle.len());
 
             let victim = self.select_victim(&cycle);
+            #[allow(clippy::cast_possible_truncation)]
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -663,8 +755,8 @@ impl DeadlockDetector {
     /// Policy trade-offs:
     /// - Youngest: minimize wasted work, may starve long transactions
     /// - Oldest: prevent starvation, wastes more work
-    /// - LowestPriority: business-rule prioritization
-    /// - MostLocks: maximize freed resources
+    /// - `LowestPriority`: business-rule prioritization
+    /// - `MostLocks`: maximize freed resources
     pub fn select_victim(&self, cycle: &[u64]) -> u64 {
         if cycle.is_empty() {
             return 0;
@@ -1238,5 +1330,105 @@ mod tests {
         // Single node cycle returns that node
         let victim = detector.select_victim(&[42]);
         assert_eq!(victim, 42);
+    }
+
+    // Gap 19: Wait graph memory bounds tests
+
+    #[test]
+    fn test_edges_bounded_per_transaction() {
+        let graph = WaitForGraph::with_max_edges_per_tx(3);
+
+        // Add 3 edges for tx 1 -- all should succeed
+        graph.add_wait(1, 10, None);
+        graph.add_wait(1, 11, None);
+        graph.add_wait(1, 12, None);
+        assert_eq!(graph.waiting_for(1).len(), 3);
+
+        // 4th edge for tx 1 should be dropped due to limit
+        graph.add_wait(1, 13, None);
+        assert_eq!(graph.waiting_for(1).len(), 3);
+        assert!(!graph.waiting_for(1).contains(&13));
+
+        // Different transaction should be unaffected
+        graph.add_wait(2, 20, None);
+        assert_eq!(graph.waiting_for(2).len(), 1);
+    }
+
+    #[test]
+    fn test_edges_unbounded_when_limit_zero() {
+        let graph = WaitForGraph::new(); // default: max_edges_per_tx = 0 (unlimited)
+
+        for i in 0..100 {
+            graph.add_wait(1, 1000 + i, None);
+        }
+
+        assert_eq!(graph.waiting_for(1).len(), 100);
+    }
+
+    #[test]
+    fn test_cleanup_stale_edges_by_ttl() {
+        let graph = WaitForGraph::new();
+
+        // Add edges -- these will have "now" as their wait_started timestamp
+        graph.add_wait(1, 10, None);
+        graph.add_wait(2, 20, None);
+
+        // With a very large TTL, nothing should be cleaned
+        let cleaned = graph.cleanup_stale_edges(60_000);
+        assert_eq!(cleaned, 0);
+        assert_eq!(graph.edge_count(), 2);
+
+        // Manually backdate wait_started for tx 1 to simulate staleness
+        {
+            let mut ws = graph.wait_started.write();
+            ws.insert(1, 1000); // epoch + 1 second -- definitely stale
+        }
+
+        // With a TTL of 1ms, the backdated tx should be cleaned
+        let cleaned = graph.cleanup_stale_edges(1);
+        assert_eq!(cleaned, 1);
+
+        // tx 1 edges should be gone, tx 2 should remain
+        assert!(graph.waiting_for(1).is_empty());
+        assert_eq!(graph.waiting_for(2).len(), 1);
+    }
+
+    #[test]
+    fn test_stale_edges_cleaned_stat() {
+        let stats = DeadlockStats::new();
+
+        stats.stale_edges_cleaned.fetch_add(5, Ordering::Relaxed);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.stale_edges_cleaned, 5);
+    }
+
+    #[test]
+    fn test_config_max_edges_per_tx_default() {
+        let config = DeadlockDetectorConfig::default();
+        assert_eq!(config.max_edges_per_tx, 50);
+        assert_eq!(config.edge_ttl_ms, 30_000);
+    }
+
+    #[test]
+    fn test_config_builder_max_edges_and_ttl() {
+        let config = DeadlockDetectorConfig::default()
+            .with_max_edges_per_tx(10)
+            .with_edge_ttl_ms(5000);
+
+        assert_eq!(config.max_edges_per_tx, 10);
+        assert_eq!(config.edge_ttl_ms, 5000);
+    }
+
+    #[test]
+    fn test_detector_graph_inherits_max_edges() {
+        let config = DeadlockDetectorConfig::default().with_max_edges_per_tx(2);
+        let detector = DeadlockDetector::new(config);
+
+        detector.graph().add_wait(1, 10, None);
+        detector.graph().add_wait(1, 11, None);
+        detector.graph().add_wait(1, 12, None); // should be dropped
+
+        assert_eq!(detector.graph().waiting_for(1).len(), 2);
     }
 }

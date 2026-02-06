@@ -14,7 +14,7 @@
 //! Key benefits:
 //! - **4-6x bandwidth reduction**: Sparse deltas typically have 10-20% non-zero entries
 //! - **Batched transfer**: Multiple updates sent in single network round-trip
-//! - **Integrity verification**: BLAKE2b checksums detect corruption
+//! - **Integrity verification**: `BLAKE2b` checksums detect corruption
 //! - **Automatic archetype learning**: Registry adapts to data distribution
 //!
 //! # Architecture
@@ -99,7 +99,7 @@
 //! | `batch_size` | 100 | Updates per network batch |
 //! | `batch_timeout_ms` | 10 | Max wait before sending partial batch |
 //! | `delta_threshold` | 1e-6 | Sparsification threshold |
-//! | `enable_checksums` | true | Compute BLAKE2b checksums |
+//! | `enable_checksums` | true | Compute `BLAKE2b` checksums |
 //! | `max_retries` | 3 | Retries on send failure |
 //!
 //! # Usage
@@ -169,6 +169,7 @@ pub struct DeltaUpdate {
 }
 
 impl DeltaUpdate {
+    #[must_use]
     pub fn from_embedding(
         key: String,
         embedding: &[f32],
@@ -179,9 +180,12 @@ impl DeltaUpdate {
         let delta = registry.encode(embedding, threshold)?;
         let sparse = delta.to_sparse_delta();
 
+        #[allow(clippy::cast_possible_truncation)]
+        let archetype_id = delta.archetype_id() as u32;
+
         Some(Self {
             key,
-            archetype_id: delta.archetype_id() as u32,
+            archetype_id,
             delta_indices: sparse.positions().to_vec(),
             delta_values: sparse.values().to_vec(),
             version,
@@ -191,7 +195,9 @@ impl DeltaUpdate {
     }
 
     /// Create a full update (no delta compression).
+    #[must_use]
     pub fn full(key: String, embedding: &[f32], version: u64) -> Self {
+        #[allow(clippy::cast_possible_truncation)]
         let indices: Vec<u32> = (0..embedding.len() as u32).collect();
         Self {
             key,
@@ -204,7 +210,8 @@ impl DeltaUpdate {
         }
     }
 
-    /// Compute BLAKE2b-256 checksum of update contents.
+    /// Compute `BLAKE2b`-256 checksum of update contents.
+    #[must_use]
     pub fn compute_checksum(&self) -> [u8; 32] {
         use blake2::digest::consts::U32;
         use blake2::{Blake2b, Digest};
@@ -226,6 +233,7 @@ impl DeltaUpdate {
     }
 
     /// Verify integrity checksum. Returns true if checksum is None (legacy).
+    #[must_use]
     pub fn verify_checksum(&self) -> bool {
         match self.checksum {
             Some(stored) => stored == self.compute_checksum(),
@@ -234,19 +242,23 @@ impl DeltaUpdate {
     }
 
     /// Add checksum to this update.
+    #[must_use]
     pub fn with_checksum(mut self) -> Self {
         self.checksum = Some(self.compute_checksum());
         self
     }
 
+    #[must_use]
     pub fn is_full_update(&self) -> bool {
         self.archetype_id == u32::MAX
     }
 
+    #[must_use]
     pub fn nnz(&self) -> usize {
         self.delta_values.len()
     }
 
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.key.len()
@@ -255,15 +267,19 @@ impl DeltaUpdate {
     }
 
     /// Compression ratio compared to full embedding.
+    #[must_use]
     pub fn compression_ratio(&self) -> f32 {
         let full_bytes = self.dimension * std::mem::size_of::<f32>();
         if full_bytes == 0 {
             return 1.0;
         }
-        full_bytes as f32 / self.memory_bytes() as f32
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = full_bytes as f32 / self.memory_bytes() as f32;
+        ratio
     }
 
     /// Decode back to dense embedding using archetype registry.
+    #[must_use]
     pub fn decode(&self, registry: &ArchetypeRegistry) -> Option<Vec<f32>> {
         if self.is_full_update() {
             // Full update - just return the values
@@ -307,6 +323,7 @@ pub struct DeltaBatch {
 }
 
 impl DeltaBatch {
+    #[must_use]
     pub fn new(source: NodeId, sequence: u64) -> Self {
         Self {
             updates: Vec::new(),
@@ -321,12 +338,14 @@ impl DeltaBatch {
         self.updates.push(update);
     }
 
+    #[must_use]
     pub fn finalize(mut self) -> Self {
         self.is_final = true;
         self
     }
 
-    /// Compute BLAKE2b-256 checksum of batch contents.
+    /// Compute `BLAKE2b`-256 checksum of batch contents.
+    #[must_use]
     pub fn compute_checksum(&self) -> [u8; 32] {
         use blake2::digest::consts::U32;
         use blake2::{Blake2b, Digest};
@@ -345,6 +364,11 @@ impl DeltaBatch {
     }
 
     /// Verify batch integrity. All updates must have valid checksums.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UpdateIntegrityFailed` if any update has an invalid checksum,
+    /// or `BatchIntegrityFailed` if the batch-level checksum is invalid.
     pub fn verify(&self) -> Result<()> {
         // Verify each update
         for (index, update) in self.updates.iter().enumerate() {
@@ -370,18 +394,20 @@ impl DeltaBatch {
     }
 
     /// Add checksums to batch and all updates.
+    #[must_use]
     pub fn with_checksum(mut self) -> Self {
         // Add checksums to all updates
         self.updates = self
             .updates
             .into_iter()
-            .map(|u| u.with_checksum())
+            .map(DeltaUpdate::with_checksum)
             .collect();
         // Add batch checksum
         self.checksum = Some(self.compute_checksum());
         self
     }
 
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.source.len()
@@ -392,6 +418,7 @@ impl DeltaBatch {
                 .sum::<usize>()
     }
 
+    #[must_use]
     pub fn avg_compression_ratio(&self) -> f32 {
         if self.updates.is_empty() {
             return 1.0;
@@ -401,13 +428,17 @@ impl DeltaBatch {
             .iter()
             .map(DeltaUpdate::compression_ratio)
             .sum();
-        total / self.updates.len() as f32
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = total / self.updates.len() as f32;
+        ratio
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.updates.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.updates.is_empty()
     }
@@ -464,6 +495,7 @@ pub struct ReplicationStatsSnapshot {
 }
 
 impl ReplicationStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -471,17 +503,20 @@ impl ReplicationStats {
     /// Update stats with a batch (thread-safe).
     pub fn record_batch(&self, batch: &DeltaBatch, full_bytes: usize) {
         let batch_bytes = batch.memory_bytes();
+        #[allow(clippy::cast_possible_truncation)]
+        let batch_bytes_u64 = batch_bytes as u64;
         self.bytes_sent
-            .fetch_add(batch_bytes as u64, Ordering::Relaxed);
-        self.bytes_saved.fetch_add(
-            full_bytes.saturating_sub(batch_bytes) as u64,
-            Ordering::Relaxed,
-        );
-        self.updates_sent
-            .fetch_add(batch.len() as u64, Ordering::Relaxed);
+            .fetch_add(batch_bytes_u64, Ordering::Relaxed);
+        #[allow(clippy::cast_possible_truncation)]
+        let saved = full_bytes.saturating_sub(batch_bytes) as u64;
+        self.bytes_saved.fetch_add(saved, Ordering::Relaxed);
+        #[allow(clippy::cast_possible_truncation)]
+        let update_count = batch.len() as u64;
+        self.updates_sent.fetch_add(update_count, Ordering::Relaxed);
         let batches = self.batches_sent.fetch_add(1, Ordering::Relaxed) + 1;
 
         // Update running average (using fixed-point for atomics)
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let batch_ratio_fp = (batch.avg_compression_ratio() * 1000.0) as u64;
         if batches == 1 {
             self.avg_compression_ratio_fp
@@ -495,6 +530,7 @@ impl ReplicationStats {
         }
 
         // Count full updates
+        #[allow(clippy::cast_possible_truncation)]
         let full_count = batch.updates.iter().filter(|u| u.is_full_update()).count() as u64;
         self.full_updates.fetch_add(full_count, Ordering::Relaxed);
     }
@@ -524,28 +560,35 @@ impl ReplicationStats {
         self.queue_depth.fetch_sub(1, Ordering::Relaxed);
     }
 
+    #[must_use]
     pub fn queue_depth(&self) -> usize {
         self.queue_depth.load(Ordering::Relaxed)
     }
 
     /// Get effective compression ratio.
+    #[must_use]
     pub fn effective_compression(&self) -> f32 {
         let sent = self.bytes_sent.load(Ordering::Relaxed);
         if sent == 0 {
             return 1.0;
         }
         let saved = self.bytes_saved.load(Ordering::Relaxed);
-        (sent + saved) as f32 / sent as f32
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = (sent + saved) as f32 / sent as f32;
+        ratio
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> ReplicationStatsSnapshot {
+        #[allow(clippy::cast_precision_loss)]
+        let avg_compression_ratio =
+            self.avg_compression_ratio_fp.load(Ordering::Relaxed) as f32 / 1000.0;
         ReplicationStatsSnapshot {
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_saved: self.bytes_saved.load(Ordering::Relaxed),
             updates_sent: self.updates_sent.load(Ordering::Relaxed),
             batches_sent: self.batches_sent.load(Ordering::Relaxed),
-            avg_compression_ratio: self.avg_compression_ratio_fp.load(Ordering::Relaxed) as f32
-                / 1000.0,
+            avg_compression_ratio,
             full_updates: self.full_updates.load(Ordering::Relaxed),
             queue_depth: self.queue_depth.load(Ordering::Relaxed),
             backpressure_events: self.backpressure_events.load(Ordering::Relaxed),
@@ -569,6 +612,7 @@ impl DrainHandle {
         self.shutdown_tx.send(()).await.ok();
     }
 
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
@@ -623,13 +667,18 @@ impl std::fmt::Debug for DeltaReplicationManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeltaReplicationManager")
             .field("config", &self.config)
+            .field("registry", &"Arc<RwLock<ArchetypeRegistry>>")
+            .field("pending_tx", &"mpsc::Sender<DeltaUpdate>")
+            .field("pending_rx", &"Mutex<mpsc::Receiver<DeltaUpdate>>")
             .field("local_node", &self.local_node)
-            .field("pending_count", &self.stats.queue_depth())
+            .field("sequence", &self.sequence)
+            .field("stats", &self.stats)
             .finish()
     }
 }
 
 impl DeltaReplicationManager {
+    #[must_use]
     pub fn new(local_node: NodeId, config: DeltaReplicationConfig) -> Self {
         let (pending_tx, pending_rx) = mpsc::channel(config.max_pending);
         Self {
@@ -665,6 +714,7 @@ impl DeltaReplicationManager {
     ///
     /// If a registry exists in the store, it is loaded. Otherwise, a new empty
     /// registry is created. Use `persist_registry()` to save changes.
+    #[must_use]
     pub fn with_store(
         local_node: NodeId,
         config: DeltaReplicationConfig,
@@ -695,6 +745,10 @@ impl DeltaReplicationManager {
     ///
     /// Should be called periodically or after significant archetype changes
     /// to ensure durability across restarts.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if serialization or store write fails.
     pub fn persist_registry(&self, store: &TensorStore) -> Result<()> {
         self.registry
             .read()
@@ -725,6 +779,11 @@ impl DeltaReplicationManager {
     ///
     /// Returns `Err(ChainError::QueueFull)` if the queue is at capacity.
     /// Use `queue_update_async()` to wait for space instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QueueFull` if the channel is at capacity, or `NetworkError`
+    /// if the replication channel is closed.
     pub fn queue_update(&self, key: String, embedding: &[f32], version: u64) -> Result<()> {
         let update = self.encode_update(key, embedding, version);
 
@@ -746,6 +805,10 @@ impl DeltaReplicationManager {
     }
 
     /// Queue an embedding update, waiting for space if queue is full.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NetworkError` if the replication channel is closed.
     pub async fn queue_update_async(
         &self,
         key: String,
@@ -911,6 +974,9 @@ impl DeltaReplicationManager {
         batches
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if batch serialization or network send fails.
     pub async fn send_to_peer<T: Transport>(&self, transport: &T, peer: &NodeId) -> Result<usize> {
         let batches = self.flush();
         let mut total_sent = 0;
@@ -927,6 +993,11 @@ impl DeltaReplicationManager {
     /// Apply a received batch to local state.
     ///
     /// Verifies batch integrity checksums before applying updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checksum verification fails, an archetype is missing,
+    /// or the apply function returns an error.
     pub fn apply_batch<F>(&self, batch: &DeltaBatch, mut apply_fn: F) -> Result<usize>
     where
         F: FnMut(&str, Vec<f32>) -> Result<()>,
@@ -976,7 +1047,7 @@ impl DeltaReplicationManager {
     pub fn get_archetype_sync(&self) -> Vec<Vec<f32>> {
         let registry = self.registry.read();
         (0..registry.len())
-            .filter_map(|i| registry.get(i).map(|a| a.to_vec()))
+            .filter_map(|i| registry.get(i).map(<[f32]>::to_vec))
             .collect()
     }
 

@@ -6,25 +6,32 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use rand::RngCore;
+use zeroize::Zeroizing;
 
-use crate::{key::MasterKey, Result, VaultError};
+use crate::{
+    key::{MasterKey, KEY_SIZE},
+    Result, VaultError,
+};
 
 /// 12-byte nonce for AES-GCM (96 bits is the standard).
 pub const NONCE_SIZE: usize = 12;
 
-/// Encryption cipher using AES-256-GCM.
+/// Encryption cipher using AES-256-GCM with HKDF-derived key.
 pub struct Cipher {
-    key: MasterKey,
+    encryption_key: Zeroizing<[u8; KEY_SIZE]>,
 }
 
 impl Cipher {
-    pub fn new(key: MasterKey) -> Self {
-        Self { key }
+    /// Derive the encryption subkey from the master key via HKDF.
+    pub fn new(master_key: &MasterKey) -> Self {
+        Self {
+            encryption_key: Zeroizing::new(master_key.encryption_key()),
+        }
     }
 
     /// Encrypt plaintext, returning (ciphertext, nonce).
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<(Vec<u8>, [u8; NONCE_SIZE])> {
-        let cipher = Aes256Gcm::new_from_slice(self.key.as_bytes())
+        let cipher = Aes256Gcm::new_from_slice(&*self.encryption_key)
             .map_err(|e| VaultError::CryptoError(format!("Invalid key: {e}")))?;
 
         // Generate random nonce
@@ -48,7 +55,7 @@ impl Cipher {
             )));
         }
 
-        let cipher = Aes256Gcm::new_from_slice(self.key.as_bytes())
+        let cipher = Aes256Gcm::new_from_slice(&*self.encryption_key)
             .map_err(|e| VaultError::CryptoError(format!("Invalid key: {e}")))?;
 
         let nonce = Nonce::from_slice(nonce_bytes);
@@ -70,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let plaintext = b"hello, world!";
         let (ciphertext, nonce) = cipher.encrypt(plaintext).unwrap();
@@ -83,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_decrypt_wrong_nonce_fails() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let plaintext = b"secret data";
         let (ciphertext, _nonce) = cipher.encrypt(plaintext).unwrap();
@@ -95,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_each_encryption_unique_nonce() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let plaintext = b"same text";
         let (_, nonce1) = cipher.encrypt(plaintext).unwrap();
@@ -106,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_empty_plaintext() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let plaintext = b"";
         let (ciphertext, nonce) = cipher.encrypt(plaintext).unwrap();
@@ -117,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_large_plaintext() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let plaintext = vec![0xabu8; 1024 * 1024]; // 1MB
         let (ciphertext, nonce) = cipher.encrypt(&plaintext).unwrap();
@@ -128,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_invalid_nonce_size() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let (ciphertext, _) = cipher.encrypt(b"data").unwrap();
 
@@ -139,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_tampered_ciphertext_fails() {
-        let cipher = Cipher::new(test_key());
+        let cipher = Cipher::new(&test_key());
 
         let (mut ciphertext, nonce) = cipher.encrypt(b"secret").unwrap();
 
@@ -150,5 +157,16 @@ mod tests {
 
         let result = cipher.decrypt(&ciphertext, &nonce);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_uses_hkdf_derived_key_not_raw() {
+        let master = test_key();
+        // The HKDF-derived encryption key must differ from the raw master bytes
+        assert_ne!(
+            master.encryption_key(),
+            *master.as_bytes(),
+            "Cipher should use HKDF-derived key, not raw master key"
+        );
     }
 }

@@ -120,6 +120,12 @@ pub struct NodeStatus {
     /// Consecutive success count (for heal detection).
     pub consecutive_successes: u32,
     /// When the node entered Failed state (for partition duration tracking).
+    ///
+    /// Uses `Instant` (monotonic clock), which is local to this process. The
+    /// elapsed duration derived from this value is only meaningful on the node
+    /// that recorded it. For cross-node partition-heal verification (e.g.,
+    /// confirming that *both* sides agree the partition ended), use HLC
+    /// timestamps from [`crate::hlc::HybridLogicalClock`] instead.
     pub partition_start: Option<Instant>,
     /// Total successful pings.
     pub total_pings: u64,
@@ -356,6 +362,22 @@ impl ClusterConfig {
 }
 
 /// Callback trait for membership changes.
+///
+/// # Ordering guarantees
+///
+/// Callbacks are invoked **sequentially** in registration order while a
+/// `parking_lot::RwLock` read-guard is held on the callback list. This means:
+///
+/// 1. For a single health-check cycle, every registered callback sees the same
+///    event in the same order -- callback N completes before callback N+1 begins.
+/// 2. Different health-check cycles (or explicit `mark_failed`/`mark_healthy`
+///    calls) are **not** serialised with each other. If two threads call
+///    `mark_failed` concurrently for different nodes, each thread will invoke
+///    the full callback list independently, and those two invocation sequences
+///    may interleave at the per-callback boundary.
+/// 3. Implementations must therefore be safe to call from multiple threads, but
+///    can rely on the fact that a single invocation sequence will not be
+///    reordered.
 pub trait MembershipCallback: Send + Sync {
     /// Called when a node's health state changes.
     fn on_health_change(&self, node_id: &NodeId, old_health: NodeHealth, new_health: NodeHealth);
@@ -391,7 +413,11 @@ pub struct MembershipManager {
     /// Transport for sending pings.
     transport: Arc<dyn Transport>,
 
-    /// Registered callbacks.
+    /// Registered callbacks, invoked sequentially in registration order.
+    ///
+    /// A read-guard on this lock is held for the duration of each callback
+    /// invocation sequence, so callbacks within one sequence cannot interleave.
+    /// See [`MembershipCallback`] for the full ordering contract.
     callbacks: RwLock<Vec<Arc<dyn MembershipCallback>>>,
 
     /// Shutdown signal.
@@ -531,6 +557,15 @@ impl MembershipManager {
     /// 1. Were previously in Failed state (have partition_start set)
     /// 2. Are now Healthy
     /// 3. Have achieved the required consecutive successes threshold
+    ///
+    /// # Clock skew caveat
+    ///
+    /// The returned `partition_duration_ms` is measured with the local monotonic
+    /// clock (`Instant`) and only reflects this node's perception of the
+    /// partition length. It does **not** account for clock skew between nodes.
+    /// When coordinating partition-heal decisions across multiple nodes, use
+    /// HLC timestamps from [`crate::hlc::HybridLogicalClock`] to establish a
+    /// skew-tolerant ordering of heal events.
     ///
     /// # Arguments
     /// * `threshold` - Number of consecutive successes required to confirm heal

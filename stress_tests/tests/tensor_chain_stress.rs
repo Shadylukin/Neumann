@@ -235,7 +235,7 @@ fn stress_concurrent_transactions_10k() {
                 };
 
                 let vote = coordinator.handle_prepare(request);
-                coordinator.record_vote(tx.tx_id, 0, vote);
+                let _ = coordinator.record_vote(tx.tx_id, 0, vote);
 
                 // Commit or abort
                 match coordinator.commit(tx.tx_id) {

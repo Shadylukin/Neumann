@@ -165,7 +165,7 @@ fuzz_target!(|input: FuzzInput| {
                             conflicting_tx: tx_id + 1,
                         }
                     };
-                    coordinator.record_vote(tx_id, shard, vote);
+                    let _ = coordinator.record_vote(tx_id, shard, vote);
                 }
             },
 

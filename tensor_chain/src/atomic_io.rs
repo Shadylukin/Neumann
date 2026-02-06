@@ -35,7 +35,7 @@ impl From<AtomicIoError> for io::Error {
     fn from(e: AtomicIoError) -> Self {
         match e {
             AtomicIoError::Io(io_err) => io_err,
-            other => io::Error::other(other.to_string()),
+            other => Self::other(other.to_string()),
         }
     }
 }
@@ -197,18 +197,20 @@ impl AtomicWriter {
 
 impl Write for AtomicWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match &mut self.temp_file {
-            Some(file) => file.write(buf),
-            None => Err(io::Error::other(
+        if let Some(file) = &mut self.temp_file {
+            file.write(buf)
+        } else {
+            Err(io::Error::other(
                 "AtomicWriter already committed or aborted",
-            )),
+            ))
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        match &mut self.temp_file {
-            Some(file) => file.flush(),
-            None => Ok(()),
+        if let Some(file) = &mut self.temp_file {
+            file.flush()
+        } else {
+            Ok(())
         }
     }
 }

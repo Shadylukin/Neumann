@@ -20,6 +20,7 @@ tensor_blob = { path = "../tensor_blob", features = ["full"] }
 tensor_checkpoint = { path = "../tensor_checkpoint" }
 tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
+integration_tests = { path = "../integration_tests" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"

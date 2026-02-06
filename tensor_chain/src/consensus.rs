@@ -77,6 +77,7 @@ pub enum ConflictClass {
 }
 
 impl ConflictClass {
+    #[must_use]
     pub fn can_merge(&self) -> bool {
         matches!(
             self,
@@ -84,6 +85,7 @@ impl ConflictClass {
         )
     }
 
+    #[must_use]
     pub fn should_reject(&self) -> bool {
         matches!(self, Self::Ambiguous | Self::Conflicting)
     }
@@ -150,14 +152,16 @@ pub struct DeltaVector {
 }
 
 impl DeltaVector {
-    pub fn new(vector: Vec<f32>, affected_keys: HashSet<String>, tx_id: u64) -> Self {
+    #[must_use]
+    pub fn new(vector: &[f32], affected_keys: HashSet<String>, tx_id: u64) -> Self {
         Self {
-            delta: SparseVector::from_dense(&vector),
+            delta: SparseVector::from_dense(vector),
             affected_keys,
             tx_id,
         }
     }
 
+    #[must_use]
     pub fn from_sparse(delta: SparseVector, affected_keys: HashSet<String>, tx_id: u64) -> Self {
         Self {
             delta,
@@ -169,6 +173,7 @@ impl DeltaVector {
     /// Create from before and after state embeddings.
     ///
     /// Computes a sparse delta, storing only positions that changed.
+    #[must_use]
     pub fn from_states(
         before: &[f32],
         after: &[f32],
@@ -179,6 +184,7 @@ impl DeltaVector {
     }
 
     /// Create from before and after state embeddings with custom sparsity threshold.
+    #[must_use]
     pub fn from_states_with_threshold(
         before: &[f32],
         after: &[f32],
@@ -190,6 +196,7 @@ impl DeltaVector {
         Self::from_sparse(delta, affected_keys, tx_id)
     }
 
+    #[must_use]
     pub fn zero(dimension: usize) -> Self {
         Self {
             delta: SparseVector::new(dimension),
@@ -198,6 +205,7 @@ impl DeltaVector {
         }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nnz() == 0
     }
@@ -205,6 +213,7 @@ impl DeltaVector {
     /// Get the dense representation of the delta.
     ///
     /// For sparse deltas this reconstructs the full vector.
+    #[must_use]
     pub fn to_dense(&self, dimension: usize) -> Vec<f32> {
         let mut result = vec![0.0; dimension];
         for (&idx, &val) in self.delta.positions().iter().zip(self.delta.values()) {
@@ -215,6 +224,7 @@ impl DeltaVector {
         result
     }
 
+    #[must_use]
     pub fn cosine_similarity(&self, other: &DeltaVector) -> f32 {
         self.delta.cosine_similarity(&other.delta)
     }
@@ -222,6 +232,7 @@ impl DeltaVector {
     /// Compute angular distance with another delta.
     ///
     /// Range: [0, PI] where 0 = identical direction.
+    #[must_use]
     pub fn angular_distance(&self, other: &DeltaVector) -> f32 {
         self.delta.angular_distance(&other.delta)
     }
@@ -230,14 +241,17 @@ impl DeltaVector {
     ///
     /// Measures overlap of non-zero positions, independent of values.
     /// Range: [0, 1] where 1 = same positions modified.
+    #[must_use]
     pub fn jaccard_index(&self, other: &DeltaVector) -> f32 {
         self.delta.jaccard_index(&other.delta)
     }
 
+    #[must_use]
     pub fn structural_similarity(&self, other: &DeltaVector) -> f32 {
         self.jaccard_index(other)
     }
 
+    #[must_use]
     pub fn geodesic_distance(&self, other: &DeltaVector) -> f32 {
         self.delta.geodesic_distance(&other.delta)
     }
@@ -245,14 +259,17 @@ impl DeltaVector {
     /// Compute weighted Jaccard similarity.
     ///
     /// Considers both position overlap and value magnitudes.
+    #[must_use]
     pub fn weighted_jaccard(&self, other: &DeltaVector) -> f32 {
         self.delta.weighted_jaccard(&other.delta)
     }
 
+    #[must_use]
     pub fn euclidean_distance(&self, other: &DeltaVector) -> f32 {
         self.delta.euclidean_distance(&other.delta)
     }
 
+    #[must_use]
     pub fn overlaps_with(&self, other: &DeltaVector) -> bool {
         self.affected_keys
             .intersection(&other.affected_keys)
@@ -260,6 +277,7 @@ impl DeltaVector {
             .is_some()
     }
 
+    #[must_use]
     pub fn overlapping_keys(&self, other: &DeltaVector) -> HashSet<String> {
         self.affected_keys
             .intersection(&other.affected_keys)
@@ -270,10 +288,12 @@ impl DeltaVector {
     /// Check if this delta overlaps with another in index space.
     ///
     /// True if both deltas modify the same embedding positions.
+    #[must_use]
     pub fn overlaps_indices(&self, other: &DeltaVector) -> bool {
         self.delta.jaccard_index(&other.delta) > 0.0
     }
 
+    #[must_use]
     pub fn add(&self, other: &DeltaVector) -> DeltaVector {
         let delta = self.delta.add(&other.delta);
         let keys: HashSet<String> = self
@@ -284,6 +304,7 @@ impl DeltaVector {
         DeltaVector::from_sparse(delta, keys, 0) // New tx_id will be assigned
     }
 
+    #[must_use]
     pub fn weighted_average(&self, other: &DeltaVector, w1: f32, w2: f32) -> DeltaVector {
         let total = w1 + w2;
         if total == 0.0 {
@@ -298,16 +319,19 @@ impl DeltaVector {
         DeltaVector::from_sparse(delta, keys, 0)
     }
 
+    #[must_use]
     pub fn project_non_conflicting(&self, conflict_direction: &SparseVector) -> DeltaVector {
         let delta = self.delta.project_orthogonal(conflict_direction);
         DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
     }
 
+    #[must_use]
     pub fn project_non_conflicting_dense(&self, conflict_direction: &[f32]) -> DeltaVector {
         let direction = SparseVector::from_dense(conflict_direction);
         self.project_non_conflicting(&direction)
     }
 
+    #[must_use]
     pub fn scale(&self, factor: f32) -> DeltaVector {
         let delta = self.delta.scale(factor);
         DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
@@ -328,10 +352,12 @@ pub struct ConsensusManager {
 }
 
 impl ConsensusManager {
+    #[must_use]
     pub fn new(config: ConsensusConfig) -> Self {
         Self { config }
     }
 
+    #[must_use]
     pub fn default_config() -> Self {
         Self::new(ConsensusConfig::default())
     }
@@ -344,6 +370,7 @@ impl ConsensusManager {
     ///
     /// This catches conflicts that pure cosine misses - two deltas modifying the
     /// same embedding positions are likely in conflict even if their values differ.
+    #[must_use]
     pub fn detect_conflict(&self, d1: &DeltaVector, d2: &DeltaVector) -> ConflictResult {
         let similarity = d1.cosine_similarity(d2);
         let structural_overlap = d1.structural_similarity(d2);
@@ -434,7 +461,11 @@ impl ConsensusManager {
         let merged = match conflict.action {
             MergeAction::VectorAdd => d1.add(d2),
             MergeAction::WeightedAverage { weight1, weight2 } => {
-                d1.weighted_average(d2, weight1 as f32, weight2 as f32)
+                #[allow(clippy::cast_precision_loss)]
+                let w1 = weight1 as f32;
+                #[allow(clippy::cast_precision_loss)]
+                let w2 = weight2 as f32;
+                d1.weighted_average(d2, w1, w2)
             },
             MergeAction::Deduplicate => d1.clone(),
             MergeAction::Cancel => DeltaVector::zero(d1.dimension()),
@@ -536,6 +567,13 @@ impl ConsensusManager {
         }
     }
 
+    /// Find an optimal merge order for the given deltas.
+    ///
+    /// # Panics
+    ///
+    /// Panics if internal invariants are violated (order or remaining vectors
+    /// become unexpectedly empty).
+    #[must_use]
     pub fn find_merge_order(&self, deltas: &[DeltaVector]) -> Vec<usize> {
         if deltas.len() <= 2 {
             return (0..deltas.len()).collect();
@@ -567,9 +605,10 @@ impl ConsensusManager {
         order
     }
 
+    #[must_use]
     pub fn delta_to_vector(&self, delta: &TransactionDelta) -> DeltaVector {
         DeltaVector::new(
-            delta.delta_embedding.clone(),
+            &delta.delta_embedding,
             delta.affected_keys.clone(),
             delta.tx_id,
         )
@@ -613,6 +652,7 @@ impl ConsensusManager {
     /// Find orthogonal deltas that can be safely merged.
     ///
     /// Returns indices of deltas that have no conflicts with any other delta.
+    #[must_use]
     pub fn find_orthogonal_set(&self, deltas: &[DeltaVector]) -> Vec<usize> {
         let mut orthogonal = Vec::new();
 

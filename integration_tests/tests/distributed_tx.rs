@@ -28,7 +28,7 @@ fn create_coordinator_with_config(config: DistributedTxConfig) -> DistributedTxC
 
 fn create_delta(embedding: Vec<f32>, keys: Vec<&str>, tx_id: u64) -> DeltaVector {
     DeltaVector::new(
-        embedding,
+        &embedding,
         keys.into_iter().map(|s| s.to_string()).collect(),
         tx_id,
     )
@@ -192,9 +192,7 @@ fn test_lock_manager_release_by_tx() {
 fn test_coordinator_begin_transaction() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator
-        .begin("node1".to_string(), vec![0, 1, 2])
-        .unwrap();
+    let tx = coordinator.begin(&"node1".to_string(), &[0, 1, 2]).unwrap();
 
     assert_eq!(tx.participants, vec![0, 1, 2]);
     assert_eq!(coordinator.pending_count(), 1);
@@ -210,12 +208,12 @@ fn test_coordinator_max_concurrent_limit() {
     let coordinator = create_coordinator_with_config(config);
 
     // Create max transactions
-    coordinator.begin("node1".to_string(), vec![0]).unwrap();
-    coordinator.begin("node1".to_string(), vec![1]).unwrap();
-    coordinator.begin("node1".to_string(), vec![2]).unwrap();
+    coordinator.begin(&"node1".to_string(), &[0]).unwrap();
+    coordinator.begin(&"node1".to_string(), &[1]).unwrap();
+    coordinator.begin(&"node1".to_string(), &[2]).unwrap();
 
     // Next one should fail
-    let result = coordinator.begin("node1".to_string(), vec![3]);
+    let result = coordinator.begin(&"node1".to_string(), &[3]);
     assert!(result.is_err());
 }
 
@@ -234,7 +232,7 @@ fn test_coordinator_prepare_vote_yes() {
         timeout_ms: 5000,
     };
 
-    let vote = coordinator.handle_prepare(request);
+    let vote = coordinator.handle_prepare(&request);
 
     match vote {
         PrepareVote::Yes { lock_handle, delta } => {
@@ -250,7 +248,7 @@ fn test_coordinator_full_commit_flow() {
     let coordinator = create_coordinator();
 
     // Begin transaction
-    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     // Simulate votes from shards (orthogonal deltas)
@@ -266,7 +264,7 @@ fn test_coordinator_full_commit_flow() {
             delta: delta0,
         },
     );
-    assert!(phase.is_none()); // Not all voted yet
+    assert!(phase.unwrap().is_none()); // Not all voted yet
 
     // Record second vote
     let phase = coordinator.record_vote(
@@ -277,7 +275,7 @@ fn test_coordinator_full_commit_flow() {
             delta: delta1,
         },
     );
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
 
     // Commit
     coordinator.commit(tx_id).unwrap();
@@ -290,13 +288,13 @@ fn test_coordinator_full_commit_flow() {
 fn test_coordinator_abort_on_no_vote() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     let delta = create_delta(vec![1.0, 0.0], vec!["key1"], tx_id);
 
     // First shard votes yes
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx_id,
         0,
         PrepareVote::Yes {
@@ -314,20 +312,20 @@ fn test_coordinator_abort_on_no_vote() {
         },
     );
 
-    assert_eq!(phase, Some(TxPhase::Aborting));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Aborting));
 }
 
 #[test]
 fn test_coordinator_conflict_vote() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     let delta = create_delta(vec![1.0, 0.0], vec!["key1"], tx_id);
 
     // First shard votes yes
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx_id,
         0,
         PrepareVote::Yes {
@@ -346,7 +344,7 @@ fn test_coordinator_conflict_vote() {
         },
     );
 
-    assert_eq!(phase, Some(TxPhase::Aborting));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Aborting));
     assert_eq!(coordinator.stats().conflicts.load(Ordering::Relaxed), 1);
 }
 
@@ -358,14 +356,14 @@ fn test_coordinator_cross_shard_conflict_detection() {
     };
     let coordinator = create_coordinator_with_config(config);
 
-    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     // Both shards touch the same key with high similarity deltas
     let delta0 = create_delta(vec![1.0, 0.1, 0.0], vec!["shared_key"], tx_id);
     let delta1 = create_delta(vec![0.9, 0.2, 0.0], vec!["shared_key"], tx_id);
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx_id,
         0,
         PrepareVote::Yes {
@@ -383,7 +381,7 @@ fn test_coordinator_cross_shard_conflict_detection() {
     );
 
     // Should abort due to cross-shard conflict on same key
-    assert_eq!(phase, Some(TxPhase::Aborting));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Aborting));
 }
 
 #[test]
@@ -394,14 +392,14 @@ fn test_coordinator_orthogonal_merge_success() {
     };
     let coordinator = create_coordinator_with_config(config);
 
-    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     // Orthogonal deltas on different keys
     let delta0 = create_delta(vec![1.0, 0.0, 0.0], vec!["key_a"], tx_id);
     let delta1 = create_delta(vec![0.0, 1.0, 0.0], vec!["key_b"], tx_id);
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx_id,
         0,
         PrepareVote::Yes {
@@ -418,7 +416,7 @@ fn test_coordinator_orthogonal_merge_success() {
         },
     );
 
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
     assert_eq!(
         coordinator
             .stats()
@@ -601,7 +599,7 @@ fn test_distributed_tx_phase_transitions() {
 fn test_single_shard_transaction() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator.begin("coord".to_string(), vec![0]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0]).unwrap();
     let tx_id = tx.tx_id;
 
     let delta = create_delta(vec![1.0, 0.0], vec!["single_key"], tx_id);
@@ -614,7 +612,7 @@ fn test_single_shard_transaction() {
             delta,
         },
     );
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
 
     coordinator.commit(tx_id).unwrap();
     assert_eq!(coordinator.stats().committed.load(Ordering::Relaxed), 1);
@@ -633,7 +631,7 @@ fn test_empty_delta_transaction() {
 fn test_commit_not_prepared_fails() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator.begin("coord".to_string(), vec![0]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0]).unwrap();
     let tx_id = tx.tx_id;
 
     // Try to commit without voting
@@ -645,7 +643,7 @@ fn test_commit_not_prepared_fails() {
 fn test_abort_releases_locks() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator.begin("coord".to_string(), vec![0]).unwrap();
+    let tx = coordinator.begin(&"coord".to_string(), &[0]).unwrap();
     let tx_id = tx.tx_id;
 
     // Simulate prepare and record the vote properly
@@ -661,7 +659,7 @@ fn test_abort_releases_locks() {
     };
 
     // Handle prepare returns the vote with lock handle
-    let vote = coordinator.handle_prepare(request);
+    let vote = coordinator.handle_prepare(&request);
     let (lock_handle, delta) = match vote {
         PrepareVote::Yes { lock_handle, delta } => (lock_handle, delta),
         _ => panic!("Expected Yes vote"),
@@ -671,7 +669,7 @@ fn test_abort_releases_locks() {
     assert!(coordinator.lock_manager().is_locked("locked_key"));
 
     // Record the vote so abort can release the locks
-    coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle, delta });
+    let _ = coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle, delta });
 
     // Abort should release the lock
     coordinator.abort(tx_id, "test abort").unwrap();

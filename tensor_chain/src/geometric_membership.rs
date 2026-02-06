@@ -246,7 +246,7 @@ pub struct RankedPeer {
     pub is_healthy: bool,
 }
 
-/// Geometric membership manager that extends MembershipManager with embedding awareness.
+/// Geometric membership manager that extends `MembershipManager` with embedding awareness.
 pub struct GeometricMembershipManager {
     /// Underlying membership manager.
     inner: Arc<MembershipManager>,
@@ -259,7 +259,7 @@ pub struct GeometricMembershipManager {
 }
 
 impl GeometricMembershipManager {
-    /// Create a new geometric membership manager wrapping an existing MembershipManager.
+    /// Create a new geometric membership manager wrapping an existing `MembershipManager`.
     pub fn new(inner: Arc<MembershipManager>, config: GeometricMembershipConfig) -> Self {
         Self {
             inner,
@@ -307,7 +307,7 @@ impl GeometricMembershipManager {
     /// Get all peers ranked by combined geometric proximity and health.
     ///
     /// Score formula: `score = (1 - geo_weight) * health_score + geo_weight * similarity`
-    /// - health_score: 1.0 for healthy, 0.5 for degraded, 0.0 for failed/unknown
+    /// - `health_score`: 1.0 for healthy, 0.5 for degraded, 0.0 for failed/unknown
     /// - similarity: cosine similarity between query and peer embeddings
     pub fn ranked_peers(&self, query: &SparseVector) -> Vec<RankedPeer> {
         let view = self.view();
@@ -327,8 +327,7 @@ impl GeometricMembershipManager {
 
                 let similarity = embeddings
                     .get(&status.node_id)
-                    .map(|emb| query.cosine_similarity(emb))
-                    .unwrap_or(0.0);
+                    .map_or(0.0, |emb| query.cosine_similarity(emb));
 
                 let score = (1.0 - self.config.geometric_weight) * health_score
                     + self.config.geometric_weight * similarity;
@@ -389,12 +388,10 @@ impl GeometricMembershipManager {
 impl std::fmt::Debug for GeometricMembershipManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GeometricMembershipManager")
+            .field("inner", &"MembershipManager(..)")
+            .field("peer_embeddings", &self.peer_embeddings.read().len())
+            .field("local_embedding", &self.local_embedding.read().is_some())
             .field("config", &self.config)
-            .field("cached_embeddings", &self.peer_embeddings.read().len())
-            .field(
-                "has_local_embedding",
-                &self.local_embedding.read().is_some(),
-            )
             .finish()
     }
 }

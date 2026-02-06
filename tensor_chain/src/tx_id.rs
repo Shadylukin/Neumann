@@ -125,7 +125,7 @@ use rand::RngCore;
 
 /// Custom epoch: 2024-01-01 00:00:00 UTC in milliseconds since UNIX epoch.
 /// Using a custom epoch extends the useful range of the 16-bit millisecond field.
-const CUSTOM_EPOCH_MS: u64 = 1704067200000;
+const CUSTOM_EPOCH_MS: u64 = 1_704_067_200_000;
 
 /// Overflow counter for same-millisecond collisions.
 static OVERFLOW_COUNTER: AtomicU16 = AtomicU16::new(0);

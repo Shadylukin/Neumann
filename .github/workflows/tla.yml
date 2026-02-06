@@ -1,0 +1,115 @@
+---
+name: TLA+ Model Checking
+
+"on":
+  schedule:
+    - cron: '0 3 * * 0'  # Weekly Sunday 3am UTC
+
+  workflow_dispatch:
+
+  push:
+    paths:
+      - 'specs/tla/**'
+      - 'tensor_chain/src/raft.rs'
+      - 'tensor_chain/src/distributed_tx.rs'
+      - 'tensor_chain/src/gossip.rs'
+      - 'tensor_chain/src/membership.rs'
+
+  pull_request:
+    paths:
+      - 'specs/tla/**'
+      - 'tensor_chain/src/raft.rs'
+      - 'tensor_chain/src/distributed_tx.rs'
+      - 'tensor_chain/src/gossip.rs'
+      - 'tensor_chain/src/membership.rs'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  model-check:
+    name: TLC ${{ matrix.spec }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        spec:
+          - Raft
+          - TwoPhaseCommit
+          - Membership
+
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache TLA+ tools
+        id: cache-tla
+        # v4.2.3
+        uses: >-
+          actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306
+        with:
+          path: /opt/tla
+          key: tla2tools-v1.8.0
+
+      - name: Download tla2tools.jar
+        if: steps.cache-tla.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /opt/tla
+          curl -fSL -o /opt/tla/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+
+      - name: Save TLA+ tools cache
+        if: steps.cache-tla.outputs.cache-hit != 'true'
+        # v4.2.3
+        uses: >-
+          actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306
+        with:
+          path: /opt/tla
+          key: tla2tools-v1.8.0
+
+      - name: Run TLC on ${{ matrix.spec }}
+        working-directory: specs/tla
+        run: |
+          java -jar /opt/tla/tla2tools.jar \
+            -deadlock \
+            -workers auto \
+            -config ${{ matrix.spec }}.cfg \
+            ${{ matrix.spec }}.tla
+
+      - name: Upload TLC output
+        if: failure()
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tlc-output-${{ matrix.spec }}
+          path: specs/tla/*.out
+          if-no-files-found: ignore
+
+  tla-summary:
+    name: TLA+ Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: model-check
+    if: always()
+
+    steps:
+      - name: Check model-checking results
+        run: |
+          if [[ "${{ needs.model-check.result }}" != "success" ]]; then
+            echo "::error::TLA+ model checking failed"
+            exit 1
+          fi
+          echo "TLA+ model checking completed successfully for all specs"

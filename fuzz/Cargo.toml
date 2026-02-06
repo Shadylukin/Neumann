@@ -893,3 +893,63 @@ path = "fuzz_targets/durable_blob_crash.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 42: Edge case hardening targets
+
+[[bin]]
+name = "raft_backoff"
+path = "fuzz_targets/raft_backoff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock_release_wal"
+path = "fuzz_targets/lock_release_wal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_dedup"
+path = "fuzz_targets/session_dedup.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 43: Chaos and formal verification targets
+
+[[bin]]
+name = "raft_stateful_sequence"
+path = "fuzz_targets/raft_stateful_sequence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "distributed_tx_sequence"
+path = "fuzz_targets/distributed_tx_sequence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hlc_ordering"
+path = "fuzz_targets/hlc_ordering.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "membership_convergence"
+path = "fuzz_targets/membership_convergence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "consensus_conflict"
+path = "fuzz_targets/consensus_conflict.rs"
+test = false
+doc = false
+bench = false

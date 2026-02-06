@@ -94,6 +94,7 @@ impl Default for HandlerTimeoutConfig {
 }
 
 impl HandlerTimeoutConfig {
+    #[must_use]
     pub fn new(
         query_timeout_ms: u64,
         prepare_timeout_ms: u64,
@@ -135,6 +136,7 @@ pub struct OrchestratorConfig {
 }
 
 impl OrchestratorConfig {
+    #[must_use]
     pub fn new(local: LocalNodeConfig, peers: Vec<PeerConfig>) -> Self {
         Self {
             local,
@@ -151,55 +153,55 @@ impl OrchestratorConfig {
         }
     }
 
-    /// Set the Raft configuration.
+    #[must_use]
     pub fn with_raft(mut self, raft: RaftConfig) -> Self {
         self.raft = raft;
         self
     }
 
-    /// Set the geometric membership configuration.
+    #[must_use]
     pub fn with_geometric(mut self, geometric: GeometricMembershipConfig) -> Self {
         self.geometric = geometric;
         self
     }
 
-    /// Set the fast-path threshold.
+    #[must_use]
     pub fn with_fast_path_threshold(mut self, threshold: f32) -> Self {
         self.fast_path_threshold = threshold.clamp(0.0, 1.0);
         self
     }
 
-    /// Set the gossip configuration.
+    #[must_use]
     pub fn with_gossip(mut self, gossip: GossipConfig) -> Self {
         self.gossip = gossip;
         self
     }
 
-    /// Set the distributed transaction configuration.
+    #[must_use]
     pub fn with_dtx(mut self, dtx: DistributedTxConfig) -> Self {
         self.dtx = dtx;
         self
     }
 
-    /// Set the delta replication configuration.
+    #[must_use]
     pub fn with_delta_replication(mut self, delta_replication: DeltaReplicationConfig) -> Self {
         self.delta_replication = delta_replication;
         self
     }
 
-    /// Set the handler timeout configuration.
+    #[must_use]
     pub fn with_handler_timeouts(mut self, handler_timeouts: HandlerTimeoutConfig) -> Self {
         self.handler_timeouts = handler_timeouts;
         self
     }
 
-    /// Set the message validation configuration.
+    #[must_use]
     pub fn with_message_validation(mut self, message_validation: MessageValidationConfig) -> Self {
         self.message_validation = message_validation;
         self
     }
 
-    /// Set the security mode for TCP transport.
+    #[must_use]
     pub fn with_security_mode(mut self, security_mode: SecurityMode) -> Self {
         self.security_mode = Some(security_mode);
         self
@@ -231,7 +233,7 @@ pub struct ClusterOrchestrator {
     chain: Arc<Chain>,
     /// State machine for applying committed entries.
     state_machine: Arc<TensorStateMachine>,
-    /// TensorStore for persistence.
+    /// `TensorStore` for persistence.
     store: TensorStore,
     /// Optional query executor for distributed query handling.
     query_executor: RwLock<Option<Arc<dyn QueryExecutor>>>,
@@ -245,12 +247,16 @@ impl ClusterOrchestrator {
     /// Start a new cluster node.
     ///
     /// This initializes all components:
-    /// 1. TensorStore for persistence
+    /// 1. `TensorStore` for persistence
     /// 2. TCP transport
     /// 3. Membership manager with geometric scoring
     /// 4. Raft node (loading persisted state if available)
     /// 5. Chain storage
     /// 6. State machine
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if transport startup, peer connection, or chain initialization fails.
     pub async fn start(config: OrchestratorConfig) -> Result<Self> {
         // 1. Initialize TensorStore for persistence and chain storage
         let store = TensorStore::new();
@@ -276,7 +282,7 @@ impl ClusterOrchestrator {
         transport
             .start()
             .await
-            .map_err(|e| ChainError::NetworkError(format!("Failed to start transport: {}", e)))?;
+            .map_err(|e| ChainError::NetworkError(format!("Failed to start transport: {e}")))?;
 
         // 3. Connect to peers (non-blocking, failures are OK at startup)
         for peer in &config.peers {
@@ -385,7 +391,7 @@ impl ClusterOrchestrator {
 
     /// Register a query executor for handling distributed queries.
     ///
-    /// The executor will be called when QueryRequest messages are received.
+    /// The executor will be called when `QueryRequest` messages are received.
     pub fn register_query_executor(&self, executor: Arc<dyn QueryExecutor>) {
         *self.query_executor.write() = Some(executor);
     }
@@ -431,6 +437,7 @@ impl ClusterOrchestrator {
                     Ok(bytes) => (bytes, true, None),
                     Err(e) => (Vec::new(), false, Some(e)),
                 };
+                #[allow(clippy::cast_possible_truncation)] // micros duration fits in u64
                 let execution_time_us = start.elapsed().as_micros() as u64;
                 (result, success, error, execution_time_us)
             })
@@ -475,10 +482,7 @@ impl ClusterOrchestrator {
                     result: Vec::new(),
                     execution_time_us: timeout_ms * 1000,
                     success: false,
-                    error: Some(format!(
-                        "query execution timeout: exceeded {}ms",
-                        timeout_ms
-                    )),
+                    error: Some(format!("query execution timeout: exceeded {timeout_ms}ms")),
                 }))
             },
         }
@@ -501,27 +505,26 @@ impl ClusterOrchestrator {
         let shard_id = msg.shard_id;
 
         let result = tokio::time::timeout(timeout, async move {
-            tokio::task::spawn_blocking(move || dtx.handle_prepare(request)).await
+            tokio::task::spawn_blocking(move || dtx.handle_prepare(&request)).await
         })
         .await;
 
-        match result {
-            Ok(Ok(vote)) => Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
+        if let Ok(Ok(vote)) = result {
+            Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
                 tx_id,
                 shard_id,
                 vote: vote.into(),
-            })),
-            Ok(Err(_)) | Err(_) => {
-                // Timeout or panic - vote No
-                tracing::warn!("TX prepare {} timed out after {}ms", tx_id, timeout_ms);
-                Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
-                    tx_id,
-                    shard_id,
-                    vote: crate::network::TxVote::No {
-                        reason: format!("prepare timeout: exceeded {}ms", timeout_ms),
-                    },
-                }))
-            },
+            }))
+        } else {
+            // Timeout or panic - vote No
+            tracing::warn!("TX prepare {} timed out after {}ms", tx_id, timeout_ms);
+            Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
+                tx_id,
+                shard_id,
+                vote: crate::network::TxVote::No {
+                    reason: format!("prepare timeout: exceeded {timeout_ms}ms"),
+                },
+            }))
         }
     }
 
@@ -543,22 +546,21 @@ impl ClusterOrchestrator {
         })
         .await;
 
-        match result {
-            Ok(Ok(success)) => Some(Message::TxAck(TxAckMsg {
+        if let Ok(Ok(success)) = result {
+            Some(Message::TxAck(TxAckMsg {
                 tx_id,
                 shard_id,
                 success,
                 error: None,
-            })),
-            Ok(Err(_)) | Err(_) => {
-                tracing::warn!("TX commit {} timed out after {}ms", tx_id, timeout_ms);
-                Some(Message::TxAck(TxAckMsg {
-                    tx_id,
-                    shard_id,
-                    success: false,
-                    error: Some(format!("commit timeout: exceeded {}ms", timeout_ms)),
-                }))
-            },
+            }))
+        } else {
+            tracing::warn!("TX commit {} timed out after {}ms", tx_id, timeout_ms);
+            Some(Message::TxAck(TxAckMsg {
+                tx_id,
+                shard_id,
+                success: false,
+                error: Some(format!("commit timeout: exceeded {timeout_ms}ms")),
+            }))
         }
     }
 
@@ -584,22 +586,21 @@ impl ClusterOrchestrator {
         })
         .await;
 
-        match result {
-            Ok(Ok(success)) => Some(Message::TxAck(TxAckMsg {
+        if let Ok(Ok(success)) = result {
+            Some(Message::TxAck(TxAckMsg {
                 tx_id,
                 shard_id,
                 success,
                 error: None,
-            })),
-            Ok(Err(_)) | Err(_) => {
-                tracing::warn!("TX abort {} timed out after {}ms", tx_id, timeout_ms);
-                Some(Message::TxAck(TxAckMsg {
-                    tx_id,
-                    shard_id,
-                    success: false,
-                    error: Some(format!("abort timeout: exceeded {}ms", timeout_ms)),
-                }))
-            },
+            }))
+        } else {
+            tracing::warn!("TX abort {} timed out after {}ms", tx_id, timeout_ms);
+            Some(Message::TxAck(TxAckMsg {
+                tx_id,
+                shard_id,
+                success: false,
+                error: Some(format!("abort timeout: exceeded {timeout_ms}ms")),
+            }))
         }
     }
 
@@ -613,6 +614,11 @@ impl ClusterOrchestrator {
     /// - Membership health checks
     /// - State machine apply loop
     /// - Query message handling
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Raft tick loop or transport fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
         let raft = self.raft.clone();
         let state_machine = self.state_machine.clone();
@@ -718,7 +724,7 @@ impl ClusterOrchestrator {
                         }
                     }
                 }
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
+                () = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
                     // Tick Raft
                     raft.tick_async().await?;
 
@@ -763,6 +769,10 @@ impl ClusterOrchestrator {
     /// Gracefully shut down the node.
     ///
     /// Saves Raft state to the store for recovery on restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if saving Raft state to the store fails.
     pub async fn shutdown(&self) -> Result<()> {
         // Save Raft state before shutdown
         self.raft.save_to_store(&self.store)?;
@@ -854,6 +864,11 @@ impl ClusterOrchestrator {
     }
 
     /// Send a query request to a remote node and await the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sending the request or receiving the response fails,
+    /// or if the query times out.
     pub async fn send_query(
         &self,
         target: &NodeId,
@@ -877,8 +892,7 @@ impl ClusterOrchestrator {
         loop {
             if tokio::time::Instant::now() > deadline {
                 return Err(ChainError::NetworkError(format!(
-                    "Query timeout after {}ms",
-                    timeout_ms
+                    "Query timeout after {timeout_ms}ms"
                 )));
             }
 

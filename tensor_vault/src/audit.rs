@@ -38,6 +38,7 @@ pub enum AuditOperation {
     Grant { to: String, permission: String },
     Revoke { from: String },
     List,
+    RotateMasterKey { secrets_count: usize },
 }
 
 impl AuditOperation {
@@ -50,6 +51,7 @@ impl AuditOperation {
             Self::Grant { .. } => "grant",
             Self::Revoke { .. } => "revoke",
             Self::List => "list",
+            Self::RotateMasterKey { .. } => "rotate_master_key",
         }
     }
 
@@ -82,6 +84,17 @@ impl AuditOperation {
                     _ => String::new(),
                 };
                 Some(Self::Revoke { from })
+            },
+            "rotate_master_key" => {
+                let secrets_count = match tensor.get("_secrets_count") {
+                    Some(TensorValue::Scalar(ScalarValue::Int(n))) => {
+                        #[allow(clippy::cast_sign_loss)]
+                        let count = *n as usize;
+                        count
+                    },
+                    _ => 0,
+                };
+                Some(Self::RotateMasterKey { secrets_count })
             },
             _ => None,
         }
@@ -145,6 +158,12 @@ impl<'a> AuditLog<'a> {
                 tensor.set(
                     "_target",
                     TensorValue::Scalar(ScalarValue::String(from.clone())),
+                );
+            },
+            AuditOperation::RotateMasterKey { secrets_count } => {
+                tensor.set(
+                    "_secrets_count",
+                    TensorValue::Scalar(ScalarValue::Int(*secrets_count as i64)),
                 );
             },
             _ => {},

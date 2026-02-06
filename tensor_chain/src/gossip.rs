@@ -602,6 +602,9 @@ pub struct GossipMembershipManager {
     shutdown_tx: broadcast::Sender<()>,
     /// Ping sequence counter for indirect pings.
     ping_sequence: AtomicU64,
+    /// Number of times the sequence exhaustion threshold was exceeded.
+    #[allow(dead_code)]
+    sequence_exhaustion_warnings: AtomicU64,
     /// Gossip round counter.
     round_counter: AtomicU64,
     // --- Signing support ---
@@ -636,6 +639,7 @@ impl GossipMembershipManager {
             known_peers: RwLock::new(Vec::new()),
             shutdown_tx,
             ping_sequence: AtomicU64::new(0),
+            sequence_exhaustion_warnings: AtomicU64::new(0),
             round_counter: AtomicU64::new(0),
             identity: None,
             validator_registry: None,
@@ -687,6 +691,7 @@ impl GossipMembershipManager {
             known_peers: RwLock::new(Vec::new()),
             shutdown_tx,
             ping_sequence: AtomicU64::new(0),
+            sequence_exhaustion_warnings: AtomicU64::new(0),
             round_counter: AtomicU64::new(0),
             identity: Some(identity),
             validator_registry: Some(validator_registry),
@@ -698,6 +703,17 @@ impl GossipMembershipManager {
     /// Check if signatures are required for incoming gossip messages.
     pub fn require_signatures(&self) -> bool {
         self.config.require_signatures
+    }
+
+    /// Returns true if the ping sequence counter has exceeded 90% of `u64::MAX`,
+    /// indicating that sequence number exhaustion is approaching.
+    pub fn check_sequence_exhaustion(&self) -> bool {
+        self.ping_sequence.load(Ordering::Relaxed) > u64::MAX / 10 * 9
+    }
+
+    /// Returns the number of times the sequence exhaustion warning was triggered.
+    pub fn sequence_exhaustion_warning_count(&self) -> u64 {
+        self.sequence_exhaustion_warnings.load(Ordering::Relaxed)
     }
 
     /// Create a signed or unsigned Message::Gossip depending on configuration.
@@ -1198,6 +1214,15 @@ impl GossipMembershipManager {
         }
 
         let sequence = self.ping_sequence.fetch_add(1, Ordering::Relaxed);
+
+        if sequence > u64::MAX / 10 * 9 {
+            self.sequence_exhaustion_warnings
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                sequence = sequence,
+                "Ping sequence counter approaching u64::MAX (>90% exhausted)"
+            );
+        }
 
         let msg = self.create_gossip_message(GossipMessage::PingReq {
             origin: self.local_node.clone(),
@@ -3132,5 +3157,29 @@ mod tests {
             manager.node_state(&"node2".to_string()).map(|s| s.health),
             Some(NodeHealth::Failed | NodeHealth::Degraded)
         ));
+    }
+
+    #[test]
+    fn test_check_sequence_exhaustion() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Initially not exhausted
+        assert!(!manager.check_sequence_exhaustion());
+        assert_eq!(manager.sequence_exhaustion_warning_count(), 0);
+
+        // Set ping_sequence just below the threshold
+        let threshold = u64::MAX / 10 * 9;
+        manager.ping_sequence.store(threshold, Ordering::Relaxed);
+        assert!(!manager.check_sequence_exhaustion());
+
+        // Set ping_sequence above the threshold
+        manager
+            .ping_sequence
+            .store(threshold + 1, Ordering::Relaxed);
+        assert!(manager.check_sequence_exhaustion());
     }
 }

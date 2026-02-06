@@ -45,7 +45,7 @@ fn test_wait_graph_updated_on_prepare_conflict() {
         timeout_ms: 5000,
     };
 
-    let vote = coordinator.handle_prepare(request);
+    let vote = coordinator.handle_prepare(&request);
 
     // Should be a conflict vote
     assert!(
@@ -67,7 +67,7 @@ fn test_wait_graph_cleanup_on_commit() {
 
     // Start a transaction
     let tx = coordinator
-        .begin("node1".to_string(), vec![0])
+        .begin(&"node1".to_string(), &[0])
         .expect("begin should succeed");
     let tx_id = tx.tx_id;
 
@@ -94,7 +94,7 @@ fn test_wait_graph_cleanup_on_commit() {
             tx_id,
         ),
     };
-    coordinator.record_vote(tx_id, 0, vote);
+    let _ = coordinator.record_vote(tx_id, 0, vote);
 
     // Commit should clean wait graph
     coordinator.commit(tx_id).expect("commit should succeed");
@@ -112,7 +112,7 @@ fn test_wait_graph_cleanup_on_abort() {
 
     // Start a transaction
     let tx = coordinator
-        .begin("node1".to_string(), vec![0])
+        .begin(&"node1".to_string(), &[0])
         .expect("begin should succeed");
     let tx_id = tx.tx_id;
 
@@ -136,7 +136,7 @@ fn test_wait_graph_cleanup_on_abort() {
             tx_id,
         ),
     };
-    coordinator.record_vote(tx_id, 0, vote);
+    let _ = coordinator.record_vote(tx_id, 0, vote);
 
     // Abort should clean wait graph
     coordinator
@@ -231,7 +231,7 @@ fn test_wait_graph_concurrent_updates() {
                 delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
                 timeout_ms: 5000,
             };
-            let _ = coord.handle_prepare(request);
+            let _ = coord.handle_prepare(&request);
         }));
     }
 

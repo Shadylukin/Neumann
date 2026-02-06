@@ -5,7 +5,7 @@
 //! time with logical counters to ensure ordering even when system time
 //! goes backwards or fails.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub struct HLCTimestamp {
 }
 
 impl HLCTimestamp {
-    /// Create a new HLC timestamp.
+    #[must_use]
     pub fn new(wall_ms: u64, logical: u64, node_id_hash: u32) -> Self {
         Self {
             wall_ms,
@@ -101,6 +101,8 @@ pub struct HybridLogicalClock {
     monotonic_start: Instant,
     /// Wall clock time at start in milliseconds.
     wall_start_ms: u64,
+    /// Simulated clock drift offset in milliseconds (for testing).
+    drift_offset_ms: AtomicI64,
 }
 
 impl HybridLogicalClock {
@@ -119,6 +121,7 @@ impl HybridLogicalClock {
             node_id_hash: (node_id & 0xFFFF_FFFF) as u32,
             monotonic_start: Instant::now(),
             wall_start_ms,
+            drift_offset_ms: AtomicI64::new(0),
         })
     }
 
@@ -131,14 +134,24 @@ impl HybridLogicalClock {
         Self::new(hash)
     }
 
+    /// Compute the current wall time with drift applied.
+    fn wall_with_drift(&self) -> u64 {
+        let elapsed_ms = self.monotonic_start.elapsed().as_millis() as u64;
+        let base_wall = self.wall_start_ms.saturating_add(elapsed_ms);
+        let drift = self.drift_offset_ms.load(Ordering::SeqCst);
+        if drift >= 0 {
+            base_wall.saturating_add(drift.unsigned_abs())
+        } else {
+            base_wall.saturating_sub(drift.unsigned_abs())
+        }
+    }
+
     /// Get the current timestamp.
     ///
     /// This method is infallible after construction because it uses
     /// the monotonic clock anchored to the initial wall clock reading.
     pub fn now(&self) -> Result<HLCTimestamp, ChainError> {
-        // Use monotonic clock to avoid time going backwards
-        let elapsed_ms = self.monotonic_start.elapsed().as_millis() as u64;
-        let current_wall = self.wall_start_ms.saturating_add(elapsed_ms);
+        let current_wall = self.wall_with_drift();
 
         let last = self.last_wall_ms.load(Ordering::SeqCst);
 
@@ -169,8 +182,7 @@ impl HybridLogicalClock {
     /// Returns a new timestamp that is guaranteed to be after both
     /// the local time and the received timestamp.
     pub fn receive(&self, received: &HLCTimestamp) -> Result<HLCTimestamp, ChainError> {
-        let elapsed_ms = self.monotonic_start.elapsed().as_millis() as u64;
-        let current_wall = self.wall_start_ms.saturating_add(elapsed_ms);
+        let current_wall = self.wall_with_drift();
 
         let last = self.last_wall_ms.load(Ordering::SeqCst);
         let max_wall = current_wall.max(last).max(received.wall_ms);
@@ -211,8 +223,27 @@ impl HybridLogicalClock {
 
     /// Get the current wall time estimate in milliseconds.
     pub fn estimated_wall_ms(&self) -> u64 {
-        let elapsed_ms = self.monotonic_start.elapsed().as_millis() as u64;
-        self.wall_start_ms.saturating_add(elapsed_ms)
+        self.wall_with_drift()
+    }
+
+    /// Set the simulated clock drift offset in milliseconds.
+    ///
+    /// Positive values make the clock appear ahead; negative values make it
+    /// appear behind. The HLC monotonicity guarantee is preserved regardless
+    /// of drift direction.
+    pub fn set_drift_offset(&self, offset_ms: i64) {
+        self.drift_offset_ms.store(offset_ms, Ordering::SeqCst);
+    }
+
+    /// Simulate a clock jump (e.g. NTP correction) by adding to the current
+    /// drift offset. Multiple jumps accumulate.
+    pub fn inject_clock_jump(&self, jump_ms: i64) {
+        self.drift_offset_ms.fetch_add(jump_ms, Ordering::SeqCst);
+    }
+
+    /// Get the current drift offset in milliseconds.
+    pub fn drift_offset(&self) -> i64 {
+        self.drift_offset_ms.load(Ordering::SeqCst)
     }
 }
 

@@ -407,8 +407,9 @@ impl TransactionWorkspace {
     /// Convert the delta embedding to a DeltaVector for conflict detection.
     pub fn to_delta_vector(&self) -> DeltaVector {
         let emb = self.embedding.read();
+        let delta = emb.delta_or_zero();
         let affected = self.affected_keys.read().clone();
-        DeltaVector::new(emb.delta_or_zero(), affected, self.id)
+        DeltaVector::new(&delta, affected, self.id)
     }
 }
 

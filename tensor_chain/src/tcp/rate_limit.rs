@@ -150,6 +150,18 @@ impl PeerRateLimiter {
             .available(&self.config)
     }
 
+    /// Reset a peer's rate limit state without removing them entirely.
+    ///
+    /// Used for reconnection scenarios where the peer's token bucket should be
+    /// soft-reset (refilled to full capacity) rather than fully removed. This
+    /// preserves the peer's entry in the map, avoiding a race where concurrent
+    /// callers might re-insert a fresh bucket between remove and re-check.
+    pub fn reset_peer(&self, peer: &NodeId) {
+        if let Some(mut bucket) = self.buckets.get_mut(peer) {
+            *bucket = TokenBucket::new(self.config.bucket_size);
+        }
+    }
+
     pub fn remove_peer(&self, peer: &NodeId) {
         self.buckets.remove(peer);
     }
@@ -410,6 +422,39 @@ mod tests {
         }
 
         assert_eq!(limiter.peer_count(), 10);
+    }
+
+    #[test]
+    fn test_reset_peer_restores_tokens() {
+        let config = RateLimitConfig::default()
+            .with_bucket_size(5)
+            .with_refill_rate(0.0);
+        let limiter = PeerRateLimiter::new(config);
+        let peer = "node1".to_string();
+
+        // Consume all tokens
+        for _ in 0..5 {
+            assert!(limiter.check(&peer));
+        }
+        assert!(!limiter.check(&peer));
+
+        // Reset peer -- should restore full bucket without removing entry
+        limiter.reset_peer(&peer);
+        assert_eq!(limiter.peer_count(), 1);
+
+        // Should have a fresh bucket with full tokens
+        for i in 0..5 {
+            assert!(
+                limiter.check(&peer),
+                "Message {} should be allowed after reset",
+                i
+            );
+        }
+        assert!(!limiter.check(&peer));
+
+        // Reset of unknown peer is a no-op
+        limiter.reset_peer(&"unknown".to_string());
+        assert_eq!(limiter.peer_count(), 1);
     }
 
     #[test]

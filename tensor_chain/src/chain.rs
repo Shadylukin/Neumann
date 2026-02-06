@@ -114,6 +114,10 @@ impl Chain {
     ///
     /// Idempotent: safe to call multiple times. If the chain already exists,
     /// loads existing height and tip from storage without creating a new genesis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if block storage or retrieval fails.
     pub fn initialize(&self) -> Result<()> {
         // Check if chain already exists
         if let Some(mut height) = self.load_height() {
@@ -168,6 +172,11 @@ impl Chain {
     }
 
     /// Append a new block to the chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the block height or previous hash is invalid,
+    /// the transaction root does not match, the block is unsigned, or storage fails.
     pub fn append(&self, mut block: Block) -> Result<BlockHash> {
         // Serialize appends to prevent TOCTOU race conditions where two
         // concurrent appends read the same height and both attempt to append
@@ -235,18 +244,21 @@ impl Chain {
         Ok(block_hash)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the stored block data is missing or cannot be deserialized.
     pub fn get_block_at(&self, height: u64) -> Result<Option<Block>> {
         let key = block_key(height);
 
-        let data = match self.graph.store().get(&key) {
-            Ok(d) => d,
-            Err(_) => return Ok(None),
+        let Ok(data) = self.graph.store().get(&key) else {
+            return Ok(None);
         };
 
         // Deserialize block from stored bytes
-        let bytes = match data.get("_block") {
-            Some(tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(b))) => b,
-            _ => return Err(ChainError::StorageError("missing block data".to_string())),
+        let Some(tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(bytes))) =
+            data.get("_block")
+        else {
+            return Err(ChainError::StorageError("missing block data".to_string()));
         };
 
         let block: Block = bitcode::deserialize(bytes)
@@ -255,15 +267,26 @@ impl Chain {
         Ok(Some(block))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the tip block cannot be retrieved.
     pub fn get_tip(&self) -> Result<Option<Block>> {
         self.get_block_at(self.height())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the genesis block cannot be retrieved.
     pub fn get_genesis(&self) -> Result<Option<Block>> {
         self.get_block_at(0)
     }
 
     /// Verify the entire chain integrity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any block is missing, has an invalid chain link,
+    /// or fails signature verification.
     pub fn verify_chain(&self) -> Result<()> {
         let height = self.height();
         if height == 0 {
@@ -285,7 +308,11 @@ impl Chain {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if any block in the range cannot be retrieved.
     pub fn get_blocks_range(&self, start: u64, end: u64) -> Result<Vec<Block>> {
+        #[allow(clippy::cast_possible_truncation)] // block count fits in usize
         let mut blocks = Vec::with_capacity((end - start + 1) as usize);
 
         for h in start..=end {
@@ -306,6 +333,10 @@ impl Chain {
     }
 
     /// Get history of changes for a specific key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any block cannot be retrieved during traversal.
     pub fn history(&self, key: &str) -> Result<Vec<(u64, Transaction)>> {
         let mut history = Vec::new();
 
@@ -346,11 +377,11 @@ impl Chain {
             "_block",
             tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(bytes)),
         );
+        #[allow(clippy::cast_possible_wrap)] // block height won't exceed i64::MAX
+        let height_i64 = block.header.height as i64;
         data.set(
             "_height",
-            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(
-                block.header.height as i64,
-            )),
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(height_i64)),
         );
         data.set(
             "_hash",
@@ -358,11 +389,11 @@ impl Chain {
                 block.hash(),
             ))),
         );
+        #[allow(clippy::cast_possible_wrap)] // timestamp won't exceed i64::MAX
+        let timestamp_i64 = block.header.timestamp as i64;
         data.set(
             "_timestamp",
-            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(
-                block.header.timestamp as i64,
-            )),
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(timestamp_i64)),
         );
 
         self.graph
@@ -377,6 +408,7 @@ impl Chain {
         let data = self.graph.store().get(CHAIN_META_KEY).ok()?;
         match data.get("height") {
             Some(tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(h))) => {
+                #[allow(clippy::cast_sign_loss)] // height is always non-negative
                 Some(*h as u64)
             },
             _ => None,
@@ -388,6 +420,7 @@ impl Chain {
         let mut data = tensor_store::TensorData::new();
         data.set(
             "height",
+            #[allow(clippy::cast_possible_wrap)] // height won't exceed i64::MAX
             tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(height as i64)),
         );
         self.graph
@@ -400,7 +433,7 @@ impl Chain {
 
 /// Generate the storage key for a block at a given height.
 fn block_key(height: u64) -> String {
-    format!("{}{}", BLOCK_PREFIX, height)
+    format!("{BLOCK_PREFIX}{height}")
 }
 
 /// Iterator over blocks in the chain.
@@ -410,7 +443,7 @@ pub struct ChainIterator<'a> {
     end: u64,
 }
 
-impl<'a> Iterator for ChainIterator<'a> {
+impl Iterator for ChainIterator<'_> {
     type Item = Result<Block>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -429,6 +462,15 @@ impl<'a> Iterator for ChainIterator<'a> {
     }
 }
 
+impl<'a> IntoIterator for &'a Chain {
+    type Item = Result<Block>;
+    type IntoIter = ChainIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Builder for creating new blocks.
 pub struct BlockBuilder {
     height: u64,
@@ -442,41 +484,49 @@ pub struct BlockBuilder {
 }
 
 impl BlockBuilder {
+    #[must_use]
     pub fn add_transaction(mut self, tx: Transaction) -> Self {
         self.transactions.push(tx);
         self
     }
 
+    #[must_use]
     pub fn add_transactions(mut self, txs: impl IntoIterator<Item = Transaction>) -> Self {
         self.transactions.extend(txs);
         self
     }
 
+    #[must_use]
     pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.delta_embedding = embedding;
         self
     }
 
+    #[must_use]
     pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
         self.delta_embedding = SparseVector::from_dense(embedding);
         self
     }
 
+    #[must_use]
     pub fn with_codes(mut self, codes: Vec<u16>) -> Self {
         self.quantized_codes = codes;
         self
     }
 
+    #[must_use]
     pub fn with_state_root(mut self, state_root: BlockHash) -> Self {
         self.state_root = state_root;
         self
     }
 
+    #[must_use]
     pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
         self.signature = signature;
         self
     }
 
+    #[must_use]
     pub fn build(self) -> Block {
         let header = BlockHeader::new(
             self.height,
@@ -501,6 +551,7 @@ impl BlockBuilder {
     ///
     /// This constructs the block header, computes the signing bytes, signs them
     /// with the provided Ed25519 identity, and returns the signed block.
+    #[must_use]
     pub fn sign_and_build(self, identity: &Identity) -> Block {
         // Build header without signature first to compute signing bytes
         let header = BlockHeader::new(
@@ -587,7 +638,7 @@ mod tests {
             let block = chain
                 .new_block()
                 .add_transaction(Transaction::Put {
-                    key: format!("key{}", i),
+                    key: format!("key{i}"),
                     data: vec![i as u8],
                 })
                 .with_signature(test_signature())
@@ -855,7 +906,7 @@ mod tests {
             let block = chain
                 .new_block()
                 .add_transaction(Transaction::Put {
-                    key: format!("key{}", i),
+                    key: format!("key{i}"),
                     data: vec![i as u8],
                 })
                 .with_signature(test_signature())

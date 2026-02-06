@@ -53,7 +53,7 @@ impl std::fmt::Display for EmbeddingError {
             Self::NotComputed => write!(f, "delta not yet computed"),
             Self::AlreadyComputed => write!(f, "delta already computed"),
             Self::DimensionMismatch { before, after } => {
-                write!(f, "dimension mismatch: before={}, after={}", before, after)
+                write!(f, "dimension mismatch: before={before}, after={after}")
             },
         }
     }
@@ -62,33 +62,38 @@ impl std::fmt::Display for EmbeddingError {
 impl std::error::Error for EmbeddingError {}
 
 impl EmbeddingState {
+    #[must_use]
     pub fn new(before: SparseVector) -> Self {
         Self::Initial { before }
     }
 
+    #[must_use]
     pub fn from_dense(before: &[f32]) -> Self {
         Self::Initial {
             before: SparseVector::from_dense(before),
         }
     }
 
+    #[must_use]
     pub fn empty(dimension: usize) -> Self {
         Self::Initial {
             before: SparseVector::new(dimension),
         }
     }
 
+    #[must_use]
     pub fn before(&self) -> &SparseVector {
         match self {
-            Self::Initial { before } => before,
-            Self::Computed { before, .. } => before,
+            Self::Initial { before } | Self::Computed { before, .. } => before,
         }
     }
 
+    #[must_use]
     pub fn is_computed(&self) -> bool {
         matches!(self, Self::Computed { .. })
     }
 
+    #[must_use]
     pub fn delta(&self) -> Option<&SparseVector> {
         match self {
             Self::Initial { .. } => None,
@@ -96,6 +101,7 @@ impl EmbeddingState {
         }
     }
 
+    #[must_use]
     pub fn after(&self) -> Option<&SparseVector> {
         match self {
             Self::Initial { .. } => None,
@@ -106,6 +112,8 @@ impl EmbeddingState {
     /// Compute the delta from an after-state embedding.
     ///
     /// Transitions from `Initial` to `Computed` state.
+    ///
+    /// # Errors
     /// Returns error if already computed or dimensions mismatch.
     pub fn compute(self, after: SparseVector) -> Result<Self, EmbeddingError> {
         match self {
@@ -128,14 +136,19 @@ impl EmbeddingState {
         }
     }
 
+    /// # Errors
+    /// Returns error if already computed or dimensions mismatch.
     pub fn compute_from_dense(self, after: &[f32]) -> Result<Self, EmbeddingError> {
         self.compute(SparseVector::from_dense(after))
     }
 
     /// Compute delta using sparse diff with threshold.
     ///
-    /// More efficient than compute() when you have dense vectors,
+    /// More efficient than `compute()` when you have dense vectors,
     /// as it directly creates a sparse delta.
+    ///
+    /// # Errors
+    /// Returns error if already computed or dimensions mismatch.
     pub fn compute_with_threshold(
         self,
         after_dense: &[f32],
@@ -164,6 +177,7 @@ impl EmbeddingState {
         }
     }
 
+    #[must_use]
     pub fn dimension(&self) -> usize {
         self.before().dimension()
     }
@@ -172,6 +186,7 @@ impl EmbeddingState {
     ///
     /// This is a compatibility method for code that expects dense vectors.
     /// Prefer using `delta()` directly when possible.
+    #[must_use]
     pub fn delta_or_zero(&self) -> Vec<f32> {
         match self {
             Self::Initial { before } => vec![0.0; before.dimension()],
@@ -179,6 +194,7 @@ impl EmbeddingState {
         }
     }
 
+    #[must_use]
     pub fn delta_magnitude(&self) -> f32 {
         match self {
             Self::Initial { .. } => 0.0,

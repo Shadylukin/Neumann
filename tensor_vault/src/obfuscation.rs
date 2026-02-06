@@ -3,7 +3,6 @@
 //!
 //! Provides:
 //! - Key obfuscation via HMAC
-//! - Blind indexes for searchable encryption
 //! - Padding for length hiding
 //! - Pointer indirection for storage pattern hiding
 //! - AEAD metadata encryption with per-record nonces
@@ -78,33 +77,11 @@ pub struct Obfuscator {
 
 impl Obfuscator {
     /// Create obfuscator from master key.
-    /// Derives separate keys for obfuscation and metadata encryption.
+    /// Derives separate keys via HKDF for obfuscation and metadata encryption.
     pub fn new(master_key: &MasterKey) -> Self {
-        let master_bytes = master_key.as_bytes();
-
-        // Derive obfuscation key using domain separation
-        let mut obfuscation_key = [0u8; 32];
-        for (i, byte) in obfuscation_key.iter_mut().enumerate() {
-            *byte = master_bytes[i] ^ 0x5c; // HMAC-style outer padding
-        }
-        let domain = b"neumann_vault_obfuscation_v1";
-        for (i, &b) in domain.iter().enumerate() {
-            obfuscation_key[i % 32] ^= b;
-        }
-
-        // Derive separate metadata key with different domain
-        let mut metadata_key = [0u8; 32];
-        for (i, byte) in metadata_key.iter_mut().enumerate() {
-            *byte = master_bytes[i] ^ 0x36; // HMAC-style inner padding
-        }
-        let metadata_domain = b"neumann_vault_metadata_v1";
-        for (i, &b) in metadata_domain.iter().enumerate() {
-            metadata_key[i % 32] ^= b;
-        }
-
         Self {
-            obfuscation_key,
-            metadata_key,
+            obfuscation_key: master_key.obfuscation_key(),
+            metadata_key: master_key.metadata_key(),
         }
     }
 
@@ -113,18 +90,6 @@ impl Obfuscator {
     pub fn obfuscate_key(&self, key: &str) -> String {
         let hash = self.hmac_hash(key.as_bytes(), b"key");
         hex::encode(&hash[..16]) // Use first 16 bytes = 32 hex chars
-    }
-
-    /// Create a blind index for pattern matching.
-    /// Allows searching for secrets by pattern without revealing the pattern.
-    pub fn blind_index(&self, key: &str, pattern: &str) -> String {
-        // Combine key and pattern for the index
-        let mut input = key.as_bytes().to_vec();
-        input.extend_from_slice(b"::");
-        input.extend_from_slice(pattern.as_bytes());
-
-        let hash = self.hmac_hash(&input, b"blind_index");
-        hex::encode(&hash[..8]) // Shorter for index (16 hex chars)
     }
 
     /// Generate a random-looking storage key for pointer indirection.
@@ -338,18 +303,6 @@ mod tests {
         let key2 = obf2.obfuscate_key("api_key");
 
         assert_ne!(key1, key2);
-    }
-
-    #[test]
-    fn test_blind_index() {
-        let obf = Obfuscator::new(&test_key());
-
-        let idx1 = obf.blind_index("api_key", "api:*");
-        let idx2 = obf.blind_index("api_key", "api:*");
-        let idx3 = obf.blind_index("api_key", "db:*");
-
-        assert_eq!(idx1, idx2);
-        assert_ne!(idx1, idx3);
     }
 
     #[test]

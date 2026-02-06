@@ -32,19 +32,6 @@ pub struct PersistedGrant {
     pub secret_key: String,
 }
 
-impl PersistedGrant {
-    fn now_ms() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    }
-
-    fn is_expired(&self) -> bool {
-        self.expires_at_ms <= Self::now_ms()
-    }
-}
-
 /// An entry in the grant TTL tracker.
 #[derive(Debug, Clone)]
 struct GrantTTLEntry {
@@ -288,14 +275,11 @@ impl GrantTTLTracker {
         {
             let mut heap = tracker.heap.lock().unwrap();
             for grant in grants {
-                // Skip already expired grants
-                if !grant.is_expired() {
-                    heap.push(GrantTTLEntry {
-                        expires_at: Self::unix_ms_to_instant(grant.expires_at_ms),
-                        entity: grant.entity,
-                        secret_key: grant.secret_key,
-                    });
-                }
+                heap.push(GrantTTLEntry {
+                    expires_at: Self::unix_ms_to_instant(grant.expires_at_ms),
+                    entity: grant.entity,
+                    secret_key: grant.secret_key,
+                });
             }
         }
 
@@ -513,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_persist_skips_expired() {
+    fn test_persist_loads_expired() {
         use std::sync::Arc;
 
         let store = Arc::new(TensorStore::new());
@@ -534,9 +518,9 @@ mod tests {
         // Persist (includes both)
         tracker.persist(&store).unwrap();
 
-        // Load - should skip expired
+        // Load keeps all grants so the caller can clean up expired ones
         let loaded = GrantTTLTracker::load(&store).unwrap();
-        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.len(), 2);
     }
 
     #[test]

@@ -68,6 +68,7 @@ impl Default for BlockHeader {
 }
 
 impl BlockHeader {
+    #[must_use]
     pub fn new(
         height: u64,
         prev_hash: BlockHash,
@@ -75,6 +76,7 @@ impl BlockHeader {
         state_root: BlockHash,
         proposer: NodeId,
     ) -> Self {
+        #[allow(clippy::cast_possible_truncation)] // millis since epoch fits in u64 for centuries
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -93,6 +95,7 @@ impl BlockHeader {
         }
     }
 
+    #[must_use]
     pub fn hash(&self) -> BlockHash {
         let mut hasher = Sha256::new();
 
@@ -123,26 +126,31 @@ impl BlockHeader {
         hasher.finalize().into()
     }
 
+    #[must_use]
     pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.delta_embedding = embedding;
         self
     }
 
+    #[must_use]
     pub fn with_state_root(mut self, state_root: BlockHash) -> Self {
         self.state_root = state_root;
         self
     }
 
+    #[must_use]
     pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
         self.delta_embedding = SparseVector::from_dense(embedding);
         self
     }
 
+    #[must_use]
     pub fn with_codes(mut self, codes: Vec<u16>) -> Self {
         self.quantized_codes = codes;
         self
     }
 
+    #[must_use]
     pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
         self.signature = signature;
         self
@@ -180,7 +188,10 @@ impl BlockHeader {
     }
 
     /// Verify the proposer's signature on this block header.
-    /// Returns Ok(()) if valid, Err if signature is missing, invalid, or proposer unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the signature is missing, invalid, or the proposer is unknown.
     pub fn verify_signature(&self, registry: &ValidatorRegistry) -> Result<()> {
         // SECURITY: Require non-empty signature
         if self.signature.is_empty() {
@@ -246,47 +257,49 @@ pub enum Transaction {
 
 impl Transaction {
     /// Returns the logical key affected by this transaction (used for locking).
+    #[must_use]
     pub fn affected_key(&self) -> &str {
         match self {
-            Transaction::Put { key, .. } => key,
-            Transaction::Delete { key } => key,
-            Transaction::Embed { key, .. } => key,
-            Transaction::NodeCreate { key, .. } => key,
-            Transaction::NodeDelete { key } => key,
-            Transaction::EdgeCreate { from, .. } => from,
-            Transaction::TableInsert { table, .. } => table,
-            Transaction::TableUpdate { table, .. } => table,
-            Transaction::TableDelete { table, .. } => table,
+            Self::Put { key, .. }
+            | Self::Delete { key }
+            | Self::Embed { key, .. }
+            | Self::NodeCreate { key, .. }
+            | Self::NodeDelete { key } => key,
+            Self::EdgeCreate { from, .. } => from,
+            Self::TableInsert { table, .. }
+            | Self::TableUpdate { table, .. }
+            | Self::TableDelete { table, .. } => table,
         }
     }
 
     /// Returns the actual storage key used in `TensorStore` for this transaction.
     ///
     /// This differs from `affected_key()` for transaction types that transform
-    /// keys before storage (e.g., Embed uses "emb:{key}", NodeCreate uses "node:{key}").
+    /// keys before storage (e.g., `Embed` uses "emb:{key}", `NodeCreate` uses "node:{key}").
     #[must_use]
     pub fn storage_key(&self) -> String {
         match self {
-            Transaction::Put { key, .. } | Transaction::Delete { key } => key.clone(),
-            Transaction::Embed { key, .. } => format!("emb:{key}"),
-            Transaction::NodeCreate { key, .. } | Transaction::NodeDelete { key } => {
+            Self::Put { key, .. } | Self::Delete { key } => key.clone(),
+            Self::Embed { key, .. } => format!("emb:{key}"),
+            Self::NodeCreate { key, .. } | Self::NodeDelete { key } => {
                 format!("node:{key}")
             },
-            Transaction::EdgeCreate {
+            Self::EdgeCreate {
                 from,
                 to,
                 edge_type,
             } => {
                 format!("edge:{from}:{to}:{edge_type}")
             },
-            Transaction::TableInsert { table, .. }
-            | Transaction::TableUpdate { table, .. }
-            | Transaction::TableDelete { table, .. } => {
+            Self::TableInsert { table, .. }
+            | Self::TableUpdate { table, .. }
+            | Self::TableDelete { table, .. } => {
                 format!("table:{table}")
             },
         }
     }
 
+    #[must_use]
     pub fn hash(&self) -> [u8; 32] {
         let bytes = match bitcode::serialize(self) {
             Ok(b) => b,
@@ -302,7 +315,7 @@ impl Transaction {
 }
 
 /// Validator signature for consensus.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValidatorSignature {
     /// Node ID of the validator.
     pub validator: NodeId,
@@ -326,6 +339,7 @@ pub struct Block {
 }
 
 impl Block {
+    #[must_use]
     pub fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
         Self {
             header,
@@ -334,6 +348,7 @@ impl Block {
         }
     }
 
+    #[must_use]
     pub fn genesis(proposer: NodeId) -> Self {
         let header = BlockHeader::new(
             0, [0u8; 32], // No previous block
@@ -349,6 +364,7 @@ impl Block {
         }
     }
 
+    #[must_use]
     pub fn hash(&self) -> BlockHash {
         self.header.hash()
     }
@@ -357,21 +373,30 @@ impl Block {
     ///
     /// Hashes each transaction to form leaves, then recursively combines pairs
     /// with SHA-256. Odd leaves are duplicated for the final pair.
+    #[must_use]
     pub fn compute_tx_root(&self) -> BlockHash {
         if self.transactions.is_empty() {
             return [0u8; 32];
         }
 
-        let leaves: Vec<[u8; 32]> = self.transactions.iter().map(|tx| tx.hash()).collect();
+        let leaves: Vec<[u8; 32]> = self.transactions.iter().map(Transaction::hash).collect();
 
         merkle_root(&leaves)
     }
 
+    #[must_use]
     pub fn verify_tx_root(&self) -> bool {
         self.header.tx_root == self.compute_tx_root()
     }
 
-    pub fn verify_chain(&self, prev_block: &Block) -> Result<()> {
+    /// Verify this block follows the given previous block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the height is not consecutive, the previous hash
+    /// does not match, the transaction root is invalid, or the timestamp
+    /// is before the previous block.
+    pub fn verify_chain(&self, prev_block: &Self) -> Result<()> {
         // Check height is consecutive
         if self.header.height != prev_block.header.height + 1 {
             return Err(ChainError::ValidationFailed(format!(
@@ -407,7 +432,10 @@ impl Block {
     }
 
     /// Add a validator signature to this block.
-    /// Rejects duplicate signers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the validator has already signed this block.
     pub fn add_signature(&mut self, signature: ValidatorSignature) -> crate::Result<()> {
         // Check for duplicate signer
         if self
@@ -424,10 +452,11 @@ impl Block {
         Ok(())
     }
 
+    #[must_use]
     pub fn affected_keys(&self) -> Vec<&str> {
         self.transactions
             .iter()
-            .map(|tx| tx.affected_key())
+            .map(Transaction::affected_key)
             .collect()
     }
 }
@@ -1023,7 +1052,7 @@ mod tests {
 
         for i in 0..3 {
             let sig = ValidatorSignature {
-                validator: format!("validator{}", i),
+                validator: format!("validator{i}"),
                 signature: vec![i as u8],
                 block_hash: hash,
             };

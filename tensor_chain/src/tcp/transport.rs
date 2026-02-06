@@ -581,6 +581,33 @@ impl TcpTransport {
             },
         }
     }
+
+    /// Broadcast a message to all connected peers, returning per-peer results.
+    ///
+    /// Unlike `broadcast`, which is best-effort and swallows individual errors,
+    /// this method reports exactly which peers succeeded and which failed.
+    pub async fn broadcast_with_results(&self, msg: Message) -> BroadcastResult {
+        let peer_ids = self.connections.peer_ids();
+        let mut result = BroadcastResult::default();
+
+        for peer_id in peer_ids {
+            match self.send(&peer_id, msg.clone()).await {
+                Ok(()) => result.successes.push(peer_id),
+                Err(e) => result.failures.push((peer_id, e.to_string())),
+            }
+        }
+
+        result
+    }
+}
+
+/// Per-peer success/failure tracking for broadcast operations.
+#[derive(Debug, Clone, Default)]
+pub struct BroadcastResult {
+    /// Peers that received the message successfully.
+    pub successes: Vec<NodeId>,
+    /// Peers that failed, with error descriptions.
+    pub failures: Vec<(NodeId, String)>,
 }
 
 /// Transport statistics.
@@ -1103,6 +1130,37 @@ mod tests {
         // Broadcast should still succeed (best-effort)
         let result = transport.broadcast(Message::Ping { term: 1 }).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_with_results_tracks_failures() {
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
+        let transport = TcpTransport::new(config);
+
+        // No peers -- empty result
+        let result = transport
+            .broadcast_with_results(Message::Ping { term: 1 })
+            .await;
+        assert!(result.successes.is_empty());
+        assert!(result.failures.is_empty());
+
+        // Add two pools without actual connections (sends will fail)
+        transport
+            .connections
+            .get_or_create_pool(&"peer1".to_string(), "127.0.0.1:12345".parse().unwrap());
+        transport
+            .connections
+            .get_or_create_pool(&"peer2".to_string(), "127.0.0.1:12346".parse().unwrap());
+
+        let result = transport
+            .broadcast_with_results(Message::Ping { term: 1 })
+            .await;
+        assert!(result.successes.is_empty());
+        assert_eq!(result.failures.len(), 2);
+        // Both failures should carry the peer ID
+        let failed_peers: Vec<&NodeId> = result.failures.iter().map(|(id, _)| id).collect();
+        assert!(failed_peers.contains(&&"peer1".to_string()));
+        assert!(failed_peers.contains(&&"peer2".to_string()));
     }
 
     #[tokio::test]

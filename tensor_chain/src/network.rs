@@ -942,7 +942,18 @@ pub trait GeometricTransport: Transport {
     ) -> Result<()>;
 }
 
-/// In-memory transport for testing with partition injection support.
+/// Aggregate chaos injection statistics.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChaosStats {
+    /// Total messages dropped (partition + link quality).
+    pub dropped_messages: u64,
+    /// Total messages reordered (delayed).
+    pub reordered_messages: u64,
+    /// Total messages corrupted (term incremented).
+    pub corrupted_messages: u64,
+}
+
+/// In-memory transport for testing with partition injection and chaos features.
 pub struct MemoryTransport {
     /// Local node ID.
     local_id: NodeId,
@@ -960,6 +971,18 @@ pub struct MemoryTransport {
     latency_ms: RwLock<Option<(u64, u64)>>,
     /// Per-peer latency overrides.
     peer_latency_ms: RwLock<HashMap<NodeId, (u64, u64)>>,
+    /// Reorder probability (0.0-1.0).
+    reorder_probability: RwLock<f32>,
+    /// Maximum reorder delay in milliseconds.
+    max_reorder_delay_ms: RwLock<u64>,
+    /// Corruption rate (0.0-1.0).
+    corruption_rate: RwLock<f32>,
+    /// Per-peer link drop rates for partial connectivity.
+    link_quality: RwLock<HashMap<NodeId, f32>>,
+    /// Reordered message counter.
+    reordered_messages: AtomicU64,
+    /// Corrupted message counter.
+    corrupted_messages: AtomicU64,
 }
 
 impl MemoryTransport {
@@ -974,6 +997,12 @@ impl MemoryTransport {
             dropped_messages: AtomicU64::new(0),
             latency_ms: RwLock::new(None),
             peer_latency_ms: RwLock::new(HashMap::new()),
+            reorder_probability: RwLock::new(0.0),
+            max_reorder_delay_ms: RwLock::new(0),
+            corruption_rate: RwLock::new(0.0),
+            link_quality: RwLock::new(HashMap::new()),
+            reordered_messages: AtomicU64::new(0),
+            corrupted_messages: AtomicU64::new(0),
         }
     }
 
@@ -1082,6 +1111,140 @@ impl MemoryTransport {
     pub fn heal_all(&self) {
         self.partitioned.write().clear();
     }
+
+    // -- Chaos injection: message reordering --
+
+    pub fn enable_reordering(&self, probability: f32, max_delay_ms: u64) {
+        *self.reorder_probability.write() = probability;
+        *self.max_reorder_delay_ms.write() = max_delay_ms;
+    }
+
+    pub fn disable_reordering(&self) {
+        *self.reorder_probability.write() = 0.0;
+        *self.max_reorder_delay_ms.write() = 0;
+    }
+
+    pub fn reordered_message_count(&self) -> u64 {
+        self.reordered_messages.load(Ordering::Relaxed)
+    }
+
+    // -- Chaos injection: message corruption --
+
+    pub fn set_corruption_rate(&self, rate: f32) {
+        *self.corruption_rate.write() = rate;
+    }
+
+    pub fn corrupted_message_count(&self) -> u64 {
+        self.corrupted_messages.load(Ordering::Relaxed)
+    }
+
+    // -- Chaos injection: per-peer link quality --
+
+    pub fn set_link_quality(&self, peer_id: &NodeId, drop_rate: f32) {
+        self.link_quality.write().insert(peer_id.clone(), drop_rate);
+    }
+
+    pub fn clear_link_quality(&self, peer_id: &NodeId) {
+        self.link_quality.write().remove(peer_id);
+    }
+
+    pub fn link_drop_rate(&self, peer_id: &NodeId) -> f32 {
+        self.link_quality
+            .read()
+            .get(peer_id)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    // -- Chaos statistics --
+
+    pub fn chaos_stats(&self) -> ChaosStats {
+        ChaosStats {
+            dropped_messages: self.dropped_messages.load(Ordering::Relaxed),
+            reordered_messages: self.reordered_messages.load(Ordering::Relaxed),
+            corrupted_messages: self.corrupted_messages.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn reset_chaos_counters(&self) {
+        self.dropped_messages.store(0, Ordering::Relaxed);
+        self.reordered_messages.store(0, Ordering::Relaxed);
+        self.corrupted_messages.store(0, Ordering::Relaxed);
+    }
+
+    // -- Internal chaos helpers --
+
+    fn should_drop_for_link_quality(&self, peer_id: &NodeId) -> bool {
+        let drop_rate = self
+            .link_quality
+            .read()
+            .get(peer_id)
+            .copied()
+            .unwrap_or(0.0);
+        if drop_rate <= 0.0 {
+            return false;
+        }
+        if drop_rate >= 1.0 {
+            return true;
+        }
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let threshold = (f64::from(drop_rate) * 1000.0) as u64;
+        (seed % 1000) < threshold
+    }
+
+    fn get_reorder_delay(&self) -> Option<u64> {
+        let prob = *self.reorder_probability.read();
+        if prob <= 0.0 {
+            return None;
+        }
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        if prob < 1.0 {
+            let threshold = (f64::from(prob) * 1000.0) as u64;
+            if (seed % 1000) >= threshold {
+                return None;
+            }
+        }
+        let max_delay = *self.max_reorder_delay_ms.read();
+        if max_delay == 0 {
+            return Some(0);
+        }
+        Some(1 + (seed.wrapping_mul(6_364_136_223_846_793_005) % max_delay))
+    }
+
+    fn should_corrupt(&self) -> bool {
+        let rate = *self.corruption_rate.read();
+        if rate <= 0.0 {
+            return false;
+        }
+        if rate >= 1.0 {
+            return true;
+        }
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let threshold = (f64::from(rate) * 1000.0) as u64;
+        (seed % 1000) < threshold
+    }
+}
+
+/// Corrupt a message by incrementing its term field (for Byzantine testing).
+fn corrupt_message(msg: Message) -> Message {
+    match msg {
+        Message::Ping { term } => Message::Ping {
+            term: term.wrapping_add(1),
+        },
+        Message::Pong { term } => Message::Pong {
+            term: term.wrapping_add(1),
+        },
+        other => other,
+    }
 }
 
 #[async_trait]
@@ -1100,6 +1263,31 @@ impl Transport for MemoryTransport {
                 self.local_id, to
             )));
         }
+
+        // Check link quality - probabilistic drop
+        if self.should_drop_for_link_quality(to) {
+            self.dropped_messages.fetch_add(1, Ordering::Relaxed);
+            return Err(ChainError::NetworkError(format!(
+                "link quality drop: {} -> {}",
+                self.local_id, to
+            )));
+        }
+
+        // Apply reorder delay
+        if let Some(delay) = self.get_reorder_delay() {
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+            self.reordered_messages.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Apply corruption
+        let msg = if self.should_corrupt() {
+            self.corrupted_messages.fetch_add(1, Ordering::Relaxed);
+            corrupt_message(msg)
+        } else {
+            msg
+        };
 
         // Apply simulated latency before sending
         self.apply_latency(to).await;

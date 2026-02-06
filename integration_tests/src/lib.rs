@@ -3,6 +3,16 @@
 //!
 //! Provides utilities for setting up multi-engine test scenarios.
 
+// Test helpers: suppress pedantic lints that add noise without value
+#![allow(clippy::must_use_candidate)] // Test helpers don't need #[must_use]
+#![allow(clippy::missing_panics_doc)] // Test helpers intentionally panic on failure
+#![allow(clippy::doc_markdown)] // Relaxed doc formatting for test utilities
+#![allow(clippy::cast_precision_loss)] // Precision loss acceptable in test data generation
+
+pub mod chaos;
+pub mod jepsen;
+pub mod linearizability;
+
 use std::sync::Arc;
 
 use graph_engine::GraphEngine;
@@ -143,12 +153,10 @@ pub fn create_test_vector_router(count: usize, dim: usize) -> QueryRouter {
     for (i, emb) in embeddings.iter().enumerate() {
         let emb_str = emb
             .iter()
-            .map(|v| format!("{:.4}", v))
+            .map(|v| format!("{v:.4}"))
             .collect::<Vec<_>>()
             .join(", ");
-        router
-            .execute(&format!("EMBED doc:{} {}", i, emb_str))
-            .unwrap();
+        router.execute(&format!("EMBED doc:{i} {emb_str}")).unwrap();
     }
 
     router
@@ -162,13 +170,12 @@ pub fn create_test_unified_router(count: usize) -> QueryRouter {
     for (i, emb) in embeddings.iter().enumerate() {
         let emb_str = emb
             .iter()
-            .map(|v| format!("{:.4}", v))
+            .map(|v| format!("{v:.4}"))
             .collect::<Vec<_>>()
             .join(", ");
         router
             .execute_parsed(&format!(
-                "ENTITY CREATE 'entity:{}' {{ idx: {} }} EMBEDDING [{}]",
-                i, i, emb_str
+                "ENTITY CREATE 'entity:{i}' {{ idx: {i} }} EMBEDDING [{emb_str}]"
             ))
             .unwrap();
     }
@@ -217,7 +224,7 @@ pub fn assert_result_not_empty(result: &QueryResult) -> bool {
 /// Format embedding as comma-separated string for query.
 pub fn format_embedding(emb: &[f32]) -> String {
     emb.iter()
-        .map(|v| format!("{:.4}", v))
+        .map(|v| format!("{v:.4}"))
         .collect::<Vec<_>>()
         .join(", ")
 }

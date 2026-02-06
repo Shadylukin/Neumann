@@ -6,7 +6,7 @@
 use std::{thread, time::Duration};
 
 use tensor_store::{
-    tiered::{TieredConfig, TieredStore},
+    tiered::{MigrationStrategy, TieredConfig, TieredStore},
     ScalarValue, TensorData, TensorValue,
 };
 
@@ -66,6 +66,7 @@ fn test_tiered_store_with_cold_storage() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024, // 1MB
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -100,6 +101,7 @@ fn test_migrate_cold() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -139,6 +141,7 @@ fn test_cold_data_promotion() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -189,6 +192,7 @@ fn test_preload_specific_keys() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -275,6 +279,7 @@ fn test_delete_from_both_tiers() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -310,6 +315,7 @@ fn test_exists_across_tiers() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -347,6 +353,7 @@ fn test_tiered_stats() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -384,6 +391,7 @@ fn test_flush_cold_storage() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();
@@ -411,6 +419,7 @@ fn test_into_tensor_store() {
         cold_dir: dir.clone(),
         cold_capacity: 1024 * 1024,
         sample_rate: 1,
+        migration_strategy: MigrationStrategy::default(),
     };
 
     let mut store = TieredStore::new(config).unwrap();

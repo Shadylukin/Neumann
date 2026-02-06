@@ -251,6 +251,12 @@ pub struct RaftConfig {
     pub auto_heartbeat: bool,
     /// Maximum consecutive heartbeat failures before logging warning.
     pub max_heartbeat_failures: u32,
+    /// Maximum power for exponential backoff (2^n entries skipped per failure).
+    /// Capped to prevent overshooting. Default: 10 (max 1024 entries per step).
+    pub max_backoff_power: u32,
+    /// Enable adaptive exponential backoff for `next_index` decrement on
+    /// `AppendEntries` rejection. When false, uses linear (one-at-a-time) decrement.
+    pub enable_adaptive_backoff: bool,
 }
 
 impl Default for RaftConfig {
@@ -274,6 +280,8 @@ impl Default for RaftConfig {
             snapshot_temp_dir: None,
             auto_heartbeat: true,
             max_heartbeat_failures: 3,
+            max_backoff_power: 10,
+            enable_adaptive_backoff: true,
         }
     }
 }
@@ -292,6 +300,8 @@ struct LeaderVolatileState {
     next_index: HashMap<NodeId, u64>,
     /// For each server, index of highest log entry known to be replicated.
     match_index: HashMap<NodeId, u64>,
+    /// Per-follower consecutive failure count for exponential backoff.
+    backoff_failures: HashMap<NodeId, u32>,
 }
 
 /// Combined leadership state for atomic transitions.
@@ -2140,6 +2150,8 @@ impl RaftNode {
                 if aer.success {
                     ls.next_index.insert(from.clone(), aer.match_index + 1);
                     ls.match_index.insert(from.clone(), aer.match_index);
+                    // Reset backoff on success
+                    ls.backoff_failures.remove(from);
 
                     // Record successful response for quorum tracking
                     self.quorum_tracker.record_success(from);
@@ -2148,11 +2160,30 @@ impl RaftNode {
                         .fetch_add(1, Ordering::Relaxed);
                     true
                 } else {
-                    // Decrement next_index and retry
+                    // Decrement next_index with exponential backoff
                     let next = ls.next_index.entry(from.clone()).or_insert(1);
-                    if *next > 1 {
-                        *next -= 1;
+                    let failures = ls.backoff_failures.entry(from.clone()).or_insert(0);
+                    let decrement = if self.config.enable_adaptive_backoff {
+                        let power = (*failures).min(self.config.max_backoff_power);
+                        let base = 1u64.checked_shl(power).unwrap_or(u64::MAX);
+                        // Don't overshoot past index 1
+                        base.min(next.saturating_sub(1))
+                    } else {
+                        1
+                    };
+                    if decrement > 0 {
+                        *next = next.saturating_sub(decrement);
+                        if *next < 1 {
+                            *next = 1;
+                        }
                     }
+                    if decrement > 1 {
+                        self.stats.backoff_events.fetch_add(1, Ordering::Relaxed);
+                        self.stats
+                            .backoff_skipped_entries
+                            .fetch_add(decrement - 1, Ordering::Relaxed);
+                    }
+                    *failures = failures.saturating_add(1);
 
                     // Record failure for quorum tracking
                     self.quorum_tracker.record_failure(from);
@@ -2343,6 +2374,7 @@ impl RaftNode {
         leadership.leader_volatile = Some(LeaderVolatileState {
             next_index,
             match_index,
+            backoff_failures: HashMap::new(),
         });
     }
 

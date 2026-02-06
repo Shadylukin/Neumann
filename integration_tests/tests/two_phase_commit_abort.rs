@@ -27,37 +27,35 @@ fn test_abort_broadcast_to_participants() {
     let coordinator = create_test_coordinator();
 
     // Begin a transaction with 3 shards
-    let tx = coordinator
-        .begin("node1".to_string(), vec![0, 1, 2])
-        .unwrap();
+    let tx = coordinator.begin(&"node1".to_string(), &[0, 1, 2]).unwrap();
 
     // Record votes from all shards - one says No
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::No {
             reason: "test".to_string(),
         },
     );
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         1,
         PrepareVote::Yes {
             lock_handle: 1,
             delta: DeltaVector::new(
-                vec![1.0],
+                &[1.0],
                 ["k1"].iter().map(|s| s.to_string()).collect(),
                 tx.tx_id,
             ),
         },
     );
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         2,
         PrepareVote::Yes {
             lock_handle: 2,
             delta: DeltaVector::new(
-                vec![0.0, 1.0],
+                &[0.0, 1.0],
                 ["k2"].iter().map(|s| s.to_string()).collect(),
                 tx.tx_id,
             ),
@@ -173,17 +171,17 @@ fn test_abort_flow_complete() {
     let coordinator = create_test_coordinator();
 
     // Begin transaction
-    let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
     // Record NO votes from both shards
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::No {
             reason: "conflict".to_string(),
         },
     );
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         1,
         PrepareVote::No {
@@ -213,21 +211,21 @@ fn test_cross_shard_conflict_queues_abort() {
     let coordinator = create_test_coordinator();
 
     // Begin transaction with 2 shards
-    let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+    let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
     // Both shards vote YES with overlapping keys and similar deltas
     let delta0 = DeltaVector::new(
-        vec![1.0, 0.0],
+        &[1.0, 0.0],
         ["shared_key"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
     let delta1 = DeltaVector::new(
-        vec![0.9, 0.1], // Similar to delta0
+        &[0.9, 0.1], // Similar to delta0
         ["shared_key"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::Yes {
@@ -245,7 +243,7 @@ fn test_cross_shard_conflict_queues_abort() {
     );
 
     // Should have detected conflict
-    if phase == Some(tensor_chain::distributed_tx::TxPhase::Aborting) {
+    if phase == Ok(Some(tensor_chain::distributed_tx::TxPhase::Aborting)) {
         // Cross-shard conflict was detected - check abort was queued
         let pending = coordinator.take_pending_aborts();
         assert!(!pending.is_empty());

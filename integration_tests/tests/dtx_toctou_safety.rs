@@ -42,7 +42,7 @@ fn test_concurrent_begin_respects_max_limit() {
         let failure = Arc::clone(&failure_count);
 
         handles.push(thread::spawn(move || {
-            match coord.begin(format!("node{}", i), vec![i % 3]) {
+            match coord.begin(&format!("node{}", i), &[i % 3]) {
                 Ok(_) => {
                     success.fetch_add(1, Ordering::SeqCst);
                 },
@@ -147,7 +147,7 @@ fn test_wal_write_atomic_with_pending_insert() {
     let mut tx_ids = vec![];
     for i in 0..5 {
         let tx = coordinator
-            .begin(format!("node{}", i), vec![i])
+            .begin(&format!("node{}", i), &[i])
             .expect("begin should succeed");
         tx_ids.push(tx.tx_id);
     }
@@ -187,7 +187,7 @@ fn test_max_concurrent_never_exceeded_under_load() {
         handles.push(thread::spawn(move || {
             for i in 0..50 {
                 // Try to begin
-                if let Ok(tx) = coord.begin(format!("node{}-{}", t, i), vec![t]) {
+                if let Ok(tx) = coord.begin(&format!("node{}-{}", t, i), &[t]) {
                     // Record current pending count
                     let current = coord.pending_count();
                     let mut max = max_obs.load(Ordering::SeqCst);
@@ -288,16 +288,16 @@ fn test_begin_failure_does_not_leak_transaction() {
 
     // Fill up to limit
     let tx1 = coordinator
-        .begin("node1".to_string(), vec![0])
+        .begin(&"node1".to_string(), &[0])
         .expect("first begin should succeed");
     let tx2 = coordinator
-        .begin("node2".to_string(), vec![1])
+        .begin(&"node2".to_string(), &[1])
         .expect("second begin should succeed");
 
     assert_eq!(coordinator.pending_count(), 2);
 
     // Third should fail
-    let result = coordinator.begin("node3".to_string(), vec![2]);
+    let result = coordinator.begin(&"node3".to_string(), &[2]);
     assert!(result.is_err(), "third begin should fail");
 
     // Should still have only 2 pending

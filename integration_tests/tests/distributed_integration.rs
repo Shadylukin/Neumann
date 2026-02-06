@@ -120,7 +120,7 @@ fn test_leader_election_then_cross_shard_commit() {
     // 2. Now run a cross-shard 2PC transaction
     let coordinator = create_coordinator();
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Both shards vote YES with orthogonal deltas
@@ -139,9 +139,9 @@ fn test_leader_election_then_cross_shard_commit() {
             },
             timeout_ms: 5000,
         };
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
         assert!(matches!(vote, PrepareVote::Yes { .. }));
-        coordinator.record_vote(tx.tx_id, shard, vote);
+        let _ = coordinator.record_vote(tx.tx_id, shard, vote);
     }
 
     // Transaction should be prepared
@@ -175,12 +175,12 @@ fn test_semantic_conflict_during_concurrent_modifications() {
     let coordinator = DistributedTxCoordinator::new(consensus, config);
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Shard 0: Modifies "user:1" with delta [1,0,0]
     let delta0 = DeltaVector::new(
-        vec![1.0, 0.0, 0.0],
+        &[1.0, 0.0, 0.0],
         ["user:1"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
@@ -188,13 +188,13 @@ fn test_semantic_conflict_during_concurrent_modifications() {
     // Shard 1: Also modifies "user:1" with similar delta [0.9,0.1,0]
     // This should be detected as a conflict (same key, similar direction)
     let delta1 = DeltaVector::new(
-        vec![0.9, 0.1, 0.0],
+        &[0.9, 0.1, 0.0],
         ["user:1"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     // Record votes
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::Yes {
@@ -215,7 +215,7 @@ fn test_semantic_conflict_during_concurrent_modifications() {
     // Should detect conflict due to overlapping keys with similar deltas
     assert_eq!(
         phase,
-        Some(TxPhase::Aborting),
+        Ok(Some(TxPhase::Aborting)),
         "Expected conflict to be detected for same key with similar deltas"
     );
 }
@@ -226,7 +226,7 @@ fn test_semantic_conflict_dual_commit_prevented() {
     let coordinator = create_coordinator();
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0])
+        .begin(&"coordinator".to_string(), &[0])
         .expect("Failed to begin transaction");
 
     // Vote YES
@@ -240,8 +240,8 @@ fn test_semantic_conflict_dual_commit_prevented() {
         delta_embedding: SparseVector::from_dense(&[1.0]),
         timeout_ms: 5000,
     };
-    let vote = coordinator.handle_prepare(request);
-    coordinator.record_vote(tx.tx_id, 0, vote);
+    let vote = coordinator.handle_prepare(&request);
+    let _ = coordinator.record_vote(tx.tx_id, 0, vote);
 
     // First commit succeeds
     let result1 = coordinator.commit(tx.tx_id);
@@ -259,24 +259,24 @@ fn test_orthogonal_auto_merge_different_keys() {
     let coordinator = create_coordinator();
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Shard 0: Modifies "account:A" (delta [1,0,0])
     let delta0 = DeltaVector::new(
-        vec![1.0, 0.0, 0.0],
+        &[1.0, 0.0, 0.0],
         ["account:A"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     // Shard 1: Modifies "account:B" (delta [0,1,0]) - orthogonal and different key
     let delta1 = DeltaVector::new(
-        vec![0.0, 1.0, 0.0],
+        &[0.0, 1.0, 0.0],
         ["account:B"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::Yes {
@@ -295,7 +295,7 @@ fn test_orthogonal_auto_merge_different_keys() {
     );
 
     // Should succeed - orthogonal deltas on different keys can merge
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
 
     // Commit should work
     coordinator.commit(tx.tx_id).unwrap();
@@ -318,23 +318,23 @@ fn test_orthogonal_auto_merge_same_key_orthogonal_deltas() {
     let coordinator = create_coordinator();
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Different keys, orthogonal vectors
     let delta0 = DeltaVector::new(
-        vec![1.0, 0.0, 0.0, 0.0],
+        &[1.0, 0.0, 0.0, 0.0],
         ["key_x"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     let delta1 = DeltaVector::new(
-        vec![0.0, 0.0, 1.0, 0.0],
+        &[0.0, 0.0, 1.0, 0.0],
         ["key_y"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::Yes {
@@ -353,7 +353,7 @@ fn test_orthogonal_auto_merge_same_key_orthogonal_deltas() {
     );
 
     // Should succeed
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
 }
 
 // ============= Scenario 4: Full Pipeline Test =============
@@ -366,7 +366,7 @@ fn test_full_flow_workspace_to_commit() {
 
     // 1. Begin transaction
     let tx = coordinator
-        .begin("node1".to_string(), vec![0, 1, 2])
+        .begin(&"node1".to_string(), &[0, 1, 2])
         .expect("Failed to begin transaction");
 
     assert_eq!(coordinator.pending_count(), 1);
@@ -402,9 +402,9 @@ fn test_full_flow_workspace_to_commit() {
             timeout_ms: 5000,
         };
 
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
         assert!(matches!(vote, PrepareVote::Yes { .. }));
-        coordinator.record_vote(tx.tx_id, shard, vote);
+        let _ = coordinator.record_vote(tx.tx_id, shard, vote);
     }
 
     // 3. Verify transaction is prepared
@@ -429,7 +429,7 @@ fn test_full_flow_with_abort() {
 
     // Begin transaction
     let tx = coordinator
-        .begin("node1".to_string(), vec![0, 1])
+        .begin(&"node1".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Shard 0 votes YES
@@ -443,8 +443,8 @@ fn test_full_flow_with_abort() {
         delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
-    let vote0 = coordinator.handle_prepare(request0);
-    coordinator.record_vote(tx.tx_id, 0, vote0);
+    let vote0 = coordinator.handle_prepare(&request0);
+    let _ = coordinator.record_vote(tx.tx_id, 0, vote0);
 
     // Shard 1 votes NO
     let phase = coordinator.record_vote(
@@ -456,7 +456,7 @@ fn test_full_flow_with_abort() {
     );
 
     // Should move to aborting
-    assert_eq!(phase, Some(TxPhase::Aborting));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Aborting));
 
     // Actually abort the transaction to increment stats
     let abort_result = coordinator.abort(tx.tx_id, "Resource unavailable");
@@ -536,7 +536,7 @@ fn test_empty_transaction_participants() {
     let coordinator = create_coordinator();
 
     // Transaction with no participants
-    let tx = coordinator.begin("node1".to_string(), vec![]);
+    let tx = coordinator.begin(&"node1".to_string(), &[]);
 
     // Should succeed
     assert!(tx.is_ok());
@@ -555,7 +555,7 @@ fn test_transaction_timeout_detection() {
     let coordinator = create_coordinator();
 
     let tx = coordinator
-        .begin("node1".to_string(), vec![0])
+        .begin(&"node1".to_string(), &[0])
         .expect("Failed to begin transaction");
 
     // The transaction uses its own timeout_ms (default 5000ms)
@@ -574,7 +574,7 @@ fn test_concurrent_transactions_different_keys() {
 
     // Transaction 1 on key_a
     let tx1 = coordinator
-        .begin("node1".to_string(), vec![0])
+        .begin(&"node1".to_string(), &[0])
         .expect("Failed to begin tx1");
 
     let request1 = PrepareRequest {
@@ -587,12 +587,12 @@ fn test_concurrent_transactions_different_keys() {
         delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
-    let vote1 = coordinator.handle_prepare(request1);
+    let vote1 = coordinator.handle_prepare(&request1);
     assert!(matches!(vote1, PrepareVote::Yes { .. }));
 
     // Transaction 2 on key_b (should not conflict)
     let tx2 = coordinator
-        .begin("node1".to_string(), vec![0])
+        .begin(&"node1".to_string(), &[0])
         .expect("Failed to begin tx2");
 
     let request2 = PrepareRequest {
@@ -605,7 +605,7 @@ fn test_concurrent_transactions_different_keys() {
         delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
         timeout_ms: 5000,
     };
-    let vote2 = coordinator.handle_prepare(request2);
+    let vote2 = coordinator.handle_prepare(&request2);
     assert!(
         matches!(vote2, PrepareVote::Yes { .. }),
         "Different keys should not conflict"
@@ -617,22 +617,22 @@ fn test_merged_delta_computation() {
     let coordinator = create_coordinator();
 
     let tx = coordinator
-        .begin("node1".to_string(), vec![0, 1])
+        .begin(&"node1".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     let delta0 = DeltaVector::new(
-        vec![1.0, 0.0, 0.0],
+        &[1.0, 0.0, 0.0],
         ["key_a"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     let delta1 = DeltaVector::new(
-        vec![0.0, 2.0, 0.0],
+        &[0.0, 2.0, 0.0],
         ["key_b"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         PrepareVote::Yes {
@@ -641,7 +641,7 @@ fn test_merged_delta_computation() {
         },
     );
 
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         1,
         PrepareVote::Yes {

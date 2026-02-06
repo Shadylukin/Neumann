@@ -81,6 +81,11 @@ jobs:
           - tt_roundtrip
           - streaming_format
           - delta_apply
+          - raft_stateful_sequence
+          - distributed_tx_sequence
+          - hlc_ordering
+          - membership_convergence
+          - consensus_conflict
 
     steps:
       - name: Checkout

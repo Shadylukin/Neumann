@@ -160,29 +160,45 @@ impl Connection {
         matches!(self.state(), ConnectionState::Connected)
     }
 
+    /// Replace the stream after a reconnection handshake.
+    ///
+    /// Atomicity guarantee: reader, writer, and state are all updated while
+    /// holding their write locks simultaneously. This prevents a concurrent
+    /// observer from seeing a partially-updated connection (e.g. new reader
+    /// but stale writer) during the handshake-to-connected transition.
     pub fn set_stream<S>(&self, stream: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (reader, writer) = split_stream(stream);
-        *self.reader.write() = Some(reader);
-        *self.writer.write() = Some(writer);
-        *self.state.write() = ConnectionState::Connected;
+        // Acquire all three locks before mutating any field.
+        let mut reader_guard = self.reader.write();
+        let mut writer_guard = self.writer.write();
+        let mut state_guard = self.state.write();
+        *reader_guard = Some(reader);
+        *writer_guard = Some(writer);
+        *state_guard = ConnectionState::Connected;
     }
 
     pub fn mark_disconnected(&self) {
-        *self.state.write() = ConnectionState::Disconnected;
-        *self.reader.write() = None;
-        *self.writer.write() = None;
+        let mut state_guard = self.state.write();
+        let mut reader_guard = self.reader.write();
+        let mut writer_guard = self.writer.write();
+        *state_guard = ConnectionState::Disconnected;
+        *reader_guard = None;
+        *writer_guard = None;
     }
 
     pub fn mark_reconnecting(&self, attempt: usize, next_retry: Instant) {
-        *self.state.write() = ConnectionState::Reconnecting {
+        let mut state_guard = self.state.write();
+        let mut reader_guard = self.reader.write();
+        let mut writer_guard = self.writer.write();
+        *state_guard = ConnectionState::Reconnecting {
             attempt,
             next_retry,
         };
-        *self.reader.write() = None;
-        *self.writer.write() = None;
+        *reader_guard = None;
+        *writer_guard = None;
         self.stats.record_reconnect();
     }
 

@@ -45,10 +45,12 @@ pub type EpochMillis = u64;
 
 /// Get current time as epoch milliseconds.
 fn now_epoch_millis() -> EpochMillis {
-    SystemTime::now()
+    #[allow(clippy::cast_possible_truncation)]
+    let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis() as u64;
+    ms
 }
 
 /// Shard identifier.
@@ -159,7 +161,9 @@ pub struct DistributedTransaction {
 }
 
 impl DistributedTransaction {
+    #[must_use]
     pub fn new(coordinator: NodeId, participants: Vec<ShardId>) -> Self {
+        #[allow(clippy::cast_possible_truncation)]
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -190,25 +194,30 @@ impl DistributedTransaction {
         self.votes.insert(shard, vote);
     }
 
+    #[must_use]
     pub fn all_voted(&self) -> bool {
         self.participants
             .iter()
             .all(|shard| self.votes.contains_key(shard))
     }
 
+    #[must_use]
     pub fn all_yes(&self) -> bool {
         self.votes
             .values()
             .all(|v| matches!(v, PrepareVote::Yes { .. }))
     }
 
+    #[must_use]
     pub fn any_no(&self) -> bool {
         self.votes
             .values()
             .any(|v| matches!(v, PrepareVote::No { .. } | PrepareVote::Conflict { .. }))
     }
 
+    #[must_use]
     pub fn is_timed_out(&self) -> bool {
+        #[allow(clippy::cast_possible_truncation)]
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -216,6 +225,7 @@ impl DistributedTransaction {
         now - self.started_at > self.timeout_ms
     }
 
+    #[must_use]
     pub fn affected_keys(&self) -> HashSet<String> {
         self.deltas
             .values()
@@ -223,6 +233,7 @@ impl DistributedTransaction {
             .collect()
     }
 
+    #[must_use]
     pub fn merged_delta(&self) -> Option<DeltaVector> {
         let deltas: Vec<_> = self.deltas.values().cloned().collect();
         if deltas.is_empty() {
@@ -324,6 +335,7 @@ pub struct KeyLock {
 }
 
 impl KeyLock {
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         now_epoch_millis().saturating_sub(self.acquired_at_ms) > self.timeout_ms
     }
@@ -344,6 +356,7 @@ pub struct LockManager {
 }
 
 impl LockManager {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             locks: RwLock::new(HashMap::new()),
@@ -352,6 +365,7 @@ impl LockManager {
         }
     }
 
+    #[must_use]
     pub fn with_default_timeout(timeout: Duration) -> Self {
         Self {
             locks: RwLock::new(HashMap::new()),
@@ -361,7 +375,11 @@ impl LockManager {
     }
 
     /// Try to acquire locks for a set of keys.
-    /// Returns a lock handle if successful, or the conflicting tx_id if not.
+    /// Returns a lock handle if successful, or the conflicting `tx_id` if not.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `tx_id` of the conflicting lock holder.
     pub fn try_lock(&self, tx_id: u64, keys: &[String]) -> std::result::Result<u64, u64> {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -378,6 +396,7 @@ impl LockManager {
         // Acquire all locks
         let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
         let now_ms = now_epoch_millis();
+        #[allow(clippy::cast_possible_truncation)]
         let timeout_ms = self.default_timeout.as_millis() as u64;
 
         for key in keys {
@@ -544,14 +563,18 @@ impl LockManager {
         self.locks.read().len()
     }
 
+    #[must_use]
     pub fn to_serializable(&self) -> SerializableLockState {
+        #[allow(clippy::cast_possible_truncation)]
+        let default_timeout_ms = self.default_timeout.as_millis() as u64;
         SerializableLockState {
             locks: self.locks.read().clone(),
             tx_locks: self.tx_locks.read().clone(),
-            default_timeout_ms: self.default_timeout.as_millis() as u64,
+            default_timeout_ms,
         }
     }
 
+    #[must_use]
     pub fn from_serializable(state: SerializableLockState) -> Self {
         Self {
             locks: RwLock::new(state.locks),
@@ -562,11 +585,19 @@ impl LockManager {
 
     /// Try to acquire locks with wait-for graph tracking.
     ///
-    /// On success, returns Ok(lock_handle).
-    /// On conflict, updates the wait-for graph and returns Err(WaitInfo).
+    /// On success, returns `Ok(lock_handle)`.
+    /// On conflict, updates the wait-for graph and returns `Err(WaitInfo)`.
     ///
     /// This method atomically checks for conflicts, collects all blocking transactions,
     /// and updates the wait-for graph WHILE holding the lock to prevent TOCTOU races.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WaitInfo` if a conflicting lock holder is found.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the blocking transaction set is empty after detecting conflicts.
     pub fn try_lock_with_wait_tracking(
         &self,
         tx_id: u64,
@@ -611,6 +642,7 @@ impl LockManager {
         // No conflicts - acquire all locks atomically
         let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
         let now_ms = now_epoch_millis();
+        #[allow(clippy::cast_possible_truncation)]
         let timeout_ms = self.default_timeout.as_millis() as u64;
 
         for key in keys {
@@ -640,6 +672,7 @@ impl LockManager {
         Ok(lock_handle)
     }
 
+    #[must_use]
     pub fn keys_for_transaction(&self, tx_id: u64) -> Vec<String> {
         self.tx_locks
             .read()
@@ -648,16 +681,13 @@ impl LockManager {
             .unwrap_or_default()
     }
 
+    #[must_use]
     pub fn lock_count_for_transaction(&self, tx_id: u64) -> usize {
-        self.tx_locks
-            .read()
-            .get(&tx_id)
-            .map(|v| v.len())
-            .unwrap_or(0)
+        self.tx_locks.read().get(&tx_id).map_or(0, Vec::len)
     }
 }
 
-/// Serializable representation of LockManager state.
+/// Serializable representation of `LockManager` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableLockState {
     locks: HashMap<String, KeyLock>,
@@ -666,6 +696,7 @@ pub struct SerializableLockState {
 }
 
 impl SerializableLockState {
+    #[must_use]
     pub fn new(
         locks: HashMap<String, KeyLock>,
         tx_locks: HashMap<u64, Vec<String>>,
@@ -678,14 +709,17 @@ impl SerializableLockState {
         }
     }
 
+    #[must_use]
     pub fn locks(&self) -> &HashMap<String, KeyLock> {
         &self.locks
     }
 
+    #[must_use]
     pub fn tx_locks(&self) -> &HashMap<u64, Vec<String>> {
         &self.tx_locks
     }
 
+    #[must_use]
     pub fn default_timeout_ms(&self) -> u64 {
         self.default_timeout_ms
     }
@@ -722,6 +756,10 @@ pub struct DistributedTxConfig {
     pub orthogonal_threshold: f32,
     /// Whether to allow optimistic locking.
     pub optimistic_locking: bool,
+    /// Soft limit percentage of `max_concurrent` at which a warning is logged.
+    /// Transactions are still allowed through (soft limit), but the warning
+    /// signals that the system is approaching capacity. Range: 0-100.
+    pub tx_queue_soft_limit_pct: u8,
 }
 
 impl Default for DistributedTxConfig {
@@ -732,6 +770,7 @@ impl Default for DistributedTxConfig {
             max_concurrent: 100,
             orthogonal_threshold: 0.1,
             optimistic_locking: true,
+            tx_queue_soft_limit_pct: 80,
         }
     }
 }
@@ -765,29 +804,41 @@ pub struct DistributedTxStats {
     // Participation tracking
     /// Transactions aborted due to participant timeout (partition).
     pub participation_timeouts: AtomicU64,
+
+    // Queue pressure tracking
+    /// Number of transactions that triggered the soft queue limit warning.
+    pub tx_queue_soft_limit_warnings: AtomicU64,
 }
 
 impl DistributedTxStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn commit_rate(&self) -> f32 {
         let started = self.started.load(Ordering::Relaxed);
         if started == 0 {
             return 0.0;
         }
-        self.committed.load(Ordering::Relaxed) as f32 / started as f32
+        #[allow(clippy::cast_precision_loss)]
+        let rate = self.committed.load(Ordering::Relaxed) as f32 / started as f32;
+        rate
     }
 
+    #[must_use]
     pub fn conflict_rate(&self) -> f32 {
         let started = self.started.load(Ordering::Relaxed);
         if started == 0 {
             return 0.0;
         }
-        self.conflicts.load(Ordering::Relaxed) as f32 / started as f32
+        #[allow(clippy::cast_precision_loss)]
+        let rate = self.conflicts.load(Ordering::Relaxed) as f32 / started as f32;
+        rate
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> DistributedTxStatsSnapshot {
         DistributedTxStatsSnapshot {
             started: self.started.load(Ordering::Relaxed),
@@ -849,6 +900,45 @@ pub(crate) struct AbortState {
     pub(crate) retry_count: u32,
 }
 
+/// Error when recording a vote fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoteRecordError {
+    /// Transaction not found in pending map.
+    TxNotFound(u64),
+    /// Transaction is not in the expected phase.
+    WrongPhase {
+        tx_id: u64,
+        expected: TxPhase,
+        actual: TxPhase,
+    },
+    /// Shard has already voted for this transaction.
+    DuplicateVote { tx_id: u64, shard: ShardId },
+}
+
+impl std::fmt::Display for VoteRecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TxNotFound(tx_id) => write!(f, "transaction {tx_id} not found"),
+            Self::WrongPhase {
+                tx_id,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "transaction {tx_id} in wrong phase: expected {expected:?}, actual {actual:?}"
+                )
+            },
+            Self::DuplicateVote { tx_id, shard } => {
+                write!(
+                    f,
+                    "duplicate vote for transaction {tx_id} from shard {shard}"
+                )
+            },
+        }
+    }
+}
+
 /// Coordinator for distributed transactions.
 pub struct DistributedTxCoordinator {
     /// Pending transactions by ID.
@@ -873,6 +963,7 @@ pub struct DistributedTxCoordinator {
 }
 
 impl DistributedTxCoordinator {
+    #[must_use]
     pub fn new(consensus: ConsensusManager, config: DistributedTxConfig) -> Self {
         Self {
             pending: RwLock::new(HashMap::new()),
@@ -887,10 +978,12 @@ impl DistributedTxCoordinator {
         }
     }
 
+    #[must_use]
     pub fn with_consensus(consensus: ConsensusManager) -> Self {
         Self::new(consensus, DistributedTxConfig::default())
     }
 
+    #[must_use]
     pub fn with_wal(mut self, wal: TxWal) -> Self {
         self.wal = Some(RwLock::new(wal));
         self
@@ -900,7 +993,7 @@ impl DistributedTxCoordinator {
         if let Some(ref wal) = self.wal {
             wal.write()
                 .append(entry)
-                .map_err(|e| ChainError::StorageError(format!("WAL write failed: {}", e)))?;
+                .map_err(|e| ChainError::StorageError(format!("WAL write failed: {e}")))?;
         }
         Ok(())
     }
@@ -911,14 +1004,17 @@ impl DistributedTxCoordinator {
     /// - Prepared transactions are restored to pending
     /// - Committing transactions are marked for completion
     /// - Aborting transactions are marked for completion
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL replay fails.
     pub fn recover_from_wal(&self) -> Result<RecoveryStats> {
-        let wal = match &self.wal {
-            Some(w) => w,
-            None => return Ok(RecoveryStats::default()),
+        let Some(wal) = &self.wal else {
+            return Ok(RecoveryStats::default());
         };
 
         let recovery_state = TxRecoveryState::from_wal(&wal.read())
-            .map_err(|e| ChainError::StorageError(format!("WAL replay failed: {}", e)))?;
+            .map_err(|e| ChainError::StorageError(format!("WAL replay failed: {e}")))?;
 
         let mut stats = RecoveryStats::default();
         let mut pending = self.pending.write();
@@ -973,19 +1069,28 @@ impl DistributedTxCoordinator {
         Ok(stats)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the WAL truncation fails.
     pub fn truncate_wal(&self) -> Result<()> {
         if let Some(ref wal) = self.wal {
             wal.write()
                 .truncate()
-                .map_err(|e| ChainError::StorageError(format!("WAL truncate failed: {}", e)))?;
+                .map_err(|e| ChainError::StorageError(format!("WAL truncate failed: {e}")))?;
         }
         Ok(())
     }
 
+    /// Begin a new distributed transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the maximum concurrent transaction limit is reached
+    /// or if the WAL write fails.
     pub fn begin(
         &self,
-        coordinator: NodeId,
-        participants: Vec<ShardId>,
+        coordinator: &NodeId,
+        participants: &[ShardId],
     ) -> Result<DistributedTransaction> {
         // Atomically check limit, write WAL, and insert - all in single critical section
         // to prevent TOCTOU race on max_concurrent and ensure WAL/pending consistency
@@ -1003,13 +1108,28 @@ impl DistributedTxCoordinator {
                 ));
             }
 
-            let tx = DistributedTransaction::new(coordinator.clone(), participants.clone());
+            // Soft limit warning: approaching capacity but still allow through
+            let soft_limit =
+                self.config.max_concurrent * usize::from(self.config.tx_queue_soft_limit_pct) / 100;
+            if pending.len() >= soft_limit {
+                self.stats
+                    .tx_queue_soft_limit_warnings
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    pending = pending.len(),
+                    soft_limit = soft_limit,
+                    max = self.config.max_concurrent,
+                    "Transaction queue approaching capacity (soft limit reached)"
+                );
+            }
+
+            let tx = DistributedTransaction::new(coordinator.clone(), participants.to_vec());
 
             // Write WAL INSIDE critical section - if this fails, tx is NOT in pending
             // This ensures WAL and pending state are always consistent
             self.log_wal_entry(&TxWalEntry::TxBegin {
                 tx_id: tx.tx_id,
-                participants: participants.clone(),
+                participants: participants.to_vec(),
             })?;
 
             pending.insert(tx.tx_id, tx.clone());
@@ -1035,7 +1155,7 @@ impl DistributedTxCoordinator {
     /// Two-stage validation: (1) Lock acquisition with wait-for graph tracking,
     /// (2) Semantic conflict detection via delta similarity. Returns Conflict early
     /// on lock failure to avoid expensive embedding computation.
-    pub fn handle_prepare(&self, request: PrepareRequest) -> PrepareVote {
+    pub fn handle_prepare(&self, request: &PrepareRequest) -> PrepareVote {
         // Extract affected keys from operations
         let keys: Vec<String> = request
             .operations
@@ -1133,9 +1253,24 @@ impl DistributedTxCoordinator {
     /// - Phase 2: Expensive conflict detection (NO LOCKS HELD)
     /// - Phase 3: Brief re-acquisition for state update
     ///
-    /// This prevents deadlocks with release_orphaned_locks by never holding
-    /// pending lock while acquiring pending_aborts lock.
-    pub fn record_vote(&self, tx_id: u64, shard: ShardId, vote: PrepareVote) -> Option<TxPhase> {
+    /// This prevents deadlocks with `release_orphaned_locks` by never holding
+    /// pending lock while acquiring `pending_aborts` lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`VoteRecordError`] if the transaction is not found, in the
+    /// wrong phase, or the shard already voted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if all votes are YES but the transaction snapshot is missing.
+    #[allow(clippy::too_many_lines)]
+    pub fn record_vote(
+        &self,
+        tx_id: u64,
+        shard: ShardId,
+        vote: PrepareVote,
+    ) -> std::result::Result<Option<TxPhase>, VoteRecordError> {
         // Log vote to WAL BEFORE recording in memory to ensure durability
         let vote_kind = match &vote {
             PrepareVote::Yes { lock_handle, .. } => crate::tx_wal::PrepareVoteKind::Yes {
@@ -1151,13 +1286,27 @@ impl DistributedTxCoordinator {
             vote: vote_kind,
         }) {
             tracing::error!(tx_id = tx_id, shard = shard, error = %e, "Failed to log vote to WAL");
-            return None;
+            return Ok(None);
         }
 
         // Phase 1: Quick lookup and vote recording (brief lock)
         let (needs_conflict_check, tx_snapshot, abort_info) = {
             let mut pending = self.pending.write();
-            let tx = pending.get_mut(&tx_id)?;
+            let tx = pending
+                .get_mut(&tx_id)
+                .ok_or(VoteRecordError::TxNotFound(tx_id))?;
+
+            if tx.phase != TxPhase::Preparing {
+                return Err(VoteRecordError::WrongPhase {
+                    tx_id,
+                    expected: TxPhase::Preparing,
+                    actual: tx.phase,
+                });
+            }
+
+            if tx.votes.contains_key(&shard) {
+                return Err(VoteRecordError::DuplicateVote { tx_id, shard });
+            }
 
             tracing::debug!(
                 tx_id = tx_id,
@@ -1203,12 +1352,12 @@ impl DistributedTxCoordinator {
         // Handle abort case - acquire pending_aborts AFTER releasing pending
         if let Some((reason, shards)) = abort_info {
             self.pending_aborts.write().push((tx_id, reason, shards));
-            return Some(TxPhase::Aborting);
+            return Ok(Some(TxPhase::Aborting));
         }
 
         // Phase 2: Expensive conflict detection (NO LOCKS HELD)
         if needs_conflict_check {
-            let tx = tx_snapshot.unwrap();
+            let tx: DistributedTransaction = tx_snapshot.unwrap();
 
             // Check cross-shard conflicts using cloned data
             if tx.merged_delta().is_some() {
@@ -1248,7 +1397,7 @@ impl DistributedTxCoordinator {
                                     "cross-shard conflict".to_string(),
                                     shards,
                                 ));
-                                return Some(TxPhase::Aborting);
+                                return Ok(Some(TxPhase::Aborting));
                             }
                         }
                     }
@@ -1270,7 +1419,7 @@ impl DistributedTxCoordinator {
                         to: TxPhase::Prepared,
                     }) {
                         tracing::error!(tx_id = tx_id, error = %e, "Failed to log phase change to WAL");
-                        return None;
+                        return Ok(None);
                     }
 
                     tracing::info!(
@@ -1279,19 +1428,22 @@ impl DistributedTxCoordinator {
                         "Transaction prepared"
                     );
                     tx.phase = TxPhase::Prepared;
-                    return Some(TxPhase::Prepared);
+                    return Ok(Some(TxPhase::Prepared));
                 }
             }
         }
 
-        None
+        Ok(None)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not found or not in the prepared phase.
     pub fn commit(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
             tracing::warn!(tx_id = tx_id, "Commit failed: transaction not found");
-            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+            ChainError::TransactionFailed(format!("transaction {tx_id} not found"))
         })?;
 
         if tx.phase != TxPhase::Prepared {
@@ -1301,8 +1453,7 @@ impl DistributedTxCoordinator {
                 "Commit failed: transaction not in prepared phase"
             );
             return Err(ChainError::TransactionFailed(format!(
-                "transaction {} not in prepared phase",
-                tx_id
+                "transaction {tx_id} not in prepared phase"
             )));
         }
 
@@ -1345,16 +1496,19 @@ impl DistributedTxCoordinator {
 
     /// Complete a commit for a transaction already in the Committing phase.
     /// Used during recovery to finalize transactions that were interrupted mid-commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not found or not in the committing phase.
     pub fn complete_commit(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
-            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+            ChainError::TransactionFailed(format!("transaction {tx_id} not found"))
         })?;
 
         if tx.phase != TxPhase::Committing {
             return Err(ChainError::TransactionFailed(format!(
-                "transaction {} not in committing phase",
-                tx_id
+                "transaction {tx_id} not in committing phase"
             )));
         }
 
@@ -1376,16 +1530,19 @@ impl DistributedTxCoordinator {
 
     /// Complete an abort for a transaction already in the Aborting phase.
     /// Used during recovery to finalize transactions that were interrupted mid-abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not found or not in the aborting phase.
     pub fn complete_abort(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
-            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+            ChainError::TransactionFailed(format!("transaction {tx_id} not found"))
         })?;
 
         if tx.phase != TxPhase::Aborting {
             return Err(ChainError::TransactionFailed(format!(
-                "transaction {} not in aborting phase",
-                tx_id
+                "transaction {tx_id} not in aborting phase"
             )));
         }
 
@@ -1405,11 +1562,14 @@ impl DistributedTxCoordinator {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not found or WAL logging fails.
     pub fn abort(&self, tx_id: u64, reason: &str) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
             tracing::warn!(tx_id = tx_id, "Abort failed: transaction not found");
-            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+            ChainError::TransactionFailed(format!("transaction {tx_id} not found"))
         })?;
 
         let from_phase = tx.phase;
@@ -1557,7 +1717,7 @@ impl DistributedTxCoordinator {
 
                 // Fire-and-forget send to shard coordinator
                 // The target node ID would come from a shard->node mapping
-                let target = format!("shard-{}", shard_id);
+                let target = format!("shard-{shard_id}");
                 if let Err(e) = transport.send(&target, Message::TxAbort(abort_msg)).await {
                     tracing::warn!(tx_id, shard = shard_id, error = %e, "failed to send abort to shard");
                 }
@@ -1591,7 +1751,7 @@ impl DistributedTxCoordinator {
 
     /// Get aborts that need to be retried.
     ///
-    /// Returns list of (tx_id, shards) pairs for transactions that haven't
+    /// Returns list of (`tx_id`, shards) pairs for transactions that haven't
     /// been acknowledged within the retry interval.
     pub fn get_retry_aborts(&self) -> Vec<(u64, Vec<usize>)> {
         let now = now_epoch_millis();
@@ -1602,7 +1762,7 @@ impl DistributedTxCoordinator {
 
         for (tx_id, state) in abort_states.iter_mut() {
             let elapsed = now.saturating_sub(state.initiated_at);
-            let expected_elapsed = retry_interval_ms * (state.retry_count as u64 + 1);
+            let expected_elapsed = retry_interval_ms * (u64::from(state.retry_count) + 1);
 
             if elapsed >= expected_elapsed && state.retry_count < 10 {
                 state.retry_count += 1;
@@ -1635,9 +1795,10 @@ impl DistributedTxCoordinator {
     }
 
     fn persistence_key(node_id: &str) -> String {
-        format!("_dtx:coordinator:{}:state", node_id)
+        format!("_dtx:coordinator:{node_id}:state")
     }
 
+    #[must_use]
     pub fn to_state(&self) -> CoordinatorState {
         CoordinatorState {
             pending: self.pending.read().clone(),
@@ -1645,6 +1806,9 @@ impl DistributedTxCoordinator {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if serialization or storage fails.
     pub fn save_to_store(&self, node_id: &str, store: &TensorStore) -> Result<()> {
         let state = self.to_state();
         let bytes = bitcode::serialize(&state)?;
@@ -1658,7 +1822,11 @@ impl DistributedTxCoordinator {
         Ok(())
     }
 
-    /// Load coordinator from TensorStore or create fresh if not found.
+    /// Load coordinator from `TensorStore` or create fresh if not found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization of persisted state fails.
     pub fn load_from_store(
         node_id: &str,
         store: &TensorStore,
@@ -1696,14 +1864,16 @@ impl DistributedTxCoordinator {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the store deletion fails (other than key not found).
     pub fn clear_persisted_state(node_id: &str, store: &TensorStore) -> Result<()> {
         // Idempotent: if key doesn't exist, that's fine (state is already cleared)
         match store.delete(&Self::persistence_key(node_id)) {
             Ok(()) => Ok(()),
             Err(e) if e.to_string().contains("not found") => Ok(()),
             Err(e) => Err(ChainError::StorageError(format!(
-                "failed to clear coordinator state for {}: {}",
-                node_id, e
+                "failed to clear coordinator state for {node_id}: {e}"
             ))),
         }
     }
@@ -1809,7 +1979,7 @@ impl DistributedTxCoordinator {
                     tx.coordinator.clone(),
                     tx.phase,
                 );
-                state.participants = tx.participants.clone();
+                state.participants.clone_from(&tx.participants);
                 state.votes = tx
                     .votes
                     .iter()
@@ -1827,10 +1997,13 @@ impl DistributedTxCoordinator {
     /// This is used to reconcile transactions that were pending during a partition.
     /// If `commit` is true and the transaction is in a commitable state, it commits.
     /// Otherwise, the transaction is aborted.
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not found or cannot be committed.
     pub fn force_resolve(&self, tx_id: u64, commit: bool) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
-            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+            ChainError::TransactionFailed(format!("transaction {tx_id} not found"))
         })?;
 
         if commit {
@@ -1849,8 +2022,7 @@ impl DistributedTxCoordinator {
                 pending.remove(&tx_id);
             } else {
                 return Err(ChainError::TransactionFailed(format!(
-                    "transaction {} cannot be committed (not all votes are YES)",
-                    tx_id
+                    "transaction {tx_id} cannot be committed (not all votes are YES)"
                 )));
             }
         } else {
@@ -1967,7 +2139,7 @@ pub struct PreparedTx {
 }
 
 impl TxParticipant {
-    /// Create a new transaction participant with the given store for undo log support.
+    #[must_use]
     pub fn new(store: TensorStore) -> Self {
         Self {
             prepared: RwLock::new(HashMap::new()),
@@ -2054,6 +2226,7 @@ impl TxParticipant {
     /// # Errors
     ///
     /// Returns an error if any store operation fails.
+    #[allow(clippy::too_many_lines)]
     fn apply_operations(&self, operations: &[Transaction]) -> Result<()> {
         for tx in operations {
             match tx {
@@ -2143,6 +2316,7 @@ impl TxParticipant {
                     );
                     tensor.set(
                         "row_id",
+                        #[allow(clippy::cast_possible_wrap)]
                         TensorValue::Scalar(ScalarValue::Int(*row_id as i64)),
                     );
                     self.store
@@ -2252,6 +2426,7 @@ impl TxParticipant {
     pub fn cleanup_stale(&self, timeout: Duration) -> Vec<u64> {
         let mut prepared = self.prepared.write();
         let now = now_epoch_millis();
+        #[allow(clippy::cast_possible_truncation)]
         let timeout_ms = timeout.as_millis() as u64;
         let stale: Vec<_> = prepared
             .iter()
@@ -2285,7 +2460,7 @@ impl TxParticipant {
     }
 
     fn persistence_key(node_id: &str, shard_id: ShardId) -> String {
-        format!("_dtx:participant:{}:shard:{}:state", node_id, shard_id)
+        format!("_dtx:participant:{node_id}:shard:{shard_id}:state")
     }
 
     pub fn to_state(&self) -> ParticipantState {
@@ -2295,6 +2470,8 @@ impl TxParticipant {
         }
     }
 
+    /// # Errors
+    /// Returns an error if serialization or storage fails.
     pub fn save_to_store(
         &self,
         node_id: &str,
@@ -2313,7 +2490,8 @@ impl TxParticipant {
         Ok(())
     }
 
-    /// Load participant from TensorStore or create fresh if not found.
+    /// Load participant from `TensorStore` or create fresh if not found.
+    #[must_use]
     pub fn load_from_store(node_id: &str, shard_id: ShardId, store: &TensorStore) -> Self {
         let key = Self::persistence_key(node_id, shard_id);
 
@@ -2337,6 +2515,8 @@ impl TxParticipant {
         }
     }
 
+    /// # Errors
+    /// Returns an error if the underlying store deletion fails.
     pub fn clear_persisted_state(
         node_id: &str,
         shard_id: ShardId,
@@ -2347,8 +2527,7 @@ impl TxParticipant {
             Ok(()) => Ok(()),
             Err(e) if e.to_string().contains("not found") => Ok(()),
             Err(e) => Err(ChainError::StorageError(format!(
-                "failed to clear participant state for {}:{}: {}",
-                node_id, shard_id, e
+                "failed to clear participant state for {node_id}:{shard_id}: {e}"
             ))),
         }
     }
@@ -2361,6 +2540,7 @@ impl TxParticipant {
     pub fn recover(&self, timeout: Duration) -> Vec<u64> {
         let mut prepared = self.prepared.write();
         let now = now_epoch_millis();
+        #[allow(clippy::cast_possible_truncation)]
         let timeout_ms = timeout.as_millis() as u64;
 
         // Find expired transactions (presumed abort)
@@ -2498,7 +2678,7 @@ mod tests {
     fn test_coordinator_begin() {
         let coordinator = create_test_coordinator();
 
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         assert_eq!(coordinator.pending_count(), 1);
         assert!(coordinator.get(tx.tx_id).is_some());
@@ -2513,11 +2693,11 @@ mod tests {
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
-        coordinator.begin("node1".to_string(), vec![0]).unwrap();
-        coordinator.begin("node1".to_string(), vec![1]).unwrap();
+        coordinator.begin("node1", &[0]).unwrap();
+        coordinator.begin("node1", &[1]).unwrap();
 
         // Third should fail
-        let result = coordinator.begin("node1".to_string(), vec![2]);
+        let result = coordinator.begin("node1", &[2]);
         assert!(result.is_err());
     }
 
@@ -2550,7 +2730,7 @@ mod tests {
     #[test]
     fn test_voting_all_yes() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         let delta0 = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -2572,7 +2752,7 @@ mod tests {
                 delta: delta0,
             },
         );
-        assert!(result.is_none()); // Not all voted yet
+        assert_eq!(result.unwrap(), None); // Not all voted yet
 
         // Vote from shard 1
         let result = coordinator.record_vote(
@@ -2583,13 +2763,13 @@ mod tests {
                 delta: delta1,
             },
         );
-        assert_eq!(result, Some(TxPhase::Prepared));
+        assert_eq!(result.unwrap(), Some(TxPhase::Prepared));
     }
 
     #[test]
     fn test_voting_any_no() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -2597,7 +2777,7 @@ mod tests {
             tx.tx_id,
         );
 
-        coordinator.record_vote(
+        let _ = coordinator.record_vote(
             tx.tx_id,
             0,
             PrepareVote::Yes {
@@ -2613,13 +2793,13 @@ mod tests {
                 reason: "test".to_string(),
             },
         );
-        assert_eq!(result, Some(TxPhase::Aborting));
+        assert_eq!(result.unwrap(), Some(TxPhase::Aborting));
     }
 
     #[test]
     fn test_commit_flow() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -2627,7 +2807,7 @@ mod tests {
             tx.tx_id,
         );
 
-        coordinator.record_vote(
+        let _ = coordinator.record_vote(
             tx.tx_id,
             0,
             PrepareVote::Yes {
@@ -2645,7 +2825,7 @@ mod tests {
     #[test]
     fn test_abort_flow() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         coordinator.abort(tx.tx_id, "test abort").unwrap();
 
@@ -2825,7 +3005,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Create a transaction with immediate timeout
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Modify timeout to 0 (simulating timeout)
         {
@@ -2903,7 +3083,7 @@ mod tests {
     #[test]
     fn test_commit_not_prepared() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Try to commit without preparing
         let result = coordinator.commit(tx.tx_id);
@@ -3257,6 +3437,7 @@ mod tests {
         assert_eq!(config.max_concurrent, 100);
         assert!((config.orthogonal_threshold - 0.1).abs() < 0.01);
         assert!(config.optimistic_locking);
+        assert_eq!(config.tx_queue_soft_limit_pct, 80);
     }
 
     #[test]
@@ -3329,7 +3510,7 @@ mod tests {
     #[test]
     fn test_voting_with_conflict() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -3337,7 +3518,7 @@ mod tests {
             tx.tx_id,
         );
 
-        coordinator.record_vote(
+        let _ = coordinator.record_vote(
             tx.tx_id,
             0,
             PrepareVote::Yes {
@@ -3355,7 +3536,7 @@ mod tests {
             },
         );
 
-        assert_eq!(result, Some(TxPhase::Aborting));
+        assert_eq!(result.unwrap(), Some(TxPhase::Aborting));
         assert!(coordinator.stats.conflicts.load(Ordering::Relaxed) > 0);
     }
 
@@ -3368,7 +3549,7 @@ mod tests {
     #[test]
     fn test_cross_shard_conflict_detection() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         // Two shards with overlapping keys and similar deltas
         let delta0 = DeltaVector::new(
@@ -3382,7 +3563,7 @@ mod tests {
             tx.tx_id,
         );
 
-        coordinator.record_vote(
+        let _ = coordinator.record_vote(
             tx.tx_id,
             0,
             PrepareVote::Yes {
@@ -3401,7 +3582,7 @@ mod tests {
         );
 
         // Should detect conflict due to overlapping keys and non-orthogonal deltas
-        assert_eq!(result, Some(TxPhase::Aborting));
+        assert_eq!(result.unwrap(), Some(TxPhase::Aborting));
     }
 
     #[test]
@@ -3415,7 +3596,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Start a transaction and add delta
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
         {
             let mut pending = coordinator.pending.write();
             if let Some(t) = pending.get_mut(&tx.tx_id) {
@@ -3455,13 +3636,73 @@ mod tests {
                 delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
             },
         );
-        assert!(result.is_none());
+        assert_eq!(result, Err(VoteRecordError::TxNotFound(999)));
+    }
+
+    #[test]
+    fn test_record_vote_wrong_phase() {
+        let coordinator = create_test_coordinator();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record a YES vote to move to Prepared phase
+        let delta = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let vote = PrepareVote::Yes {
+            lock_handle: 1,
+            delta,
+        };
+        let result = coordinator.record_vote(tx_id, 0, vote);
+        assert_eq!(result.unwrap(), Some(TxPhase::Prepared));
+
+        // Try to record another vote -- tx is now in Prepared phase, not Preparing
+        let delta2 = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let vote2 = PrepareVote::Yes {
+            lock_handle: 2,
+            delta: delta2,
+        };
+        let result2 = coordinator.record_vote(tx_id, 0, vote2);
+        assert_eq!(
+            result2,
+            Err(VoteRecordError::WrongPhase {
+                tx_id,
+                expected: TxPhase::Preparing,
+                actual: TxPhase::Prepared,
+            })
+        );
+    }
+
+    #[test]
+    fn test_record_vote_duplicate() {
+        let coordinator = create_test_coordinator();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record first vote from shard 0
+        let delta = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let vote = PrepareVote::Yes {
+            lock_handle: 1,
+            delta,
+        };
+        let result = coordinator.record_vote(tx_id, 0, vote);
+        assert_eq!(result.unwrap(), None); // Not all voted yet
+
+        // Try duplicate vote from shard 0
+        let delta2 = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let vote2 = PrepareVote::Yes {
+            lock_handle: 2,
+            delta: delta2,
+        };
+        let result2 = coordinator.record_vote(tx_id, 0, vote2);
+        assert_eq!(
+            result2,
+            Err(VoteRecordError::DuplicateVote { tx_id, shard: 0 })
+        );
     }
 
     #[test]
     fn test_abort_releases_locks() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -3470,7 +3711,7 @@ mod tests {
         );
 
         // Vote and record
-        coordinator.record_vote(
+        let _ = coordinator.record_vote(
             tx.tx_id,
             0,
             PrepareVote::Yes {
@@ -3489,7 +3730,7 @@ mod tests {
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Add a vote with lock
         {
@@ -3759,7 +4000,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin a transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         let state = coordinator.to_state();
         assert_eq!(state.pending.len(), 1);
@@ -3795,8 +4036,8 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
 
         // Begin transactions
-        let tx1 = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
-        let tx2 = coordinator.begin("node1".to_string(), vec![2, 3]).unwrap();
+        let tx1 = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx2 = coordinator.begin("node1", &[2, 3]).unwrap();
 
         // Save
         coordinator.save_to_store("node1", &store).unwrap();
@@ -3823,7 +4064,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
 
         // Create transactions in different phases
-        let tx_preparing = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx_preparing = coordinator.begin("node1", &[0]).unwrap();
 
         // Manually update internal state
         {
@@ -3859,7 +4100,7 @@ mod tests {
         let store = TensorStore::new();
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
-        coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        coordinator.begin("node1", &[0]).unwrap();
 
         coordinator.save_to_store("node1", &store).unwrap();
 
@@ -4240,7 +4481,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin a transaction with 2 shards
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         // Record votes from both shards - shard 0 says No, shard 1 says Yes
         let phase1 = coordinator.record_vote(
@@ -4250,7 +4491,7 @@ mod tests {
                 reason: "test rejection".to_string(),
             },
         );
-        assert_eq!(phase1, None); // Not all voted yet
+        assert_eq!(phase1.unwrap(), None); // Not all voted yet
 
         // Record YES from shard 1
         let phase2 = coordinator.record_vote(
@@ -4266,7 +4507,7 @@ mod tests {
             },
         );
         // Now all have voted and one said NO, so it should abort
-        assert_eq!(phase2, Some(TxPhase::Aborting));
+        assert_eq!(phase2.unwrap(), Some(TxPhase::Aborting));
 
         // Check that abort was queued
         let pending = coordinator.take_pending_aborts();
@@ -4310,7 +4551,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
 
         // Begin a transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
 
         // Verify WAL has the entry
         let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
@@ -4509,7 +4750,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
 
         // Begin a transaction (creates WAL entry)
-        let _ = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let _ = coordinator.begin("node1", &[0]).unwrap();
 
         // Truncate WAL
         coordinator.truncate_wal().unwrap();
@@ -4527,7 +4768,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
 
         // Begin should work
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Create prepared state
         {
@@ -4563,7 +4804,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin transaction (creates active tx)
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Manually add a lock for the active transaction
         coordinator
@@ -4648,7 +4889,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin an active transaction with a lock
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
         coordinator
             .lock_manager
             .try_lock(tx.tx_id, &["active_key".to_string()])
@@ -5039,6 +5280,7 @@ mod tests {
             max_concurrent: 50,
             orthogonal_threshold: 0.2,
             optimistic_locking: false,
+            tx_queue_soft_limit_pct: 80,
         };
 
         let consensus = ConsensusManager::new(ConsensusConfig::default());
@@ -5103,10 +5345,10 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
 
         // Start and prepare a transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Record a Yes vote
-        coordinator.record_vote(
+        let _ = coordinator.record_vote(
             tx.tx_id,
             0,
             PrepareVote::Yes {
@@ -5147,7 +5389,7 @@ mod tests {
     fn test_coordinator_to_state_and_restore() {
         let coordinator = create_test_coordinator();
 
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Add a lock
         coordinator
@@ -5239,7 +5481,7 @@ mod tests {
         let record_vote_thread = thread::spawn(move || {
             for i in 0..iterations {
                 // Create a transaction first
-                let tx = coord1.begin("node1".to_string(), vec![0, 1]).unwrap();
+                let tx = coord1.begin("node1", &[0, 1]).unwrap();
                 let tx_id = tx.tx_id;
 
                 // Record votes from both shards
@@ -5247,13 +5489,13 @@ mod tests {
                     lock_handle: i as u64,
                     delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
                 };
-                coord1.record_vote(tx_id, 0, vote1);
+                let _ = coord1.record_vote(tx_id, 0, vote1);
 
                 let vote2 = PrepareVote::Yes {
                     lock_handle: i as u64 + 1000,
                     delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
                 };
-                coord1.record_vote(tx_id, 1, vote2);
+                let _ = coord1.record_vote(tx_id, 1, vote2);
 
                 ops1.fetch_add(1, Ordering::Relaxed);
                 thread::yield_now();
@@ -5318,7 +5560,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Create transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record YES from shard 0
@@ -5326,7 +5568,7 @@ mod tests {
             lock_handle: 1,
             delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
         };
-        assert!(coordinator.record_vote(tx_id, 0, vote1).is_none());
+        assert_eq!(coordinator.record_vote(tx_id, 0, vote1).unwrap(), None);
 
         // Record NO from shard 1 - this should trigger abort handling
         let vote2 = PrepareVote::No {
@@ -5335,7 +5577,7 @@ mod tests {
         let result = coordinator.record_vote(tx_id, 1, vote2);
 
         // Should return Aborting phase
-        assert_eq!(result, Some(TxPhase::Aborting));
+        assert_eq!(result.unwrap(), Some(TxPhase::Aborting));
 
         // Abort should be queued in pending_aborts
         let aborts = coordinator.take_pending_aborts();
@@ -5359,11 +5601,11 @@ mod tests {
             ..Default::default()
         });
 
-        let _tx1 = coordinator.begin("node1".to_string(), vec![0]).unwrap();
-        let _tx2 = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let _tx1 = coordinator.begin("node1", &[0]).unwrap();
+        let _tx2 = coordinator.begin("node1", &[0]).unwrap();
 
         // Third should fail
-        let result = coordinator.begin("node1".to_string(), vec![0]);
+        let result = coordinator.begin("node1", &[0]);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -5388,7 +5630,7 @@ mod tests {
                 let coord = Arc::clone(&coordinator);
                 let counter = Arc::clone(&success_count);
                 thread::spawn(move || {
-                    if coord.begin("node1".to_string(), vec![0]).is_ok() {
+                    if coord.begin("node1", &[0]).is_ok() {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
                 })
@@ -5466,7 +5708,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Create a transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
 
         // Acquire locks directly
         coordinator
@@ -5500,7 +5742,7 @@ mod tests {
         let tx_thread = thread::spawn(move || {
             let mut count = 0;
             while !stop1.load(Ordering::Relaxed) && count < 100 {
-                if let Ok(tx) = coord1.begin("node1".to_string(), vec![0]) {
+                if let Ok(tx) = coord1.begin("node1", &[0]) {
                     coord1
                         .lock_manager
                         .try_lock(tx.tx_id, &[format!("key_{}", count)])
@@ -5590,7 +5832,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
 
         // Start a transaction and record a YES vote
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Manually add to wait graph to simulate prior conflict
@@ -5610,7 +5852,7 @@ mod tests {
                 tx_id,
             ),
         };
-        coordinator.record_vote(tx_id, 0, vote);
+        let _ = coordinator.record_vote(tx_id, 0, vote);
 
         // Commit should clean wait graph
         coordinator.commit(tx_id).unwrap();
@@ -5631,7 +5873,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
 
         // Start a transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Add to wait graph
@@ -5651,7 +5893,7 @@ mod tests {
                 tx_id,
             ),
         };
-        coordinator.record_vote(tx_id, 0, vote);
+        let _ = coordinator.record_vote(tx_id, 0, vote);
 
         // Abort should clean wait graph
         coordinator.abort(tx_id, "test abort").unwrap();
@@ -5679,7 +5921,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Start a transaction
-        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coordinator.begin("node1", &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Manually set a very short timeout on the transaction
@@ -5706,7 +5948,7 @@ mod tests {
                 tx_id,
             ),
         };
-        coordinator.record_vote(tx_id, 0, vote);
+        let _ = coordinator.record_vote(tx_id, 0, vote);
 
         // Wait for timeout
         std::thread::sleep(Duration::from_millis(10));
@@ -5768,11 +6010,11 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config).with_wal(wal);
 
         // Begin two transactions (at limit)
-        let tx1 = coordinator.begin("node1".to_string(), vec![0]).unwrap();
-        let tx2 = coordinator.begin("node1".to_string(), vec![1]).unwrap();
+        let tx1 = coordinator.begin("node1", &[0]).unwrap();
+        let tx2 = coordinator.begin("node1", &[1]).unwrap();
 
         // Third should fail
-        let result = coordinator.begin("node1".to_string(), vec![2]);
+        let result = coordinator.begin("node1", &[2]);
         assert!(result.is_err());
 
         // Both successful transactions should be in pending
@@ -5843,7 +6085,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coord.begin("node1", &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Get pending transactions
@@ -5860,7 +6102,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coord.begin("node1", &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a YES vote with lock
@@ -5875,7 +6117,7 @@ mod tests {
         assert!(matches!(vote, PrepareVote::Yes { .. }));
 
         // Record the vote
-        coord.record_vote(tx_id, 0, vote);
+        let _ = coord.record_vote(tx_id, 0, vote);
 
         // Force commit
         let result = coord.force_resolve(tx_id, true);
@@ -5893,7 +6135,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1".to_string(), vec![0]).unwrap();
+        let tx = coord.begin("node1", &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a YES vote with lock
@@ -5905,7 +6147,7 @@ mod tests {
             timeout_ms: 5000,
         };
         let vote = coord.handle_prepare(request);
-        coord.record_vote(tx_id, 0, vote);
+        let _ = coord.record_vote(tx_id, 0, vote);
 
         // Force abort
         let result = coord.force_resolve(tx_id, false);
@@ -5934,14 +6176,14 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx = coord.begin("node1", &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a NO vote for one shard
         let no_vote = PrepareVote::No {
             reason: "test rejection".to_string(),
         };
-        coord.record_vote(tx_id, 0, no_vote);
+        let _ = coord.record_vote(tx_id, 0, no_vote);
 
         // Try to force commit - should fail because there's a NO vote
         let result = coord.force_resolve(tx_id, true);
@@ -6508,5 +6750,52 @@ mod tests {
 
         assert!(response.success);
         assert!(store.exists("table:users"));
+    }
+
+    #[test]
+    fn test_begin_soft_limit_warning() {
+        // Configure max_concurrent=10, soft_limit_pct=50 so soft limit triggers at 5.
+        // The check runs before inserting, so pending.len() must be >= 5 to trigger.
+        let config = DistributedTxConfig {
+            max_concurrent: 10,
+            tx_queue_soft_limit_pct: 50,
+            ..Default::default()
+        };
+        let coordinator = create_test_coordinator_with_config(config);
+
+        // Begin 5 transactions: pending.len() is 0..4 at each check, all < 5
+        for _ in 0..5 {
+            coordinator.begin("node1", &[0]).unwrap();
+        }
+        assert_eq!(
+            coordinator
+                .stats
+                .tx_queue_soft_limit_warnings
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        // 6th transaction: pending.len()==5 at check, which >= soft_limit(5)
+        coordinator.begin("node1", &[0]).unwrap();
+        assert_eq!(
+            coordinator
+                .stats
+                .tx_queue_soft_limit_warnings
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        // 7th still succeeds (soft limit, not hard) and also triggers warning
+        coordinator.begin("node1", &[0]).unwrap();
+        assert_eq!(
+            coordinator
+                .stats
+                .tx_queue_soft_limit_warnings
+                .load(Ordering::Relaxed),
+            2
+        );
+
+        // Verify all 7 transactions are pending (none rejected by soft limit)
+        assert_eq!(coordinator.pending_count(), 7);
     }
 }

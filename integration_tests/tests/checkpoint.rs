@@ -17,7 +17,7 @@ async fn test_checkpoint_manager_create_and_list() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     // Create checkpoint
     let id = manager.create(Some("test-cp"), &store).await.unwrap();
@@ -38,7 +38,7 @@ async fn test_checkpoint_manager_rollback() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     // Put some data
     use tensor_store::{ScalarValue, TensorData, TensorValue};
@@ -79,7 +79,7 @@ async fn test_checkpoint_manager_rollback_by_name() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     use tensor_store::{ScalarValue, TensorData, TensorValue};
     let mut data = TensorData::new();
@@ -108,7 +108,7 @@ async fn test_checkpoint_auto_checkpoint() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     let op = DestructiveOp::Delete {
         table: "users".to_string(),
@@ -136,7 +136,7 @@ async fn test_checkpoint_retention() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default().with_max_checkpoints(3);
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     // Create 5 checkpoints
     for i in 0..5 {
@@ -160,7 +160,7 @@ async fn test_checkpoint_delete() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     let id = manager.create(Some("to-delete"), &store).await.unwrap();
     assert_eq!(manager.list(None).await.unwrap().len(), 1);
@@ -178,7 +178,7 @@ async fn test_checkpoint_delete_by_name() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     manager.create(Some("named-cp"), &store).await.unwrap();
     assert_eq!(manager.list(None).await.unwrap().len(), 1);
@@ -196,7 +196,7 @@ async fn test_checkpoint_rollback_not_found() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     let result = manager.rollback("non-existent", &store).await;
     assert!(result.is_err());
@@ -211,7 +211,7 @@ async fn test_checkpoint_delete_not_found() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     let result = manager.delete("non-existent").await;
     assert!(result.is_err());
@@ -226,7 +226,7 @@ async fn test_checkpoint_with_multiple_keys() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     use tensor_store::{ScalarValue, TensorData, TensorValue};
 
@@ -267,7 +267,7 @@ async fn test_checkpoint_list_with_limit() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     for i in 0..5 {
         manager
@@ -289,7 +289,7 @@ async fn test_checkpoint_auto_naming() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     // Create checkpoint without name
     let id = manager.create(None, &store).await.unwrap();
@@ -311,7 +311,7 @@ async fn test_checkpoint_confirmation_handler() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let mut manager = CheckpointManager::new(blob, config).await;
+    let mut manager = CheckpointManager::new(blob, config);
 
     manager.set_confirmation_handler(Arc::new(AutoConfirm));
 
@@ -333,7 +333,7 @@ async fn test_checkpoint_preview_generation() {
     let blob = Arc::new(Mutex::new(blob));
 
     let config = CheckpointConfig::default();
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     let op = DestructiveOp::Delete {
         table: "users".to_string(),
@@ -357,7 +357,7 @@ async fn test_checkpoint_config_accessors() {
     let config = CheckpointConfig::default()
         .with_auto_checkpoint(false)
         .with_interactive_confirm(false);
-    let manager = CheckpointManager::new(blob, config).await;
+    let manager = CheckpointManager::new(blob, config);
 
     assert!(!manager.auto_checkpoint_enabled());
     assert!(!manager.interactive_confirm_enabled());

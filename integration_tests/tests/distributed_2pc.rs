@@ -28,7 +28,7 @@ fn test_2pc_single_shard_commit() {
 
     // Begin distributed transaction
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0])
+        .begin(&"coordinator".to_string(), &[0])
         .expect("Failed to begin transaction");
 
     // Prepare request to shard 0
@@ -44,12 +44,12 @@ fn test_2pc_single_shard_commit() {
     };
 
     // Simulate participant response
-    let vote = coordinator.handle_prepare(request);
+    let vote = coordinator.handle_prepare(&request);
     assert!(matches!(vote, tensor_chain::PrepareVote::Yes { .. }));
 
     // Record vote
     let phase = coordinator.record_vote(tx.tx_id, 0, vote);
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
 
     // Commit
     coordinator.commit(tx.tx_id).unwrap();
@@ -61,7 +61,7 @@ fn test_2pc_multi_shard_all_yes() {
     let coordinator = create_test_coordinator();
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1, 2])
+        .begin(&"coordinator".to_string(), &[0, 1, 2])
         .expect("Failed to begin transaction");
 
     // All shards vote yes with orthogonal deltas
@@ -81,8 +81,8 @@ fn test_2pc_multi_shard_all_yes() {
             timeout_ms: 5000,
         };
 
-        let vote = coordinator.handle_prepare(request);
-        coordinator.record_vote(tx.tx_id, shard, vote);
+        let vote = coordinator.handle_prepare(&request);
+        let _ = coordinator.record_vote(tx.tx_id, shard, vote);
     }
 
     // Should be prepared after all votes
@@ -106,7 +106,7 @@ fn test_2pc_conflict_detected() {
 
     // First transaction locks key
     let tx1 = coordinator
-        .begin("coordinator".to_string(), vec![0])
+        .begin(&"coordinator".to_string(), &[0])
         .expect("Failed to begin tx1");
 
     let request1 = PrepareRequest {
@@ -120,7 +120,7 @@ fn test_2pc_conflict_detected() {
         timeout_ms: 5000,
     };
 
-    let vote1 = coordinator.handle_prepare(request1);
+    let vote1 = coordinator.handle_prepare(&request1);
     assert!(matches!(vote1, tensor_chain::PrepareVote::Yes { .. }));
 
     // Second transaction tries same key - should conflict
@@ -135,7 +135,7 @@ fn test_2pc_conflict_detected() {
         timeout_ms: 5000,
     };
 
-    let vote2 = coordinator.handle_prepare(request2);
+    let vote2 = coordinator.handle_prepare(&request2);
     assert!(matches!(vote2, tensor_chain::PrepareVote::Conflict { .. }));
 }
 
@@ -144,7 +144,7 @@ fn test_2pc_abort_on_no_vote() {
     let coordinator = create_test_coordinator();
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Shard 0 votes yes
@@ -158,8 +158,8 @@ fn test_2pc_abort_on_no_vote() {
         delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
-    let vote0 = coordinator.handle_prepare(request0);
-    coordinator.record_vote(tx.tx_id, 0, vote0);
+    let vote0 = coordinator.handle_prepare(&request0);
+    let _ = coordinator.record_vote(tx.tx_id, 0, vote0);
 
     // Shard 1 votes no
     let phase = coordinator.record_vote(
@@ -170,7 +170,7 @@ fn test_2pc_abort_on_no_vote() {
         },
     );
 
-    assert_eq!(phase, Some(TxPhase::Aborting));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Aborting));
 }
 
 #[test]
@@ -310,25 +310,25 @@ fn test_2pc_cross_shard_conflict_detection() {
     let coordinator = DistributedTxCoordinator::new(consensus, config);
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Shard 0: Similar delta + overlapping key
     let delta0 = tensor_chain::consensus::DeltaVector::new(
-        vec![1.0, 0.0, 0.0],
+        &[1.0, 0.0, 0.0],
         ["shared_key"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     // Shard 1: Similar delta + same overlapping key
     let delta1 = tensor_chain::consensus::DeltaVector::new(
-        vec![0.9, 0.1, 0.0], // Similar to delta0
+        &[0.9, 0.1, 0.0], // Similar to delta0
         ["shared_key"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     // Record votes
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         tensor_chain::PrepareVote::Yes {
@@ -347,7 +347,7 @@ fn test_2pc_cross_shard_conflict_detection() {
     );
 
     // Should detect conflict due to similar deltas on same key
-    assert_eq!(phase, Some(TxPhase::Aborting));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Aborting));
 }
 
 #[test]
@@ -355,25 +355,25 @@ fn test_2pc_orthogonal_merges() {
     let coordinator = create_test_coordinator();
 
     let tx = coordinator
-        .begin("coordinator".to_string(), vec![0, 1])
+        .begin(&"coordinator".to_string(), &[0, 1])
         .expect("Failed to begin transaction");
 
     // Shard 0: Orthogonal delta + different key
     let delta0 = tensor_chain::consensus::DeltaVector::new(
-        vec![1.0, 0.0, 0.0],
+        &[1.0, 0.0, 0.0],
         ["key_a"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     // Shard 1: Orthogonal delta + different key
     let delta1 = tensor_chain::consensus::DeltaVector::new(
-        vec![0.0, 1.0, 0.0], // Orthogonal to delta0
+        &[0.0, 1.0, 0.0], // Orthogonal to delta0
         ["key_b"].iter().map(|s| s.to_string()).collect(),
         tx.tx_id,
     );
 
     // Record votes
-    coordinator.record_vote(
+    let _ = coordinator.record_vote(
         tx.tx_id,
         0,
         tensor_chain::PrepareVote::Yes {
@@ -392,7 +392,7 @@ fn test_2pc_orthogonal_merges() {
     );
 
     // Should succeed - orthogonal deltas can merge
-    assert_eq!(phase, Some(TxPhase::Prepared));
+    assert_eq!(phase.unwrap(), Some(TxPhase::Prepared));
 
     // Verify orthogonal merge was counted
     coordinator.commit(tx.tx_id).unwrap();
@@ -410,9 +410,7 @@ fn test_2pc_stats_tracking() {
     let coordinator = create_test_coordinator();
 
     // Create and commit a transaction
-    let tx = coordinator
-        .begin("coordinator".to_string(), vec![0])
-        .unwrap();
+    let tx = coordinator.begin(&"coordinator".to_string(), &[0]).unwrap();
     let request = PrepareRequest {
         tx_id: tx.tx_id,
         coordinator: "coordinator".to_string(),
@@ -423,14 +421,12 @@ fn test_2pc_stats_tracking() {
         delta_embedding: SparseVector::from_dense(&[1.0]),
         timeout_ms: 5000,
     };
-    let vote = coordinator.handle_prepare(request);
-    coordinator.record_vote(tx.tx_id, 0, vote);
+    let vote = coordinator.handle_prepare(&request);
+    let _ = coordinator.record_vote(tx.tx_id, 0, vote);
     coordinator.commit(tx.tx_id).unwrap();
 
     // Create and abort a transaction
-    let tx2 = coordinator
-        .begin("coordinator".to_string(), vec![0])
-        .unwrap();
+    let tx2 = coordinator.begin(&"coordinator".to_string(), &[0]).unwrap();
     coordinator.abort(tx2.tx_id, "test abort").unwrap();
 
     let stats = coordinator.stats();
