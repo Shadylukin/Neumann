@@ -861,15 +861,15 @@ mod tests {
     #[test]
     fn test_cypher_direction_conversion() {
         assert!(matches!(
-            cypher_direction_to_engine(&CypherDirection::Outgoing),
+            cypher_direction_to_engine(CypherDirection::Outgoing),
             Direction::Outgoing
         ));
         assert!(matches!(
-            cypher_direction_to_engine(&CypherDirection::Incoming),
+            cypher_direction_to_engine(CypherDirection::Incoming),
             Direction::Incoming
         ));
         assert!(matches!(
-            cypher_direction_to_engine(&CypherDirection::Undirected),
+            cypher_direction_to_engine(CypherDirection::Undirected),
             Direction::Both
         ));
     }
@@ -2270,8 +2270,7 @@ mod tests {
         let expr = make_expr_ident("unknown");
 
         let result = eval_expr_value(&graph, &expr, &ctx);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), PropertyValue::Null));
+        assert!(matches!(result, PropertyValue::Null));
     }
 
     #[test]
@@ -2281,8 +2280,7 @@ mod tests {
         let expr = make_expr_qualified("unknown", "prop");
 
         let result = eval_expr_value(&graph, &expr, &ctx);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), PropertyValue::Null));
+        assert!(matches!(result, PropertyValue::Null));
     }
 
     #[test]
@@ -2292,8 +2290,7 @@ mod tests {
         let expr = make_binary_expr(make_expr_int(1), BinaryOp::Add, make_expr_int(2));
 
         let result = eval_expr_value(&graph, &expr, &ctx);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), PropertyValue::Null));
+        assert!(matches!(result, PropertyValue::Null));
     }
 
     #[test]

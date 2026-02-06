@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! SWIM gossip protocol for scalable cluster membership and failure detection.
 //!
 //! # Overview
@@ -267,7 +267,7 @@ impl GossipNodeState {
 }
 
 /// Gossip protocol messages.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GossipMessage {
     /// Sync message with piggy-backed node states.
     Sync {
@@ -295,6 +295,18 @@ pub enum GossipMessage {
         target: NodeId,
         sequence: u64,
         success: bool,
+    },
+    /// Bidirectional connectivity probe (sent to verify reverse path).
+    BidirectionalProbe {
+        origin: NodeId,
+        probe_id: u64,
+        timestamp: u64,
+    },
+    /// Acknowledgement of a bidirectional probe (proves reverse path works).
+    BidirectionalAck {
+        origin: NodeId,
+        probe_id: u64,
+        responder: NodeId,
     },
 }
 
@@ -541,6 +553,13 @@ pub struct GossipConfig {
     pub require_signatures: bool,
     /// Maximum age of signed messages in milliseconds (default: 5 minutes).
     pub max_message_age_ms: u64,
+    /// Timeout for bidirectional probe acknowledgements in milliseconds.
+    pub bidirectional_probe_timeout_ms: u64,
+    /// Whether to require confirmed bidirectional connectivity before healing.
+    pub require_bidirectional: bool,
+    /// Maximum allowed incarnation jump per update. Updates exceeding this
+    /// delta are rejected to prevent incarnation inflation attacks.
+    pub max_incarnation_delta: u64,
 }
 
 impl Default for GossipConfig {
@@ -555,6 +574,9 @@ impl Default for GossipConfig {
             indirect_ping_timeout_ms: 500,
             require_signatures: false,
             max_message_age_ms: 5 * 60 * 1000, // 5 minutes
+            bidirectional_probe_timeout_ms: 1000,
+            require_bidirectional: true,
+            max_incarnation_delta: 100,
         }
     }
 }
@@ -579,6 +601,68 @@ struct HealProgress {
     partition_start: Instant,
     /// Number of consecutive successful communications.
     consecutive_successes: u32,
+}
+
+/// Tracks node flapping behavior (rapid healthy/failed transitions).
+#[derive(Debug, Clone)]
+struct FlapRecord {
+    /// Number of health state transitions in the tracking window.
+    flap_count: u32,
+    /// When the last health transition occurred.
+    last_transition: Instant,
+    /// When the node last became stable (no transitions for the reset window).
+    last_stable: Instant,
+}
+
+impl FlapRecord {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            flap_count: 0,
+            last_transition: now,
+            last_stable: now,
+        }
+    }
+
+    /// Record a health transition and return the new flap count.
+    fn record_transition(&mut self) -> u32 {
+        self.flap_count += 1;
+        self.last_transition = Instant::now();
+        self.flap_count
+    }
+
+    /// Check if the node has been stable long enough to reset flap count.
+    fn maybe_reset(&mut self, stable_window: Duration) -> bool {
+        if self.last_transition.elapsed() >= stable_window {
+            self.flap_count = 0;
+            self.last_stable = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Compute backoff duration based on flap count (exponential after threshold).
+    fn backoff_duration(&self, threshold: u32) -> Option<Duration> {
+        if self.flap_count < threshold {
+            return None;
+        }
+        let excess = self.flap_count.saturating_sub(threshold);
+        // 1s, 2s, 4s, 8s, ... capped at 5 minutes
+        let secs = 1u64 << excess.min(8);
+        Some(Duration::from_secs(secs.min(300)))
+    }
+}
+
+/// Tracks bidirectional connectivity status for a peer.
+#[derive(Debug, Clone)]
+pub struct ConnectivityEntry {
+    /// Whether we can send to this node (outbound path works).
+    pub outbound_ok: bool,
+    /// Whether this node can send to us (inbound path works, confirmed by ack).
+    pub inbound_ok: bool,
+    /// When connectivity was last verified.
+    pub last_check: Instant,
 }
 
 /// Gossip-based membership manager.
@@ -621,6 +705,22 @@ pub struct GossipMembershipManager {
     sequence_tracker: Option<Arc<SequenceTracker>>,
     /// Monotonic sequence number for outgoing signed messages.
     outgoing_sequence: AtomicU64,
+    /// Bidirectional connectivity matrix.
+    connectivity_matrix: RwLock<HashMap<NodeId, ConnectivityEntry>>,
+    /// Counter for bidirectional probe IDs.
+    probe_id_counter: AtomicU64,
+    /// Pending bidirectional probes awaiting acknowledgement.
+    pending_probes: RwLock<HashMap<u64, (NodeId, Instant)>>,
+    /// Number of asymmetric partitions detected.
+    asymmetric_partitions_detected: AtomicU64,
+    /// Number of incarnation updates rejected due to exceeding max delta.
+    incarnation_rejected: AtomicU64,
+    /// Number of signature verification failures.
+    signature_verification_failures: AtomicU64,
+    /// Per-node flap tracking for detecting rapid health transitions.
+    flap_tracker: RwLock<HashMap<NodeId, FlapRecord>>,
+    /// Number of times flap backoff was applied.
+    flap_backoffs_applied: AtomicU64,
 }
 
 impl GossipMembershipManager {
@@ -650,6 +750,14 @@ impl GossipMembershipManager {
             validator_registry: None,
             sequence_tracker: None,
             outgoing_sequence: AtomicU64::new(0),
+            connectivity_matrix: RwLock::new(HashMap::new()),
+            probe_id_counter: AtomicU64::new(0),
+            pending_probes: RwLock::new(HashMap::new()),
+            asymmetric_partitions_detected: AtomicU64::new(0),
+            incarnation_rejected: AtomicU64::new(0),
+            signature_verification_failures: AtomicU64::new(0),
+            flap_tracker: RwLock::new(HashMap::new()),
+            flap_backoffs_applied: AtomicU64::new(0),
         }
     }
 
@@ -702,6 +810,14 @@ impl GossipMembershipManager {
             validator_registry: Some(validator_registry),
             sequence_tracker: Some(sequence_tracker),
             outgoing_sequence: AtomicU64::new(0),
+            connectivity_matrix: RwLock::new(HashMap::new()),
+            probe_id_counter: AtomicU64::new(0),
+            pending_probes: RwLock::new(HashMap::new()),
+            asymmetric_partitions_detected: AtomicU64::new(0),
+            incarnation_rejected: AtomicU64::new(0),
+            signature_verification_failures: AtomicU64::new(0),
+            flap_tracker: RwLock::new(HashMap::new()),
+            flap_backoffs_applied: AtomicU64::new(0),
         }
     }
 
@@ -722,18 +838,34 @@ impl GossipMembershipManager {
     }
 
     /// Create a signed or unsigned `Message::Gossip` depending on configuration.
-    fn create_gossip_message(&self, gossip_msg: GossipMessage) -> Message {
+    ///
+    /// When `require_signatures` is enabled and signing fails, returns `None`
+    /// instead of falling back to unsigned (fail-fast behavior).
+    fn create_gossip_message(&self, gossip_msg: GossipMessage) -> Option<Message> {
         if let Some(ref identity) = self.identity {
             let seq = self.outgoing_sequence.fetch_add(1, Ordering::SeqCst);
             match SignedGossipMessage::new(identity, &gossip_msg, seq) {
-                Ok(signed) => Message::SignedGossip(signed),
+                Ok(signed) => Some(Message::SignedGossip(signed)),
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to sign gossip message, falling back to unsigned");
-                    Message::Gossip(gossip_msg)
+                    self.signature_verification_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    if self.config.require_signatures {
+                        tracing::error!(
+                            error = %e,
+                            "Failed to sign gossip message, dropping (require_signatures=true)"
+                        );
+                        None
+                    } else {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to sign gossip message, falling back to unsigned"
+                        );
+                        Some(Message::Gossip(gossip_msg))
+                    }
                 },
             }
         } else {
-            Message::Gossip(gossip_msg)
+            Some(Message::Gossip(gossip_msg))
         }
     }
 
@@ -747,21 +879,33 @@ impl GossipMembershipManager {
     pub fn handle_signed_gossip(&self, signed: &SignedGossipMessage) -> Result<()> {
         let (Some(registry), Some(tracker)) = (&self.validator_registry, &self.sequence_tracker)
         else {
+            self.signature_verification_failures
+                .fetch_add(1, Ordering::Relaxed);
             return Err(ChainError::CryptoError(
                 "signing not configured for gossip verification".into(),
             ));
         };
 
-        let msg = signed.verify_with_tracker(registry, tracker)?;
-        self.handle_gossip(msg);
-        Ok(())
+        match signed.verify_with_tracker(registry, tracker) {
+            Ok(msg) => {
+                self.handle_gossip(msg);
+                Ok(())
+            },
+            Err(e) => {
+                self.signature_verification_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(e)
+            },
+        }
     }
 
     /// Add a known peer.
     pub fn add_peer(&self, peer: NodeId) {
-        let mut peers = self.known_peers.write();
-        if !peers.contains(&peer) {
-            peers.push(peer.clone());
+        {
+            let mut peers = self.known_peers.write();
+            if !peers.contains(&peer) {
+                peers.push(peer.clone());
+            }
         }
 
         // Initialize state if not present
@@ -836,15 +980,18 @@ impl GossipMembershipManager {
 
         // Simple random selection (use round counter as seed)
         let round = self.round_counter.load(Ordering::Relaxed);
-        let mut selected = Vec::with_capacity(k.min(peers.len()));
+        let peer_count = peers.len();
+        let mut selected = Vec::with_capacity(k.min(peer_count));
 
-        for i in 0..k.min(peers.len()) {
-            let idx = ((round + i as u64) as usize) % peers.len();
+        for i in 0..k.min(peer_count) {
+            #[allow(clippy::cast_possible_truncation)] // i < peer_count which fits in usize
+            let idx = (round.wrapping_add(i as u64) as usize) % peer_count;
             let peer = &peers[idx];
             if peer != &self.local_node && !selected.contains(peer) {
                 selected.push(peer.clone());
             }
         }
+        drop(peers);
 
         if !selected.is_empty() {
             tracing::debug!(
@@ -858,6 +1005,10 @@ impl GossipMembershipManager {
     }
 
     /// Run a single gossip round.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible but returns `Result` for future error propagation.
     #[allow(clippy::unused_async)] // Async for API consistency; spawns async tasks internally
     pub async fn gossip_round(&self) -> Result<()> {
         let round = self.round_counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -881,11 +1032,13 @@ impl GossipMembershipManager {
             "Starting gossip round"
         );
 
-        let msg = self.create_gossip_message(GossipMessage::Sync {
+        let Some(msg) = self.create_gossip_message(GossipMessage::Sync {
             sender: self.local_node.clone(),
             states,
             sender_time,
-        });
+        }) else {
+            return Ok(());
+        };
 
         // Send in parallel using tokio spawn (fire-and-forget)
         for target in targets {
@@ -913,7 +1066,7 @@ impl GossipMembershipManager {
                 states,
                 sender_time,
             } => {
-                self.handle_sync(&sender, states, sender_time);
+                self.handle_sync(&sender, &states, sender_time);
             },
             GossipMessage::Suspect {
                 reporter,
@@ -943,10 +1096,24 @@ impl GossipMembershipManager {
             } => {
                 self.handle_ping_ack(&origin, &target, sequence, success);
             },
+            GossipMessage::BidirectionalProbe {
+                origin,
+                probe_id,
+                timestamp,
+            } => {
+                self.handle_bidirectional_probe(&origin, probe_id, timestamp);
+            },
+            GossipMessage::BidirectionalAck {
+                origin,
+                probe_id,
+                responder,
+            } => {
+                self.handle_bidirectional_ack(&origin, probe_id, &responder);
+            },
         }
     }
 
-    fn handle_sync(&self, sender: &NodeId, states: Vec<GossipNodeState>, sender_time: u64) {
+    fn handle_sync(&self, sender: &NodeId, states: &[GossipNodeState], sender_time: u64) {
         tracing::debug!(
             sender = %sender,
             state_count = states.len(),
@@ -957,7 +1124,31 @@ impl GossipMembershipManager {
         let changed = {
             let mut state = self.state.write();
             state.sync_time(sender_time);
-            state.merge(&states)
+            // Filter out states with incarnation jumps exceeding the configured delta
+            let max_delta = self.config.max_incarnation_delta;
+            let filtered: Vec<GossipNodeState> = states
+                .iter()
+                .filter(|incoming| {
+                    let delta = state.get(&incoming.node_id).map_or(
+                        incoming.incarnation, // new node: accept if incarnation <= max_delta
+                        |existing| incoming.incarnation.saturating_sub(existing.incarnation),
+                    );
+                    if delta > max_delta {
+                        self.incarnation_rejected.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            node_id = %incoming.node_id,
+                            delta,
+                            max_delta,
+                            "Rejected incarnation update: delta exceeds maximum"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect();
+            state.merge(&filtered)
         };
 
         if !changed.is_empty() {
@@ -983,12 +1174,7 @@ impl GossipMembershipManager {
         }
 
         // Mark sender as healthy (they're clearly alive)
-        let sender_incarnation = self
-            .state
-            .read()
-            .get(sender)
-            .map(|s| s.incarnation)
-            .unwrap_or(0);
+        let sender_incarnation = self.state.read().get(sender).map_or(0, |s| s.incarnation);
 
         let sender_state = GossipNodeState::new(
             sender.clone(),
@@ -1037,6 +1223,20 @@ impl GossipMembershipManager {
     }
 
     fn handle_alive(&self, node_id: &NodeId, incarnation: u64) {
+        // Check incarnation delta before accepting alive message
+        let current_incarnation = self.state.read().get(node_id).map_or(0, |s| s.incarnation);
+        let delta = incarnation.saturating_sub(current_incarnation);
+        if delta > self.config.max_incarnation_delta {
+            self.incarnation_rejected.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                node_id = %node_id,
+                delta,
+                max_delta = self.config.max_incarnation_delta,
+                "Rejected alive message: incarnation delta exceeds maximum"
+            );
+            return;
+        }
+
         if self.state.write().refute(node_id, incarnation) {
             tracing::debug!(
                 node_id = %node_id,
@@ -1044,6 +1244,8 @@ impl GossipMembershipManager {
                 "Alive received, clearing suspicion"
             );
             self.suspicions.write().remove(node_id);
+            // Track health transition for flap detection (suspected → alive)
+            self.record_flap(node_id);
         }
     }
 
@@ -1062,18 +1264,22 @@ impl GossipMembershipManager {
         let local = self.local_node.clone();
 
         // Pre-create signed message templates for both success and failure
-        let ack_success = self.create_gossip_message(GossipMessage::PingAck {
+        let Some(ack_success) = self.create_gossip_message(GossipMessage::PingAck {
             origin: local.clone(),
             target: target.clone(),
             sequence,
             success: true,
-        });
-        let ack_failure = self.create_gossip_message(GossipMessage::PingAck {
+        }) else {
+            return;
+        };
+        let Some(ack_failure) = self.create_gossip_message(GossipMessage::PingAck {
             origin: local,
             target: target.clone(),
             sequence,
             success: false,
-        });
+        }) else {
+            return;
+        };
 
         tokio::spawn(async move {
             let success = transport
@@ -1112,10 +1318,12 @@ impl GossipMembershipManager {
 
     /// Broadcast alive message to refute suspicion.
     fn broadcast_alive(&self, incarnation: u64) {
-        let msg = self.create_gossip_message(GossipMessage::Alive {
+        let Some(msg) = self.create_gossip_message(GossipMessage::Alive {
             node_id: self.local_node.clone(),
             incarnation,
-        });
+        }) else {
+            return;
+        };
 
         let targets = self.select_gossip_targets(self.config.fanout);
         let transport = Arc::clone(&self.transport);
@@ -1145,6 +1353,7 @@ impl GossipMembershipManager {
         }
 
         for (node_id, started_at) in to_fail {
+            #[allow(clippy::cast_possible_truncation)] // Duration in ms always fits u64
             let elapsed_ms = now.duration_since(started_at).as_millis() as u64;
             tracing::warn!(
                 node_id = %node_id,
@@ -1153,6 +1362,8 @@ impl GossipMembershipManager {
                 "Suspicion timeout, marking node as failed"
             );
             self.suspicions.write().remove(&node_id);
+            // Track health transition for flap detection (suspected → failed)
+            self.record_flap(&node_id);
             if self.state.write().fail(&node_id) {
                 // Notify callbacks
                 let callbacks = self.callbacks.read();
@@ -1164,13 +1375,12 @@ impl GossipMembershipManager {
     }
 
     /// Initiate suspicion protocol for a node that failed direct ping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if gossip messages fail to send to all targets.
     pub async fn suspect_node(&self, node_id: &NodeId) -> Result<()> {
-        let incarnation = self
-            .state
-            .read()
-            .get(node_id)
-            .map(|s| s.incarnation)
-            .unwrap_or(0);
+        let incarnation = self.state.read().get(node_id).map_or(0, |s| s.incarnation);
 
         tracing::debug!(
             node_id = %node_id,
@@ -1190,20 +1400,22 @@ impl GossipMembershipManager {
                         incarnation,
                     },
                 );
+                // Track health transition for flap detection (healthy → suspected)
+                self.record_flap(node_id);
             }
         }
 
         // Broadcast suspicion
-        let msg = self.create_gossip_message(GossipMessage::Suspect {
+        if let Some(msg) = self.create_gossip_message(GossipMessage::Suspect {
             reporter: self.local_node.clone(),
             suspect: node_id.clone(),
             incarnation,
-        });
-
-        let targets = self.select_gossip_targets(self.config.fanout);
-        for target in targets {
-            if let Err(e) = self.transport.send(&target, msg.clone()).await {
-                tracing::debug!(peer = %target, error = %e, "failed to send suspect message");
+        }) {
+            let targets = self.select_gossip_targets(self.config.fanout);
+            for target in targets {
+                if let Err(e) = self.transport.send(&target, msg.clone()).await {
+                    tracing::debug!(peer = %target, error = %e, "failed to send suspect message");
+                }
             }
         }
 
@@ -1231,11 +1443,13 @@ impl GossipMembershipManager {
             );
         }
 
-        let msg = self.create_gossip_message(GossipMessage::PingReq {
+        let Some(msg) = self.create_gossip_message(GossipMessage::PingReq {
             origin: self.local_node.clone(),
             target: target.clone(),
             sequence,
-        });
+        }) else {
+            return;
+        };
 
         for intermediary in intermediaries {
             if let Err(e) = self.transport.send(&intermediary, msg.clone()).await {
@@ -1245,6 +1459,10 @@ impl GossipMembershipManager {
     }
 
     /// Run the gossip protocol loop.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible but returns `Result` for future error propagation.
     pub async fn run(&self) -> Result<()> {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let interval = Duration::from_millis(self.config.gossip_interval_ms);
@@ -1254,7 +1472,7 @@ impl GossipMembershipManager {
                 _ = shutdown_rx.recv() => {
                     break;
                 }
-                _ = tokio::time::sleep(interval) => {
+                () = tokio::time::sleep(interval) => {
                     let _ = self.gossip_round().await;
                 }
             }
@@ -1325,19 +1543,30 @@ impl GossipMembershipManager {
     /// * `None` if heal is not confirmed or node is not being tracked
     pub fn is_heal_confirmed(&self, node: &NodeId, threshold: u32) -> Option<u64> {
         let progress = self.heal_progress.read();
+        let hp = progress.get(node)?;
 
-        if let Some(hp) = progress.get(node) {
-            if hp.consecutive_successes >= threshold {
-                let partition_duration_ms = hp.partition_start.elapsed().as_millis() as u64;
-                tracing::info!(
+        if hp.consecutive_successes >= threshold {
+            // Check bidirectional connectivity if required
+            if !self.is_bidirectional_confirmed(node) {
+                tracing::debug!(
                     node_id = %node,
-                    threshold = threshold,
-                    consecutive_successes = hp.consecutive_successes,
-                    partition_duration_ms = partition_duration_ms,
-                    "Heal confirmed"
+                    "Heal threshold met but bidirectional connectivity not confirmed"
                 );
-                return Some(partition_duration_ms);
+                return None;
             }
+
+            #[allow(clippy::cast_possible_truncation)] // Duration in ms always fits u64
+            let partition_duration_ms = hp.partition_start.elapsed().as_millis() as u64;
+            let consecutive = hp.consecutive_successes;
+            drop(progress);
+            tracing::info!(
+                node_id = %node,
+                threshold = threshold,
+                consecutive_successes = consecutive,
+                partition_duration_ms = partition_duration_ms,
+                "Heal confirmed"
+            );
+            return Some(partition_duration_ms);
         }
 
         None
@@ -1370,6 +1599,244 @@ impl GossipMembershipManager {
             .iter()
             .map(|(id, hp)| (id.clone(), hp.consecutive_successes))
             .collect()
+    }
+
+    /// Send a bidirectional connectivity probe to a node.
+    ///
+    /// The probe verifies that the target can receive our messages AND send
+    /// messages back to us, detecting asymmetric partitions where A can reach
+    /// B but B cannot reach A.
+    pub fn send_bidirectional_probe(&self, target: &NodeId) {
+        let probe_id = self.probe_id_counter.fetch_add(1, Ordering::Relaxed);
+        let timestamp = self.state.read().lamport_time();
+
+        self.pending_probes
+            .write()
+            .insert(probe_id, (target.clone(), Instant::now()));
+
+        // Mark outbound as ok (we're sending)
+        {
+            let mut matrix = self.connectivity_matrix.write();
+            let entry = matrix.entry(target.clone()).or_insert(ConnectivityEntry {
+                outbound_ok: false,
+                inbound_ok: false,
+                last_check: Instant::now(),
+            });
+            entry.outbound_ok = true;
+            entry.last_check = Instant::now();
+        }
+
+        let Some(msg) = self.create_gossip_message(GossipMessage::BidirectionalProbe {
+            origin: self.local_node.clone(),
+            probe_id,
+            timestamp,
+        }) else {
+            return;
+        };
+
+        let transport = Arc::clone(&self.transport);
+        let target_clone = target.clone();
+        tokio::spawn(async move {
+            if let Err(e) = transport.send(&target_clone, msg).await {
+                tracing::debug!(
+                    peer = %target_clone,
+                    error = %e,
+                    "Failed to send bidirectional probe"
+                );
+            }
+        });
+    }
+
+    fn handle_bidirectional_probe(&self, origin: &NodeId, probe_id: u64, _timestamp: u64) {
+        tracing::debug!(
+            origin = %origin,
+            probe_id = probe_id,
+            "Received bidirectional probe, sending ack"
+        );
+
+        let Some(msg) = self.create_gossip_message(GossipMessage::BidirectionalAck {
+            origin: origin.clone(),
+            probe_id,
+            responder: self.local_node.clone(),
+        }) else {
+            return;
+        };
+
+        let transport = Arc::clone(&self.transport);
+        let origin_clone = origin.clone();
+        tokio::spawn(async move {
+            if let Err(e) = transport.send(&origin_clone, msg).await {
+                tracing::debug!(
+                    peer = %origin_clone,
+                    error = %e,
+                    "Failed to send bidirectional ack"
+                );
+            }
+        });
+    }
+
+    fn handle_bidirectional_ack(&self, _origin: &NodeId, probe_id: u64, responder: &NodeId) {
+        // Remove from pending
+        let pending = self.pending_probes.write().remove(&probe_id);
+        if let Some((expected_target, _sent_at)) = pending {
+            if &expected_target == responder {
+                tracing::debug!(
+                    responder = %responder,
+                    probe_id = probe_id,
+                    "Bidirectional connectivity confirmed"
+                );
+                let mut matrix = self.connectivity_matrix.write();
+                let entry = matrix
+                    .entry(responder.clone())
+                    .or_insert(ConnectivityEntry {
+                        outbound_ok: true,
+                        inbound_ok: false,
+                        last_check: Instant::now(),
+                    });
+                entry.inbound_ok = true;
+                entry.last_check = Instant::now();
+            }
+        }
+    }
+
+    /// Expire pending bidirectional probes that have timed out.
+    ///
+    /// Probes that don't receive an ack within the timeout indicate that the
+    /// reverse path (target -> us) is broken, i.e., asymmetric partition.
+    pub fn expire_bidirectional_probes(&self) {
+        let timeout = Duration::from_millis(self.config.bidirectional_probe_timeout_ms);
+        let now = Instant::now();
+
+        let mut expired = Vec::new();
+        {
+            let pending = self.pending_probes.read();
+            for (probe_id, (target, sent_at)) in pending.iter() {
+                if now.duration_since(*sent_at) >= timeout {
+                    expired.push((*probe_id, target.clone()));
+                }
+            }
+        }
+
+        if !expired.is_empty() {
+            let mut pending = self.pending_probes.write();
+            let mut matrix = self.connectivity_matrix.write();
+            for (probe_id, target) in &expired {
+                pending.remove(probe_id);
+                let entry = matrix.entry(target.clone()).or_insert(ConnectivityEntry {
+                    outbound_ok: true,
+                    inbound_ok: false,
+                    last_check: Instant::now(),
+                });
+                // Outbound worked (we sent it) but inbound failed (no ack)
+                entry.inbound_ok = false;
+                entry.last_check = now;
+
+                self.asymmetric_partitions_detected
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    node_id = %target,
+                    probe_id = probe_id,
+                    "Asymmetric partition detected: outbound OK but no inbound ack"
+                );
+            }
+        }
+    }
+
+    /// Check whether bidirectional connectivity to a node has been confirmed.
+    ///
+    /// Returns `true` if both outbound and inbound paths are verified, or if
+    /// `require_bidirectional` is disabled in config.
+    pub fn is_bidirectional_confirmed(&self, node: &NodeId) -> bool {
+        if !self.config.require_bidirectional {
+            return true;
+        }
+
+        let matrix = self.connectivity_matrix.read();
+        matrix
+            .get(node)
+            .is_some_and(|entry| entry.outbound_ok && entry.inbound_ok)
+    }
+
+    /// Get the connectivity status for a node.
+    pub fn connectivity_status(&self, node: &NodeId) -> Option<ConnectivityEntry> {
+        self.connectivity_matrix.read().get(node).cloned()
+    }
+
+    /// Get the number of asymmetric partitions detected.
+    pub fn asymmetric_partition_count(&self) -> u64 {
+        self.asymmetric_partitions_detected.load(Ordering::Relaxed)
+    }
+
+    /// Get the number of incarnation updates rejected due to exceeding max delta.
+    pub fn incarnation_rejected_count(&self) -> u64 {
+        self.incarnation_rejected.load(Ordering::Relaxed)
+    }
+
+    /// Get the number of signature verification failures.
+    pub fn signature_verification_failure_count(&self) -> u64 {
+        self.signature_verification_failures.load(Ordering::Relaxed)
+    }
+
+    /// Record a health transition for flap detection.
+    /// Returns the backoff duration if the node is flapping, or `None` if normal.
+    fn record_flap(&self, node_id: &NodeId) -> Option<Duration> {
+        let mut tracker = self.flap_tracker.write();
+        let record = tracker
+            .entry(node_id.clone())
+            .or_insert_with(FlapRecord::new);
+
+        // Reset if stable for 5 minutes
+        record.maybe_reset(Duration::from_secs(300));
+
+        let count = record.record_transition();
+        let backoff = record.backoff_duration(5); // threshold: 5 flaps
+
+        if let Some(ref duration) = backoff {
+            self.flap_backoffs_applied.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                node_id = %node_id,
+                flap_count = count,
+                backoff_secs = duration.as_secs(),
+                "Node flapping detected, applying exponential backoff"
+            );
+        }
+        backoff
+    }
+
+    /// Check if a node is currently in flap backoff.
+    pub fn is_in_flap_backoff(&self, node_id: &NodeId) -> bool {
+        let tracker = self.flap_tracker.read();
+        tracker
+            .get(node_id)
+            .and_then(|r| r.backoff_duration(5))
+            .is_some()
+    }
+
+    /// Get the flap count for a node.
+    pub fn flap_count(&self, node_id: &NodeId) -> u32 {
+        self.flap_tracker
+            .read()
+            .get(node_id)
+            .map_or(0, |r| r.flap_count)
+    }
+
+    /// Get the number of times flap backoff was applied.
+    pub fn flap_backoffs_count(&self) -> u64 {
+        self.flap_backoffs_applied.load(Ordering::Relaxed)
+    }
+
+    /// Reset flap tracking for all nodes that have been stable.
+    pub fn reset_stable_flap_records(&self) {
+        let mut tracker = self.flap_tracker.write();
+        tracker.retain(|_, record| {
+            record.maybe_reset(Duration::from_secs(300));
+            record.flap_count > 0
+        });
+    }
+
+    /// Clear connectivity state for a node (e.g., after partition fully heals).
+    pub fn clear_connectivity(&self, node: &NodeId) {
+        self.connectivity_matrix.write().remove(node);
     }
 
     pub fn lamport_time(&self) -> u64 {
@@ -1557,8 +2024,11 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+        let config = GossipConfig {
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         // Mark a node as failed first
         {
@@ -2795,7 +3265,9 @@ mod tests {
             sender_time: 0,
         };
 
-        let msg = manager.create_gossip_message(inner);
+        let msg = manager
+            .create_gossip_message(inner)
+            .expect("signing not configured");
         if let Message::Gossip(gossip) = msg {
             assert!(matches!(gossip, GossipMessage::Sync { .. }));
         } else {
@@ -2815,12 +3287,18 @@ mod tests {
             indirect_ping_timeout_ms: 250,
             require_signatures: true,
             max_message_age_ms: 60000,
+            bidirectional_probe_timeout_ms: 2000,
+            require_bidirectional: true,
+            max_incarnation_delta: 50,
         };
 
         assert_eq!(config.fanout, 5);
         assert_eq!(config.gossip_interval_ms, 100);
         assert!(!config.geometric_routing);
         assert!(config.require_signatures);
+        assert_eq!(config.bidirectional_probe_timeout_ms, 2000);
+        assert!(config.require_bidirectional);
+        assert_eq!(config.max_incarnation_delta, 50);
     }
 
     #[test]
@@ -2967,13 +3445,15 @@ mod tests {
             incarnation: 1,
         };
         let signed = SignedGossipMessage::new(&identity, &msg, 1).unwrap();
-        manager.handle_signed_gossip(signed).unwrap();
+        manager.handle_signed_gossip(&signed).unwrap();
 
-        let wrapped = manager.create_gossip_message(GossipMessage::PingReq {
-            origin: node_id.clone(),
-            target: "peer".to_string(),
-            sequence: 42,
-        });
+        let wrapped = manager
+            .create_gossip_message(GossipMessage::PingReq {
+                origin: node_id.clone(),
+                target: "peer".to_string(),
+                sequence: 42,
+            })
+            .expect("signing should succeed");
         assert!(matches!(wrapped, Message::SignedGossip(_)));
     }
 
@@ -2991,7 +3471,7 @@ mod tests {
             incarnation: 1,
         };
         let signed = SignedGossipMessage::new(&identity, &msg, 1).unwrap();
-        let result = manager.handle_signed_gossip(signed);
+        let result = manager.handle_signed_gossip(&signed);
         assert!(result.is_err());
     }
 
@@ -3023,9 +3503,13 @@ mod tests {
     fn test_gossip_heal_progress_tracking() {
         use crate::network::MemoryTransport;
 
+        let config = GossipConfig {
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
         let manager = GossipMembershipManager::new(
             "node1".to_string(),
-            GossipConfig::default(),
+            config,
             Arc::new(MemoryTransport::new("node1".to_string())),
         );
 
@@ -3188,5 +3672,529 @@ mod tests {
             .ping_sequence
             .store(threshold + 1, Ordering::Relaxed);
         assert!(manager.check_sequence_exhaustion());
+    }
+
+    // ========== Bidirectional Connectivity Tests ==========
+
+    #[test]
+    fn test_bidirectional_probe_and_ack_confirms_connectivity() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Initially no connectivity data
+        assert!(!manager.is_bidirectional_confirmed(&"node2".to_string()));
+        assert!(manager.connectivity_status(&"node2".to_string()).is_none());
+
+        // Simulate sending a probe (insert pending probe manually)
+        let probe_id = manager.probe_id_counter.fetch_add(1, Ordering::Relaxed);
+        manager
+            .pending_probes
+            .write()
+            .insert(probe_id, ("node2".to_string(), Instant::now()));
+        manager.connectivity_matrix.write().insert(
+            "node2".to_string(),
+            ConnectivityEntry {
+                outbound_ok: true,
+                inbound_ok: false,
+                last_check: Instant::now(),
+            },
+        );
+
+        // Not yet confirmed (no ack)
+        assert!(!manager.is_bidirectional_confirmed(&"node2".to_string()));
+
+        // Simulate receiving the ack
+        manager.handle_bidirectional_ack(&"node2".to_string(), probe_id, &"node2".to_string());
+
+        // Now confirmed
+        assert!(manager.is_bidirectional_confirmed(&"node2".to_string()));
+        let status = manager.connectivity_status(&"node2".to_string()).unwrap();
+        assert!(status.outbound_ok);
+        assert!(status.inbound_ok);
+    }
+
+    #[test]
+    fn test_bidirectional_probe_timeout_detects_asymmetric() {
+        use crate::network::MemoryTransport;
+
+        let config = GossipConfig {
+            bidirectional_probe_timeout_ms: 50,
+            ..GossipConfig::default()
+        };
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // Insert a probe that will time out
+        let sent_at = Instant::now() - Duration::from_millis(100);
+        manager
+            .pending_probes
+            .write()
+            .insert(42, ("node2".to_string(), sent_at));
+
+        assert_eq!(manager.asymmetric_partition_count(), 0);
+
+        // Expire probes
+        manager.expire_bidirectional_probes();
+
+        assert_eq!(manager.asymmetric_partition_count(), 1);
+        assert!(!manager.is_bidirectional_confirmed(&"node2".to_string()));
+
+        // Verify pending probe was removed
+        assert!(manager.pending_probes.read().is_empty());
+
+        // Verify connectivity matrix shows asymmetric
+        let status = manager.connectivity_status(&"node2".to_string()).unwrap();
+        assert!(status.outbound_ok);
+        assert!(!status.inbound_ok);
+    }
+
+    #[test]
+    fn test_heal_blocked_without_bidirectional_confirmation() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: true,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // Set up a node as failed
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+        }
+
+        // Record enough heal progress
+        manager.record_heal_progress(&"node2".to_string(), Some(Instant::now()));
+        manager.record_heal_progress(&"node2".to_string(), None);
+        manager.record_heal_progress(&"node2".to_string(), None);
+
+        // Heal NOT confirmed because bidirectional not verified
+        assert!(manager.is_heal_confirmed(&"node2".to_string(), 3).is_none());
+
+        // Now confirm bidirectional connectivity
+        manager.connectivity_matrix.write().insert(
+            "node2".to_string(),
+            ConnectivityEntry {
+                outbound_ok: true,
+                inbound_ok: true,
+                last_check: Instant::now(),
+            },
+        );
+
+        // Now heal IS confirmed
+        assert!(manager.is_heal_confirmed(&"node2".to_string(), 3).is_some());
+    }
+
+    #[test]
+    fn test_bidirectional_disabled_allows_heal_without_probe() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+        }
+
+        manager.record_heal_progress(&"node2".to_string(), Some(Instant::now()));
+        manager.record_heal_progress(&"node2".to_string(), None);
+
+        // Should confirm without bidirectional check
+        assert!(manager.is_heal_confirmed(&"node2".to_string(), 2).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_bidirectional_probe_creates_ack() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Handle a probe from node2 - this spawns an async ack send
+        // Just verify it doesn't panic
+        manager.handle_bidirectional_probe(&"node2".to_string(), 99, 100);
+    }
+
+    #[test]
+    fn test_clear_connectivity() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        manager.connectivity_matrix.write().insert(
+            "node2".to_string(),
+            ConnectivityEntry {
+                outbound_ok: true,
+                inbound_ok: true,
+                last_check: Instant::now(),
+            },
+        );
+
+        assert!(manager.connectivity_status(&"node2".to_string()).is_some());
+
+        manager.clear_connectivity(&"node2".to_string());
+        assert!(manager.connectivity_status(&"node2".to_string()).is_none());
+    }
+
+    #[test]
+    fn test_bidirectional_ack_wrong_responder_ignored() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Insert pending probe for node2
+        manager
+            .pending_probes
+            .write()
+            .insert(10, ("node2".to_string(), Instant::now()));
+
+        // Ack from wrong responder (node3 instead of node2)
+        manager.handle_bidirectional_ack(&"node3".to_string(), 10, &"node3".to_string());
+
+        // Probe was consumed but node2 not confirmed
+        assert!(manager.pending_probes.read().is_empty());
+        assert!(!manager.is_bidirectional_confirmed(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_bidirectional_ack_unknown_probe_ignored() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Ack for non-existent probe ID
+        manager.handle_bidirectional_ack(&"node2".to_string(), 999, &"node2".to_string());
+
+        // Should be no-op
+        assert!(!manager.is_bidirectional_confirmed(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_gossip_message_bidirectional_variants_serialize() {
+        let probe = GossipMessage::BidirectionalProbe {
+            origin: "node1".to_string(),
+            probe_id: 42,
+            timestamp: 100,
+        };
+        let ack = GossipMessage::BidirectionalAck {
+            origin: "node1".to_string(),
+            probe_id: 42,
+            responder: "node2".to_string(),
+        };
+
+        // Verify serialization roundtrip
+        let probe_bytes = bitcode::serialize(&probe).unwrap();
+        let probe_deser: GossipMessage = bitcode::deserialize(&probe_bytes).unwrap();
+        assert_eq!(probe, probe_deser);
+
+        let ack_bytes = bitcode::serialize(&ack).unwrap();
+        let ack_deser: GossipMessage = bitcode::deserialize(&ack_bytes).unwrap();
+        assert_eq!(ack, ack_deser);
+    }
+
+    #[test]
+    fn test_expire_bidirectional_probes_keeps_fresh() {
+        use crate::network::MemoryTransport;
+
+        let config = GossipConfig {
+            bidirectional_probe_timeout_ms: 5000,
+            ..GossipConfig::default()
+        };
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // Insert a fresh probe (not yet timed out)
+        manager
+            .pending_probes
+            .write()
+            .insert(1, ("node2".to_string(), Instant::now()));
+
+        manager.expire_bidirectional_probes();
+
+        // Probe should still be pending
+        assert_eq!(manager.pending_probes.read().len(), 1);
+        assert_eq!(manager.asymmetric_partition_count(), 0);
+    }
+
+    #[test]
+    fn test_incarnation_inflation_bound_rejects_large_jump_in_sync() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 10,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // Register a peer at incarnation 5
+        manager
+            .state
+            .write()
+            .update_local("peer1".to_string(), NodeHealth::Healthy, 5);
+
+        // Sync with incarnation jump of 100 (exceeds max_delta of 10)
+        let inflated = vec![GossipNodeState::new(
+            "peer1".to_string(),
+            NodeHealth::Healthy,
+            100,
+            105, // delta = 100
+        )];
+        manager.handle_sync(&"peer1".to_string(), &inflated, 100);
+
+        // State should not have been updated
+        let state = manager.state.read();
+        assert_eq!(state.get(&"peer1".to_string()).unwrap().incarnation, 5);
+        drop(state);
+
+        // Rejected count should be 1
+        assert_eq!(manager.incarnation_rejected_count(), 1);
+    }
+
+    #[test]
+    fn test_incarnation_inflation_bound_allows_small_jump_in_sync() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 10,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // Register a peer at incarnation 5
+        manager
+            .state
+            .write()
+            .update_local("peer1".to_string(), NodeHealth::Healthy, 5);
+
+        // Sync with incarnation jump of 3 (within max_delta of 10)
+        let valid = vec![GossipNodeState::new(
+            "peer1".to_string(),
+            NodeHealth::Healthy,
+            100,
+            8, // delta = 3
+        )];
+        manager.handle_sync(&"peer1".to_string(), &valid, 100);
+
+        // State should have been updated
+        let state = manager.state.read();
+        assert_eq!(state.get(&"peer1".to_string()).unwrap().incarnation, 8);
+        drop(state);
+
+        assert_eq!(manager.incarnation_rejected_count(), 0);
+    }
+
+    #[test]
+    fn test_incarnation_inflation_bound_rejects_alive_with_large_jump() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 5,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // Register a peer at incarnation 2
+        manager
+            .state
+            .write()
+            .update_local("peer1".to_string(), NodeHealth::Degraded, 2);
+
+        // Alive message with incarnation 100 (delta = 98, exceeds max of 5)
+        manager.handle_alive(&"peer1".to_string(), 100);
+
+        // Should still be at incarnation 2 (Alive rejected)
+        let state = manager.state.read();
+        assert_eq!(state.get(&"peer1".to_string()).unwrap().incarnation, 2);
+        drop(state);
+
+        assert_eq!(manager.incarnation_rejected_count(), 1);
+    }
+
+    #[test]
+    fn test_incarnation_inflation_bound_allows_alive_within_delta() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 5,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // Register a peer at incarnation 2, suspected
+        manager
+            .state
+            .write()
+            .update_local("peer1".to_string(), NodeHealth::Degraded, 2);
+
+        // Alive message with incarnation 4 (delta = 2, within max of 5)
+        manager.handle_alive(&"peer1".to_string(), 4);
+
+        // Should be updated to incarnation 4
+        let state = manager.state.read();
+        assert_eq!(state.get(&"peer1".to_string()).unwrap().incarnation, 4);
+        drop(state);
+
+        assert_eq!(manager.incarnation_rejected_count(), 0);
+    }
+
+    #[test]
+    fn test_incarnation_inflation_default_config() {
+        let config = GossipConfig::default();
+        assert_eq!(config.max_incarnation_delta, 100);
+    }
+
+    #[test]
+    fn test_signature_verification_failure_counter_starts_at_zero() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let manager =
+            GossipMembershipManager::new("local".to_string(), GossipConfig::default(), transport);
+        assert_eq!(manager.signature_verification_failure_count(), 0);
+    }
+
+    #[test]
+    fn test_handle_signed_gossip_without_signing_increments_failure() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        // Manager without signing configured
+        let manager =
+            GossipMembershipManager::new("local".to_string(), GossipConfig::default(), transport);
+
+        // Create a dummy signed message (it won't matter - verification not configured)
+        let dummy_signed = SignedGossipMessage {
+            envelope: crate::signing::SignedMessage {
+                sender: "attacker".to_string(),
+                public_key: [0u8; 32],
+                payload: vec![],
+                signature: vec![],
+                sequence: 0,
+                timestamp_ms: 0,
+            },
+        };
+
+        let result = manager.handle_signed_gossip(&dummy_signed);
+        assert!(result.is_err());
+        assert_eq!(manager.signature_verification_failure_count(), 1);
+    }
+
+    #[test]
+    fn test_create_gossip_message_unsigned_returns_some() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let manager =
+            GossipMembershipManager::new("local".to_string(), GossipConfig::default(), transport);
+
+        let msg = manager.create_gossip_message(GossipMessage::Alive {
+            node_id: "local".to_string(),
+            incarnation: 1,
+        });
+        assert!(msg.is_some());
+        assert_eq!(manager.signature_verification_failure_count(), 0);
+    }
+
+    #[test]
+    fn test_flap_record_tracks_transitions() {
+        let mut record = FlapRecord::new();
+        assert_eq!(record.flap_count, 0);
+        assert!(record.backoff_duration(5).is_none());
+
+        // Record 4 transitions - still below threshold
+        for _ in 0..4 {
+            record.record_transition();
+        }
+        assert_eq!(record.flap_count, 4);
+        assert!(record.backoff_duration(5).is_none());
+
+        // 5th transition triggers backoff
+        record.record_transition();
+        assert_eq!(record.flap_count, 5);
+        let backoff = record.backoff_duration(5);
+        assert!(backoff.is_some());
+        assert_eq!(backoff.unwrap(), Duration::from_secs(1));
+
+        // 6th transition increases backoff
+        record.record_transition();
+        let backoff = record.backoff_duration(5);
+        assert_eq!(backoff.unwrap(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_flap_record_backoff_exponential() {
+        let mut record = FlapRecord::new();
+        // Get to threshold + 3 (backoff = 2^3 = 8 seconds)
+        for _ in 0..8 {
+            record.record_transition();
+        }
+        let backoff = record.backoff_duration(5).unwrap();
+        assert_eq!(backoff, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn test_flap_record_backoff_capped() {
+        let mut record = FlapRecord::new();
+        // Push past the cap
+        for _ in 0..20 {
+            record.record_transition();
+        }
+        let backoff = record.backoff_duration(5).unwrap();
+        // Capped at 300 seconds (5 minutes)
+        assert!(backoff.as_secs() <= 300);
+    }
+
+    #[test]
+    fn test_flap_detection_via_manager() {
+        use crate::network::MemoryTransport;
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        assert_eq!(manager.flap_count(&"peer1".to_string()), 0);
+        assert!(!manager.is_in_flap_backoff(&"peer1".to_string()));
+        assert_eq!(manager.flap_backoffs_count(), 0);
+
+        // Simulate alive messages that refute suspicion (causes flap recording)
+        // Register a peer as suspected
+        manager
+            .state
+            .write()
+            .update_local("peer1".to_string(), NodeHealth::Degraded, 1);
+
+        // Simulate 6 alive/refute cycles
+        for i in 2..8u64 {
+            manager.handle_alive(&"peer1".to_string(), i);
+            // Re-suspect to allow next refute
+            manager
+                .state
+                .write()
+                .update_local("peer1".to_string(), NodeHealth::Degraded, i);
+        }
+
+        assert!(manager.flap_count(&"peer1".to_string()) >= 5);
+        assert!(manager.is_in_flap_backoff(&"peer1".to_string()));
+        assert!(manager.flap_backoffs_count() > 0);
     }
 }
