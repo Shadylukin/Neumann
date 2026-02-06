@@ -158,6 +158,17 @@ describe('retry', () => {
       vi.useFakeTimers(); // Restore fake timers
     });
 
+    it('throws fallback error when maxAttempts is 0', async () => {
+      const fn = vi.fn().mockResolvedValue('success');
+      const config: RetryConfig = {
+        ...DEFAULT_RETRY_CONFIG,
+        maxAttempts: 0,
+      };
+
+      await expect(withRetry(fn, config)).rejects.toThrow('Retry loop completed without result');
+      expect(fn).toHaveBeenCalledTimes(0);
+    });
+
     it('uses default config when not provided', async () => {
       const fn = vi.fn().mockResolvedValue('success');
       const result = await withRetry(fn);

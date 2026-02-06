@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Transaction, TransactionBuilder } from './transaction.js';
 import type { NeumannClient } from './client.js';
@@ -51,7 +51,7 @@ describe('Transaction', () => {
       expect(txId).toBe('tx-123');
       expect(tx.txId).toBe('tx-123');
       expect(tx.isActive).toBe(true);
-      expect(mockClient.execute).toHaveBeenCalledWith('CHAIN BEGIN', { identity: undefined });
+      expect(mockClient.execute).toHaveBeenCalledWith('CHAIN BEGIN', {});
     });
 
     it('should begin transaction with identity', async () => {
@@ -326,5 +326,146 @@ describe('TransactionBuilder', () => {
       .build();
 
     expect(tx.autoCommit).toBe(false);
+  });
+
+  it('should build transaction without identity (omits identity from options)', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-789' } },
+    };
+    vi.mocked(mockClient.execute).mockResolvedValue(beginResult);
+
+    const tx = new TransactionBuilder(mockClient).withAutoCommit(false).build();
+    await tx.begin();
+    expect(mockClient.execute).toHaveBeenCalledWith('CHAIN BEGIN', {});
+  });
+});
+
+describe('Transaction identity propagation', () => {
+  let mockClient: NeumannClient;
+
+  beforeEach(() => {
+    mockClient = createMockClient();
+  });
+
+  it('should pass identity to execute when set', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-100' } },
+    };
+    const queryResult: QueryResult = { type: 'count', count: 1 };
+    vi.mocked(mockClient.execute)
+      .mockResolvedValueOnce(beginResult)
+      .mockResolvedValueOnce(queryResult);
+
+    const tx = new Transaction(mockClient, { identity: 'user:alice' });
+    await tx.begin();
+    await tx.execute('SELECT 1');
+
+    expect(mockClient.execute).toHaveBeenCalledWith('SELECT 1', { identity: 'user:alice' });
+  });
+
+  it('should omit identity from execute when not set', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-101' } },
+    };
+    const queryResult: QueryResult = { type: 'count', count: 1 };
+    vi.mocked(mockClient.execute)
+      .mockResolvedValueOnce(beginResult)
+      .mockResolvedValueOnce(queryResult);
+
+    const tx = new Transaction(mockClient);
+    await tx.begin();
+    await tx.execute('SELECT 1');
+
+    expect(mockClient.execute).toHaveBeenCalledWith('SELECT 1', {});
+  });
+
+  it('should pass identity to commit when set', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-102' } },
+    };
+    const commitResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'committed', value: { blockHash: 'hash', height: 1 } },
+    };
+    vi.mocked(mockClient.execute)
+      .mockResolvedValueOnce(beginResult)
+      .mockResolvedValueOnce(commitResult);
+
+    const tx = new Transaction(mockClient, { identity: 'user:bob' });
+    await tx.begin();
+    await tx.commit();
+
+    expect(mockClient.execute).toHaveBeenCalledWith('CHAIN COMMIT', { identity: 'user:bob' });
+  });
+
+  it('should pass identity to rollback when set', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-103' } },
+    };
+    const rollbackResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'rolledBack', value: { toHeight: 0 } },
+    };
+    vi.mocked(mockClient.execute)
+      .mockResolvedValueOnce(beginResult)
+      .mockResolvedValueOnce(rollbackResult);
+
+    const tx = new Transaction(mockClient, { identity: 'user:carol' });
+    await tx.begin();
+    await tx.rollback();
+
+    expect(mockClient.execute).toHaveBeenCalledWith('CHAIN ROLLBACK', { identity: 'user:carol' });
+  });
+
+  it('should handle begin with non-transactionBegun chain result', async () => {
+    const chainResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'committed', value: { blockHash: 'hash', height: 1 } },
+    };
+    vi.mocked(mockClient.execute).mockResolvedValue(chainResult);
+
+    const tx = new Transaction(mockClient);
+    await expect(tx.begin()).rejects.toThrow('Failed to begin transaction');
+  });
+
+  it('should handle commit with non-committed chain result', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-104' } },
+    };
+    const wrongResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-wrong' } },
+    };
+    vi.mocked(mockClient.execute)
+      .mockResolvedValueOnce(beginResult)
+      .mockResolvedValueOnce(wrongResult);
+
+    const tx = new Transaction(mockClient);
+    await tx.begin();
+    await expect(tx.commit()).rejects.toThrow('Failed to commit transaction');
+  });
+
+  it('should handle rollback with non-rolledBack chain result', async () => {
+    const beginResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-105' } },
+    };
+    const wrongResult: ChainQueryResult = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-wrong' } },
+    };
+    vi.mocked(mockClient.execute)
+      .mockResolvedValueOnce(beginResult)
+      .mockResolvedValueOnce(wrongResult);
+
+    const tx = new Transaction(mockClient);
+    await tx.begin();
+    await expect(tx.rollback()).rejects.toThrow('Failed to rollback transaction');
   });
 });

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 import { describe, it, expect, vi } from 'vitest';
 import {
   NeumannClient,
@@ -38,6 +38,7 @@ import {
   errorFromCode,
 } from './types/errors.js';
 import type { Row, Node, Edge } from './types/query-result.js';
+import { Transaction } from './transaction.js';
 import {
   nullValue,
   intValue,
@@ -854,7 +855,54 @@ describe('Value Functions', () => {
     it('should convert other objects to string', () => {
       const v = valueFromNative({ foo: 'bar' });
       expect(v.type).toBe('string');
+      expect(v.data).toBe('{"foo":"bar"}');
     });
+
+    it('should convert non-object non-primitive via String()', () => {
+      const v = valueFromNative(Symbol.for('test'));
+      expect(v.type).toBe('string');
+      expect(v.data).toBe('Symbol(test)');
+    });
+  });
+});
+
+describe('NeumannClient transaction methods', () => {
+  it('should create a transaction via beginTransaction', () => {
+    const client = Object.create(NeumannClient.prototype);
+    const tx = client.beginTransaction();
+    expect(tx).toBeDefined();
+    expect(tx.autoCommit).toBe(true);
+  });
+
+  it('should create a transaction with options via beginTransaction', () => {
+    const client = Object.create(NeumannClient.prototype);
+    const tx = client.beginTransaction({ autoCommit: false });
+    expect(tx).toBeDefined();
+    expect(tx.autoCommit).toBe(false);
+  });
+
+  it('should call run via withTransaction', async () => {
+    const client = Object.create(NeumannClient.prototype);
+    client.execute = vi.fn();
+
+    const chainBegin = {
+      type: 'chain',
+      result: { type: 'transactionBegun', value: { txId: 'tx-wt' } },
+    };
+    const chainCommit = {
+      type: 'chain',
+      result: { type: 'committed', value: { blockHash: 'h', height: 1 } },
+    };
+    vi.mocked(client.execute)
+      .mockResolvedValueOnce(chainBegin)
+      .mockResolvedValueOnce(chainCommit);
+
+    const result = await client.withTransaction(async (tx: Transaction) => {
+      expect(tx).toBeDefined();
+      return 42;
+    });
+
+    expect(result).toBe(42);
   });
 });
 
@@ -1341,6 +1389,61 @@ describe('gRPC Error Handling', () => {
     );
     const client = await NeumannClient.connect('localhost:50051');
     await expect(client.execute('SELECT 1')).rejects.toThrow('Authentication failed');
+    client.close();
+  });
+
+  it('should use default message for PERMISSION_DENIED without details', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 7 }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow('Permission denied');
+    client.close();
+  });
+
+  it('should use default message for NOT_FOUND without details', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 5 }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow('Not found');
+    client.close();
+  });
+
+  it('should use default message for INVALID_ARGUMENT without details', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 3 }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow('Invalid argument');
+    client.close();
+  });
+
+  it('should use default message for UNAVAILABLE without details', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 14 }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow('Service unavailable');
+    client.close();
+  });
+
+  it('should use default message for unknown code without details or message', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 99 }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow('Internal error');
     client.close();
   });
 });
@@ -2487,6 +2590,21 @@ describe('Response Type Conversion via execute()', () => {
     expect(result.type).toBe('ids');
     if (result.type === 'ids') {
       expect(result.ids).toEqual(['1', '2', '3']);
+    }
+    client.close();
+  });
+
+  it('should handle ids response with string IDs', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback(null, { ids: { ids: ['abc', 'def'] } });
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    const result = await client.execute('GET IDS');
+    expect(result.type).toBe('ids');
+    if (result.type === 'ids') {
+      expect(result.ids).toEqual(['abc', 'def']);
     }
     client.close();
   });
