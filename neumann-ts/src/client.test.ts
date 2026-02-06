@@ -38,7 +38,6 @@ import {
   errorFromCode,
 } from './types/errors.js';
 import type { Row, Node, Edge } from './types/query-result.js';
-import { Transaction } from './transaction.js';
 import {
   nullValue,
   intValue,
@@ -868,36 +867,36 @@ describe('Value Functions', () => {
 
 describe('NeumannClient transaction methods', () => {
   it('should create a transaction via beginTransaction', () => {
-    const client = Object.create(NeumannClient.prototype);
+    const client = Object.create(NeumannClient.prototype) as NeumannClient;
     const tx = client.beginTransaction();
     expect(tx).toBeDefined();
     expect(tx.autoCommit).toBe(true);
   });
 
   it('should create a transaction with options via beginTransaction', () => {
-    const client = Object.create(NeumannClient.prototype);
+    const client = Object.create(NeumannClient.prototype) as NeumannClient;
     const tx = client.beginTransaction({ autoCommit: false });
     expect(tx).toBeDefined();
     expect(tx.autoCommit).toBe(false);
   });
 
   it('should call run via withTransaction', async () => {
-    const client = Object.create(NeumannClient.prototype);
-    client.execute = vi.fn();
+    const client = Object.create(NeumannClient.prototype) as NeumannClient;
+    client.execute = vi.fn() as NeumannClient['execute'];
 
     const chainBegin = {
-      type: 'chain',
-      result: { type: 'transactionBegun', value: { txId: 'tx-wt' } },
+      type: 'chain' as const,
+      result: { type: 'transactionBegun' as const, value: { txId: 'tx-wt' } },
     };
     const chainCommit = {
-      type: 'chain',
-      result: { type: 'committed', value: { blockHash: 'h', height: 1 } },
+      type: 'chain' as const,
+      result: { type: 'committed' as const, value: { blockHash: 'h', height: 1 } },
     };
     vi.mocked(client.execute)
       .mockResolvedValueOnce(chainBegin)
       .mockResolvedValueOnce(chainCommit);
 
-    const result = await client.withTransaction(async (tx: Transaction) => {
+    const result = await client.withTransaction(async (tx) => {
       expect(tx).toBeDefined();
       return 42;
     });
