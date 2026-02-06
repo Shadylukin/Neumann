@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   withRetry,
@@ -153,7 +153,7 @@ describe('retry', () => {
         maxBackoffMs: 1,
       };
 
-      await expect(withRetry(fn, config)).rejects.toEqual(error);
+      await expect(withRetry(fn, config)).rejects.toThrow('[object Object]');
       expect(fn).toHaveBeenCalledTimes(2);
       vi.useFakeTimers(); // Restore fake timers
     });

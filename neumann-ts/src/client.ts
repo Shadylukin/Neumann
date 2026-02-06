@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 import type {
   QueryResult,
   Row,
@@ -280,7 +280,7 @@ export class NeumannClient {
             try {
               resolve(this.convertProtoResponse(response));
             } catch (e) {
-              reject(e);
+              reject(e instanceof Error ? e : new Error(String(e)));
             }
           }
         );
@@ -372,7 +372,7 @@ export class NeumannClient {
               const results = (r.results ?? []).map((res) => this.convertProtoResponse(res));
               resolve(results);
             } catch (e) {
-              reject(e);
+              reject(e instanceof Error ? e : new Error(String(e)));
             }
           }
         );
@@ -436,7 +436,7 @@ export class NeumannClient {
               }
               resolve(paginatedResult);
             } catch (e) {
-              reject(e);
+              reject(e instanceof Error ? e : new Error(String(e)));
             }
           }
         );
