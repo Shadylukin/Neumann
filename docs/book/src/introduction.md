@@ -1,9 +1,8 @@
 # Introduction
 
 <p align="center">
-  <img src="images/neumann_logo.png" alt="Neumann" width="200" />
-  <br />
-  <img src="images/neumann_text.png" alt="Neumann" width="280" />
+  <img src="images/neumann_logo.png" alt="Neumann" width="200" /><br>
+  <img src="images/neumann_text.png" alt="Neumann" width="400" style="margin-top: -8px;" />
 </p>
 
 Neumann is a unified tensor-based runtime that stores relational data, graph
