@@ -129,7 +129,7 @@ correctly.
 
 ## Further Reading
 
-- [specs/tla/README.md](../../../specs/tla/README.md) for full
+- [specs/tla/README.md](https://github.com/Shadylukin/Neumann/blob/main/specs/tla/README.md) for full
   specification documentation, model parameters, and source code
   mapping
 - [Consensus Protocols](consensus-protocols.md) for Raft and SWIM
