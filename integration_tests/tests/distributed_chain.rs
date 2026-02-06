@@ -329,7 +329,7 @@ fn test_chain_block_creation() {
             data: vec![i as u8; 10],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
     }
 
     // Verify chain state
@@ -353,7 +353,7 @@ fn test_chain_history_tracking() {
             data: vec![i as u8],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
     }
 
     // Get history
@@ -382,7 +382,7 @@ fn test_chain_transaction_rollback() {
         data: vec![1],
     })
     .unwrap();
-    chain.commit(tx1).unwrap();
+    chain.commit(&tx1).unwrap();
 
     // Create and rollback second transaction
     let tx2 = chain.begin().unwrap();
@@ -391,7 +391,7 @@ fn test_chain_transaction_rollback() {
         data: vec![2],
     })
     .unwrap();
-    chain.rollback(tx2).unwrap();
+    chain.rollback(&tx2).unwrap();
 
     // Height should only reflect committed transaction
     assert_eq!(chain.height(), 1);
@@ -532,7 +532,7 @@ async fn test_distributed_chain_with_partitioning() {
             data: vec![1, 2, 3],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
     }
 
     // Verify chain recorded all transactions
