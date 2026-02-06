@@ -1,0 +1,33 @@
+TLC2 Version 2.20 of Day Month 20?? (rev: db727a7)
+Running breadth-first search Model-Checking with fp 41 and seed -5233266082945001856 with 10 workers on 10 cores with 3641MB heap and 64MB offheap memory [pid: 1255] (Mac OS X 26.2 aarch64, Eclipse Adoptium 21.0.7 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/lukin/Neumann/specs/tla/Membership.tla
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/Integers.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/Sequences.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/FiniteSets.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/TLC.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/_TLCTrace.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/Naturals.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-14799629339216270473/TLCExt.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module Membership
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module Membership
+Starting... (2026-02-06 13:56:20)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-02-06 13:56:21.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 2.4E-10
+  based on the actual fingerprints:  val = 1.2E-10
+136097 states generated, 54148 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 17.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 9 and the 95th percentile is 3).
+Finished in 02s at (2026-02-06 13:56:22)

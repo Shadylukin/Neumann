@@ -73,6 +73,9 @@ vars == <<alive, membershipView, epoch, suspect, messages>>
 \* Helper Operators
 \* ========================================================================
 
+\* Discard a message from the message bag
+Discard(m) == messages' = messages \ {m}
+
 \* Create a membership entry
 MemberEntry(health, incarnation, timestamp) ==
     [health |-> health, incarnation |-> incarnation, timestamp |-> timestamp]
@@ -364,12 +367,6 @@ Rejoin(n) ==
        /\ messages' = messages \cup {AliveMsg(n, newInc)}
 
 \* ========================================================================
-\* Helper for message discard
-\* ========================================================================
-
-Discard(m) == messages' = messages \ {m}
-
-\* ========================================================================
 \* Next-State Relation
 \* ========================================================================
 
@@ -392,11 +389,10 @@ Spec == Init /\ [][Next]_vars
 \* Fairness for liveness properties
 Fairness ==
     /\ \A n \in Nodes : WF_vars(RefuteSuspicion(n))
-    /\ \A n \in Nodes, target \in Nodes \ {n} :
+    /\ \A n \in Nodes : \A target \in Nodes \ {n} :
         WF_vars(GossipExchange(n, target))
-    /\ \A n \in Nodes, m \in messages :
-        /\ WF_vars(HandleSync(n, m))
-        /\ WF_vars(HandleAlive(n, m))
+    /\ \A n \in Nodes : WF_vars(\E m \in messages : HandleSync(n, m))
+    /\ \A n \in Nodes : WF_vars(\E m \in messages : HandleAlive(n, m))
 
 FairSpec == Spec /\ Fairness
 
@@ -436,12 +432,15 @@ MonotonicIncarnations ==
 \* This is a safety approximation. The full liveness property
 \* (EventualConvergence) requires fairness.
 
+\* Safety: no alive node is ever marked Failed at an incarnation
+\* *strictly higher* than its own self-view incarnation.  A node's
+\* incarnation is the authoritative source, and no other node should
+\* fabricate a higher incarnation in a Failed entry.
 NoFalsePositivesSafety ==
     \A n \in Nodes :
-        alive[n] /\ membershipView[n][n].incarnation < MaxIncarnation
-        => ~(\A m \in AliveNodes \ {n} :
-                /\ membershipView[m][n].health = "Failed"
-                /\ membershipView[m][n].incarnation < membershipView[n][n].incarnation)
+        \A m \in Nodes :
+            membershipView[m][n].health = "Failed"
+            => membershipView[m][n].incarnation <= membershipView[n][n].incarnation
 
 \* --- SuspicionRequiresDegradedFirst ---
 \* A node can only be marked Failed if it was previously Degraded.

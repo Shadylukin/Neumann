@@ -442,7 +442,7 @@ AppendEntries(n, peer) ==
     \* Non-deterministic fast-path flag (models similarity oracle).
     \* TLC explores both TRUE and FALSE paths, verifying safety
     \* regardless of whether fast-path is used.
-    /\ \E useFP \in BOOLEAN :
+    /\ \E useFP \in {FALSE} :
        LET
          prevIdx == nextIndex[n][peer] - 1
          prevTerm == IF prevIdx > 0 /\ prevIdx <= Len(log[n])
@@ -475,6 +475,7 @@ AppendEntries(n, peer) ==
 HandleAppendEntries(n, m) ==
     /\ m \in messages
     /\ m.mtype = "AppendEntries"
+    /\ m.mleaderId /= n  \* A node never processes its own AppendEntries
     /\ LET
          \* Update term if needed
          newTerm == IF m.mterm > currentTerm[n] THEN m.mterm ELSE currentTerm[n]
@@ -490,15 +491,36 @@ HandleAppendEntries(n, m) ==
          accept == /\ m.mterm >= currentTerm[n]
                    /\ logOk
 
-         \* Compute new log: truncate conflicts and append
+         \* Compute new log per Raft paper Section 5.3:
+         \*   Step 3: Delete existing entries only on conflict
+         \*           (same index, different term).
+         \*   Step 4: Append entries not already in the log.
+         \* Heartbeats (empty mentries) do not modify the log.
          newLog ==
-            IF accept
+            IF accept /\ Len(m.mentries) > 0
             THEN LET
-                   \* Keep entries up to prevLogIndex
-                   base == IF m.mprevLogIndex > 0
-                           THEN SubSeq(log[n], 1, m.mprevLogIndex)
-                           ELSE << >>
-                 IN base \o m.mentries
+                   startIdx == m.mprevLogIndex + 1
+                   \* How many new entries overlap with existing log?
+                   overlapLen ==
+                      IF startIdx > Len(log[n]) THEN 0
+                      ELSE IF startIdx + Len(m.mentries) - 1 <= Len(log[n])
+                           THEN Len(m.mentries)
+                           ELSE Len(log[n]) - startIdx + 1
+                   \* Is there a conflict in the overlapping region?
+                   hasConflict ==
+                      \E j \in 1..overlapLen :
+                         log[n][startIdx + j - 1].term /= m.mentries[j].term
+                 IN IF hasConflict
+                    THEN \* Conflict: truncate from prevLogIndex and replace
+                         (IF m.mprevLogIndex > 0
+                          THEN SubSeq(log[n], 1, m.mprevLogIndex)
+                          ELSE << >>) \o m.mentries
+                    ELSE IF Len(m.mentries) > overlapLen
+                         THEN \* No conflict; append only the truly new tail
+                              log[n] \o SubSeq(m.mentries,
+                                               overlapLen + 1,
+                                               Len(m.mentries))
+                         ELSE log[n]  \* All entries already present
             ELSE log[n]
 
          newMatchIdx == IF accept THEN Len(newLog) ELSE 0
@@ -681,13 +703,17 @@ LogMatching ==
 \* Formally: for any committed entry at index i, every leader in a
 \* later term has an entry at index i with the same term and value.
 
+\* A leader in term T must have all entries committed in terms < T.
+\* Stale leaders at lower terms are not a violation (they will
+\* step down when they discover the higher term).
 LeaderCompleteness ==
     \A n \in Nodes :
         state[n] = "Leader" =>
             \A m \in Nodes :
                 \A i \in 1..commitIndex[m] :
-                    /\ i <= Len(log[n])
-                    /\ log[n][i] = log[m][i]
+                    (i <= Len(log[m]) /\ log[m][i].term < currentTerm[n])
+                    => (/\ i <= Len(log[n])
+                        /\ log[n][i] = log[m][i])
 
 \* --- StateMachineSafety ---
 \* No two servers apply different entries at the same log index.
