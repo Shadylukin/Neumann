@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TensorChain stress tests at 10k+ operation scale.
 //!
 //! Tests:
@@ -211,7 +211,7 @@ fn stress_concurrent_transactions_10k() {
                 let key = format!("thread{}:key{}", t, i);
 
                 // Begin transaction
-                let tx = match coordinator.begin(format!("coord_{}", t), vec![0]) {
+                let tx = match coordinator.begin(&format!("coord_{}", t), &[0]) {
                     Ok(tx) => tx,
                     Err(_) => {
                         local_aborted += 1;
@@ -234,7 +234,7 @@ fn stress_concurrent_transactions_10k() {
                     timeout_ms: 5000,
                 };
 
-                let vote = coordinator.handle_prepare(request);
+                let vote = coordinator.handle_prepare(&request);
                 let _ = coordinator.record_vote(tx.tx_id, 0, vote);
 
                 // Commit or abort
