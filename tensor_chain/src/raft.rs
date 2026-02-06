@@ -4143,6 +4143,350 @@ mod tests {
     }
 
     #[test]
+    fn test_adaptive_backoff_exponential_decrement() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_adaptive_backoff = true;
+        config.max_backoff_power = 10;
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Give leader many log entries so there's room to backoff
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            for i in 1..=1024 {
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        let initial_next = {
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
+                .unwrap()
+                .next_index
+                .get("node2")
+                .copied()
+                .unwrap()
+        };
+
+        // Helper: send a failure and return new next_index
+        let send_failure = |n: &RaftNode| {
+            let aer = AppendEntriesResponse {
+                term: 1,
+                success: false,
+                follower_id: "node2".to_string(),
+                match_index: 0,
+                used_fast_path: false,
+            };
+            n.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+            let leadership = n.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
+                .unwrap()
+                .next_index
+                .get("node2")
+                .copied()
+                .unwrap()
+        };
+
+        // Failure 1: decrement by 2^0 = 1
+        let next_after_1 = send_failure(&node);
+        assert_eq!(
+            next_after_1,
+            initial_next - 1,
+            "First failure: decrement by 1"
+        );
+
+        // Failure 2: decrement by 2^1 = 2
+        let next_after_2 = send_failure(&node);
+        assert_eq!(
+            next_after_2,
+            next_after_1 - 2,
+            "Second failure: decrement by 2"
+        );
+
+        // Failure 3: decrement by 2^2 = 4
+        let next_after_3 = send_failure(&node);
+        assert_eq!(
+            next_after_3,
+            next_after_2 - 4,
+            "Third failure: decrement by 4"
+        );
+
+        // Failure 4: decrement by 2^3 = 8
+        let next_after_4 = send_failure(&node);
+        assert_eq!(
+            next_after_4,
+            next_after_3 - 8,
+            "Fourth failure: decrement by 8"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_backoff_resets_on_success() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_adaptive_backoff = true;
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            for i in 1..=256 {
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        // Send 3 failures to build up backoff state
+        for _ in 0..3 {
+            let aer = AppendEntriesResponse {
+                term: 1,
+                success: false,
+                follower_id: "node2".to_string(),
+                match_index: 0,
+                used_fast_path: false,
+            };
+            node.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+        }
+
+        // Send a success to reset backoff
+        let success = AppendEntriesResponse {
+            term: 1,
+            success: true,
+            follower_id: "node2".to_string(),
+            match_index: 200,
+            used_fast_path: false,
+        };
+        node.handle_message(
+            &"node2".to_string(),
+            &Message::AppendEntriesResponse(success),
+        );
+
+        let next_before = {
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
+                .unwrap()
+                .next_index
+                .get("node2")
+                .copied()
+                .unwrap()
+        };
+        assert_eq!(
+            next_before, 201,
+            "Success sets next_index = match_index + 1"
+        );
+
+        // Next failure should decrement by 1 again (backoff reset)
+        let aer = AppendEntriesResponse {
+            term: 1,
+            success: false,
+            follower_id: "node2".to_string(),
+            match_index: 0,
+            used_fast_path: false,
+        };
+        node.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+
+        let next_after = {
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
+                .unwrap()
+                .next_index
+                .get("node2")
+                .copied()
+                .unwrap()
+        };
+        assert_eq!(
+            next_after,
+            next_before - 1,
+            "After reset, first failure decrements by 1"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_backoff_never_below_one() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_adaptive_backoff = true;
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            // Only 3 entries -- backoff will try to overshoot
+            for i in 1..=3 {
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        // Send many failures -- should never go below 1
+        for _ in 0..20 {
+            let aer = AppendEntriesResponse {
+                term: 1,
+                success: false,
+                follower_id: "node2".to_string(),
+                match_index: 0,
+                used_fast_path: false,
+            };
+            node.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+        }
+
+        let final_next = {
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
+                .unwrap()
+                .next_index
+                .get("node2")
+                .copied()
+                .unwrap()
+        };
+        assert!(final_next >= 1, "next_index must never go below 1");
+    }
+
+    #[test]
+    fn test_adaptive_backoff_disabled_uses_linear() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_adaptive_backoff = false;
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            for i in 1..=100 {
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        let initial_next = {
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
+                .unwrap()
+                .next_index
+                .get("node2")
+                .copied()
+                .unwrap()
+        };
+
+        // Send 5 failures -- should always decrement by exactly 1
+        for i in 1..=5 {
+            let aer = AppendEntriesResponse {
+                term: 1,
+                success: false,
+                follower_id: "node2".to_string(),
+                match_index: 0,
+                used_fast_path: false,
+            };
+            node.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+
+            let next = {
+                let leadership = node.leadership.read();
+                leadership
+                    .leader_volatile
+                    .as_ref()
+                    .unwrap()
+                    .next_index
+                    .get("node2")
+                    .copied()
+                    .unwrap()
+            };
+            assert_eq!(next, initial_next - i, "Linear decrement: step {i}");
+        }
+    }
+
+    #[test]
+    fn test_adaptive_backoff_metrics_tracked() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_adaptive_backoff = true;
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            for i in 1..=256 {
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        // Failure 1: decrement=1, no backoff event (decrement <= 1)
+        // Failure 2: decrement=2, backoff event + 1 skipped entry
+        // Failure 3: decrement=4, backoff event + 3 skipped entries
+        for _ in 0..3 {
+            let aer = AppendEntriesResponse {
+                term: 1,
+                success: false,
+                follower_id: "node2".to_string(),
+                match_index: 0,
+                used_fast_path: false,
+            };
+            node.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+        }
+
+        let snapshot = node.stats.snapshot();
+        // backoff_events fires when decrement > 1 (failures 2 and 3)
+        assert_eq!(
+            snapshot.backoff_events, 2,
+            "Two backoff events (failures 2 & 3)"
+        );
+        // skipped entries: (2-1) + (4-1) = 1 + 3 = 4
+        assert_eq!(
+            snapshot.backoff_skipped_entries, 4,
+            "4 entries skipped total"
+        );
+    }
+
+    #[test]
     fn test_try_advance_commit_index() {
         let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
 

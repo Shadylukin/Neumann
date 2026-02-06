@@ -30,7 +30,7 @@ where
     (Box::new(read), Box::new(write))
 }
 
-/// Helper to box a stream into a DynStream.
+/// Helper to box a stream into a `DynStream`.
 pub fn box_stream<S>(stream: S) -> DynStream
 where
     S: AsyncStream + 'static,

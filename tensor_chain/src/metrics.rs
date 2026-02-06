@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Centralized metrics infrastructure for tensor_chain observability.
+//! Centralized metrics infrastructure for `tensor_chain` observability.
 //!
 //! Provides thread-safe timing statistics using atomics, following the same
-//! patterns as existing stats structures (FastPathStats, DistributedTxStats).
+//! patterns as existing stats structures (`FastPathStats`, `DistributedTxStats`).
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +26,7 @@ impl Default for TimingStats {
 }
 
 impl TimingStats {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
@@ -45,20 +46,26 @@ impl TimingStats {
 
     /// Record a duration from a `std::time::Duration`.
     pub fn record_duration(&self, duration: std::time::Duration) {
-        self.record(duration.as_micros() as u64);
+        #[allow(clippy::cast_possible_truncation)]
+        let us = duration.as_micros() as u64;
+        self.record(us);
     }
 
     /// Get the count of recorded operations.
+    #[must_use]
     pub fn count(&self) -> u64 {
         self.count.load(Ordering::Relaxed)
     }
 
     /// Get the total duration in microseconds.
+    #[must_use]
     pub fn total_us(&self) -> u64 {
         self.total_us.load(Ordering::Relaxed)
     }
 
     /// Get the average duration in microseconds.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn avg_us(&self) -> f64 {
         let count = self.count.load(Ordering::Relaxed);
         if count == 0 {
@@ -69,6 +76,7 @@ impl TimingStats {
     }
 
     /// Get the minimum duration in microseconds.
+    #[must_use]
     pub fn min_us(&self) -> u64 {
         let min = self.min_us.load(Ordering::Relaxed);
         if min == u64::MAX {
@@ -79,11 +87,14 @@ impl TimingStats {
     }
 
     /// Get the maximum duration in microseconds.
+    #[must_use]
     pub fn max_us(&self) -> u64 {
         self.max_us.load(Ordering::Relaxed)
     }
 
     /// Take a point-in-time snapshot of the statistics.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn snapshot(&self) -> TimingSnapshot {
         let count = self.count.load(Ordering::Relaxed);
         let total = self.total_us.load(Ordering::Relaxed);
@@ -125,21 +136,27 @@ pub struct TimingSnapshot {
 
 impl TimingSnapshot {
     /// Check if any operations were recorded.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Get the average duration in milliseconds.
+    #[must_use]
     pub fn avg_ms(&self) -> f64 {
         self.avg_us / 1000.0
     }
 
     /// Get the minimum duration in milliseconds.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn min_ms(&self) -> f64 {
         self.min_us as f64 / 1000.0
     }
 
     /// Get the maximum duration in milliseconds.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn max_ms(&self) -> f64 {
         self.max_us as f64 / 1000.0
     }

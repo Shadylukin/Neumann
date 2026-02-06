@@ -887,6 +887,9 @@ pub struct RecoveryStats {
     pub timed_out: usize,
     /// Transactions that were already completed (cleaned up).
     pub completed: usize,
+    /// Orphaned locks force-released during recovery (TxComplete logged
+    /// but lock release was interrupted before `AllLocksReleased`).
+    pub lock_releases_recovered: usize,
 }
 
 /// Tracks abort acknowledgments from participants.
@@ -1064,6 +1067,18 @@ impl DistributedTxCoordinator {
             let tx = restore_tx(prepared, TxPhase::Aborting);
             pending.insert(prepared.tx_id, tx);
             stats.pending_abort += 1;
+        }
+
+        // Force-release orphaned locks from completed transactions
+        for orphan in &recovery_state.orphaned_locks {
+            tracing::warn!(
+                tx_id = orphan.tx_id,
+                lock_handle = orphan.lock_handle,
+                "Releasing orphaned lock from crashed commit"
+            );
+            self.lock_manager
+                .release_by_handle_with_wait_cleanup(orphan.lock_handle, &self.wait_graph);
+            stats.lock_releases_recovered += 1;
         }
 
         Ok(stats)
@@ -1474,14 +1489,22 @@ impl DistributedTxCoordinator {
             outcome: TxOutcome::Committed,
         })?;
 
-        // Release all locks AFTER TxComplete is logged
+        // Release all locks AFTER TxComplete is logged, WAL-logging each release
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
                 tracing::debug!(tx_id = tx_id, lock_handle = lock_handle, "Releasing lock");
+                // Best-effort WAL of individual lock release -- do not fail the commit
+                let _ = self.log_wal_entry(&TxWalEntry::LockRelease {
+                    tx_id,
+                    lock_handle: *lock_handle,
+                });
                 self.lock_manager
                     .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
             }
         }
+
+        // Mark all locks released
+        let _ = self.log_wal_entry(&TxWalEntry::AllLocksReleased { tx_id });
 
         tx.phase = TxPhase::Committed;
         self.stats.committed.fetch_add(1, Ordering::Relaxed);
@@ -2678,7 +2701,7 @@ mod tests {
     fn test_coordinator_begin() {
         let coordinator = create_test_coordinator();
 
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         assert_eq!(coordinator.pending_count(), 1);
         assert!(coordinator.get(tx.tx_id).is_some());
@@ -2693,11 +2716,11 @@ mod tests {
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
-        coordinator.begin("node1", &[0]).unwrap();
-        coordinator.begin("node1", &[1]).unwrap();
+        coordinator.begin(&"node1".to_string(), &[0]).unwrap();
+        coordinator.begin(&"node1".to_string(), &[1]).unwrap();
 
         // Third should fail
-        let result = coordinator.begin("node1", &[2]);
+        let result = coordinator.begin(&"node1".to_string(), &[2]);
         assert!(result.is_err());
     }
 
@@ -2716,7 +2739,7 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
 
         match vote {
             PrepareVote::Yes { lock_handle, delta } => {
@@ -2730,15 +2753,15 @@ mod tests {
     #[test]
     fn test_voting_all_yes() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         let delta0 = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["key1"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
         let delta1 = DeltaVector::new(
-            vec![0.0, 1.0, 0.0],
+            &[0.0, 1.0, 0.0],
             ["key2"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
@@ -2769,10 +2792,10 @@ mod tests {
     #[test]
     fn test_voting_any_no() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         let delta = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["key1"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
@@ -2799,10 +2822,10 @@ mod tests {
     #[test]
     fn test_commit_flow() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         let delta = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["key1"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
@@ -2825,7 +2848,7 @@ mod tests {
     #[test]
     fn test_abort_flow() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         coordinator.abort(tx.tx_id, "test abort").unwrap();
 
@@ -2901,12 +2924,12 @@ mod tests {
         let mut tx = DistributedTransaction::new("node1".to_string(), vec![0, 1]);
 
         let delta0 = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["key1"].iter().map(|s| s.to_string()).collect(),
             1,
         );
         let delta1 = DeltaVector::new(
-            vec![0.0, 1.0, 0.0],
+            &[0.0, 1.0, 0.0],
             ["key2"].iter().map(|s| s.to_string()).collect(),
             2,
         );
@@ -2931,12 +2954,12 @@ mod tests {
         let mut tx = DistributedTransaction::new("node1".to_string(), vec![0, 1]);
 
         let delta0 = DeltaVector::new(
-            vec![1.0, 0.0],
+            &[1.0, 0.0],
             ["key1", "key2"].iter().map(|s| s.to_string()).collect(),
             1,
         );
         let delta1 = DeltaVector::new(
-            vec![0.0, 1.0],
+            &[0.0, 1.0],
             ["key3"].iter().map(|s| s.to_string()).collect(),
             2,
         );
@@ -2964,7 +2987,7 @@ mod tests {
             0,
             PrepareVote::Yes {
                 lock_handle: 1,
-                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
             },
         );
 
@@ -3005,7 +3028,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Create a transaction with immediate timeout
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Modify timeout to 0 (simulating timeout)
         {
@@ -3083,7 +3106,7 @@ mod tests {
     #[test]
     fn test_commit_not_prepared() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Try to commit without preparing
         let result = coordinator.commit(tx.tx_id);
@@ -3120,7 +3143,7 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let vote1 = coordinator.handle_prepare(request1);
+        let vote1 = coordinator.handle_prepare(&request1);
         assert!(matches!(vote1, PrepareVote::Yes { .. }));
 
         // Second prepare on same key should conflict
@@ -3135,7 +3158,7 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let vote2 = coordinator.handle_prepare(request2);
+        let vote2 = coordinator.handle_prepare(&request2);
         assert!(matches!(vote2, PrepareVote::Conflict { .. }));
     }
 
@@ -3205,7 +3228,7 @@ mod tests {
                     key: "key1".to_string(),
                     data: vec![1],
                 }],
-                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 prepared_at_ms: old_prepared_at,
                 undo_log: Vec::new(),
             },
@@ -3404,7 +3427,7 @@ mod tests {
                 tx_id: 1,
                 lock_handle: 1,
                 operations: vec![],
-                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 prepared_at_ms: old_prepared_at,
                 undo_log: vec![undo_entry],
             },
@@ -3510,10 +3533,10 @@ mod tests {
     #[test]
     fn test_voting_with_conflict() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         let delta = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["key1"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
@@ -3549,16 +3572,16 @@ mod tests {
     #[test]
     fn test_cross_shard_conflict_detection() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         // Two shards with overlapping keys and similar deltas
         let delta0 = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["shared_key"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
         let delta1 = DeltaVector::new(
-            vec![1.0, 0.1, 0.0], // Similar to delta0
+            &[1.0, 0.1, 0.0], // Similar to delta0
             ["shared_key"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
@@ -3596,12 +3619,12 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Start a transaction and add delta
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         {
             let mut pending = coordinator.pending.write();
             if let Some(t) = pending.get_mut(&tx.tx_id) {
                 let delta = DeltaVector::new(
-                    vec![1.0, 0.0, 0.0],
+                    &[1.0, 0.0, 0.0],
                     ["key1"].iter().map(|s| s.to_string()).collect(),
                     tx.tx_id,
                 );
@@ -3621,7 +3644,7 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
         assert!(matches!(vote, PrepareVote::Conflict { .. }));
     }
 
@@ -3633,7 +3656,7 @@ mod tests {
             0,
             PrepareVote::Yes {
                 lock_handle: 1,
-                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
             },
         );
         assert_eq!(result, Err(VoteRecordError::TxNotFound(999)));
@@ -3642,11 +3665,11 @@ mod tests {
     #[test]
     fn test_record_vote_wrong_phase() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a YES vote to move to Prepared phase
-        let delta = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let delta = DeltaVector::new(&[1.0], HashSet::new(), tx_id);
         let vote = PrepareVote::Yes {
             lock_handle: 1,
             delta,
@@ -3655,7 +3678,7 @@ mod tests {
         assert_eq!(result.unwrap(), Some(TxPhase::Prepared));
 
         // Try to record another vote -- tx is now in Prepared phase, not Preparing
-        let delta2 = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let delta2 = DeltaVector::new(&[1.0], HashSet::new(), tx_id);
         let vote2 = PrepareVote::Yes {
             lock_handle: 2,
             delta: delta2,
@@ -3674,11 +3697,11 @@ mod tests {
     #[test]
     fn test_record_vote_duplicate() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record first vote from shard 0
-        let delta = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let delta = DeltaVector::new(&[1.0], HashSet::new(), tx_id);
         let vote = PrepareVote::Yes {
             lock_handle: 1,
             delta,
@@ -3687,7 +3710,7 @@ mod tests {
         assert_eq!(result.unwrap(), None); // Not all voted yet
 
         // Try duplicate vote from shard 0
-        let delta2 = DeltaVector::new(vec![1.0], HashSet::new(), tx_id);
+        let delta2 = DeltaVector::new(&[1.0], HashSet::new(), tx_id);
         let vote2 = PrepareVote::Yes {
             lock_handle: 2,
             delta: delta2,
@@ -3702,10 +3725,10 @@ mod tests {
     #[test]
     fn test_abort_releases_locks() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         let delta = DeltaVector::new(
-            vec![1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0],
             ["key1"].iter().map(|s| s.to_string()).collect(),
             tx.tx_id,
         );
@@ -3730,7 +3753,7 @@ mod tests {
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Add a vote with lock
         {
@@ -3740,7 +3763,7 @@ mod tests {
                     0,
                     PrepareVote::Yes {
                         lock_handle: 1,
-                        delta: DeltaVector::new(vec![1.0], HashSet::new(), tx.tx_id),
+                        delta: DeltaVector::new(&[1.0], HashSet::new(), tx.tx_id),
                     },
                 );
                 t.timeout_ms = 0;
@@ -3801,7 +3824,7 @@ mod tests {
             tx_id: 1,
             lock_handle: 1,
             operations: vec![],
-            delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+            delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
             prepared_at_ms: now_epoch_millis(),
             undo_log: Vec::new(),
         };
@@ -3839,7 +3862,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1, 2, 3],
             }],
-            delta: DeltaVector::new(vec![1.0, 2.0], ["key1".to_string()].into(), 100),
+            delta: DeltaVector::new(&[1.0, 2.0], ["key1".to_string()].into(), 100),
             prepared_at_ms: now_epoch_millis(),
             undo_log: Vec::new(),
         };
@@ -3916,7 +3939,7 @@ mod tests {
                 tx_id: 1,
                 lock_handle: 100,
                 operations: vec![],
-                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 prepared_at_ms: 1000,
                 undo_log: Vec::new(),
             },
@@ -4000,7 +4023,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin a transaction
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         let state = coordinator.to_state();
         assert_eq!(state.pending.len(), 1);
@@ -4036,8 +4059,8 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
 
         // Begin transactions
-        let tx1 = coordinator.begin("node1", &[0, 1]).unwrap();
-        let tx2 = coordinator.begin("node1", &[2, 3]).unwrap();
+        let tx1 = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
+        let tx2 = coordinator.begin(&"node1".to_string(), &[2, 3]).unwrap();
 
         // Save
         coordinator.save_to_store("node1", &store).unwrap();
@@ -4064,7 +4087,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
 
         // Create transactions in different phases
-        let tx_preparing = coordinator.begin("node1", &[0]).unwrap();
+        let tx_preparing = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Manually update internal state
         {
@@ -4100,7 +4123,7 @@ mod tests {
         let store = TensorStore::new();
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
-        coordinator.begin("node1", &[0]).unwrap();
+        coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         coordinator.save_to_store("node1", &store).unwrap();
 
@@ -4275,7 +4298,7 @@ mod tests {
                 0,
                 PrepareVote::Yes {
                     lock_handle: 1,
-                    delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                    delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 },
             );
             pending.insert(tx.tx_id, tx);
@@ -4360,7 +4383,7 @@ mod tests {
                     tx_id: 1,
                     lock_handle: 12345, // Fixed lock handle
                     operations: vec![],
-                    delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                    delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                     prepared_at_ms: old_time,
                     undo_log: Vec::new(),
                 },
@@ -4481,7 +4504,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin a transaction with 2 shards
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         // Record votes from both shards - shard 0 says No, shard 1 says Yes
         let phase1 = coordinator.record_vote(
@@ -4500,7 +4523,7 @@ mod tests {
             PrepareVote::Yes {
                 lock_handle: 42,
                 delta: DeltaVector::new(
-                    vec![1.0, 0.0, 0.0],
+                    &[1.0, 0.0, 0.0],
                     ["key1"].iter().map(|s| s.to_string()).collect(),
                     tx.tx_id,
                 ),
@@ -4551,7 +4574,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
 
         // Begin a transaction
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
 
         // Verify WAL has the entry
         let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
@@ -4597,11 +4620,11 @@ mod tests {
         // Commit the transaction
         coordinator.commit(tx_id).unwrap();
 
-        // Verify WAL has the phase change and completion entries
+        // Verify WAL has phase change, completion, lock release, and all-released entries
         let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
         let entries = wal.replay().unwrap();
-        // Should have PhaseChange (Prepared->Committing) and TxComplete
-        assert_eq!(entries.len(), 2);
+        // PhaseChange + TxComplete + LockRelease + AllLocksReleased
+        assert_eq!(entries.len(), 4);
 
         // First entry should be phase change
         if let crate::tx_wal::TxWalEntry::PhaseChange {
@@ -4623,6 +4646,25 @@ mod tests {
             assert_eq!(*outcome, crate::tx_wal::TxOutcome::Committed);
         } else {
             panic!("expected TxComplete entry");
+        }
+
+        // Third entry should be lock release
+        if let crate::tx_wal::TxWalEntry::LockRelease {
+            tx_id: id,
+            lock_handle,
+        } = &entries[2]
+        {
+            assert_eq!(*id, tx_id);
+            assert_eq!(*lock_handle, 1);
+        } else {
+            panic!("expected LockRelease entry");
+        }
+
+        // Fourth entry should be all-locks-released
+        if let crate::tx_wal::TxWalEntry::AllLocksReleased { tx_id: id } = &entries[3] {
+            assert_eq!(*id, tx_id);
+        } else {
+            panic!("expected AllLocksReleased entry");
         }
     }
 
@@ -4750,7 +4792,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
 
         // Begin a transaction (creates WAL entry)
-        let _ = coordinator.begin("node1", &[0]).unwrap();
+        let _ = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Truncate WAL
         coordinator.truncate_wal().unwrap();
@@ -4768,7 +4810,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
 
         // Begin should work
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Create prepared state
         {
@@ -4804,7 +4846,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin transaction (creates active tx)
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Manually add a lock for the active transaction
         coordinator
@@ -4889,7 +4931,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Begin an active transaction with a lock
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         coordinator
             .lock_manager
             .try_lock(tx.tx_id, &["active_key".to_string()])
@@ -5345,7 +5387,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
 
         // Start and prepare a transaction
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Record a Yes vote
         let _ = coordinator.record_vote(
@@ -5353,7 +5395,7 @@ mod tests {
             0,
             PrepareVote::Yes {
                 lock_handle: 1,
-                delta: DeltaVector::new(vec![1.0], HashSet::new(), tx.tx_id),
+                delta: DeltaVector::new(&[1.0], HashSet::new(), tx.tx_id),
             },
         );
 
@@ -5389,7 +5431,7 @@ mod tests {
     fn test_coordinator_to_state_and_restore() {
         let coordinator = create_test_coordinator();
 
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Add a lock
         coordinator
@@ -5481,19 +5523,19 @@ mod tests {
         let record_vote_thread = thread::spawn(move || {
             for i in 0..iterations {
                 // Create a transaction first
-                let tx = coord1.begin("node1", &[0, 1]).unwrap();
+                let tx = coord1.begin(&"node1".to_string(), &[0, 1]).unwrap();
                 let tx_id = tx.tx_id;
 
                 // Record votes from both shards
                 let vote1 = PrepareVote::Yes {
                     lock_handle: i as u64,
-                    delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
+                    delta: DeltaVector::new(&[1.0], HashSet::new(), tx_id),
                 };
                 let _ = coord1.record_vote(tx_id, 0, vote1);
 
                 let vote2 = PrepareVote::Yes {
                     lock_handle: i as u64 + 1000,
-                    delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
+                    delta: DeltaVector::new(&[1.0], HashSet::new(), tx_id),
                 };
                 let _ = coord1.record_vote(tx_id, 1, vote2);
 
@@ -5560,13 +5602,13 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Create transaction
-        let tx = coordinator.begin("node1", &[0, 1]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record YES from shard 0
         let vote1 = PrepareVote::Yes {
             lock_handle: 1,
-            delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
+            delta: DeltaVector::new(&[1.0], HashSet::new(), tx_id),
         };
         assert_eq!(coordinator.record_vote(tx_id, 0, vote1).unwrap(), None);
 
@@ -5601,11 +5643,11 @@ mod tests {
             ..Default::default()
         });
 
-        let _tx1 = coordinator.begin("node1", &[0]).unwrap();
-        let _tx2 = coordinator.begin("node1", &[0]).unwrap();
+        let _tx1 = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
+        let _tx2 = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Third should fail
-        let result = coordinator.begin("node1", &[0]);
+        let result = coordinator.begin(&"node1".to_string(), &[0]);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -5630,7 +5672,7 @@ mod tests {
                 let coord = Arc::clone(&coordinator);
                 let counter = Arc::clone(&success_count);
                 thread::spawn(move || {
-                    if coord.begin("node1", &[0]).is_ok() {
+                    if coord.begin(&"node1".to_string(), &[0]).is_ok() {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
                 })
@@ -5708,7 +5750,7 @@ mod tests {
         let coordinator = create_test_coordinator();
 
         // Create a transaction
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
 
         // Acquire locks directly
         coordinator
@@ -5742,7 +5784,7 @@ mod tests {
         let tx_thread = thread::spawn(move || {
             let mut count = 0;
             while !stop1.load(Ordering::Relaxed) && count < 100 {
-                if let Ok(tx) = coord1.begin("node1", &[0]) {
+                if let Ok(tx) = coord1.begin(&"node1".to_string(), &[0]) {
                     coord1
                         .lock_manager
                         .try_lock(tx.tx_id, &[format!("key_{}", count)])
@@ -5810,7 +5852,7 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let vote = coordinator.handle_prepare(request);
+        let vote = coordinator.handle_prepare(&request);
 
         // Should be a conflict vote
         assert!(matches!(vote, PrepareVote::Conflict { .. }));
@@ -5832,7 +5874,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
 
         // Start a transaction and record a YES vote
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Manually add to wait graph to simulate prior conflict
@@ -5873,7 +5915,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::with_consensus(consensus);
 
         // Start a transaction
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Add to wait graph
@@ -5921,7 +5963,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Start a transaction
-        let tx = coordinator.begin("node1", &[0]).unwrap();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Manually set a very short timeout on the transaction
@@ -6010,11 +6052,11 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config).with_wal(wal);
 
         // Begin two transactions (at limit)
-        let tx1 = coordinator.begin("node1", &[0]).unwrap();
-        let tx2 = coordinator.begin("node1", &[1]).unwrap();
+        let tx1 = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
+        let tx2 = coordinator.begin(&"node1".to_string(), &[1]).unwrap();
 
         // Third should fail
-        let result = coordinator.begin("node1", &[2]);
+        let result = coordinator.begin(&"node1".to_string(), &[2]);
         assert!(result.is_err());
 
         // Both successful transactions should be in pending
@@ -6085,7 +6127,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1", &[0, 1]).unwrap();
+        let tx = coord.begin(&"node1".to_string(), &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Get pending transactions
@@ -6102,7 +6144,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1", &[0]).unwrap();
+        let tx = coord.begin(&"node1".to_string(), &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a YES vote with lock
@@ -6113,7 +6155,7 @@ mod tests {
             delta_embedding: SparseVector::default(),
             timeout_ms: 5000,
         };
-        let vote = coord.handle_prepare(request);
+        let vote = coord.handle_prepare(&request);
         assert!(matches!(vote, PrepareVote::Yes { .. }));
 
         // Record the vote
@@ -6135,7 +6177,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1", &[0]).unwrap();
+        let tx = coord.begin(&"node1".to_string(), &[0]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a YES vote with lock
@@ -6146,7 +6188,7 @@ mod tests {
             delta_embedding: SparseVector::default(),
             timeout_ms: 5000,
         };
-        let vote = coord.handle_prepare(request);
+        let vote = coord.handle_prepare(&request);
         let _ = coord.record_vote(tx_id, 0, vote);
 
         // Force abort
@@ -6176,7 +6218,7 @@ mod tests {
         let coord = DistributedTxCoordinator::new(consensus, config);
 
         // Begin a transaction
-        let tx = coord.begin("node1", &[0, 1]).unwrap();
+        let tx = coord.begin(&"node1".to_string(), &[0, 1]).unwrap();
         let tx_id = tx.tx_id;
 
         // Record a NO vote for one shard
@@ -6765,7 +6807,7 @@ mod tests {
 
         // Begin 5 transactions: pending.len() is 0..4 at each check, all < 5
         for _ in 0..5 {
-            coordinator.begin("node1", &[0]).unwrap();
+            coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         }
         assert_eq!(
             coordinator
@@ -6776,7 +6818,7 @@ mod tests {
         );
 
         // 6th transaction: pending.len()==5 at check, which >= soft_limit(5)
-        coordinator.begin("node1", &[0]).unwrap();
+        coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         assert_eq!(
             coordinator
                 .stats
@@ -6786,7 +6828,7 @@ mod tests {
         );
 
         // 7th still succeeds (soft limit, not hard) and also triggers warning
-        coordinator.begin("node1", &[0]).unwrap();
+        coordinator.begin(&"node1".to_string(), &[0]).unwrap();
         assert_eq!(
             coordinator
                 .stats

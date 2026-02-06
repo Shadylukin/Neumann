@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn test_delta_vector_creation() {
         let keys: HashSet<String> = ["key1", "key2"].iter().map(|s| s.to_string()).collect();
-        let delta = DeltaVector::new(vec![1.0, 0.0, 0.0], keys.clone(), 1);
+        let delta = DeltaVector::new(&[1.0, 0.0, 0.0], keys.clone(), 1);
 
         assert_eq!(delta.nnz(), 1); // Only one non-zero value
         assert!((delta.magnitude() - 1.0).abs() < 0.001);
@@ -719,10 +719,10 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity() {
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1);
-        let d2 = DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 2);
-        let d3 = DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 3);
-        let d4 = DeltaVector::new(vec![-1.0, 0.0, 0.0], HashSet::new(), 4);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1);
+        let d2 = DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 2);
+        let d3 = DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 3);
+        let d4 = DeltaVector::new(&[-1.0, 0.0, 0.0], HashSet::new(), 4);
 
         // Same direction
         assert!((d1.cosine_similarity(&d2) - 1.0).abs() < 0.001);
@@ -739,8 +739,8 @@ mod tests {
         let keys1: HashSet<String> = ["a"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["b"].iter().map(|s| s.to_string()).collect();
 
-        let d1 = DeltaVector::new(vec![1.0, 0.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![0.0, 1.0], keys2, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0], keys1, 1);
+        let d2 = DeltaVector::new(&[0.0, 1.0], keys2, 2);
 
         let sum = d1.add(&d2);
         assert_eq!(sum.to_dense(2), vec![1.0, 1.0]);
@@ -750,8 +750,8 @@ mod tests {
 
     #[test]
     fn test_weighted_average() {
-        let d1 = DeltaVector::new(vec![2.0, 0.0], HashSet::new(), 1);
-        let d2 = DeltaVector::new(vec![0.0, 2.0], HashSet::new(), 2);
+        let d1 = DeltaVector::new(&[2.0, 0.0], HashSet::new(), 1);
+        let d2 = DeltaVector::new(&[0.0, 2.0], HashSet::new(), 2);
 
         let avg = d1.weighted_average(&d2, 0.5, 0.5);
         assert_eq!(avg.to_dense(2), vec![1.0, 1.0]);
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_project_non_conflicting() {
-        let d = DeltaVector::new(vec![1.0, 1.0], HashSet::new(), 1);
+        let d = DeltaVector::new(&[1.0, 1.0], HashSet::new(), 1);
         let conflict_dir = vec![1.0, 0.0];
 
         let projected = d.project_non_conflicting_dense(&conflict_dir);
@@ -773,8 +773,8 @@ mod tests {
     fn test_conflict_detection_orthogonal() {
         let manager = ConsensusManager::default_config();
 
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1);
-        let d2 = DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1);
+        let d2 = DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2);
 
         let result = manager.detect_conflict(&d1, &d2);
         assert_eq!(result.class, ConflictClass::Orthogonal);
@@ -789,8 +789,8 @@ mod tests {
         let keys1: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["key2"].iter().map(|s| s.to_string()).collect();
         // Similar direction (high cosine) but different keys
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![0.9, 0.1, 0.0], keys2, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], keys1, 1);
+        let d2 = DeltaVector::new(&[0.9, 0.1, 0.0], keys2, 2);
 
         let result = manager.detect_conflict(&d1, &d2);
         assert_eq!(result.class, ConflictClass::Conflicting);
@@ -802,8 +802,8 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let keys: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys.clone(), 1);
-        let d2 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], keys.clone(), 1);
+        let d2 = DeltaVector::new(&[1.0, 0.0, 0.0], keys, 2);
 
         let result = manager.detect_conflict(&d1, &d2);
         assert_eq!(result.class, ConflictClass::Identical);
@@ -816,8 +816,8 @@ mod tests {
 
         // Same keys, exactly opposite directions -> Opposite classification
         let keys: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys.clone(), 1);
-        let d2 = DeltaVector::new(vec![-1.0, 0.0, 0.0], keys.clone(), 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], keys.clone(), 1);
+        let d2 = DeltaVector::new(&[-1.0, 0.0, 0.0], keys.clone(), 2);
 
         let result = manager.detect_conflict(&d1, &d2);
         // cos = -1.0, same keys -> Opposite
@@ -830,8 +830,8 @@ mod tests {
     fn test_merge_orthogonal() {
         let manager = ConsensusManager::default_config();
 
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1);
-        let d2 = DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1);
+        let d2 = DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2);
 
         let result = manager.merge(&d1, &d2);
         assert!(result.success);
@@ -844,8 +844,8 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let keys: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys.clone(), 1);
-        let d2 = DeltaVector::new(vec![-1.0, 0.0, 0.0], keys, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], keys.clone(), 1);
+        let d2 = DeltaVector::new(&[-1.0, 0.0, 0.0], keys, 2);
 
         let result = manager.merge(&d1, &d2);
         assert!(result.success);
@@ -861,8 +861,8 @@ mod tests {
         // Different keys to avoid Identical classification, but similar direction
         let keys1: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["key2"].iter().map(|s| s.to_string()).collect();
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![0.9, 0.1, 0.0], keys2, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], keys1, 1);
+        let d2 = DeltaVector::new(&[0.9, 0.1, 0.0], keys2, 2);
 
         let result = manager.merge(&d1, &d2);
         assert!(!result.success);
@@ -874,9 +874,9 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1),
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2),
-            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 3),
+            DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1),
+            DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2),
+            DeltaVector::new(&[0.0, 0.0, 1.0], HashSet::new(), 3),
         ];
 
         let result = manager.merge_all(&deltas);
@@ -891,9 +891,9 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1),
-            DeltaVector::new(vec![0.9, 0.1, 0.0], HashSet::new(), 2), // Similar to first
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 3), // Orthogonal to first
+            DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1),
+            DeltaVector::new(&[0.9, 0.1, 0.0], HashSet::new(), 2), // Similar to first
+            DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 3), // Orthogonal to first
         ];
 
         let order = manager.find_merge_order(&deltas);
@@ -917,8 +917,8 @@ mod tests {
         // d2: [0.3, 0, 0.5, 0, 0.8] - positions 0, 2, 4 (3 positions)
         // Intersection = 1, Union = 4, Jaccard = 1/4 = 0.25 < 0.5
         // Cosine = 0.3 / (1 * sqrt(0.09+0.25+0.64)) = 0.3 / 0.99 ~ 0.30
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0, 0.0, 0.0], keys.clone(), 1);
-        let d2 = DeltaVector::new(vec![0.3, 0.0, 0.5, 0.0, 0.8], keys, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0, 0.0, 0.0], keys.clone(), 1);
+        let d2 = DeltaVector::new(&[0.3, 0.0, 0.5, 0.0, 0.8], keys, 2);
 
         let result = manager.detect_conflict(&d1, &d2);
         // cos ~ 0.30, Jaccard = 0.25, has key overlap -> Ambiguous
@@ -940,9 +940,9 @@ mod tests {
 
         // Three orthogonal vectors
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1),
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2),
-            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 3),
+            DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1),
+            DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2),
+            DeltaVector::new(&[0.0, 0.0, 1.0], HashSet::new(), 3),
         ];
 
         let conflicts = manager.batch_detect_conflicts(&deltas);
@@ -958,9 +958,9 @@ mod tests {
         let keys1: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["key2"].iter().map(|s| s.to_string()).collect();
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], keys1.clone(), 1),
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal to 0
-            DeltaVector::new(vec![0.95, 0.1, 0.0], keys2.clone(), 3), // Conflicting with 0
+            DeltaVector::new(&[1.0, 0.0, 0.0], keys1.clone(), 1),
+            DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal to 0
+            DeltaVector::new(&[0.95, 0.1, 0.0], keys2.clone(), 3), // Conflicting with 0
         ];
 
         let conflicts = manager.batch_detect_conflicts(&deltas);
@@ -977,9 +977,9 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 1),
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2),
-            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 3),
+            DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 1),
+            DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2),
+            DeltaVector::new(&[0.0, 0.0, 1.0], HashSet::new(), 3),
         ];
 
         let orthogonal = manager.find_orthogonal_set(&deltas);
@@ -1010,11 +1010,11 @@ mod tests {
         // - vs Index 0: Jaccard = 0, Cosine = 0 -> Orthogonal
         // - vs Index 2: Jaccard = 0, Cosine = 0 -> Orthogonal
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], keys1.clone(), 1),
-            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 2), /* Orthogonal to all
-                                                                       * (position 2) */
-            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3), /* Conflicts with 0 (high
-                                                                      * cosine) */
+            DeltaVector::new(&[1.0, 0.0, 0.0], keys1.clone(), 1),
+            DeltaVector::new(&[0.0, 0.0, 1.0], HashSet::new(), 2), /* Orthogonal to all
+                                                                    * (position 2) */
+            DeltaVector::new(&[0.9, 0.1, 0.0], keys2.clone(), 3), /* Conflicts with 0 (high
+                                                                   * cosine) */
         ];
 
         let orthogonal = manager.find_orthogonal_set(&deltas);
@@ -1029,8 +1029,8 @@ mod tests {
 
         let keys: HashSet<String> = ["k"].iter().map(|s| s.to_string()).collect();
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], keys.clone(), 100),
-            DeltaVector::new(vec![0.95, 0.1, 0.0], keys.clone(), 200),
+            DeltaVector::new(&[1.0, 0.0, 0.0], keys.clone(), 100),
+            DeltaVector::new(&[0.95, 0.1, 0.0], keys.clone(), 200),
         ];
 
         let conflicts = manager.batch_detect_conflicts(&deltas);
@@ -1164,9 +1164,9 @@ mod tests {
         let keys2: HashSet<String> = ["b", "c"].iter().map(|s| s.to_string()).collect();
         let keys3: HashSet<String> = ["d", "e"].iter().map(|s| s.to_string()).collect();
 
-        let d1 = DeltaVector::new(vec![1.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![1.0], keys2, 2);
-        let d3 = DeltaVector::new(vec![1.0], keys3, 3);
+        let d1 = DeltaVector::new(&[1.0], keys1, 1);
+        let d2 = DeltaVector::new(&[1.0], keys2, 2);
+        let d3 = DeltaVector::new(&[1.0], keys3, 3);
 
         assert!(d1.overlaps_with(&d2));
         assert!(!d1.overlaps_with(&d3));
@@ -1176,7 +1176,7 @@ mod tests {
     #[test]
     fn test_delta_vector_cosine_similarity_zero_magnitude() {
         let d1 = DeltaVector::zero(3);
-        let d2 = DeltaVector::new(vec![1.0, 0.0, 0.0], HashSet::new(), 2);
+        let d2 = DeltaVector::new(&[1.0, 0.0, 0.0], HashSet::new(), 2);
 
         assert_eq!(d1.cosine_similarity(&d2), 0.0);
         assert_eq!(d2.cosine_similarity(&d1), 0.0);
@@ -1185,8 +1185,8 @@ mod tests {
 
     #[test]
     fn test_delta_vector_weighted_average_zero_weights() {
-        let d1 = DeltaVector::new(vec![1.0, 2.0], HashSet::new(), 1);
-        let d2 = DeltaVector::new(vec![3.0, 4.0], HashSet::new(), 2);
+        let d1 = DeltaVector::new(&[1.0, 2.0], HashSet::new(), 1);
+        let d2 = DeltaVector::new(&[3.0, 4.0], HashSet::new(), 2);
 
         let result = d1.weighted_average(&d2, 0.0, 0.0);
         assert_eq!(result.magnitude(), 0.0);
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn test_delta_vector_project_non_conflicting_zero_direction() {
-        let d = DeltaVector::new(vec![1.0, 2.0, 3.0], HashSet::new(), 1);
+        let d = DeltaVector::new(&[1.0, 2.0, 3.0], HashSet::new(), 1);
         let zero_dir = vec![0.0, 0.0, 0.0];
 
         let result = d.project_non_conflicting_dense(&zero_dir);
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[test]
     fn test_delta_vector_scale() {
-        let d = DeltaVector::new(vec![1.0, 2.0, 3.0], HashSet::new(), 1);
+        let d = DeltaVector::new(&[1.0, 2.0, 3.0], HashSet::new(), 1);
         let scaled = d.scale(2.0);
 
         assert_eq!(scaled.to_dense(3), vec![2.0, 4.0, 6.0]);
@@ -1214,7 +1214,7 @@ mod tests {
     #[test]
     fn test_delta_vector_serde() {
         let keys: HashSet<String> = ["key"].iter().map(|s| s.to_string()).collect();
-        let d = DeltaVector::new(vec![1.0, 2.0], keys, 42);
+        let d = DeltaVector::new(&[1.0, 2.0], keys, 42);
 
         let serialized = bitcode::serialize(&d).unwrap();
         let deserialized: DeltaVector = bitcode::deserialize(&serialized).unwrap();
@@ -1252,7 +1252,7 @@ mod tests {
     #[test]
     fn test_merge_all_single() {
         let manager = ConsensusManager::default_config();
-        let delta = DeltaVector::new(vec![1.0, 2.0, 3.0], HashSet::new(), 42);
+        let delta = DeltaVector::new(&[1.0, 2.0, 3.0], HashSet::new(), 42);
 
         let result = manager.merge_all(&[delta]);
         assert!(result.success);
@@ -1268,10 +1268,10 @@ mod tests {
         let keys1: HashSet<String> = ["k1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["k2"].iter().map(|s| s.to_string()).collect();
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1),
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal
-            DeltaVector::new(vec![0.95, 0.1, 0.0], keys2, 3),         /* Conflicting with
-                                                                       * accumulated */
+            DeltaVector::new(&[1.0, 0.0, 0.0], keys1, 1),
+            DeltaVector::new(&[0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal
+            DeltaVector::new(&[0.95, 0.1, 0.0], keys2, 3),         /* Conflicting with
+                                                                    * accumulated */
         ];
 
         let result = manager.merge_all(&deltas);
@@ -1290,7 +1290,7 @@ mod tests {
     #[test]
     fn test_find_merge_order_single() {
         let manager = ConsensusManager::default_config();
-        let deltas = vec![DeltaVector::new(vec![1.0], HashSet::new(), 1)];
+        let deltas = vec![DeltaVector::new(&[1.0], HashSet::new(), 1)];
         let order = manager.find_merge_order(&deltas);
         assert_eq!(order, vec![0]);
     }
@@ -1299,8 +1299,8 @@ mod tests {
     fn test_find_merge_order_two() {
         let manager = ConsensusManager::default_config();
         let deltas = vec![
-            DeltaVector::new(vec![1.0, 0.0], HashSet::new(), 1),
-            DeltaVector::new(vec![0.0, 1.0], HashSet::new(), 2),
+            DeltaVector::new(&[1.0, 0.0], HashSet::new(), 1),
+            DeltaVector::new(&[0.0, 1.0], HashSet::new(), 2),
         ];
         let order = manager.find_merge_order(&deltas);
         assert_eq!(order.len(), 2);
@@ -1330,8 +1330,8 @@ mod tests {
         let keys1: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["key2"].iter().map(|s| s.to_string()).collect();
 
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0, 0.0, 0.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![0.3, 0.0, 0.5, 0.0, 0.8], keys2, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0, 0.0, 0.0], keys1, 1);
+        let d2 = DeltaVector::new(&[0.3, 0.0, 0.5, 0.0, 0.8], keys2, 2);
 
         let result = manager.detect_conflict(&d1, &d2);
         // cos ~ 0.30, Jaccard = 0.25, no key overlap -> LowConflict
@@ -1345,8 +1345,8 @@ mod tests {
         let manager2 = ConsensusManager::default_config();
 
         // Both should have the same default config
-        let d1 = DeltaVector::new(vec![1.0, 0.0], HashSet::new(), 1);
-        let d2 = DeltaVector::new(vec![0.0, 1.0], HashSet::new(), 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0], HashSet::new(), 1);
+        let d2 = DeltaVector::new(&[0.0, 1.0], HashSet::new(), 2);
 
         let r1 = manager1.detect_conflict(&d1, &d2);
         let r2 = manager2.detect_conflict(&d1, &d2);
@@ -1394,8 +1394,8 @@ mod tests {
         // Mid-range similarity with overlap but config allows it
         let keys1: HashSet<String> = ["shared"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["shared"].iter().map(|s| s.to_string()).collect();
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![0.5, 0.866, 0.0], keys2, 2);
+        let d1 = DeltaVector::new(&[1.0, 0.0, 0.0], keys1, 1);
+        let d2 = DeltaVector::new(&[0.5, 0.866, 0.0], keys2, 2);
 
         let result = manager.merge(&d1, &d2);
         // With allow_key_overlap_merge=true and high conflict_threshold, should allow merge
@@ -1409,8 +1409,8 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let keys: HashSet<String> = ["key"].iter().map(|s| s.to_string()).collect();
-        let d1 = DeltaVector::new(vec![1.0, 2.0, 3.0], keys.clone(), 1);
-        let d2 = DeltaVector::new(vec![1.0, 2.0, 3.0], keys, 2);
+        let d1 = DeltaVector::new(&[1.0, 2.0, 3.0], keys.clone(), 1);
+        let d2 = DeltaVector::new(&[1.0, 2.0, 3.0], keys, 2);
 
         let result = manager.merge(&d1, &d2);
         assert!(result.success);

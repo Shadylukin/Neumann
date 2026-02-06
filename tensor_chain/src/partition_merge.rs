@@ -48,6 +48,15 @@ pub struct PartitionMergeConfig {
     /// Maximum retries for failed merge phases.
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
+
+    /// Dedup window for merge sessions (milliseconds). Sessions initiated for
+    /// the same set of participants within this window are considered duplicates.
+    #[serde(default = "default_session_dedup_window_ms")]
+    pub session_dedup_window_ms: u64,
+}
+
+fn default_session_dedup_window_ms() -> u64 {
+    5000
 }
 
 fn default_heal_confirmation_threshold() -> u32 {
@@ -78,6 +87,7 @@ impl Default for PartitionMergeConfig {
             auto_merge_on_heal: default_auto_merge_on_heal(),
             merge_cooldown_ms: default_merge_cooldown_ms(),
             max_retries: default_max_retries(),
+            session_dedup_window_ms: default_session_dedup_window_ms(),
         }
     }
 }
@@ -502,6 +512,9 @@ pub struct PartitionMergeStats {
 
     /// Number of merge sessions aborted due to repartition during merge.
     pub merge_aborted_repartition: AtomicU64,
+
+    /// Number of duplicate merge sessions deduplicated.
+    pub sessions_deduplicated: AtomicU64,
 }
 
 impl PartitionMergeStats {
@@ -537,6 +550,10 @@ impl PartitionMergeStats {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_session_deduplicated(&self) {
+        self.sessions_deduplicated.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> PartitionMergeStatsSnapshot {
         PartitionMergeStatsSnapshot {
             sessions_started: self.sessions_started.load(Ordering::Relaxed),
@@ -547,6 +564,7 @@ impl PartitionMergeStats {
             conflicts_manual: self.conflicts_manual.load(Ordering::Relaxed),
             total_merge_duration_ms: self.total_merge_duration_ms.load(Ordering::Relaxed),
             merge_aborted_repartition: self.merge_aborted_repartition.load(Ordering::Relaxed),
+            sessions_deduplicated: self.sessions_deduplicated.load(Ordering::Relaxed),
         }
     }
 }
@@ -562,6 +580,7 @@ pub struct PartitionMergeStatsSnapshot {
     pub conflicts_manual: u64,
     pub total_merge_duration_ms: u64,
     pub merge_aborted_repartition: u64,
+    pub sessions_deduplicated: u64,
 }
 
 impl PartitionMergeStatsSnapshot {
@@ -1042,6 +1061,9 @@ pub struct PartitionMergeManager {
     /// Monotonic counter incremented on each new partition event.
     #[allow(dead_code)]
     partition_generation: std::sync::atomic::AtomicU64,
+    /// Dedup map: deterministic session key -> (session_id, created_at).
+    /// Prevents duplicate sessions when both sides detect a heal simultaneously.
+    recent_sessions: RwLock<HashMap<u64, (u64, Instant)>>,
 }
 
 impl PartitionMergeManager {
@@ -1056,6 +1078,7 @@ impl PartitionMergeManager {
             tx_reconciler: TransactionReconciler::default(),
             cooldowns: RwLock::new(HashMap::new()),
             partition_generation: std::sync::atomic::AtomicU64::new(0),
+            recent_sessions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1075,6 +1098,7 @@ impl PartitionMergeManager {
             tx_reconciler,
             cooldowns: RwLock::new(HashMap::new()),
             partition_generation: std::sync::atomic::AtomicU64::new(0),
+            recent_sessions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1115,6 +1139,27 @@ impl PartitionMergeManager {
     /// Start a new merge session with healed nodes.
     ///
     /// Returns the session ID if started, or None if blocked by cooldown/limit.
+    /// Compute a deterministic dedup key from sorted participant names.
+    /// Sessions with the same participant set within the dedup window are duplicates.
+    fn dedup_key(participants: &[NodeId]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut sorted: Vec<&NodeId> = participants.iter().collect();
+        sorted.sort();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for p in &sorted {
+            p.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// Expire stale entries from the dedup map.
+    fn gc_recent_sessions(&self) {
+        let window = std::time::Duration::from_millis(self.config.session_dedup_window_ms);
+        self.recent_sessions
+            .write()
+            .retain(|_, (_, created)| created.elapsed() < window);
+    }
+
     pub fn start_merge(&self, healed_nodes: Vec<NodeId>) -> Option<u64> {
         // Check concurrent session limit
         if self.sessions.read().len() >= self.config.max_concurrent_merges {
@@ -1137,6 +1182,25 @@ impl PartitionMergeManager {
             return None;
         }
 
+        // Dedup check: reject if same participant set already has a recent session
+        self.gc_recent_sessions();
+        let key = Self::dedup_key(&eligible);
+        {
+            let recent = self.recent_sessions.read();
+            if let Some((existing_id, created)) = recent.get(&key) {
+                let window = std::time::Duration::from_millis(self.config.session_dedup_window_ms);
+                if created.elapsed() < window {
+                    tracing::debug!(
+                        existing_session = *existing_id,
+                        participants = ?eligible,
+                        "Merge deduplicated: session already exists for these participants"
+                    );
+                    self.stats.record_session_deduplicated();
+                    return Some(*existing_id);
+                }
+            }
+        }
+
         // Record merge attempts
         for node in &eligible {
             self.record_merge_attempt(node);
@@ -1152,6 +1216,9 @@ impl PartitionMergeManager {
             .load(std::sync::atomic::Ordering::Relaxed);
 
         self.sessions.write().insert(session_id, session);
+        self.recent_sessions
+            .write()
+            .insert(key, (session_id, Instant::now()));
         self.stats.record_session_start();
 
         tracing::info!(

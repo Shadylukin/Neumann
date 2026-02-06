@@ -684,7 +684,7 @@ impl ClusterOrchestrator {
                             }
                             Message::SignedGossip(signed_gossip) => {
                                 // Verify signature and process gossip
-                                if let Err(e) = gossip.handle_signed_gossip(signed_gossip) {
+                                if let Err(e) = gossip.handle_signed_gossip(&signed_gossip) {
                                     tracing::warn!(peer = %from, error = %e, "failed to verify signed gossip");
                                 }
                             }
@@ -773,6 +773,7 @@ impl ClusterOrchestrator {
     /// # Errors
     ///
     /// Returns an error if saving Raft state to the store fails.
+    #[allow(clippy::unused_async)]
     pub async fn shutdown(&self) -> Result<()> {
         // Save Raft state before shutdown
         self.raft.save_to_store(&self.store)?;

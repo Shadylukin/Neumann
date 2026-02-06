@@ -140,7 +140,7 @@
 //! Messages can be signed using [`SignedGossipMessage`]
 //! to provide:
 //! - Authentication (Ed25519 signatures)
-//! - Identity binding (NodeId derived from public key)
+//! - Identity binding (`NodeId` derived from public key)
 //! - Replay protection (sequence numbers + timestamps)
 //!
 //! # See Also
@@ -174,7 +174,7 @@ use crate::{
 };
 
 /// State of a node in the gossip protocol.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GossipNodeState {
     /// Node identifier.
     pub node_id: NodeId,
@@ -194,16 +194,11 @@ impl GossipNodeState {
     /// Uses the HLC to get a monotonic timestamp. If the HLC fails to initialize
     /// (system time before epoch), falls back to the provided timestamp as the
     /// wall clock time to ensure the state is still usable.
+    #[must_use]
     pub fn new(node_id: NodeId, health: NodeHealth, timestamp: u64, incarnation: u64) -> Self {
         // Try to get wall clock time via HLC for monotonic timestamps
-        let updated_at = match HybridLogicalClock::new(0) {
-            Ok(hlc) => hlc.estimated_wall_ms(),
-            Err(_) => {
-                // Fallback: use the Lamport timestamp as a proxy for ordering
-                // This maintains monotonicity within this node's view
-                timestamp
-            },
-        };
+        let updated_at =
+            HybridLogicalClock::new(0).map_or(timestamp, |hlc| hlc.estimated_wall_ms());
 
         Self {
             node_id,
@@ -217,7 +212,8 @@ impl GossipNodeState {
     /// Create a new gossip node state with explicit wall clock time.
     ///
     /// Use this when you have a known-good wall clock time from an HLC.
-    pub fn with_wall_time(
+    #[must_use]
+    pub const fn with_wall_time(
         node_id: NodeId,
         health: NodeHealth,
         timestamp: u64,
@@ -236,6 +232,10 @@ impl GossipNodeState {
     /// Create a new gossip node state, returning an error if system time is unavailable.
     ///
     /// Prefer this in production code where timestamp accuracy is critical.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HLC cannot be initialized (system time unavailable).
     pub fn try_new(
         node_id: NodeId,
         health: NodeHealth,
@@ -256,11 +256,12 @@ impl GossipNodeState {
 
     /// Check if this state supersedes another state for the same node.
     /// Uses incarnation first, then timestamp as tiebreaker.
-    pub fn supersedes(&self, other: &GossipNodeState) -> bool {
-        if self.incarnation != other.incarnation {
-            self.incarnation > other.incarnation
-        } else {
+    #[must_use]
+    pub const fn supersedes(&self, other: &Self) -> bool {
+        if self.incarnation == other.incarnation {
             self.timestamp > other.timestamp
+        } else {
+            self.incarnation > other.incarnation
         }
     }
 }
@@ -307,11 +308,13 @@ pub struct LWWMembershipState {
 }
 
 impl LWWMembershipState {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn lamport_time(&self) -> u64 {
+    #[must_use]
+    pub const fn lamport_time(&self) -> u64 {
         self.lamport_time
     }
 
@@ -326,6 +329,7 @@ impl LWWMembershipState {
         self.lamport_time = self.lamport_time.max(incoming_time) + 1;
     }
 
+    #[must_use]
     pub fn get(&self, node_id: &NodeId) -> Option<&GossipNodeState> {
         self.states.get(node_id)
     }
@@ -334,7 +338,8 @@ impl LWWMembershipState {
         self.states.values()
     }
 
-    /// Get states for gossip (up to max_count, prioritizing recently updated).
+    /// Get states for gossip (up to `max_count`, prioritizing recently updated).
+    #[must_use]
     pub fn states_for_gossip(&self, max_count: usize) -> Vec<GossipNodeState> {
         let mut states: Vec<_> = self.states.values().cloned().collect();
         // Sort by timestamp descending (most recent first)
@@ -348,23 +353,20 @@ impl LWWMembershipState {
         let mut changed = Vec::new();
 
         for state in incoming {
-            let should_update = match self.states.get(&state.node_id) {
-                Some(existing) => {
-                    let supersedes = state.supersedes(existing);
-                    if supersedes {
-                        tracing::debug!(
-                            node_id = %state.node_id,
-                            old_incarnation = existing.incarnation,
-                            new_incarnation = state.incarnation,
-                            old_timestamp = existing.timestamp,
-                            new_timestamp = state.timestamp,
-                            "State superseded"
-                        );
-                    }
-                    supersedes
-                },
-                None => true,
-            };
+            let should_update = self.states.get(&state.node_id).map_or(true, |existing| {
+                let supersedes = state.supersedes(existing);
+                if supersedes {
+                    tracing::debug!(
+                        node_id = %state.node_id,
+                        old_incarnation = existing.incarnation,
+                        new_incarnation = state.incarnation,
+                        old_timestamp = existing.timestamp,
+                        new_timestamp = state.timestamp,
+                        "State superseded"
+                    );
+                }
+                supersedes
+            });
 
             if should_update {
                 changed.push(state.node_id.clone());
@@ -489,6 +491,7 @@ impl LWWMembershipState {
     }
 
     /// Count nodes by health status.
+    #[must_use]
     pub fn count_by_health(&self) -> (usize, usize, usize) {
         let mut healthy = 0;
         let mut degraded = 0;
@@ -505,10 +508,12 @@ impl LWWMembershipState {
         (healthy, degraded, failed)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.states.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.states.is_empty()
     }
@@ -592,9 +597,9 @@ pub struct GossipMembershipManager {
     geometric: Option<Arc<GeometricMembershipManager>>,
     /// Registered callbacks.
     callbacks: RwLock<Vec<Arc<dyn MembershipCallback>>>,
-    /// Pending suspicions (node_id -> suspicion record).
+    /// Pending suspicions (`node_id` -> suspicion record).
     suspicions: RwLock<HashMap<NodeId, PendingSuspicion>>,
-    /// Heal progress tracking (node_id -> heal progress).
+    /// Heal progress tracking (`node_id` -> heal progress).
     heal_progress: RwLock<HashMap<NodeId, HealProgress>>,
     /// Known peers for random selection fallback.
     known_peers: RwLock<Vec<NodeId>>,
@@ -701,7 +706,7 @@ impl GossipMembershipManager {
     }
 
     /// Check if signatures are required for incoming gossip messages.
-    pub fn require_signatures(&self) -> bool {
+    pub const fn require_signatures(&self) -> bool {
         self.config.require_signatures
     }
 
@@ -716,7 +721,7 @@ impl GossipMembershipManager {
         self.sequence_exhaustion_warnings.load(Ordering::Relaxed)
     }
 
-    /// Create a signed or unsigned Message::Gossip depending on configuration.
+    /// Create a signed or unsigned `Message::Gossip` depending on configuration.
     fn create_gossip_message(&self, gossip_msg: GossipMessage) -> Message {
         if let Some(ref identity) = self.identity {
             let seq = self.outgoing_sequence.fetch_add(1, Ordering::SeqCst);
@@ -735,14 +740,16 @@ impl GossipMembershipManager {
     /// Handle a signed gossip message.
     ///
     /// Verifies the signature and replay protection, then processes the gossip.
-    pub fn handle_signed_gossip(&self, signed: SignedGossipMessage) -> Result<()> {
-        let (registry, tracker) = match (&self.validator_registry, &self.sequence_tracker) {
-            (Some(r), Some(t)) => (r, t),
-            _ => {
-                return Err(ChainError::CryptoError(
-                    "signing not configured for gossip verification".into(),
-                ))
-            },
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if signing is not configured or signature verification fails.
+    pub fn handle_signed_gossip(&self, signed: &SignedGossipMessage) -> Result<()> {
+        let (Some(registry), Some(tracker)) = (&self.validator_registry, &self.sequence_tracker)
+        else {
+            return Err(ChainError::CryptoError(
+                "signing not configured for gossip verification".into(),
+            ));
         };
 
         let msg = signed.verify_with_tracker(registry, tracker)?;

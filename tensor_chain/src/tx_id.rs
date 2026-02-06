@@ -24,7 +24,7 @@
 //! |------|-------|-------------|
 //! | 63-48 | Milliseconds | Time since custom epoch, mod 65536 (~65 seconds cycle) |
 //! | 47-32 | Microseconds + Overflow | Sub-millisecond precision + collision counter |
-//! | 31-0 | Random | CSPRNG output from OsRng |
+//! | 31-0 | Random | CSPRNG output from `OsRng` |
 //!
 //! # Custom Epoch
 //!
@@ -137,15 +137,18 @@ static LAST_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 ///
 /// The ID combines:
 /// - Timestamp (32 bits total: 16 bits ms, 16 bits us + overflow)
-/// - Random (32 bits from OsRng)
+/// - Random (32 bits from `OsRng`)
 ///
 /// This prevents ID prediction while maintaining approximate time ordering.
+#[must_use]
 pub fn generate_tx_id() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
 
+    #[allow(clippy::cast_possible_truncation)]
     let ms = now.as_millis() as u64;
+    #[allow(clippy::cast_possible_truncation)]
     let us = (now.as_micros() % 1000) as u16;
 
     // Handle same-millisecond collisions with overflow counter
@@ -160,14 +163,14 @@ pub fn generate_tx_id() -> u64 {
     };
 
     // Get 32 bits of cryptographic randomness
-    let random_bits = rand::rngs::OsRng.next_u32() as u64;
+    let random_bits = u64::from(rand::rngs::OsRng.next_u32());
 
     // Assemble the ID:
     // - Bits 63-48: milliseconds (mod 65536)
     // - Bits 47-32: microseconds + overflow
     // - Bits 31-0: random
     let ms_bits = (current_ts & 0xFFFF) << 48;
-    let us_bits = (us.wrapping_add(overflow) as u64) << 32;
+    let us_bits = u64::from(us.wrapping_add(overflow)) << 32;
 
     ms_bits | us_bits | random_bits
 }
@@ -176,6 +179,7 @@ pub fn generate_tx_id() -> u64 {
 ///
 /// Returns the estimated milliseconds since UNIX epoch when the ID was generated.
 /// This is only an approximation due to the 16-bit truncation of the millisecond field.
+#[must_use]
 pub fn extract_timestamp_hint(tx_id: u64) -> u64 {
     let ms_component = (tx_id >> 48) & 0xFFFF;
     CUSTOM_EPOCH_MS + ms_component
@@ -186,7 +190,9 @@ pub fn extract_timestamp_hint(tx_id: u64) -> u64 {
 /// Returns true if the ID's timestamp component falls within `window_ms`
 /// milliseconds of the current time. This can be used to detect obviously
 /// invalid or replayed transaction IDs.
+#[must_use]
 pub fn is_plausible_tx_id(tx_id: u64, window_ms: u64) -> bool {
+    #[allow(clippy::cast_possible_truncation)]
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

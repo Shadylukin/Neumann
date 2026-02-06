@@ -8,17 +8,21 @@ use crate::{
     error::{ChainError, Result},
 };
 
-/// Compute a deterministic state root for the current TensorStore contents.
+/// Compute a deterministic state root for the current `TensorStore` contents.
 ///
 /// The state root is the SHA-256 hash of all keys and values, iterated in
 /// sorted order to avoid dependence on internal storage layout.
+///
+/// # Errors
+/// Returns an error if a key cannot be read or a value cannot be serialized.
 pub fn compute_state_root(store: &tensor_store::TensorStore) -> Result<BlockHash> {
     let mut hasher = Sha256::new();
     let mut keys = store.scan("");
     keys.sort();
 
     for key in keys {
-        hasher.update((key.len() as u64).to_le_bytes());
+        let key_len = key.len() as u64;
+        hasher.update(key_len.to_le_bytes());
         hasher.update(key.as_bytes());
 
         let data = store
@@ -27,10 +31,12 @@ pub fn compute_state_root(store: &tensor_store::TensorStore) -> Result<BlockHash
 
         let mut field_keys: Vec<&String> = data.keys().collect();
         field_keys.sort();
-        hasher.update((field_keys.len() as u64).to_le_bytes());
+        let field_count = field_keys.len() as u64;
+        hasher.update(field_count.to_le_bytes());
 
         for field_key in field_keys {
-            hasher.update((field_key.len() as u64).to_le_bytes());
+            let fk_len = field_key.len() as u64;
+            hasher.update(fk_len.to_le_bytes());
             hasher.update(field_key.as_bytes());
 
             let value = data
@@ -38,7 +44,8 @@ pub fn compute_state_root(store: &tensor_store::TensorStore) -> Result<BlockHash
                 .ok_or_else(|| ChainError::StorageError("missing field".to_string()))?;
             let value_bytes = bitcode::serialize(value)
                 .map_err(|e| ChainError::SerializationError(e.to_string()))?;
-            hasher.update((value_bytes.len() as u64).to_le_bytes());
+            let vb_len = value_bytes.len() as u64;
+            hasher.update(vb_len.to_le_bytes());
             hasher.update(value_bytes);
         }
     }

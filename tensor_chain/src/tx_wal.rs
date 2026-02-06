@@ -54,6 +54,12 @@ pub enum TxWalEntry {
 
     /// Transaction completed (committed or aborted).
     TxComplete { tx_id: u64, outcome: TxOutcome },
+
+    /// Individual lock released during commit/abort.
+    LockRelease { tx_id: u64, lock_handle: u64 },
+
+    /// All locks for a transaction have been released.
+    AllLocksReleased { tx_id: u64 },
 }
 
 /// Vote type during prepare phase.
@@ -468,6 +474,19 @@ pub struct TxRecoveryState {
     pub committing_txs: Vec<RecoveredPreparedTx>,
     /// Transactions that were in Aborting phase (need completion).
     pub aborting_txs: Vec<RecoveredPreparedTx>,
+    /// Lock handles from completed transactions that were not fully released
+    /// (TxComplete logged but AllLocksReleased not seen). These are orphaned
+    /// locks that must be force-released during recovery.
+    pub orphaned_locks: Vec<OrphanedLock>,
+}
+
+/// A lock handle that belongs to a completed transaction but was never released.
+#[derive(Debug, Clone)]
+pub struct OrphanedLock {
+    /// Transaction that held this lock.
+    pub tx_id: u64,
+    /// The lock handle to release.
+    pub lock_handle: u64,
 }
 
 /// A transaction in prepared state awaiting decision.
@@ -486,10 +505,20 @@ type InProgressTxState = (Vec<usize>, Vec<(usize, PrepareVoteKind)>, TxPhase);
 
 impl TxRecoveryState {
     /// Reconstruct state from WAL entries.
+    ///
+    /// Tracks orphaned locks: if a TxComplete is logged but AllLocksReleased is not,
+    /// the lock handles from PrepareVote::Yes entries are considered orphaned and
+    /// must be force-released during recovery.
     pub fn from_entries(entries: &[TxWalEntry]) -> Self {
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
 
         let mut in_progress: HashMap<u64, InProgressTxState> = HashMap::new();
+        // Track completed txs whose lock handles we collected from votes
+        let mut completed_lock_handles: HashMap<u64, Vec<u64>> = HashMap::new();
+        // Track individual lock releases per tx
+        let mut released_locks: HashMap<u64, HashSet<u64>> = HashMap::new();
+        // Track txs that have AllLocksReleased
+        let mut fully_released: HashSet<u64> = HashSet::new();
 
         for entry in entries {
             match entry {
@@ -513,7 +542,29 @@ impl TxRecoveryState {
                     }
                 },
                 TxWalEntry::TxComplete { tx_id, .. } => {
+                    // Collect lock handles before removing from in_progress
+                    if let Some((_, votes, _)) = in_progress.get(tx_id) {
+                        let handles: Vec<u64> = votes
+                            .iter()
+                            .filter_map(|(_, vote)| match vote {
+                                PrepareVoteKind::Yes { lock_handle } => Some(*lock_handle),
+                                PrepareVoteKind::No => None,
+                            })
+                            .collect();
+                        if !handles.is_empty() {
+                            completed_lock_handles.insert(*tx_id, handles);
+                        }
+                    }
                     in_progress.remove(tx_id);
+                },
+                TxWalEntry::LockRelease { tx_id, lock_handle } => {
+                    released_locks
+                        .entry(*tx_id)
+                        .or_default()
+                        .insert(*lock_handle);
+                },
+                TxWalEntry::AllLocksReleased { tx_id } => {
+                    fully_released.insert(*tx_id);
                 },
             }
         }
@@ -541,6 +592,23 @@ impl TxRecoveryState {
                     // Preparing: Transaction didn't reach decision, can be aborted
                     // Committed/Aborted: Should have TxComplete entry, but may be safe to ignore
                 },
+            }
+        }
+
+        // Detect orphaned locks: TxComplete seen but AllLocksReleased not seen
+        for (tx_id, handles) in &completed_lock_handles {
+            if fully_released.contains(tx_id) {
+                continue;
+            }
+            let released = released_locks.get(tx_id);
+            for handle in handles {
+                let already_released = released.is_some_and(|set| set.contains(handle));
+                if !already_released {
+                    state.orphaned_locks.push(OrphanedLock {
+                        tx_id: *tx_id,
+                        lock_handle: *handle,
+                    });
+                }
             }
         }
 
@@ -1248,6 +1316,174 @@ mod tests {
         .unwrap();
         let size_after_two = wal.current_size();
         assert!(size_after_two > size_after_one);
+    }
+
+    #[test]
+    fn test_lock_release_entries_serialize_roundtrip() {
+        let entries = vec![
+            TxWalEntry::LockRelease {
+                tx_id: 1,
+                lock_handle: 42,
+            },
+            TxWalEntry::AllLocksReleased { tx_id: 1 },
+        ];
+
+        for entry in entries {
+            let bytes = bitcode::serialize(&entry).unwrap();
+            let restored: TxWalEntry = bitcode::deserialize(&bytes).unwrap();
+            assert_eq!(entry, restored);
+        }
+    }
+
+    #[test]
+    fn test_lock_release_wal_roundtrip() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("lock_release.wal");
+
+        {
+            let mut wal = TxWal::open(&wal_path).unwrap();
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0, 1],
+            })
+            .unwrap();
+            wal.append(&TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 0,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
+            })
+            .unwrap();
+            wal.append(&TxWalEntry::TxComplete {
+                tx_id: 1,
+                outcome: TxOutcome::Committed,
+            })
+            .unwrap();
+            wal.append(&TxWalEntry::LockRelease {
+                tx_id: 1,
+                lock_handle: 100,
+            })
+            .unwrap();
+            wal.append(&TxWalEntry::AllLocksReleased { tx_id: 1 })
+                .unwrap();
+        }
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[test]
+    fn test_recovery_detects_orphaned_locks() {
+        let entries = vec![
+            TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0, 1],
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 0,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 1,
+                vote: PrepareVoteKind::Yes { lock_handle: 101 },
+            },
+            TxWalEntry::TxComplete {
+                tx_id: 1,
+                outcome: TxOutcome::Committed,
+            },
+            // Crash -- no LockRelease or AllLocksReleased entries
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert!(state.prepared_txs.is_empty());
+        assert_eq!(state.orphaned_locks.len(), 2);
+        let mut handles: Vec<u64> = state.orphaned_locks.iter().map(|o| o.lock_handle).collect();
+        handles.sort_unstable();
+        assert_eq!(handles, vec![100, 101]);
+    }
+
+    #[test]
+    fn test_recovery_no_orphans_when_all_released() {
+        let entries = vec![
+            TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0],
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 0,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
+            },
+            TxWalEntry::TxComplete {
+                tx_id: 1,
+                outcome: TxOutcome::Committed,
+            },
+            TxWalEntry::LockRelease {
+                tx_id: 1,
+                lock_handle: 100,
+            },
+            TxWalEntry::AllLocksReleased { tx_id: 1 },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert!(state.orphaned_locks.is_empty());
+    }
+
+    #[test]
+    fn test_recovery_partial_lock_release_detected() {
+        let entries = vec![
+            TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0, 1],
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 0,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 1,
+                vote: PrepareVoteKind::Yes { lock_handle: 101 },
+            },
+            TxWalEntry::TxComplete {
+                tx_id: 1,
+                outcome: TxOutcome::Committed,
+            },
+            // Only one lock released before crash
+            TxWalEntry::LockRelease {
+                tx_id: 1,
+                lock_handle: 100,
+            },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert_eq!(state.orphaned_locks.len(), 1);
+        assert_eq!(state.orphaned_locks[0].lock_handle, 101);
+    }
+
+    #[test]
+    fn test_recovery_no_orphans_for_no_votes() {
+        let entries = vec![
+            TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0],
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 0,
+                vote: PrepareVoteKind::No,
+            },
+            TxWalEntry::TxComplete {
+                tx_id: 1,
+                outcome: TxOutcome::Aborted,
+            },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert!(state.orphaned_locks.is_empty());
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub struct TensorStateMachine {
 }
 
 impl TensorStateMachine {
+    #[must_use]
     pub fn new(chain: Arc<Chain>, raft: Arc<RaftNode>, store: TensorStore) -> Self {
         Self {
             chain,
@@ -56,6 +57,7 @@ impl TensorStateMachine {
         }
     }
 
+    #[must_use]
     pub fn with_threshold(
         chain: Arc<Chain>,
         raft: Arc<RaftNode>,
@@ -72,10 +74,12 @@ impl TensorStateMachine {
         }
     }
 
+    #[must_use]
     pub fn fast_path_threshold(&self) -> f32 {
         self.fast_path_threshold
     }
 
+    #[must_use]
     pub fn recent_embedding_count(&self) -> usize {
         self.recent_embeddings.read().len()
     }
@@ -83,6 +87,9 @@ impl TensorStateMachine {
     /// Apply all committed but unapplied entries to the chain.
     ///
     /// Returns the number of blocks successfully applied.
+    ///
+    /// # Errors
+    /// Returns an error if applying any entry fails.
     pub fn apply_committed(&self) -> Result<usize> {
         let entries = self.raft.get_uncommitted_entries();
         let mut applied_count = 0;
@@ -97,6 +104,9 @@ impl TensorStateMachine {
     }
 
     /// Apply a block directly (for testing or manual application).
+    ///
+    /// # Errors
+    /// Returns an error if block application or validation fails.
     pub fn apply_block(&self, block: &Block) -> Result<()> {
         let pre_apply_snapshot = self
             .store
@@ -268,6 +278,7 @@ impl TensorStateMachine {
         max_similarity >= self.fast_path_threshold
     }
 
+    #[must_use]
     pub fn recent_embedding_similarity(&self, embedding: &SparseVector) -> f32 {
         let recent = self.recent_embeddings.read();
         if recent.is_empty() || embedding.nnz() == 0 {
@@ -317,7 +328,8 @@ impl TensorStateMachine {
     /// Get the current state embedding for geometric routing.
     ///
     /// Returns a weighted average of recent embeddings, giving more weight
-    /// to newer entries. Returns None if no recent embeddings exist.
+    /// to newer entries. Returns `None` if no recent embeddings exist.
+    #[must_use]
     pub fn current_state_embedding(&self) -> Option<SparseVector> {
         let recent = self.recent_embeddings.read();
         if recent.is_empty() {
@@ -328,14 +340,17 @@ impl TensorStateMachine {
         recent.last().cloned()
     }
 
+    #[must_use]
     pub fn chain(&self) -> &Chain {
         &self.chain
     }
 
+    #[must_use]
     pub fn raft(&self) -> &RaftNode {
         &self.raft
     }
 
+    #[must_use]
     pub fn store(&self) -> &TensorStore {
         &self.store
     }

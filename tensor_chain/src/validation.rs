@@ -87,6 +87,7 @@ pub struct TransitionValidator {
 }
 
 impl TransitionValidator {
+    #[must_use]
     pub fn new(global: Arc<GlobalCodebook>, config: ValidationConfig) -> Self {
         Self {
             global,
@@ -95,10 +96,12 @@ impl TransitionValidator {
         }
     }
 
+    #[must_use]
     pub fn with_global(global: Arc<GlobalCodebook>) -> Self {
         Self::new(global, ValidationConfig::default())
     }
 
+    #[must_use]
     pub fn global(&self) -> &GlobalCodebook {
         &self.global
     }
@@ -124,7 +127,7 @@ impl TransitionValidator {
 
     /// Get or create a local codebook for a domain.
     ///
-    /// Note: Returns a new LocalCodebook initialized with the same config for backwards
+    /// Note: Returns a new `LocalCodebook` initialized with the same config for backwards
     /// compatibility. Prefer `with_local()` for operations that need persistence.
     #[deprecated(note = "Use with_local() for operations that need persistence")]
     pub fn get_or_create_local(&self, domain: &str) -> LocalCodebook {
@@ -150,10 +153,12 @@ impl TransitionValidator {
         self.locals.write().insert(domain.to_string(), local);
     }
 
+    #[must_use]
     pub fn is_valid_state(&self, domain: &str, state: &[f32]) -> bool {
         self.validate_state(domain, state).is_valid
     }
 
+    #[must_use]
     pub fn validate_state(&self, domain: &str, state: &[f32]) -> StateValidation {
         // Check global codebook
         let (global_entry, global_similarity) = self.global.quantize(state).unwrap_or((0, 0.0));
@@ -186,10 +191,12 @@ impl TransitionValidator {
         }
     }
 
+    #[must_use]
     pub fn is_valid_transition(&self, domain: &str, from: &[f32], to: &[f32]) -> bool {
         self.validate_transition(domain, from, to).is_valid
     }
 
+    #[must_use]
     pub fn validate_transition(
         &self,
         domain: &str,
@@ -211,36 +218,33 @@ impl TransitionValidator {
         let direction_similarity =
             SparseVector::from_dense(from).cosine_similarity(&SparseVector::from_dense(to));
 
+        let max_mag = self.config.max_transition_magnitude;
+
         // Determine validity
         let (is_valid, rejection_reason) = if self.config.strict_transition {
             if !from_validation.is_valid {
                 (false, Some("source state invalid".to_string()))
             } else if !to_validation.is_valid {
                 (false, Some("target state invalid".to_string()))
-            } else if magnitude > self.config.max_transition_magnitude {
+            } else if magnitude > max_mag {
                 (
                     false,
                     Some(format!(
-                        "transition magnitude {} exceeds max {}",
-                        magnitude, self.config.max_transition_magnitude
+                        "transition magnitude {magnitude} exceeds max {max_mag}"
                     )),
                 )
             } else {
                 (true, None)
             }
+        } else if magnitude > max_mag {
+            (
+                false,
+                Some(format!(
+                    "transition magnitude {magnitude} exceeds max {max_mag}"
+                )),
+            )
         } else {
-            // Non-strict: only check magnitude
-            if magnitude > self.config.max_transition_magnitude {
-                (
-                    false,
-                    Some(format!(
-                        "transition magnitude {} exceeds max {}",
-                        magnitude, self.config.max_transition_magnitude
-                    )),
-                )
-            } else {
-                (true, None)
-            }
+            (true, None)
         };
 
         TransitionValidation {
@@ -253,6 +257,7 @@ impl TransitionValidator {
         }
     }
 
+    #[must_use]
     pub fn validate_batch(
         &self,
         domain: &str,
@@ -264,6 +269,8 @@ impl TransitionValidator {
             .collect()
     }
 
+    /// # Errors
+    /// Returns an error if any transition in the path is invalid.
     pub fn validate_path(&self, domain: &str, states: &[Vec<f32>]) -> Result<()> {
         if states.len() < 2 {
             return Ok(());
@@ -273,8 +280,7 @@ impl TransitionValidator {
             let validation = self.validate_transition(domain, &window[0], &window[1]);
             if !validation.is_valid {
                 return Err(ChainError::ValidationFailed(format!(
-                    "transition {} -> {}: {}",
-                    i,
+                    "transition {i} -> {}: {}",
                     i + 1,
                     validation.rejection_reason.unwrap_or_default()
                 )));
@@ -284,6 +290,7 @@ impl TransitionValidator {
         Ok(())
     }
 
+    #[must_use]
     pub fn compute_path_drift(&self, states: &[Vec<f32>]) -> f32 {
         if states.len() < 2 {
             return 0.0;
@@ -302,6 +309,7 @@ impl TransitionValidator {
             .sum()
     }
 
+    #[must_use]
     pub fn find_max_deviation(&self, domain: &str, states: &[Vec<f32>]) -> Option<(usize, f32)> {
         states
             .iter()
@@ -361,6 +369,7 @@ pub struct FastPathResult {
 }
 
 impl FastPathResult {
+    #[must_use]
     pub fn accept(similarity: f32, blocks_checked: usize) -> Self {
         Self {
             can_use_fast_path: true,
@@ -370,6 +379,7 @@ impl FastPathResult {
         }
     }
 
+    #[must_use]
     pub fn reject(reason: &str, similarity: f32, blocks_checked: usize) -> Self {
         Self {
             can_use_fast_path: false,
@@ -404,6 +414,7 @@ impl Default for FastPathValidator {
 }
 
 impl FastPathValidator {
+    #[must_use]
     pub fn new(similarity_threshold: f32, min_leader_history: usize) -> Self {
         Self {
             similarity_threshold,
@@ -413,6 +424,7 @@ impl FastPathValidator {
         }
     }
 
+    #[must_use]
     pub fn check_fast_path(
         &self,
         block_embedding: &[f32],
@@ -444,7 +456,7 @@ impl FastPathValidator {
         let max_similarity = recent_embeddings
             .iter()
             .map(|emb| block_vec.cosine_similarity(&SparseVector::from_dense(emb)))
-            .fold(0.0f32, |max, sim| max.max(sim));
+            .fold(0.0f32, f32::max);
 
         if max_similarity >= self.similarity_threshold {
             FastPathResult::accept(max_similarity, recent_embeddings.len())

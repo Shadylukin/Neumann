@@ -29,6 +29,20 @@ use super::compression::{self, CompressionConfig, CompressionMethod};
 use super::error::{TcpError, TcpResult};
 use crate::network::Message;
 
+/// Saturating conversion from `Duration` milliseconds to `u64`.
+fn timeout_ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Convert a byte length to a 4-byte big-endian length prefix.
+fn length_prefix(len: usize, max: usize) -> TcpResult<[u8; 4]> {
+    let n = u32::try_from(len).map_err(|_| TcpError::MessageTooLarge {
+        size: len,
+        max_size: max,
+    })?;
+    Ok(n.to_be_bytes())
+}
+
 /// Length-delimited codec for message framing.
 #[derive(Clone)]
 pub struct LengthDelimitedCodec {
@@ -38,19 +52,21 @@ pub struct LengthDelimitedCodec {
 }
 
 impl LengthDelimitedCodec {
+    #[must_use]
     pub fn new(max_frame_length: usize) -> Self {
         Self {
             max_frame_length,
             compression: CompressionConfig::default(),
-            compress_enabled: false, // Disabled until negotiated
+            compress_enabled: false,
         }
     }
 
-    pub fn with_compression(max_frame_length: usize, compression: CompressionConfig) -> Self {
+    #[must_use]
+    pub const fn with_compression(max_frame_length: usize, compression: CompressionConfig) -> Self {
         Self {
             max_frame_length,
             compression,
-            compress_enabled: false, // Disabled until negotiated
+            compress_enabled: false,
         }
     }
 
@@ -58,14 +74,19 @@ impl LengthDelimitedCodec {
         self.compress_enabled = enabled && self.compression.enabled;
     }
 
-    pub fn compression_enabled(&self) -> bool {
+    #[must_use]
+    pub const fn compression_enabled(&self) -> bool {
         self.compress_enabled
     }
 
-    pub fn compression_config(&self) -> &CompressionConfig {
+    #[must_use]
+    pub const fn compression_config(&self) -> &CompressionConfig {
         &self.compression
     }
 
+    /// # Errors
+    ///
+    /// Returns `MessageTooLarge` if the serialized payload exceeds the max frame length.
     pub fn encode(&self, msg: &Message) -> TcpResult<Vec<u8>> {
         let payload = bitcode::serialize(msg)?;
 
@@ -76,14 +97,18 @@ impl LengthDelimitedCodec {
             });
         }
 
-        let length = payload.len() as u32;
+        let header = length_prefix(payload.len(), self.max_frame_length)?;
         let mut frame = Vec::with_capacity(4 + payload.len());
-        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(&header);
         frame.extend_from_slice(&payload);
 
         Ok(frame)
     }
 
+    /// # Errors
+    ///
+    /// Returns `MessageTooLarge` if the payload exceeds the max frame length,
+    /// or a deserialization error if decoding fails.
     pub fn decode_payload(&self, payload: &[u8]) -> TcpResult<Message> {
         if payload.len() > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
@@ -96,14 +121,15 @@ impl LengthDelimitedCodec {
         Ok(msg)
     }
 
+    /// # Errors
+    ///
+    /// Returns `MessageTooLarge` if the frame (flags + payload) exceeds the max frame length.
     pub fn encode_v2(&self, msg: &Message) -> TcpResult<Vec<u8>> {
         let serialized = bitcode::serialize(msg)?;
 
-        // Check if we should compress
         let (payload, flags) =
             if self.compress_enabled && serialized.len() >= self.compression.min_size {
                 let compressed = compression::compress(&serialized, self.compression.method);
-                // Only use compression if it actually reduces size
                 if compression::is_beneficial(serialized.len(), compressed.len()) {
                     (
                         compressed,
@@ -116,7 +142,6 @@ impl LengthDelimitedCodec {
                 (serialized, compression::flags::NONE)
             };
 
-        // Validate total frame size (flags + payload)
         let frame_content_len = 1 + payload.len();
         if frame_content_len > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
@@ -125,15 +150,19 @@ impl LengthDelimitedCodec {
             });
         }
 
-        let length = frame_content_len as u32;
+        let header = length_prefix(frame_content_len, self.max_frame_length)?;
         let mut frame = Vec::with_capacity(4 + frame_content_len);
-        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(&header);
         frame.push(flags);
         frame.extend_from_slice(&payload);
 
         Ok(frame)
     }
 
+    /// # Errors
+    ///
+    /// Returns `InvalidFrame` for empty payloads, `MessageTooLarge` if the
+    /// decompressed data exceeds the max frame length.
     pub fn decode_payload_v2(&self, payload: &[u8]) -> TcpResult<Message> {
         if payload.is_empty() {
             return Err(TcpError::InvalidFrame("empty v2 payload".to_string()));
@@ -160,26 +189,26 @@ impl LengthDelimitedCodec {
         Ok(msg)
     }
 
-    /// Read a frame from an async reader.
+    /// Read a v1 frame. Returns `None` on graceful connection close.
     ///
-    /// Returns None if the connection was closed gracefully.
+    /// # Errors
+    ///
+    /// Returns `MessageTooLarge`, `InvalidFrame`, or an I/O error.
     pub async fn read_frame<R>(&self, reader: &mut R) -> TcpResult<Option<Message>>
     where
         R: AsyncRead + Unpin,
     {
-        // Read length prefix
         let mut length_buf = [0u8; 4];
         match reader.read_exact(&mut length_buf).await {
             Ok(_) => {},
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // Connection closed
+                return Ok(None);
             },
             Err(e) => return Err(e.into()),
         }
 
         let length = u32::from_be_bytes(length_buf) as usize;
 
-        // Validate length
         if length > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
                 size: length,
@@ -191,15 +220,16 @@ impl LengthDelimitedCodec {
             return Err(TcpError::InvalidFrame("zero-length frame".to_string()));
         }
 
-        // Read payload
         let mut payload = vec![0u8; length];
         reader.read_exact(&mut payload).await?;
 
-        // Decode message
         let msg = self.decode_payload(&payload)?;
         Ok(Some(msg))
     }
 
+    /// # Errors
+    ///
+    /// Returns a serialization or I/O error.
     pub async fn write_frame<W>(&self, writer: &mut W, msg: &Message) -> TcpResult<()>
     where
         W: AsyncWrite + Unpin,
@@ -210,9 +240,11 @@ impl LengthDelimitedCodec {
         Ok(())
     }
 
-    /// Read a frame from an async reader with timeout.
+    /// Read a v1 frame with timeout. Returns `None` on graceful connection close.
     ///
-    /// Returns None if the connection was closed gracefully.
+    /// # Errors
+    ///
+    /// Returns `Timeout`, `MessageTooLarge`, `InvalidFrame`, or an I/O error.
     pub async fn read_frame_with_timeout<R>(
         &self,
         reader: &mut R,
@@ -221,25 +253,23 @@ impl LengthDelimitedCodec {
     where
         R: AsyncRead + Unpin,
     {
-        // Read length prefix with timeout
         let mut length_buf = [0u8; 4];
         match timeout(io_timeout, reader.read_exact(&mut length_buf)).await {
             Ok(Ok(_)) => {},
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // Connection closed
+                return Ok(None);
             },
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
                 return Err(TcpError::Timeout {
                     operation: "read length",
-                    timeout_ms: io_timeout.as_millis() as u64,
+                    timeout_ms: timeout_ms(io_timeout),
                 })
             },
         }
 
         let length = u32::from_be_bytes(length_buf) as usize;
 
-        // Validate length
         if length > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
                 size: length,
@@ -251,21 +281,23 @@ impl LengthDelimitedCodec {
             return Err(TcpError::InvalidFrame("zero-length frame".to_string()));
         }
 
-        // Read payload with timeout
         let mut payload = vec![0u8; length];
         timeout(io_timeout, reader.read_exact(&mut payload))
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "read payload",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
 
-        // Decode message
         let msg = self.decode_payload(&payload)?;
         Ok(Some(msg))
     }
 
-    /// Write a frame to an async writer with timeout.
+    /// Write a v1 frame with timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Timeout`, serialization, or I/O error.
     pub async fn write_frame_with_timeout<W>(
         &self,
         writer: &mut W,
@@ -280,37 +312,37 @@ impl LengthDelimitedCodec {
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "write frame",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         timeout(io_timeout, writer.flush())
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "flush",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         Ok(())
     }
 
-    /// Read a v2 frame from an async reader.
+    /// Read a v2 frame. Returns `None` on graceful connection close.
     ///
-    /// Returns None if the connection was closed gracefully.
+    /// # Errors
+    ///
+    /// Returns `MessageTooLarge`, `InvalidFrame`, or an I/O error.
     pub async fn read_frame_v2<R>(&self, reader: &mut R) -> TcpResult<Option<Message>>
     where
         R: AsyncRead + Unpin,
     {
-        // Read length prefix
         let mut length_buf = [0u8; 4];
         match reader.read_exact(&mut length_buf).await {
             Ok(_) => {},
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // Connection closed
+                return Ok(None);
             },
             Err(e) => return Err(e.into()),
         }
 
         let length = u32::from_be_bytes(length_buf) as usize;
 
-        // Validate length (must have at least flags byte)
         if length > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
                 size: length,
@@ -322,15 +354,16 @@ impl LengthDelimitedCodec {
             return Err(TcpError::InvalidFrame("zero-length v2 frame".to_string()));
         }
 
-        // Read payload (flags + data)
         let mut payload = vec![0u8; length];
         reader.read_exact(&mut payload).await?;
 
-        // Decode v2 message
         let msg = self.decode_payload_v2(&payload)?;
         Ok(Some(msg))
     }
 
+    /// # Errors
+    ///
+    /// Returns a serialization or I/O error.
     pub async fn write_frame_v2<W>(&self, writer: &mut W, msg: &Message) -> TcpResult<()>
     where
         W: AsyncWrite + Unpin,
@@ -341,9 +374,11 @@ impl LengthDelimitedCodec {
         Ok(())
     }
 
-    /// Read a v2 frame from an async reader with timeout.
+    /// Read a v2 frame with timeout. Returns `None` on graceful connection close.
     ///
-    /// Returns None if the connection was closed gracefully.
+    /// # Errors
+    ///
+    /// Returns `Timeout`, `MessageTooLarge`, `InvalidFrame`, or an I/O error.
     pub async fn read_frame_v2_with_timeout<R>(
         &self,
         reader: &mut R,
@@ -352,25 +387,23 @@ impl LengthDelimitedCodec {
     where
         R: AsyncRead + Unpin,
     {
-        // Read length prefix with timeout
         let mut length_buf = [0u8; 4];
         match timeout(io_timeout, reader.read_exact(&mut length_buf)).await {
             Ok(Ok(_)) => {},
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // Connection closed
+                return Ok(None);
             },
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
                 return Err(TcpError::Timeout {
                     operation: "read length",
-                    timeout_ms: io_timeout.as_millis() as u64,
+                    timeout_ms: timeout_ms(io_timeout),
                 })
             },
         }
 
         let length = u32::from_be_bytes(length_buf) as usize;
 
-        // Validate length
         if length > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
                 size: length,
@@ -382,20 +415,23 @@ impl LengthDelimitedCodec {
             return Err(TcpError::InvalidFrame("zero-length v2 frame".to_string()));
         }
 
-        // Read payload with timeout
         let mut payload = vec![0u8; length];
         timeout(io_timeout, reader.read_exact(&mut payload))
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "read payload",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
 
-        // Decode v2 message
         let msg = self.decode_payload_v2(&payload)?;
         Ok(Some(msg))
     }
 
+    /// Write a v2 frame with timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Timeout`, serialization, or I/O error.
     pub async fn write_frame_v2_with_timeout<W>(
         &self,
         writer: &mut W,
@@ -410,18 +446,19 @@ impl LengthDelimitedCodec {
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "write frame",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         timeout(io_timeout, writer.flush())
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "flush",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         Ok(())
     }
 
-    pub fn max_frame_length(&self) -> usize {
+    #[must_use]
+    pub const fn max_frame_length(&self) -> usize {
         self.max_frame_length
     }
 }
@@ -461,63 +498,70 @@ impl Handshake {
         }
     }
 
+    #[must_use]
     pub fn with_capability(mut self, cap: impl Into<String>) -> Self {
         self.capabilities.push(cap.into());
         self
     }
 
+    #[must_use]
     pub fn with_compression(self) -> Self {
         self.with_capability(super::compression::COMPRESSION_CAPABILITY)
     }
 
+    #[must_use]
     pub fn supports_compression(&self) -> bool {
         self.capabilities
             .iter()
             .any(|c| c == super::compression::COMPRESSION_CAPABILITY)
     }
 
-    pub fn is_v2(&self) -> bool {
+    #[must_use]
+    pub const fn is_v2(&self) -> bool {
         self.protocol_version >= 2
     }
 
-    pub fn compression_negotiated(&self, peer: &Handshake) -> bool {
+    #[must_use]
+    pub fn compression_negotiated(&self, peer: &Self) -> bool {
         self.is_v2() && peer.is_v2() && self.supports_compression() && peer.supports_compression()
     }
 
+    /// # Errors
+    ///
+    /// Returns a serialization error if encoding fails.
     pub fn encode(&self) -> TcpResult<Vec<u8>> {
         let payload = bitcode::serialize(self)?;
-        let length = payload.len() as u32;
+        let header = length_prefix(payload.len(), usize::MAX)?;
         let mut frame = Vec::with_capacity(4 + payload.len());
-        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(&header);
         frame.extend_from_slice(&payload);
         Ok(frame)
     }
 
+    /// # Errors
+    ///
+    /// Returns `HandshakeFailed` if the payload is too large, deserialization
+    /// fails, or the protocol version is unsupported.
     pub async fn read_from<R>(reader: &mut R, max_size: usize) -> TcpResult<Self>
     where
         R: AsyncRead + Unpin,
     {
-        // Read length prefix
         let mut length_buf = [0u8; 4];
         reader.read_exact(&mut length_buf).await?;
         let length = u32::from_be_bytes(length_buf) as usize;
 
         if length > max_size {
             return Err(TcpError::HandshakeFailed(format!(
-                "handshake too large: {} bytes",
-                length
+                "handshake too large: {length} bytes"
             )));
         }
 
-        // Read payload
         let mut payload = vec![0u8; length];
         reader.read_exact(&mut payload).await?;
 
-        // Decode
-        let handshake: Handshake =
+        let handshake: Self =
             bitcode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
 
-        // Validate protocol version (accept v1 and v2)
         if handshake.protocol_version < Self::MIN_PROTOCOL_VERSION
             || handshake.protocol_version > Self::PROTOCOL_VERSION
         {
@@ -532,6 +576,9 @@ impl Handshake {
         Ok(handshake)
     }
 
+    /// # Errors
+    ///
+    /// Returns a serialization or I/O error.
     pub async fn write_to<W>(&self, writer: &mut W) -> TcpResult<()>
     where
         W: AsyncWrite + Unpin,
@@ -542,6 +589,9 @@ impl Handshake {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns `Timeout`, `HandshakeFailed`, or an I/O error.
     pub async fn read_from_with_timeout<R>(
         reader: &mut R,
         max_size: usize,
@@ -550,37 +600,32 @@ impl Handshake {
     where
         R: AsyncRead + Unpin,
     {
-        // Read length prefix with timeout
         let mut length_buf = [0u8; 4];
         timeout(io_timeout, reader.read_exact(&mut length_buf))
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "handshake read length",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         let length = u32::from_be_bytes(length_buf) as usize;
 
         if length > max_size {
             return Err(TcpError::HandshakeFailed(format!(
-                "handshake too large: {} bytes",
-                length
+                "handshake too large: {length} bytes"
             )));
         }
 
-        // Read payload with timeout
         let mut payload = vec![0u8; length];
         timeout(io_timeout, reader.read_exact(&mut payload))
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "handshake read payload",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
 
-        // Decode
-        let handshake: Handshake =
+        let handshake: Self =
             bitcode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
 
-        // Validate protocol version (accept v1 and v2)
         if handshake.protocol_version < Self::MIN_PROTOCOL_VERSION
             || handshake.protocol_version > Self::PROTOCOL_VERSION
         {
@@ -595,6 +640,9 @@ impl Handshake {
         Ok(handshake)
     }
 
+    /// # Errors
+    ///
+    /// Returns `Timeout`, serialization, or I/O error.
     pub async fn write_to_with_timeout<W>(
         &self,
         writer: &mut W,
@@ -608,13 +656,13 @@ impl Handshake {
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "handshake write",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         timeout(io_timeout, writer.flush())
             .await
             .map_err(|_| TcpError::Timeout {
                 operation: "handshake flush",
-                timeout_ms: io_timeout.as_millis() as u64,
+                timeout_ms: timeout_ms(io_timeout),
             })??;
         Ok(())
     }

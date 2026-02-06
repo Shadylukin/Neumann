@@ -196,7 +196,7 @@ const MAX_ENTRY_SIZE: usize = 100 * 1024 * 1024;
 /// Convert a slice to a fixed-size array, returning an error if lengths don't match.
 fn slice_to_array<const N: usize>(slice: &[u8]) -> Result<[u8; N]> {
     slice.try_into().map_err(|_| {
-        StreamingError::InvalidFormat(format!("expected {} bytes, got {}", N, slice.len()))
+        StreamingError::InvalidFormat(format!("expected {N} bytes, got {}", slice.len()))
     })
 }
 
@@ -212,6 +212,8 @@ pub struct SnapshotWriter {
 }
 
 impl SnapshotWriter {
+    /// # Errors
+    /// Returns an error if the snapshot buffer cannot be created.
     pub fn new(config: SnapshotBufferConfig) -> Result<Self> {
         let mut buffer = SnapshotBuffer::new(config)?;
 
@@ -227,19 +229,23 @@ impl SnapshotWriter {
         })
     }
 
+    /// # Errors
+    /// Returns an error if the snapshot buffer cannot be created.
     pub fn with_defaults() -> Result<Self> {
         Self::new(SnapshotBufferConfig::default())
     }
 
+    /// # Errors
+    /// Returns an error if serialization or writing fails, or entry exceeds size limit.
     pub fn write_entry(&mut self, entry: &LogEntry) -> Result<()> {
         let bytes = bitcode::serialize(entry)?;
+        #[allow(clippy::cast_possible_truncation)]
         let len = bytes.len() as u32;
 
         if bytes.len() > MAX_ENTRY_SIZE {
             return Err(StreamingError::InvalidFormat(format!(
-                "entry too large: {} bytes (max {})",
+                "entry too large: {} bytes (max {MAX_ENTRY_SIZE})",
                 bytes.len(),
-                MAX_ENTRY_SIZE
             )));
         }
 
@@ -279,6 +285,9 @@ impl SnapshotWriter {
     ///
     /// This writes the header with entry count and returns the
     /// completed buffer for chunk serving.
+    ///
+    /// # Errors
+    /// Returns an error if writing the header or copying data fails.
     pub fn finish(mut self) -> Result<SnapshotBuffer> {
         // Get current data (after header)
         let total_len = self.buffer.total_len();
@@ -327,6 +336,8 @@ pub struct SnapshotReader<'a> {
 }
 
 impl<'a> SnapshotReader<'a> {
+    /// # Errors
+    /// Returns an error if the buffer is too small or has an invalid header.
     pub fn new(buffer: &'a SnapshotBuffer) -> Result<Self> {
         if buffer.total_len() < HEADER_SIZE as u64 {
             return Err(StreamingError::InvalidFormat(
@@ -344,8 +355,7 @@ impl<'a> SnapshotReader<'a> {
         let version = u32::from_le_bytes(slice_to_array(&header[4..8])?);
         if version > STREAMING_VERSION {
             return Err(StreamingError::InvalidFormat(format!(
-                "unsupported version: {}",
-                version
+                "unsupported version: {version}"
             )));
         }
 
@@ -374,6 +384,8 @@ impl<'a> SnapshotReader<'a> {
         self.entry_count.saturating_sub(self.entries_read)
     }
 
+    /// # Errors
+    /// Returns an error if reading or deserializing an entry fails.
     pub fn read_entry(&mut self) -> Result<Option<LogEntry>> {
         if self.entries_read >= self.entry_count {
             return Ok(None);
@@ -390,8 +402,7 @@ impl<'a> SnapshotReader<'a> {
 
         if len > MAX_ENTRY_SIZE {
             return Err(StreamingError::InvalidFormat(format!(
-                "entry too large: {} bytes",
-                len
+                "entry too large: {len} bytes"
             )));
         }
 
@@ -423,6 +434,9 @@ impl Iterator for SnapshotReader<'_> {
 }
 
 /// Deserialize a snapshot from raw bytes (for backwards compatibility).
+///
+/// # Errors
+/// Returns an error if the data is corrupted or cannot be deserialized.
 pub fn deserialize_entries(data: &[u8]) -> Result<Vec<LogEntry>> {
     // First try streaming format
     if data.len() >= HEADER_SIZE && data[0..4] == STREAMING_MAGIC {
@@ -444,6 +458,8 @@ pub fn deserialize_entries(data: &[u8]) -> Result<Vec<LogEntry>> {
     }
 }
 
+/// # Errors
+/// Returns an error if serialization or buffer creation fails.
 pub fn serialize_entries(
     entries: &[LogEntry],
     config: SnapshotBufferConfig,

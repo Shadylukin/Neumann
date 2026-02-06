@@ -907,7 +907,7 @@ mod tests {
     fn test_merge_candidate_debug() {
         let store = TensorStore::new();
         let workspace = Arc::new(TransactionWorkspace::begin(&store).unwrap());
-        let delta = DeltaVector::new(vec![1.0], HashSet::new(), 1);
+        let delta = DeltaVector::new(&[1.0], HashSet::new(), 1);
 
         let candidate = MergeCandidate {
             workspace,

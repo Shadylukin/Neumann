@@ -40,8 +40,9 @@ impl HLCTimestamp {
 
     /// Create a timestamp from a raw u64 value.
     ///
-    /// Uses upper 48 bits for wall_ms, lower 16 for logical.
+    /// Uses upper 48 bits for `wall_ms`, lower 16 for logical.
     /// Node ID hash is set to 0.
+    #[must_use]
     pub fn from_u64(value: u64) -> Self {
         Self {
             wall_ms: value >> 16,
@@ -52,33 +53,39 @@ impl HLCTimestamp {
 
     /// Convert to a packed u64 representation.
     ///
-    /// Uses upper 48 bits for wall_ms, lower 16 for logical.
-    /// Note: this loses the node_id_hash for compact storage.
+    /// Uses upper 48 bits for `wall_ms`, lower 16 for logical.
+    /// Note: this loses the `node_id_hash` for compact storage.
+    #[must_use]
     pub fn as_u64(&self) -> u64 {
         (self.wall_ms << 16) | (self.logical & 0xFFFF)
     }
 
     /// Get the wall clock component in milliseconds.
+    #[must_use]
     pub fn wall_ms(&self) -> u64 {
         self.wall_ms
     }
 
     /// Get the logical counter component.
+    #[must_use]
     pub fn logical(&self) -> u64 {
         self.logical
     }
 
     /// Get the node ID hash component.
+    #[must_use]
     pub fn node_id_hash(&self) -> u32 {
         self.node_id_hash
     }
 
     /// Check if this timestamp is strictly before another.
+    #[must_use]
     pub fn is_before(&self, other: &Self) -> bool {
         self < other
     }
 
     /// Check if this timestamp is strictly after another.
+    #[must_use]
     pub fn is_after(&self, other: &Self) -> bool {
         self > other
     }
@@ -108,17 +115,22 @@ pub struct HybridLogicalClock {
 impl HybridLogicalClock {
     /// Create a new HLC for the given node ID.
     ///
+    /// # Errors
     /// Returns an error if the system time is before the UNIX epoch.
     pub fn new(node_id: u64) -> Result<Self, ChainError> {
+        #[allow(clippy::cast_possible_truncation)]
         let wall_start_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| ChainError::ClockError(format!("system time before epoch: {}", e)))?
+            .map_err(|e| ChainError::ClockError(format!("system time before epoch: {e}")))?
             .as_millis() as u64;
+
+        #[allow(clippy::cast_possible_truncation)]
+        let node_id_hash = (node_id & 0xFFFF_FFFF) as u32;
 
         Ok(Self {
             last_wall_ms: AtomicU64::new(wall_start_ms),
             logical: AtomicU64::new(0),
-            node_id_hash: (node_id & 0xFFFF_FFFF) as u32,
+            node_id_hash,
             monotonic_start: Instant::now(),
             wall_start_ms,
             drift_offset_ms: AtomicI64::new(0),
@@ -126,16 +138,20 @@ impl HybridLogicalClock {
     }
 
     /// Create an HLC from a string node ID.
+    ///
+    /// # Errors
+    /// Returns an error if the system time is before the UNIX epoch.
     pub fn from_node_id(node_id: &str) -> Result<Self, ChainError> {
         // Use a simple hash of the node ID string
-        let hash = node_id
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        let hash = node_id.bytes().fold(0u64, |acc, b| {
+            acc.wrapping_mul(31).wrapping_add(u64::from(b))
+        });
         Self::new(hash)
     }
 
     /// Compute the current wall time with drift applied.
     fn wall_with_drift(&self) -> u64 {
+        #[allow(clippy::cast_possible_truncation)]
         let elapsed_ms = self.monotonic_start.elapsed().as_millis() as u64;
         let base_wall = self.wall_start_ms.saturating_add(elapsed_ms);
         let drift = self.drift_offset_ms.load(Ordering::SeqCst);
@@ -150,6 +166,9 @@ impl HybridLogicalClock {
     ///
     /// This method is infallible after construction because it uses
     /// the monotonic clock anchored to the initial wall clock reading.
+    ///
+    /// # Errors
+    /// This method currently always succeeds after construction.
     pub fn now(&self) -> Result<HLCTimestamp, ChainError> {
         let current_wall = self.wall_with_drift();
 
@@ -181,6 +200,9 @@ impl HybridLogicalClock {
     ///
     /// Returns a new timestamp that is guaranteed to be after both
     /// the local time and the received timestamp.
+    ///
+    /// # Errors
+    /// This method currently always succeeds after construction.
     pub fn receive(&self, received: &HLCTimestamp) -> Result<HLCTimestamp, ChainError> {
         let current_wall = self.wall_with_drift();
 
@@ -217,11 +239,13 @@ impl HybridLogicalClock {
     }
 
     /// Get the node ID hash.
+    #[must_use]
     pub fn node_id_hash(&self) -> u32 {
         self.node_id_hash
     }
 
     /// Get the current wall time estimate in milliseconds.
+    #[must_use]
     pub fn estimated_wall_ms(&self) -> u64 {
         self.wall_with_drift()
     }
@@ -242,6 +266,7 @@ impl HybridLogicalClock {
     }
 
     /// Get the current drift offset in milliseconds.
+    #[must_use]
     pub fn drift_offset(&self) -> i64 {
         self.drift_offset_ms.load(Ordering::SeqCst)
     }

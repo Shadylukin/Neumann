@@ -166,7 +166,8 @@ pub use transaction::{
 };
 pub use tx_id::{extract_timestamp_hint, generate_tx_id, is_plausible_tx_id};
 pub use tx_wal::{
-    PrepareVoteKind, RecoveredPreparedTx, TxOutcome, TxRecoveryState, TxWal, TxWalEntry,
+    OrphanedLock, PrepareVoteKind, RecoveredPreparedTx, TxOutcome, TxRecoveryState, TxWal,
+    TxWalEntry,
 };
 pub use validation::{
     FastPathResult, FastPathValidator, StateValidation, TransitionValidation, TransitionValidator,
