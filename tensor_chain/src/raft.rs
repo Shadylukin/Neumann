@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Tensor-Raft consensus implementation.
 //!
 //! This module implements a modified Raft protocol with tensor-native optimizations
@@ -152,7 +152,7 @@
 //!
 //! `RaftNode` is thread-safe and uses interior mutability:
 //! - `RwLock` for state that changes during normal operation
-//! - `AtomicU64` for frequently-read counters (term, commit_index)
+//! - `AtomicU64` for frequently-read counters (term, `commit_index`)
 //! - All public methods are safe to call from multiple threads
 //!
 //! # Quorum Calculation
@@ -257,6 +257,9 @@ pub struct RaftConfig {
     /// Enable adaptive exponential backoff for `next_index` decrement on
     /// `AppendEntries` rejection. When false, uses linear (one-at-a-time) decrement.
     pub enable_adaptive_backoff: bool,
+    /// Timeout for snapshot transfers in milliseconds (default: 300,000 = 5 minutes).
+    /// If a snapshot transfer exceeds this deadline, it is aborted.
+    pub snapshot_transfer_timeout_ms: u64,
 }
 
 impl Default for RaftConfig {
@@ -282,6 +285,7 @@ impl Default for RaftConfig {
             max_heartbeat_failures: 3,
             max_backoff_power: 10,
             enable_adaptive_backoff: true,
+            snapshot_transfer_timeout_ms: 300_000, // 5 minutes
         }
     }
 }
@@ -418,9 +422,14 @@ pub struct RaftStats {
     pub backoff_events: AtomicU64,
     /// Number of entries skipped due to backoff.
     pub backoff_skipped_entries: AtomicU64,
+    /// Number of snapshot transfers that timed out.
+    pub snapshot_transfer_timeouts: AtomicU64,
+    /// Number of WAL persist retries (each retry increments this).
+    pub wal_persist_retries: AtomicU64,
 }
 
 impl RaftStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -445,7 +454,9 @@ impl RaftStats {
         if total == 0 {
             0.0
         } else {
-            accepted as f32 / total as f32
+            #[allow(clippy::cast_precision_loss)]
+            let rate = accepted as f32 / total as f32;
+            rate
         }
     }
 
@@ -462,7 +473,9 @@ impl RaftStats {
         if total == 0 {
             1.0 // No heartbeats sent yet, assume success
         } else {
-            successes as f32 / total as f32
+            #[allow(clippy::cast_precision_loss)]
+            let rate = successes as f32 / total as f32;
+            rate
         }
     }
 
@@ -483,6 +496,8 @@ impl RaftStats {
             heartbeat_success_rate: self.heartbeat_success_rate(),
             backoff_events: self.backoff_events.load(Ordering::Relaxed),
             backoff_skipped_entries: self.backoff_skipped_entries.load(Ordering::Relaxed),
+            snapshot_transfer_timeouts: self.snapshot_transfer_timeouts.load(Ordering::Relaxed),
+            wal_persist_retries: self.wal_persist_retries.load(Ordering::Relaxed),
         }
     }
 }
@@ -504,6 +519,8 @@ pub struct RaftStatsSnapshot {
     pub heartbeat_success_rate: f32,
     pub backoff_events: u64,
     pub backoff_skipped_entries: u64,
+    pub snapshot_transfer_timeouts: u64,
+    pub wal_persist_retries: u64,
 }
 
 /// Backward compatibility alias for `RaftStats`.
@@ -526,6 +543,7 @@ pub struct QuorumTracker {
 }
 
 impl QuorumTracker {
+    #[must_use]
     pub fn new(response_timeout: std::time::Duration, max_failures: u32) -> Self {
         Self {
             last_response: RwLock::new(HashMap::new()),
@@ -536,6 +554,7 @@ impl QuorumTracker {
     }
 
     /// Create with default settings (5s timeout, 3 max failures).
+    #[must_use]
     pub fn default_config() -> Self {
         Self::new(std::time::Duration::from_secs(5), 3)
     }
@@ -614,7 +633,7 @@ impl std::fmt::Debug for QuorumTracker {
             .field("reachable_count", &self.reachable_count())
             .field("response_timeout", &self.response_timeout)
             .field("max_failures", &self.max_failures)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -632,7 +651,7 @@ impl Default for QuorumTracker {
 pub struct SnapshotMetadata {
     /// Log index included in this snapshot (all entries up to and including).
     pub last_included_index: u64,
-    /// Term of the entry at last_included_index.
+    /// Term of the entry at `last_included_index`.
     pub last_included_term: u64,
     /// Block hash at the snapshot height.
     pub snapshot_hash: [u8; 32],
@@ -649,9 +668,14 @@ pub struct SnapshotMetadata {
     /// Global codebook at snapshot time (for state quantization).
     #[serde(default)]
     pub codebook: Option<GlobalCodebookSnapshot>,
+    /// Compaction epoch (monotonically increasing per compaction).
+    /// Used to detect incomplete compactions on crash recovery.
+    #[serde(default)]
+    pub compaction_epoch: u64,
 }
 
 impl SnapshotMetadata {
+    #[must_use]
     pub fn new(
         last_included_index: u64,
         last_included_term: u64,
@@ -672,10 +696,12 @@ impl SnapshotMetadata {
                 .as_secs(),
             size,
             codebook: None,
+            compaction_epoch: 0,
         }
     }
 
     /// Create snapshot metadata with full membership configuration.
+    #[must_use]
     pub fn with_membership(
         last_included_index: u64,
         last_included_term: u64,
@@ -696,10 +722,12 @@ impl SnapshotMetadata {
                 .as_secs(),
             size,
             codebook: None,
+            compaction_epoch: 0,
         }
     }
 
     /// Create snapshot metadata with codebook.
+    #[must_use]
     pub fn with_codebook(
         last_included_index: u64,
         last_included_term: u64,
@@ -721,10 +749,12 @@ impl SnapshotMetadata {
                 .as_secs(),
             size,
             codebook: Some(codebook),
+            compaction_epoch: 0,
         }
     }
 
     /// Set the codebook on an existing snapshot metadata (builder pattern).
+    #[must_use]
     pub fn set_codebook(mut self, codebook: GlobalCodebookSnapshot) -> Self {
         self.codebook = Some(codebook);
         self
@@ -743,16 +773,19 @@ struct SnapshotState {
     pending_total_size: u64,
     /// Configuration for snapshot buffer creation.
     buffer_config: SnapshotBufferConfig,
+    /// When the current snapshot transfer started (for timeout enforcement).
+    transfer_started_at: Option<Instant>,
 }
 
 impl SnapshotState {
-    fn new(config: SnapshotBufferConfig) -> Self {
+    const fn new(config: SnapshotBufferConfig) -> Self {
         Self {
             last_snapshot: None,
             in_progress: false,
             pending_buffer: None,
             pending_total_size: 0,
             buffer_config: config,
+            transfer_started_at: None,
         }
     }
 
@@ -763,6 +796,7 @@ impl SnapshotState {
                 .snapshot_temp_dir
                 .clone()
                 .unwrap_or_else(std::env::temp_dir),
+            #[allow(clippy::cast_possible_truncation)]
             initial_file_capacity: config.snapshot_chunk_size as usize * 16, // 16 chunks worth
         };
         Self::new(buffer_config)
@@ -773,6 +807,7 @@ impl SnapshotState {
         total_size: u64,
     ) -> std::result::Result<(), crate::snapshot_buffer::SnapshotBufferError> {
         self.in_progress = true;
+        self.transfer_started_at = Some(Instant::now());
         // Clean up any existing buffer
         if let Some(mut buf) = self.pending_buffer.take() {
             let _ = buf.cleanup();
@@ -795,6 +830,7 @@ impl SnapshotState {
     fn finish_receive(&mut self) -> Option<SnapshotBuffer> {
         self.in_progress = false;
         self.pending_total_size = 0;
+        self.transfer_started_at = None;
         if let Some(mut buf) = self.pending_buffer.take() {
             if buf.finalize().is_ok() {
                 return Some(buf);
@@ -806,9 +842,16 @@ impl SnapshotState {
     fn cancel_receive(&mut self) {
         self.in_progress = false;
         self.pending_total_size = 0;
+        self.transfer_started_at = None;
         if let Some(mut buf) = self.pending_buffer.take() {
             let _ = buf.cleanup();
         }
+    }
+
+    /// Check if the current snapshot transfer has exceeded its deadline.
+    fn is_transfer_timed_out(&self, timeout_ms: u64) -> bool {
+        self.transfer_started_at
+            .is_some_and(|started| started.elapsed() > Duration::from_millis(timeout_ms))
     }
 }
 
@@ -830,6 +873,7 @@ impl Default for FastPathState {
 }
 
 impl FastPathState {
+    #[must_use]
     pub fn new(max_history: usize) -> Self {
         Self {
             leader_embeddings: RwLock::new(HashMap::new()),
@@ -848,10 +892,11 @@ impl FastPathState {
         if history.len() > self.max_history {
             history.remove(0);
         }
+        drop(embeddings);
     }
 
-    pub fn add_dense_embedding(&self, leader: &NodeId, embedding: Vec<f32>) {
-        self.add_embedding(leader, SparseVector::from_dense(&embedding));
+    pub fn add_dense_embedding(&self, leader: &NodeId, embedding: &[f32]) {
+        self.add_embedding(leader, SparseVector::from_dense(embedding));
     }
 
     /// Get embeddings for a leader (returns dense for fast-path validation compatibility).
@@ -859,7 +904,7 @@ impl FastPathState {
         self.leader_embeddings
             .read()
             .get(leader)
-            .map(|sparse_vecs| sparse_vecs.iter().map(|sv| sv.to_dense()).collect())
+            .map(|sparse_vecs| sparse_vecs.iter().map(SparseVector::to_dense).collect())
             .unwrap_or_default()
     }
 
@@ -880,8 +925,7 @@ impl FastPathState {
         self.leader_embeddings
             .read()
             .get(leader)
-            .map(|v| v.len())
-            .unwrap_or(0)
+            .map_or(0, Vec::len)
     }
 }
 
@@ -890,7 +934,7 @@ pub struct RaftNode {
     /// Local node ID.
     node_id: NodeId,
     /// Combined leadership state for atomic transitions.
-    /// Contains role, current_leader, and leader-specific volatile state.
+    /// Contains role, `current_leader`, and leader-specific volatile state.
     leadership: RwLock<LeadershipState>,
     /// Persistent state.
     persistent: RwLock<PersistentState>,
@@ -930,9 +974,11 @@ pub struct RaftNode {
     transfer_state: RwLock<Option<TransferState>>,
     /// Tick counter for compaction check interval.
     compaction_tick_counter: AtomicU64,
+    /// Monotonically increasing compaction epoch for crash recovery.
+    compaction_epoch: AtomicU64,
     /// Timestamp of last successful compaction (for cooldown).
     last_compaction: RwLock<Option<Instant>>,
-    /// Optional TensorStore reference for snapshot persistence.
+    /// Optional `TensorStore` reference for snapshot persistence.
     store: Option<Arc<tensor_store::TensorStore>>,
     /// Optional Write-Ahead Log for durable state changes.
     wal: Option<Arc<parking_lot::Mutex<crate::raft_wal::RaftWal>>>,
@@ -996,6 +1042,7 @@ impl RaftNode {
             in_pre_vote: RwLock::new(false),
             transfer_state: RwLock::new(None),
             compaction_tick_counter: AtomicU64::new(0),
+            compaction_epoch: AtomicU64::new(0),
             last_compaction: RwLock::new(None),
             store: None,
             wal: None,
@@ -1040,10 +1087,14 @@ impl RaftNode {
         format!("_raft:snapshot:data:{node_id}")
     }
 
-    /// Save persistent state to TensorStore.
+    /// Save persistent state to `TensorStore`.
     ///
-    /// Stores term, voted_for, log entries, and state embedding.
+    /// Stores term, `voted_for`, log entries, and state embedding.
     /// Use `save_snapshot_compressed()` for tensor-native compression.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or storage fails.
     pub fn save_to_store(&self, store: &tensor_store::TensorStore) -> Result<()> {
         use tensor_store::{ScalarValue, TensorData, TensorValue};
 
@@ -1055,10 +1106,11 @@ impl RaftNode {
         // Store current term
         data.set(
             "term",
+            #[allow(clippy::cast_possible_wrap)]
             TensorValue::Scalar(ScalarValue::Int(persistent.current_term as i64)),
         );
 
-        // Store voted_for if present
+        // Store `voted_for` if present
         if let Some(ref voted_for) = persistent.voted_for {
             data.set(
                 "voted_for",
@@ -1071,20 +1123,24 @@ impl RaftNode {
             .map_err(|e| ChainError::SerializationError(format!("Raft log: {e}")))?;
         data.set("log", TensorValue::Scalar(ScalarValue::Bytes(log_bytes)));
 
+        drop(persistent);
+
         // Store state embedding for geometric recovery
         let state_embedding = self.state_embedding.read();
         if state_embedding.nnz() > 0 {
             data.set("_embedding", TensorValue::Sparse(state_embedding.clone()));
         }
+        drop(state_embedding);
 
         store
             .put(&key, data)
             .map_err(|e| ChainError::StorageError(e.to_string()))
     }
 
-    /// Load persistent state from TensorStore.
+    /// Load persistent state from `TensorStore`.
     ///
-    /// Returns (term, voted_for, log) if state exists.
+    /// Returns (term, `voted_for`, log) if state exists.
+    #[must_use]
     pub fn load_from_store(
         node_id: &str,
         store: &tensor_store::TensorStore,
@@ -1096,7 +1152,11 @@ impl RaftNode {
 
         // Load term
         let term = match data.get("term") {
-            Some(TensorValue::Scalar(ScalarValue::Int(t))) => *t as u64,
+            Some(TensorValue::Scalar(ScalarValue::Int(t))) => {
+                #[allow(clippy::cast_sign_loss)]
+                let term = *t as u64;
+                term
+            },
             _ => return None,
         };
 
@@ -1117,9 +1177,13 @@ impl RaftNode {
         Some((term, voted_for, log))
     }
 
-    /// Persist snapshot metadata and data to TensorStore.
+    /// Persist snapshot metadata and data to `TensorStore`.
     ///
-    /// MUST be called BEFORE truncate_log() to ensure atomicity.
+    /// MUST be called BEFORE `truncate_log()` to ensure atomicity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or storage fails.
     pub fn save_snapshot(
         &self,
         meta: &SnapshotMetadata,
@@ -1153,9 +1217,10 @@ impl RaftNode {
         Ok(())
     }
 
-    /// Load snapshot state from TensorStore.
+    /// Load snapshot state from `TensorStore`.
     ///
     /// Returns (metadata, data) if a snapshot exists.
+    #[must_use]
     pub fn load_snapshot(
         node_id: &str,
         store: &tensor_store::TensorStore,
@@ -1164,9 +1229,9 @@ impl RaftNode {
 
         // Load metadata
         let meta_tensor = store.get(&Self::snapshot_meta_key(node_id)).ok()?;
-        let meta_bytes = match meta_tensor.get("metadata") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b,
-            _ => return None,
+        let Some(TensorValue::Scalar(ScalarValue::Bytes(meta_bytes))) = meta_tensor.get("metadata")
+        else {
+            return None;
         };
         let metadata: SnapshotMetadata = bitcode::deserialize(meta_bytes).ok()?;
 
@@ -1183,12 +1248,12 @@ impl RaftNode {
     // ========== Compaction Cooldown Methods ==========
 
     fn can_compact(&self) -> bool {
-        match *self.last_compaction.read() {
-            Some(instant) => {
-                instant.elapsed().as_millis() as u64 >= self.config.compaction_cooldown_ms
-            },
-            None => true,
-        }
+        let last = *self.last_compaction.read();
+        last.map_or(true, |instant| {
+            #[allow(clippy::cast_possible_truncation)]
+            let elapsed_ms = instant.elapsed().as_millis() as u64;
+            elapsed_ms >= self.config.compaction_cooldown_ms
+        })
     }
 
     fn mark_compacted(&self) {
@@ -1233,8 +1298,33 @@ impl RaftNode {
         let mut node = Self::with_state(node_id, peers, transport, config, term, voted_for, log);
 
         // Restore snapshot metadata if available
-        if let Some(meta) = snapshot_meta {
-            node.snapshot_state.write().last_snapshot = Some(meta);
+        if let Some(ref meta) = snapshot_meta {
+            // Restore compaction epoch from snapshot
+            node.compaction_epoch
+                .store(meta.compaction_epoch, Ordering::SeqCst);
+
+            // Crash recovery: if snapshot exists, verify log is properly truncated.
+            // A crash between save_snapshot and truncate_log leaves the log
+            // with entries that should have been compacted.
+            #[allow(clippy::cast_possible_truncation)]
+            let snapshot_idx = meta.last_included_index as usize;
+            let log_len = node.persistent.read().log.len();
+            let trailing = node.config.snapshot_trailing_logs;
+            let expected_cut = snapshot_idx.saturating_sub(trailing);
+
+            if log_len > 0 && expected_cut > 0 && log_len > snapshot_idx {
+                tracing::info!(
+                    snapshot_index = meta.last_included_index,
+                    compaction_epoch = meta.compaction_epoch,
+                    log_len = log_len,
+                    "Detected incomplete compaction on recovery, re-truncating log"
+                );
+                if let Err(e) = node.truncate_log(meta) {
+                    tracing::warn!(error = %e, "Failed to re-truncate log on recovery");
+                }
+            }
+
+            node.snapshot_state.write().last_snapshot = Some(meta.clone());
         }
 
         // Store reference for future persistence
@@ -1292,6 +1382,7 @@ impl RaftNode {
             transfer_state: RwLock::new(None),
             stats: RaftStats::new(),
             compaction_tick_counter: AtomicU64::new(0),
+            compaction_epoch: AtomicU64::new(0),
             last_compaction: RwLock::new(None),
             store: None,
             wal: None,
@@ -1305,8 +1396,12 @@ impl RaftNode {
 
     /// Create a Raft node with WAL for durable state changes.
     ///
-    /// The WAL ensures that term and voted_for changes are persisted to disk
+    /// The WAL ensures that term and `voted_for` changes are persisted to disk
     /// before being applied in memory, preventing split-brain scenarios.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL cannot be opened or recovery fails.
     pub fn with_wal(
         node_id: NodeId,
         peers: Vec<NodeId>,
@@ -1342,21 +1437,51 @@ impl RaftNode {
         use crate::raft_wal::RaftWalEntry;
 
         if let Some(ref wal) = self.wal {
-            wal.lock()
-                .append(&RaftWalEntry::TermAndVote {
-                    term,
-                    voted_for: voted_for.map(String::from),
-                })
-                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+            let entry = RaftWalEntry::TermAndVote {
+                term,
+                voted_for: voted_for.map(String::from),
+            };
+
+            let max_retries = 3u32;
+            let mut last_err = None;
+
+            for attempt in 0..max_retries {
+                let result = wal.lock().append(&entry);
+                match result {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        last_err = Some(e);
+                        if attempt + 1 < max_retries {
+                            let backoff_ms = 100u64 << attempt; // 100, 200, 400
+                            self.stats
+                                .wal_persist_retries
+                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_retries = max_retries,
+                                backoff_ms = backoff_ms,
+                                "WAL persist failed, retrying"
+                            );
+                            std::thread::sleep(Duration::from_millis(backoff_ms));
+                        }
+                    },
+                }
+            }
+
+            // All retries exhausted
+            let err = last_err.unwrap();
+            tracing::error!("WAL persist failed after {} attempts: {}", max_retries, err);
+            return Err(ChainError::StorageError(format!(
+                "WAL persist failed after {max_retries} retries: {err}"
+            )));
         }
         Ok(())
     }
 
     fn is_peer_healthy(&self, peer_id: &NodeId) -> bool {
-        match &self.membership {
-            Some(membership) => membership.view().is_healthy(peer_id),
-            None => true, // No membership manager = assume all peers healthy
-        }
+        self.membership
+            .as_ref()
+            .map_or(true, |membership| membership.view().is_healthy(peer_id))
     }
 
     /// Compute geometric vote bias based on state embedding similarity.
@@ -1372,16 +1497,22 @@ impl RaftNode {
 
         // If either embedding is empty (zero dimension), return neutral bias
         if local_embedding.dimension() == 0 || candidate_embedding.dimension() == 0 {
+            tracing::debug!(
+                local_dim = local_embedding.dimension(),
+                candidate_dim = candidate_embedding.dimension(),
+                "Geometric tie-break skipped: one or both embeddings missing"
+            );
             return 0.5;
         }
 
         let similarity = local_embedding.cosine_similarity(candidate_embedding);
+        drop(local_embedding);
 
         // Normalize to 0-1 range (cosine similarity can be -1 to 1)
         ((similarity + 1.0) / 2.0).clamp(0.0, 1.0)
     }
 
-    pub fn node_id(&self) -> &NodeId {
+    pub const fn node_id(&self) -> &NodeId {
         &self.node_id
     }
 
@@ -1402,7 +1533,9 @@ impl RaftNode {
     }
 
     pub fn reset_heartbeat_for_election(&self) {
-        *self.last_heartbeat.write() = Instant::now() - std::time::Duration::from_secs(10);
+        *self.last_heartbeat.write() = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap_or_else(Instant::now);
     }
 
     pub fn is_leader(&self) -> bool {
@@ -1425,23 +1558,23 @@ impl RaftNode {
         self.persistent.read().log.len()
     }
 
-    pub fn fast_path_stats(&self) -> &FastPathStats {
+    pub const fn fast_path_stats(&self) -> &FastPathStats {
         &self.fast_path_state.stats
     }
 
-    pub fn fast_path_state(&self) -> &FastPathState {
+    pub const fn fast_path_state(&self) -> &FastPathState {
         &self.fast_path_state
     }
 
-    pub fn stats(&self) -> &RaftStats {
+    pub const fn stats(&self) -> &RaftStats {
         &self.stats
     }
 
-    pub fn quorum_tracker(&self) -> &QuorumTracker {
+    pub const fn quorum_tracker(&self) -> &QuorumTracker {
         &self.quorum_tracker
     }
 
-    pub fn transport(&self) -> &Arc<dyn Transport> {
+    pub const fn transport(&self) -> &Arc<dyn Transport> {
         &self.transport
     }
 
@@ -1459,6 +1592,10 @@ impl RaftNode {
     ///
     /// The node will receive log entries but not participate in voting
     /// until it catches up and is promoted to voter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not leader or the node is already in the cluster.
     pub fn add_learner(&self, node_id: NodeId) -> crate::error::Result<()> {
         if !self.is_leader() {
             return Err(crate::error::ChainError::NotLeader);
@@ -1472,12 +1609,14 @@ impl RaftNode {
         }
 
         config.add_learner(node_id.clone());
+        drop(config);
 
         // Also add to peers list for replication
         let mut peers = self.peers.write();
         if !peers.contains(&node_id) {
             peers.push(node_id);
         }
+        drop(peers);
 
         Ok(())
     }
@@ -1485,6 +1624,10 @@ impl RaftNode {
     /// Promote a learner to a voting member.
     ///
     /// The learner must have caught up with the leader's log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not leader or the node is not a learner.
     pub fn promote_learner(&self, node_id: &NodeId) -> crate::error::Result<()> {
         if !self.is_leader() {
             return Err(crate::error::ChainError::NotLeader);
@@ -1502,6 +1645,7 @@ impl RaftNode {
                 "Failed to promote learner".to_string(),
             ));
         }
+        drop(config);
 
         Ok(())
     }
@@ -1509,6 +1653,10 @@ impl RaftNode {
     /// Remove a node from the cluster.
     ///
     /// Cannot remove self if we are the leader (transfer leadership first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not leader, removing self, or node not found.
     pub fn remove_node(&self, node_id: &NodeId) -> crate::error::Result<()> {
         if !self.is_leader() {
             return Err(crate::error::ChainError::NotLeader);
@@ -1526,10 +1674,12 @@ impl RaftNode {
                 "Node not in cluster".to_string(),
             ));
         }
+        drop(config);
 
         // Also remove from peers list
         let mut peers = self.peers.write();
         peers.retain(|p| p != node_id);
+        drop(peers);
 
         Ok(())
     }
@@ -1540,6 +1690,7 @@ impl RaftNode {
         if !config.is_learner(node_id) {
             return false;
         }
+        drop(config);
 
         // Check if we have leader state and the learner's match index
         if let Some(ref leader_volatile) = self.leadership.read().leader_volatile {
@@ -1598,8 +1749,8 @@ impl RaftNode {
     }
 
     /// Update state embedding from a dense vector.
-    pub fn update_state_embedding_dense(&self, embedding: Vec<f32>) {
-        *self.state_embedding.write() = SparseVector::from_dense(&embedding);
+    pub fn update_state_embedding_dense(&self, embedding: &[f32]) {
+        *self.state_embedding.write() = SparseVector::from_dense(embedding);
     }
 
     /// Handle a received message.
@@ -1631,7 +1782,8 @@ impl RaftNode {
         }
     }
 
-    /// Handle RequestVote RPC.
+    /// Handle `RequestVote` RPC.
+    #[allow(clippy::unnecessary_wraps)]
     fn handle_request_vote(&self, _from: &NodeId, rv: &RequestVote) -> Option<Message> {
         let mut persistent = self.persistent.write();
         let mut vote_granted = false;
@@ -1689,7 +1841,15 @@ impl RaftNode {
             // For equal logs, use geometric tie-breaking
             let geometric_ok = if log_equal && self.config.enable_geometric_tiebreak {
                 let bias = self.geometric_vote_bias(&rv.state_embedding);
-                bias >= self.config.geometric_tiebreak_threshold
+                let passes = bias >= self.config.geometric_tiebreak_threshold;
+                tracing::debug!(
+                    candidate = %rv.candidate_id,
+                    bias,
+                    threshold = self.config.geometric_tiebreak_threshold,
+                    passes,
+                    "Geometric tie-break evaluated"
+                );
+                passes
             } else {
                 true // No geometric tie-breaking needed for strictly better logs
             };
@@ -1734,7 +1894,7 @@ impl RaftNode {
         }))
     }
 
-    /// Handle RequestVoteResponse RPC.
+    /// Handle `RequestVoteResponse` RPC.
     fn handle_request_vote_response(&self, from: &NodeId, rvr: &RequestVoteResponse) {
         if self.leadership.read().role != RaftState::Candidate {
             return;
@@ -1825,13 +1985,14 @@ impl RaftNode {
         // Note: Broadcast handled by async version in production
     }
 
-    /// Handle PreVote RPC.
+    /// Handle `PreVote` RPC.
     ///
     /// Grants pre-vote if:
     /// 1. Candidate's term >= our term
     /// 2. Election timeout has elapsed (no recent leader heartbeat)
     /// 3. Candidate's log is at least as up-to-date
     /// 4. Candidate is healthy (if membership configured)
+    #[allow(clippy::unnecessary_wraps)]
     fn handle_pre_vote(&self, _from: &NodeId, pv: &PreVote) -> Option<Message> {
         let persistent = self.persistent.read();
         let mut vote_granted = false;
@@ -1839,6 +2000,7 @@ impl RaftNode {
         // Check if candidate's term is at least as recent
         if pv.term >= persistent.current_term {
             // Check if election timeout has elapsed (no recent heartbeat from leader)
+            #[allow(clippy::cast_possible_truncation)]
             let elapsed = self.last_heartbeat.read().elapsed().as_millis() as u64;
             let timeout_elapsed = elapsed > self.config.election_timeout.0;
 
@@ -1870,7 +2032,7 @@ impl RaftNode {
         }))
     }
 
-    /// Handle PreVoteResponse RPC.
+    /// Handle `PreVoteResponse` RPC.
     fn handle_pre_vote_response(&self, from: &NodeId, pvr: &PreVoteResponse) {
         // Only process if we're in pre-vote phase
         if !*self.in_pre_vote.read() {
@@ -1895,9 +2057,11 @@ impl RaftNode {
                 return; // Don't step down if WAL fails
             }
 
-            let mut persistent = self.persistent.write();
-            persistent.current_term = pvr.term;
-            persistent.voted_for = None;
+            {
+                let mut persistent = self.persistent.write();
+                persistent.current_term = pvr.term;
+                persistent.voted_for = None;
+            }
             self.leadership.write().role = RaftState::Follower;
             *self.in_pre_vote.write() = false;
             return;
@@ -1943,10 +2107,9 @@ impl RaftNode {
 
     /// Initiate leadership transfer to target node.
     ///
-    /// Returns error if:
-    /// - This node is not the leader
-    /// - Target is not a known peer
-    /// - A transfer is already in progress
+    /// # Errors
+    ///
+    /// Returns an error if not leader, target is unknown, or a transfer is in progress.
     pub fn transfer_leadership(&self, target: &NodeId) -> Result<()> {
         // Verify we're the leader
         if self.leadership.read().role != RaftState::Leader {
@@ -1965,8 +2128,7 @@ impl RaftNode {
         // Verify target is a known peer
         if !self.peers.read().contains(target) {
             return Err(ChainError::ConsensusError(format!(
-                "unknown transfer target: {}",
-                target
+                "unknown transfer target: {target}"
             )));
         }
 
@@ -1981,9 +2143,10 @@ impl RaftNode {
         Ok(())
     }
 
-    /// Handle TimeoutNow RPC from leader initiating transfer.
+    /// Handle `TimeoutNow` RPC from leader initiating transfer.
     ///
     /// This causes the node to immediately start an election (skipping pre-vote).
+    #[allow(clippy::unnecessary_wraps)]
     fn handle_timeout_now(&self, from: &NodeId, tn: &TimeoutNow) -> Option<Message> {
         // Verify sender is our believed leader
         let current_leader = self.leadership.read().current_leader.clone();
@@ -2003,7 +2166,8 @@ impl RaftNode {
         None
     }
 
-    /// Handle AppendEntries RPC.
+    /// Handle `AppendEntries` RPC.
+    #[allow(clippy::unnecessary_wraps)]
     fn handle_append_entries(&self, _from: &NodeId, ae: &AppendEntries) -> Option<Message> {
         let mut persistent = self.persistent.write();
         let mut success = false;
@@ -2081,7 +2245,9 @@ impl RaftNode {
             let log_ok = if ae.prev_log_index == 0 {
                 true
             } else if ae.prev_log_index <= persistent.log.len() as u64 {
-                persistent.log[(ae.prev_log_index - 1) as usize].term == ae.prev_log_term
+                #[allow(clippy::cast_possible_truncation)]
+                let idx = (ae.prev_log_index - 1) as usize;
+                persistent.log[idx].term == ae.prev_log_term
             } else {
                 false
             };
@@ -2091,6 +2257,7 @@ impl RaftNode {
 
                 // Append new entries
                 for entry in &ae.entries {
+                    #[allow(clippy::cast_possible_truncation)]
                     let idx = entry.index as usize;
                     if idx > persistent.log.len() {
                         persistent.log.push(entry.clone());
@@ -2120,7 +2287,7 @@ impl RaftNode {
         }))
     }
 
-    /// Handle AppendEntriesResponse RPC.
+    /// Handle `AppendEntriesResponse` RPC.
     fn handle_append_entries_response(&self, from: &NodeId, aer: &AppendEntriesResponse) {
         if self.leadership.read().role != RaftState::Leader {
             return;
@@ -2205,7 +2372,7 @@ impl RaftNode {
         }
     }
 
-    /// Handle SnapshotRequest RPC from a follower requesting snapshot chunks.
+    /// Handle `SnapshotRequest` RPC from a follower requesting snapshot chunks.
     fn handle_snapshot_request(&self, _from: &NodeId, sr: &SnapshotRequest) -> Option<Message> {
         // Only leaders should respond to snapshot requests
         if self.leadership.read().role != RaftState::Leader {
@@ -2216,9 +2383,8 @@ impl RaftNode {
         let snapshot_meta = self.get_snapshot_metadata()?;
 
         // Create snapshot data
-        let (_, data) = match self.create_snapshot() {
-            Ok(result) => result,
-            Err(_) => return None,
+        let Ok((_, data)) = self.create_snapshot() else {
+            return None;
         };
 
         // Calculate the chunk to send
@@ -2230,8 +2396,11 @@ impl RaftNode {
             return None; // Invalid offset
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let end = ((offset + chunk_size) as usize).min(data.len());
-        let chunk_data = data[offset as usize..end].to_vec();
+        #[allow(clippy::cast_possible_truncation)]
+        let start = offset as usize;
+        let chunk_data = data[start..end].to_vec();
         let is_last = end >= data.len();
 
         Some(Message::SnapshotResponse(SnapshotResponse {
@@ -2244,7 +2413,7 @@ impl RaftNode {
         }))
     }
 
-    /// Handle SnapshotResponse RPC when receiving snapshot chunks.
+    /// Handle `SnapshotResponse` RPC when receiving snapshot chunks.
     fn handle_snapshot_response(&self, _from: &NodeId, sr: &SnapshotResponse) {
         // Only followers should process snapshot responses
         if self.leadership.read().role != RaftState::Follower {
@@ -2252,11 +2421,11 @@ impl RaftNode {
         }
 
         // Receive the chunk
-        let complete =
-            match self.receive_snapshot_chunk(sr.offset, &sr.data, sr.total_size, sr.is_last) {
-                Ok(complete) => complete,
-                Err(_) => return, // Error handling chunk
-            };
+        let Ok(complete) =
+            self.receive_snapshot_chunk(sr.offset, &sr.data, sr.total_size, sr.is_last)
+        else {
+            return; // Error handling chunk
+        };
 
         if complete {
             // Get the accumulated data
@@ -2265,8 +2434,7 @@ impl RaftNode {
             // Find the term for this snapshot - it should be in our log or snapshot state
             let term = self
                 .get_snapshot_metadata()
-                .map(|m| m.last_included_term)
-                .unwrap_or(1);
+                .map_or(1, |m| m.last_included_term);
 
             // Create metadata for installation
             let metadata = SnapshotMetadata::new(
@@ -2343,7 +2511,7 @@ impl RaftNode {
     /// Become leader after winning election.
     ///
     /// This method performs an atomic leadership transition. All leadership state
-    /// (role, current_leader, leader_volatile) is updated in a single lock acquisition
+    /// (role, `current_leader`, `leader_volatile`) is updated in a single lock acquisition
     /// to ensure observers never see partial state.
     ///
     /// This is public to allow testing scenarios.
@@ -2413,6 +2581,7 @@ impl RaftNode {
 
             // Only commit if entry is from current term
             if new_commit > volatile.commit_index {
+                #[allow(clippy::cast_possible_truncation)]
                 let entry_idx = (new_commit - 1) as usize;
                 if entry_idx < persistent.log.len()
                     && persistent.log[entry_idx].term == persistent.current_term
@@ -2424,6 +2593,10 @@ impl RaftNode {
     }
 
     /// Propose a block (leader only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not leader or WAL persistence fails.
     pub fn propose(&self, block: Block) -> Result<u64> {
         if self.leadership.read().role != RaftState::Leader {
             return Err(ChainError::ConsensusError("not leader".to_string()));
@@ -2452,6 +2625,7 @@ impl RaftNode {
 
         let entry = LogEntry::new(term, index, block);
         persistent.log.push(entry);
+        drop(persistent);
 
         // Track embedding for fast-path validation by followers (already sparse)
         self.fast_path_state.add_embedding(&self.node_id, embedding);
@@ -2475,6 +2649,10 @@ impl RaftNode {
     ///
     /// Creates a log entry with the codebook change and appends it to the log.
     /// The change will be replicated to followers through normal Raft replication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn propose_codebook_replace(&self, snapshot: GlobalCodebookSnapshot) -> Result<u64> {
         if self.leadership.read().role != RaftState::Leader {
             return Err(ChainError::ConsensusError("not leader".into()));
@@ -2498,6 +2676,7 @@ impl RaftNode {
 
         let entry = LogEntry::codebook(term, index, CodebookChange::replace(snapshot));
         persistent.log.push(entry);
+        drop(persistent);
 
         Ok(index)
     }
@@ -2564,8 +2743,8 @@ impl RaftNode {
     /// Check if it is safe to accept writes (quorum available).
     ///
     /// Returns true if both:
-    /// 1. QuorumTracker indicates we can reach a majority of peers
-    /// 2. MembershipManager (if present) indicates quorum is reachable
+    /// 1. `QuorumTracker` indicates we can reach a majority of peers
+    /// 2. `MembershipManager` (if present) indicates quorum is reachable
     pub fn is_write_safe(&self) -> bool {
         let peer_count = self.peers.read().len();
 
@@ -2622,12 +2801,15 @@ impl RaftNode {
     }
 
     /// Finalize committed entries up to a height.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn finalize_to(&self, height: u64) -> Result<()> {
         let commit_index = self.volatile.read().commit_index;
         if height > commit_index {
             return Err(ChainError::ConsensusError(format!(
-                "cannot finalize {} above commit index {}",
-                height, commit_index
+                "cannot finalize {height} above commit index {commit_index}"
             )));
         }
 
@@ -2639,8 +2821,11 @@ impl RaftNode {
         let persistent = self.persistent.read();
         let volatile = self.volatile.read();
 
+        #[allow(clippy::cast_possible_truncation)]
         let start = volatile.last_applied as usize;
+        #[allow(clippy::cast_possible_truncation)]
         let end = volatile.commit_index as usize;
+        drop(volatile);
 
         if end > start && end <= persistent.log.len() {
             persistent.log[start..end].to_vec()
@@ -2660,10 +2845,9 @@ impl RaftNode {
 
     pub fn should_compact(&self) -> bool {
         let persistent = self.persistent.read();
-        let snapshot_state = self.snapshot_state.read();
-
-        // Only compact if log exceeds threshold and we have finalized entries
         let log_len = persistent.log.len();
+        drop(persistent);
+
         let finalized = self.finalized_height.load(Ordering::SeqCst);
 
         if log_len < self.config.snapshot_threshold {
@@ -2671,16 +2855,23 @@ impl RaftNode {
         }
 
         // Check if we have entries to compact (finalized entries)
-        match &snapshot_state.last_snapshot {
-            Some(meta) => finalized > meta.last_included_index,
-            None => finalized > 0,
-        }
+        let snapshot_state = self.snapshot_state.read();
+        let result = snapshot_state
+            .last_snapshot
+            .as_ref()
+            .map_or(finalized > 0, |meta| finalized > meta.last_included_index);
+        drop(snapshot_state);
+        result
     }
 
     /// Create a snapshot using streaming serialization for memory efficiency.
     ///
-    /// Uses SnapshotWriter to serialize log entries incrementally, avoiding
+    /// Uses `SnapshotWriter` to serialize log entries incrementally, avoiding
     /// the need to hold the entire serialized snapshot in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn create_snapshot_streaming(&self) -> Result<(SnapshotMetadata, SnapshotBuffer)> {
         use crate::snapshot_streaming::SnapshotWriter;
 
@@ -2694,12 +2885,12 @@ impl RaftNode {
         let persistent = self.persistent.read();
 
         // Find the log entry at finalized height
+        #[allow(clippy::cast_possible_truncation)]
         let snapshot_idx = finalized.saturating_sub(1) as usize;
         if snapshot_idx >= persistent.log.len() {
+            let log_len = persistent.log.len();
             return Err(ChainError::SnapshotError(format!(
-                "finalized height {} exceeds log length {}",
-                finalized,
-                persistent.log.len()
+                "finalized height {finalized} exceeds log length {log_len}"
             )));
         }
 
@@ -2708,19 +2899,24 @@ impl RaftNode {
 
         // Create streaming writer and write entries incrementally
         let mut writer = SnapshotWriter::new(buffer_config).map_err(|e| {
-            ChainError::SnapshotError(format!("failed to create snapshot writer: {}", e))
+            ChainError::SnapshotError(format!("failed to create snapshot writer: {e}"))
         })?;
 
         for entry in &persistent.log[..=snapshot_idx] {
             writer.write_entry(entry).map_err(|e| {
-                ChainError::SnapshotError(format!("failed to write snapshot entry: {}", e))
+                ChainError::SnapshotError(format!("failed to write snapshot entry: {e}"))
             })?;
         }
 
         // Finalize the buffer
-        let buffer = writer.finish().map_err(|e| {
-            ChainError::SnapshotError(format!("failed to finalize snapshot: {}", e))
-        })?;
+        let buffer = writer
+            .finish()
+            .map_err(|e| ChainError::SnapshotError(format!("failed to finalize snapshot: {e}")))?;
+
+        // Get entry metadata before dropping persistent lock
+        let entry_index = persistent.log[snapshot_idx].index;
+        let entry_term = persistent.log[snapshot_idx].term;
+        drop(persistent);
 
         // Get hash from buffer
         let snapshot_hash = buffer.hash();
@@ -2728,10 +2924,9 @@ impl RaftNode {
         // Get current cluster config
         let config = self.peers.read().clone();
 
-        let entry = &persistent.log[snapshot_idx];
         let metadata = SnapshotMetadata::new(
-            entry.index,
-            entry.term,
+            entry_index,
+            entry_term,
             snapshot_hash,
             config,
             buffer.total_len(),
@@ -2744,7 +2939,13 @@ impl RaftNode {
     ///
     /// For large snapshots, prefer `create_snapshot_streaming()` which is more
     /// memory-efficient.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn create_snapshot(&self) -> Result<(SnapshotMetadata, Vec<u8>)> {
+        use sha2::{Digest, Sha256};
+
         let finalized = self.finalized_height.load(Ordering::SeqCst);
         if finalized == 0 {
             return Err(ChainError::SnapshotError(
@@ -2755,25 +2956,27 @@ impl RaftNode {
         let persistent = self.persistent.read();
 
         // Find the log entry at finalized height
+        #[allow(clippy::cast_possible_truncation)]
         let snapshot_idx = finalized.saturating_sub(1) as usize;
         if snapshot_idx >= persistent.log.len() {
+            let log_len = persistent.log.len();
             return Err(ChainError::SnapshotError(format!(
-                "finalized height {} exceeds log length {}",
-                finalized,
-                persistent.log.len()
+                "finalized height {finalized} exceeds log length {log_len}"
             )));
         }
 
-        let entry = &persistent.log[snapshot_idx];
+        let entry_index = persistent.log[snapshot_idx].index;
+        let entry_term = persistent.log[snapshot_idx].term;
 
         // Serialize the state up to finalized height
         // In a full implementation, this would serialize the state machine state
         // For now, we serialize the log entries themselves as the "state"
         let state_entries: Vec<LogEntry> = persistent.log[..=snapshot_idx].to_vec();
+        drop(persistent);
+
         let data = bitcode::serialize(&state_entries)?;
 
         // Compute SHA-256 hash of snapshot data for integrity validation
-        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let snapshot_hash: [u8; 32] = hasher.finalize().into();
@@ -2782,8 +2985,8 @@ impl RaftNode {
         let config = self.peers.read().clone();
 
         let metadata = SnapshotMetadata::new(
-            entry.index,
-            entry.term,
+            entry_index,
+            entry_term,
             snapshot_hash,
             config,
             data.len() as u64,
@@ -2796,24 +2999,31 @@ impl RaftNode {
     ///
     /// Keeps `snapshot_trailing_logs` entries after the snapshot point
     /// to help followers catch up without needing a full snapshot transfer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn truncate_log(&self, snapshot_meta: &SnapshotMetadata) -> Result<()> {
         let mut persistent = self.persistent.write();
-        let mut snapshot_state = self.snapshot_state.write();
 
         let snapshot_idx = snapshot_meta.last_included_index;
         let trailing = self.config.snapshot_trailing_logs;
 
         // Find the index in our log array
         // Log entries are 1-indexed, array is 0-indexed
+        #[allow(clippy::cast_possible_truncation)]
         let cut_point = (snapshot_idx as usize).saturating_sub(trailing);
 
         if cut_point > 0 && cut_point < persistent.log.len() {
             // Remove entries before the cut point
             persistent.log.drain(..cut_point);
         }
+        drop(persistent);
 
         // Update snapshot state
+        let mut snapshot_state = self.snapshot_state.write();
         snapshot_state.last_snapshot = Some(snapshot_meta.clone());
+        drop(snapshot_state);
 
         Ok(())
     }
@@ -2825,9 +3035,9 @@ impl RaftNode {
     /// Only leaders should call this. Compaction happens if:
     /// 1. Check interval has been reached
     /// 2. Cooldown period has elapsed
-    /// 3. Log exceeds snapshot_threshold
+    /// 3. Log exceeds `snapshot_threshold`
     /// 4. Finalized entries exist beyond last snapshot
-    async fn try_auto_compact(&self) -> Result<()> {
+    fn try_auto_compact(&self) -> Result<()> {
         // Check interval counter (only check every N ticks)
         let tick_count = self.compaction_tick_counter.fetch_add(1, Ordering::Relaxed);
         if tick_count % self.config.compaction_check_interval != 0 {
@@ -2845,7 +3055,7 @@ impl RaftNode {
         }
 
         // Perform compaction
-        self.perform_compaction().await
+        self.perform_compaction()
     }
 
     /// Perform the actual compaction operation.
@@ -2855,9 +3065,13 @@ impl RaftNode {
     /// 2. Persist snapshot to store (if available)
     /// 3. Truncate log (only after successful persistence)
     /// 4. Update cooldown timestamp
-    async fn perform_compaction(&self) -> Result<()> {
+    fn perform_compaction(&self) -> Result<()> {
         // Create snapshot (reads log)
-        let (metadata, data) = self.create_snapshot()?;
+        let (mut metadata, data) = self.create_snapshot()?;
+
+        // Stamp compaction epoch on snapshot for crash recovery detection
+        let epoch = self.compaction_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        metadata.compaction_epoch = epoch;
 
         // Persist snapshot BEFORE truncating (critical for atomicity)
         if let Some(ref store) = self.store {
@@ -2868,7 +3082,9 @@ impl RaftNode {
         // (log only grows, but be defensive against concurrent modifications)
         {
             let persistent = self.persistent.read();
-            if metadata.last_included_index as usize > persistent.log.len() {
+            #[allow(clippy::cast_possible_truncation)]
+            let snapshot_idx = metadata.last_included_index as usize;
+            if snapshot_idx > persistent.log.len() {
                 return Err(ChainError::SnapshotError(
                     "snapshot index no longer valid".to_string(),
                 ));
@@ -2895,8 +3111,12 @@ impl RaftNode {
 
     /// Install a snapshot from a memory-efficient buffer.
     ///
-    /// Uses SnapshotReader for streaming deserialization, reading entries
+    /// Uses `SnapshotReader` for streaming deserialization, reading entries
     /// one at a time to minimize peak memory usage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn install_snapshot_streaming(
         &self,
         metadata: SnapshotMetadata,
@@ -2915,14 +3135,15 @@ impl RaftNode {
 
         // Create reader for streaming deserialization
         let reader = SnapshotReader::new(buffer).map_err(|e| {
-            ChainError::SnapshotError(format!("failed to create snapshot reader: {}", e))
+            ChainError::SnapshotError(format!("failed to create snapshot reader: {e}"))
         })?;
 
         // Read entries incrementally
+        #[allow(clippy::cast_possible_truncation)]
         let mut entries = Vec::with_capacity(reader.entry_count() as usize);
         for entry_result in reader {
             let entry = entry_result.map_err(|e| {
-                ChainError::SnapshotError(format!("failed to read snapshot entry: {}", e))
+                ChainError::SnapshotError(format!("failed to read snapshot entry: {e}"))
             })?;
             entries.push(entry);
         }
@@ -2951,12 +3172,16 @@ impl RaftNode {
     /// Install a snapshot from raw bytes.
     ///
     /// For large snapshots, prefer `install_snapshot_streaming()` with a
-    /// SnapshotBuffer for better memory efficiency.
+    /// `SnapshotBuffer` for better memory efficiency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn install_snapshot(&self, metadata: SnapshotMetadata, data: &[u8]) -> Result<()> {
         use crate::snapshot_streaming::deserialize_entries;
+        use sha2::{Digest, Sha256};
 
         // Validate snapshot hash before installing
-        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(data);
         let computed_hash: [u8; 32] = hasher.finalize().into();
@@ -2970,7 +3195,7 @@ impl RaftNode {
 
         // Deserialize the log entries from snapshot data (supports both legacy and streaming formats)
         let entries: Vec<LogEntry> = deserialize_entries(data).map_err(|e| {
-            ChainError::SnapshotError(format!("failed to deserialize snapshot: {}", e))
+            ChainError::SnapshotError(format!("failed to deserialize snapshot: {e}"))
         })?;
 
         // Validate the snapshot
@@ -2995,11 +3220,36 @@ impl RaftNode {
     }
 
     /// Install snapshot entries into the Raft state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     fn install_snapshot_entries(
         &self,
         metadata: SnapshotMetadata,
         entries: Vec<LogEntry>,
     ) -> Result<()> {
+        // Reject out-of-order snapshots (older than what we already have)
+        {
+            let snapshot_state = self.snapshot_state.read();
+            if let Some(ref existing) = snapshot_state.last_snapshot {
+                if metadata.last_included_index <= existing.last_included_index {
+                    tracing::warn!(
+                        incoming_index = metadata.last_included_index,
+                        incoming_term = metadata.last_included_term,
+                        existing_index = existing.last_included_index,
+                        existing_term = existing.last_included_term,
+                        "Rejecting out-of-order snapshot: incoming is not newer"
+                    );
+                    let incoming = metadata.last_included_index;
+                    let existing_idx = existing.last_included_index;
+                    return Err(ChainError::SnapshotError(format!(
+                        "out-of-order snapshot: incoming index {incoming} <= existing index {existing_idx}"
+                    )));
+                }
+            }
+        }
+
         // Check if we need to update term and persist BEFORE acquiring locks
         let needs_term_update = {
             let persistent = self.persistent.read();
@@ -3012,28 +3262,28 @@ impl RaftNode {
         }
 
         // Install the snapshot
-        {
-            let mut persistent = self.persistent.write();
-            let mut volatile = self.volatile.write();
-            let mut snapshot_state = self.snapshot_state.write();
+        let mut persistent = self.persistent.write();
+        // Replace log with entries from snapshot
+        persistent.log = entries;
 
-            // Replace log with entries from snapshot
-            persistent.log = entries;
-
-            // Update term if snapshot has higher term (re-check after WAL persist)
-            if metadata.last_included_term > persistent.current_term {
-                persistent.current_term = metadata.last_included_term;
-                persistent.voted_for = None;
-            }
-
-            // Update commit/apply indices
-            volatile.commit_index = metadata.last_included_index;
-            volatile.last_applied = metadata.last_included_index;
-
-            // Update snapshot metadata
-            snapshot_state.last_snapshot = Some(metadata.clone());
-            snapshot_state.cancel_receive(); // Clear any pending transfer
+        // Update term if snapshot has higher term (re-check after WAL persist)
+        if metadata.last_included_term > persistent.current_term {
+            persistent.current_term = metadata.last_included_term;
+            persistent.voted_for = None;
         }
+        drop(persistent);
+
+        // Update commit/apply indices
+        let mut volatile = self.volatile.write();
+        volatile.commit_index = metadata.last_included_index;
+        volatile.last_applied = metadata.last_included_index;
+        drop(volatile);
+
+        // Update snapshot metadata
+        let mut snapshot_state = self.snapshot_state.write();
+        snapshot_state.last_snapshot = Some(metadata.clone());
+        snapshot_state.cancel_receive(); // Clear any pending transfer
+        drop(snapshot_state);
 
         // Update finalized height
         self.finalized_height
@@ -3051,6 +3301,10 @@ impl RaftNode {
     /// Receive a snapshot chunk during transfer.
     ///
     /// Call this for each chunk received. Returns true when snapshot is complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn receive_snapshot_chunk(
         &self,
         offset: u64,
@@ -3060,10 +3314,25 @@ impl RaftNode {
     ) -> Result<bool> {
         let mut snapshot_state = self.snapshot_state.write();
 
+        // Check timeout on ongoing transfer
+        if snapshot_state.is_transfer_timed_out(self.config.snapshot_transfer_timeout_ms) {
+            tracing::warn!(
+                timeout_ms = self.config.snapshot_transfer_timeout_ms,
+                "Snapshot transfer timed out, aborting"
+            );
+            self.stats
+                .snapshot_transfer_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            snapshot_state.cancel_receive();
+            return Err(ChainError::SnapshotError(
+                "snapshot transfer timed out".to_string(),
+            ));
+        }
+
         // Start new transfer if offset is 0
         if offset == 0 {
             snapshot_state.start_receive(total_size).map_err(|e| {
-                ChainError::SnapshotError(format!("failed to start snapshot receive: {}", e))
+                ChainError::SnapshotError(format!("failed to start snapshot receive: {e}"))
             })?;
         }
 
@@ -3071,21 +3340,19 @@ impl RaftNode {
         let current_size = snapshot_state
             .pending_buffer
             .as_ref()
-            .map(|b| b.total_len())
-            .unwrap_or(0);
+            .map_or(0, SnapshotBuffer::total_len);
 
         // Validate offset matches current position
         if offset != current_size {
             snapshot_state.cancel_receive();
             return Err(ChainError::SnapshotError(format!(
-                "chunk offset mismatch: expected {}, got {}",
-                current_size, offset
+                "chunk offset mismatch: expected {current_size}, got {offset}"
             )));
         }
 
         snapshot_state.append_chunk(data).map_err(|e| {
             snapshot_state.cancel_receive();
-            ChainError::SnapshotError(format!("failed to append chunk: {}", e))
+            ChainError::SnapshotError(format!("failed to append chunk: {e}"))
         })?;
 
         if is_last {
@@ -3093,23 +3360,49 @@ impl RaftNode {
             let actual_size = snapshot_state
                 .pending_buffer
                 .as_ref()
-                .map(|b| b.total_len())
-                .unwrap_or(0);
+                .map_or(0, SnapshotBuffer::total_len);
             if actual_size != total_size {
                 snapshot_state.cancel_receive();
                 return Err(ChainError::SnapshotError(format!(
-                    "snapshot size mismatch: expected {}, got {}",
-                    total_size, actual_size
+                    "snapshot size mismatch: expected {total_size}, got {actual_size}"
                 )));
             }
+            drop(snapshot_state);
             return Ok(true);
         }
+        drop(snapshot_state);
 
         Ok(false)
     }
 
     pub fn take_pending_snapshot_buffer(&self) -> Option<SnapshotBuffer> {
         self.snapshot_state.write().finish_receive()
+    }
+
+    /// Check if there is an in-progress snapshot transfer that has timed out.
+    pub fn is_snapshot_transfer_timed_out(&self) -> bool {
+        self.snapshot_state
+            .read()
+            .is_transfer_timed_out(self.config.snapshot_transfer_timeout_ms)
+    }
+
+    /// Abort a timed-out snapshot transfer, returning whether one was aborted.
+    pub fn abort_timed_out_snapshot_transfer(&self) -> bool {
+        let mut snapshot_state = self.snapshot_state.write();
+        if snapshot_state.is_transfer_timed_out(self.config.snapshot_transfer_timeout_ms) {
+            tracing::warn!(
+                timeout_ms = self.config.snapshot_transfer_timeout_ms,
+                "Aborting timed-out snapshot transfer"
+            );
+            self.stats
+                .snapshot_transfer_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            snapshot_state.cancel_receive();
+            drop(snapshot_state);
+            return true;
+        }
+        drop(snapshot_state);
+        false
     }
 
     /// Get the accumulated snapshot data after receiving all chunks.
@@ -3119,39 +3412,46 @@ impl RaftNode {
         self.snapshot_state
             .write()
             .finish_receive()
-            .and_then(|buf| buf.as_bytes().ok().map(|b| b.to_vec()))
+            .and_then(|buf| buf.as_bytes().ok().map(<[u8]>::to_vec))
             .unwrap_or_default()
     }
 
     /// Check if we need to send a snapshot to a follower.
     ///
-    /// Returns true if the follower's next_index is before our first log entry.
+    /// Returns true if the follower's `next_index` is before our first log entry.
     pub fn needs_snapshot_for_follower(&self, follower: &NodeId) -> bool {
         let leadership = self.leadership.read();
-        let persistent = self.persistent.read();
-        let snapshot_state = self.snapshot_state.read();
-
         let next_idx = leadership
             .leader_volatile
             .as_ref()
             .and_then(|ls| ls.next_index.get(follower))
             .copied()
             .unwrap_or(1);
+        drop(leadership);
+
+        let persistent = self.persistent.read();
+        let log_empty = persistent.log.is_empty();
+        let first_log_index = persistent.log.first().map_or(1, |e| e.index);
+        drop(persistent);
+
+        let snapshot_state = self.snapshot_state.read();
+        let has_snapshot = snapshot_state.last_snapshot.is_some();
+        drop(snapshot_state);
 
         // If we have no log entries, we might need snapshot
-        if persistent.log.is_empty() {
-            return snapshot_state.last_snapshot.is_some();
+        if log_empty {
+            return has_snapshot;
         }
 
         // Check if follower needs entries before our first log entry
-        let first_log_index = persistent.log.first().map(|e| e.index).unwrap_or(1);
-        next_idx < first_log_index && snapshot_state.last_snapshot.is_some()
+        next_idx < first_log_index && has_snapshot
     }
 
     /// Get snapshot chunks for transfer to a follower.
     ///
-    /// Returns a vector of (offset, data, is_last) chunks.
+    /// Returns a vector of (offset, data, `is_last`) chunks.
     pub fn get_snapshot_chunks(&self, data: &[u8]) -> Vec<(u64, Vec<u8>, bool)> {
+        #[allow(clippy::cast_possible_truncation)]
         let chunk_size = self.config.snapshot_chunk_size as usize;
         let total_chunks = data.len().div_ceil(chunk_size);
 
@@ -3165,10 +3465,14 @@ impl RaftNode {
             .collect()
     }
 
-    /// Get a single chunk from a SnapshotBuffer with zero-copy access.
+    /// Get a single chunk from a `SnapshotBuffer` with zero-copy access.
     ///
-    /// Returns (data_slice, is_last) for the chunk at the given offset.
+    /// Returns (`data_slice`, `is_last`) for the chunk at the given offset.
     /// Uses memory-mapped I/O when the buffer is file-backed, avoiding copies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn get_snapshot_chunk_streaming<'a>(
         &self,
         buffer: &'a SnapshotBuffer,
@@ -3177,26 +3481,27 @@ impl RaftNode {
         let total_len = buffer.total_len();
         if offset >= total_len {
             return Err(ChainError::SnapshotError(format!(
-                "chunk offset {} beyond buffer length {}",
-                offset, total_len
+                "chunk offset {offset} beyond buffer length {total_len}"
             )));
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let chunk_size = self.config.snapshot_chunk_size as usize;
+        #[allow(clippy::cast_possible_truncation)]
         let remaining = (total_len - offset) as usize;
         let actual_size = chunk_size.min(remaining);
         let is_last = offset + actual_size as u64 >= total_len;
 
         let data = buffer.as_slice(offset, actual_size).map_err(|e| {
-            ChainError::SnapshotError(format!("failed to read chunk at offset {}: {}", offset, e))
+            ChainError::SnapshotError(format!("failed to read chunk at offset {offset}: {e}"))
         })?;
 
         Ok((data, is_last))
     }
 
-    /// Iterator over snapshot chunks from a SnapshotBuffer.
+    /// Iterator over snapshot chunks from a `SnapshotBuffer`.
     ///
-    /// Yields (offset, data_slice, is_last) for each chunk.
+    /// Yields (offset, `data_slice`, `is_last`) for each chunk.
     /// Uses zero-copy access when possible.
     pub fn snapshot_chunk_iter<'a>(
         &'a self,
@@ -3215,25 +3520,27 @@ impl RaftNode {
 
     /// Get entries for replication to a specific follower.
     ///
-    /// Returns (prev_log_index, prev_log_term, entries, block_embedding).
-    /// The block_embedding is from the last entry if any, for fast-path validation.
+    /// Returns (`prev_log_index`, `prev_log_term`, entries, `block_embedding`).
+    /// The `block_embedding` is from the last entry if any, for fast-path validation.
     pub fn get_entries_for_follower(
         &self,
         follower: &NodeId,
     ) -> (u64, u64, Vec<LogEntry>, Option<SparseVector>) {
-        let persistent = self.persistent.read();
         let leadership = self.leadership.read();
-
         let next_idx = leadership
             .leader_volatile
             .as_ref()
             .and_then(|ls| ls.next_index.get(follower))
             .copied()
             .unwrap_or(1);
+        drop(leadership);
+
+        let persistent = self.persistent.read();
 
         let (prev_log_index, prev_log_term) = if next_idx <= 1 {
             (0, 0)
         } else {
+            #[allow(clippy::cast_possible_truncation)]
             let idx = (next_idx - 2) as usize;
             if idx < persistent.log.len() {
                 (persistent.log[idx].index, persistent.log[idx].term)
@@ -3242,12 +3549,14 @@ impl RaftNode {
             }
         };
 
+        #[allow(clippy::cast_possible_truncation)]
         let start = (next_idx - 1) as usize;
         let entries = if start < persistent.log.len() {
             persistent.log[start..].to_vec()
         } else {
             Vec::new()
         };
+        drop(persistent);
 
         // Extract embedding from last entry for fast-path (already sparse)
         let block_embedding = entries
@@ -3260,16 +3569,28 @@ impl RaftNode {
     // ========== Async Transport Methods ==========
 
     /// Send a message to a specific peer via transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn send_to_peer(&self, peer: &NodeId, msg: Message) -> Result<()> {
         self.transport.send(peer, msg).await
     }
 
     /// Broadcast a message to all peers via transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn broadcast_to_peers(&self, msg: Message) -> Result<()> {
         self.transport.broadcast(msg).await
     }
 
-    /// Start an election and broadcast RequestVote to all peers.
+    /// Start an election and broadcast `RequestVote` to all peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn start_election_async(&self) -> Result<()> {
         // Build the RequestVote message in a sync block (no await)
         let request = {
@@ -3279,8 +3600,7 @@ impl RaftNode {
             // CRITICAL: Persist BEFORE applying state change to prevent double voting
             if let Err(e) = self.persist_term_and_vote(new_term, Some(&self.node_id)) {
                 return Err(ChainError::StorageError(format!(
-                    "WAL persist failed during async election: {}",
-                    e
+                    "WAL persist failed during async election: {e}"
                 )));
             }
 
@@ -3297,6 +3617,7 @@ impl RaftNode {
                 (last.index, last.term)
             };
             let term = persistent.current_term;
+            drop(persistent);
             let state_embedding = self.state_embedding.read().clone();
 
             Message::RequestVote(RequestVote {
@@ -3312,10 +3633,14 @@ impl RaftNode {
         self.transport.broadcast(request).await
     }
 
-    /// Start pre-vote phase and broadcast PreVote to all peers.
+    /// Start pre-vote phase and broadcast `PreVote` to all peers.
     ///
     /// Pre-vote prevents disruptive elections from partitioned nodes by requiring
     /// candidates to confirm they can win before incrementing their term.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn start_pre_vote_async(&self) -> Result<()> {
         // Build the PreVote message in a sync block (no await)
         let request = {
@@ -3330,6 +3655,7 @@ impl RaftNode {
                 (last.index, last.term)
             };
             let term = persistent.current_term;
+            drop(persistent);
             let state_embedding = self.state_embedding.read().clone();
 
             Message::PreVote(PreVote {
@@ -3346,6 +3672,10 @@ impl RaftNode {
     }
 
     /// Receive a message from transport (test helper).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn transport_recv(&self) -> Result<(NodeId, Message)> {
         self.transport.recv().await
     }
@@ -3353,7 +3683,11 @@ impl RaftNode {
     /// Initiate leadership transfer to target node (async version).
     ///
     /// This sends a heartbeat to ensure the target is caught up, then sends
-    /// TimeoutNow to trigger an immediate election on the target.
+    /// `TimeoutNow` to trigger an immediate election on the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn transfer_leadership_async(&self, target: &NodeId) -> Result<()> {
         // Do the sync validation and state setup
         self.transfer_leadership(target)?;
@@ -3389,6 +3723,10 @@ impl RaftNode {
     ///
     /// This spawns a tokio task that sends heartbeats at the configured interval.
     /// The task automatically stops when the node is no longer leader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn start_heartbeat_task(self: &Arc<Self>) -> Result<()> {
         let mut task = self.heartbeat_task.write();
         if task.handle.is_some() {
@@ -3404,6 +3742,7 @@ impl RaftNode {
 
         task.handle = Some(handle);
         task.shutdown_tx = Some(shutdown_tx);
+        drop(task);
         self.heartbeat_stats.reset();
         Ok(())
     }
@@ -3428,7 +3767,11 @@ impl RaftNode {
         self.heartbeat_stats.snapshot()
     }
 
-    /// Send heartbeats (AppendEntries) to all followers.
+    /// Send heartbeats (`AppendEntries`) to all followers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn send_heartbeats(&self) -> Result<()> {
         // Build all messages in a sync block (no await)
         let messages: Vec<(NodeId, Message)> = {
@@ -3474,6 +3817,10 @@ impl RaftNode {
     }
 
     /// Propose a block and replicate to followers (async version).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn propose_async(&self, block: Block) -> Result<u64> {
         // First, add to local log (sync part)
         let index = self.propose(block)?;
@@ -3485,6 +3832,10 @@ impl RaftNode {
     }
 
     /// Handle incoming message and optionally send response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn handle_message_async(&self, from: &NodeId, msg: Message) -> Result<()> {
         if let Some(response) = self.handle_message(from, &msg) {
             self.transport.send(from, response).await?;
@@ -3493,7 +3844,12 @@ impl RaftNode {
     }
 
     /// Tick the Raft node - check for election timeout (async version).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn tick_async(&self) -> Result<()> {
+        #[allow(clippy::cast_possible_truncation)]
         let elapsed = self.last_heartbeat.read().elapsed().as_millis() as u64;
         let state = self.leadership.read().role;
 
@@ -3514,14 +3870,11 @@ impl RaftNode {
             },
             RaftState::Leader => {
                 // Check if leadership transfer has timed out
-                let should_cancel = {
-                    if let Some(ref transfer) = *self.transfer_state.read() {
-                        transfer.started_at.elapsed().as_millis() as u64
-                            > self.config.transfer_timeout_ms
-                    } else {
-                        false
-                    }
-                };
+                let should_cancel = self.transfer_state.read().as_ref().is_some_and(|transfer| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let elapsed_ms = transfer.started_at.elapsed().as_millis() as u64;
+                    elapsed_ms > self.config.transfer_timeout_ms
+                });
                 if should_cancel {
                     self.cancel_transfer();
                 }
@@ -3533,7 +3886,7 @@ impl RaftNode {
                 }
 
                 // Automatic log compaction check
-                self.try_auto_compact().await?;
+                self.try_auto_compact()?;
             },
         }
         Ok(())
@@ -3545,6 +3898,10 @@ impl RaftNode {
     /// - Incoming messages from peers
     /// - Election timeouts (start election if no heartbeat)
     /// - Heartbeat sending (if leader)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub async fn run(&self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> Result<()> {
         let tick_interval = std::time::Duration::from_millis(self.config.heartbeat_interval / 2);
         let mut ticker = tokio::time::interval(tick_interval);
@@ -3594,21 +3951,18 @@ async fn heartbeat_loop(node: Arc<RaftNode>, mut shutdown_rx: tokio::sync::onesh
                     break;
                 }
 
-                match node.send_heartbeats().await {
-                    Ok(()) => {
-                        node.heartbeat_stats.heartbeats_sent.fetch_add(1, Ordering::Relaxed);
-                        node.heartbeat_stats.consecutive_failures.store(0, Ordering::Relaxed);
-                        *node.heartbeat_stats.last_heartbeat_at.write() = Some(Instant::now());
-                    }
-                    Err(_) => {
-                        node.heartbeat_stats.heartbeats_failed.fetch_add(1, Ordering::Relaxed);
-                        let failures = node.heartbeat_stats.consecutive_failures.fetch_add(1, Ordering::Relaxed);
-                        if failures >= node.config.max_heartbeat_failures {
-                            tracing::warn!(
-                                "Heartbeat consecutive failures: {}",
-                                failures + 1
-                            );
-                        }
+                if node.send_heartbeats().await.is_ok() {
+                    node.heartbeat_stats.heartbeats_sent.fetch_add(1, Ordering::Relaxed);
+                    node.heartbeat_stats.consecutive_failures.store(0, Ordering::Relaxed);
+                    *node.heartbeat_stats.last_heartbeat_at.write() = Some(Instant::now());
+                } else {
+                    node.heartbeat_stats.heartbeats_failed.fetch_add(1, Ordering::Relaxed);
+                    let failures = node.heartbeat_stats.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+                    if failures >= node.config.max_heartbeat_failures {
+                        tracing::warn!(
+                            "Heartbeat consecutive failures: {}",
+                            failures + 1
+                        );
                     }
                 }
             }
@@ -3903,8 +4257,8 @@ mod tests {
         let state = FastPathState::new(3);
         let leader = "leader1".to_string();
 
-        state.add_dense_embedding(&leader, vec![1.0, 0.0, 0.0]);
-        state.add_dense_embedding(&leader, vec![0.0, 1.0, 0.0]);
+        state.add_dense_embedding(&leader, &[1.0, 0.0, 0.0]);
+        state.add_dense_embedding(&leader, &[0.0, 1.0, 0.0]);
 
         assert_eq!(state.leader_history_size(&leader), 2);
 
@@ -3919,9 +4273,9 @@ mod tests {
         let state = FastPathState::new(2);
         let leader = "leader1".to_string();
 
-        state.add_dense_embedding(&leader, vec![1.0, 0.0, 0.0]);
-        state.add_dense_embedding(&leader, vec![0.0, 1.0, 0.0]);
-        state.add_dense_embedding(&leader, vec![0.0, 0.0, 1.0]);
+        state.add_dense_embedding(&leader, &[1.0, 0.0, 0.0]);
+        state.add_dense_embedding(&leader, &[0.0, 1.0, 0.0]);
+        state.add_dense_embedding(&leader, &[0.0, 0.0, 1.0]);
 
         // Should only keep last 2
         assert_eq!(state.leader_history_size(&leader), 2);
@@ -3935,8 +4289,8 @@ mod tests {
     fn test_fast_path_state_multiple_leaders() {
         let state = FastPathState::new(5);
 
-        state.add_dense_embedding(&"leader1".to_string(), vec![1.0, 0.0]);
-        state.add_dense_embedding(&"leader2".to_string(), vec![0.0, 1.0]);
+        state.add_dense_embedding(&"leader1".to_string(), &[1.0, 0.0]);
+        state.add_dense_embedding(&"leader2".to_string(), &[0.0, 1.0]);
 
         assert_eq!(state.leader_history_size(&"leader1".to_string()), 1);
         assert_eq!(state.leader_history_size(&"leader2".to_string()), 1);
@@ -3947,7 +4301,7 @@ mod tests {
         let state = FastPathState::new(5);
         let leader = "leader1".to_string();
 
-        state.add_dense_embedding(&leader, vec![1.0, 0.0]);
+        state.add_dense_embedding(&leader, &[1.0, 0.0]);
         assert_eq!(state.leader_history_size(&leader), 1);
 
         state.clear_leader(&leader);
@@ -4571,11 +4925,11 @@ mod tests {
             node.set_current_leader(Some("node2".to_string()));
             // Need at least 3 embeddings for fast-path to be considered
             node.fast_path_state
-                .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+                .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
             node.fast_path_state
-                .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+                .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
             node.fast_path_state
-                .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+                .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         }
 
         // Send append entries with similar embedding
@@ -4614,11 +4968,11 @@ mod tests {
 
         // Build up history for node2
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.set_current_leader(Some("node2".to_string()));
 
         // Now receive from node3 - should trigger leader change cleanup
@@ -4665,7 +5019,7 @@ mod tests {
 
         // Only 1 embedding in history (need 3 minimum)
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.set_current_leader(Some("node2".to_string()));
 
         let ae = AppendEntries {
@@ -4706,11 +5060,11 @@ mod tests {
         node.set_current_leader(Some("node2".to_string()));
         // Add sufficient history
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
 
         // Orthogonal vector - low similarity
         let ae = AppendEntries {
@@ -4752,11 +5106,11 @@ mod tests {
         node.set_current_leader(Some("node2".to_string()));
         // Add sufficient history for fast-path
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), &[1.0, 0.0, 0.0]);
 
         // Send similar embedding - should use fast-path
         let ae = AppendEntries {
@@ -4820,7 +5174,7 @@ mod tests {
     fn test_update_state_embedding() {
         let node = create_test_node("node1", vec!["node2".to_string()]);
 
-        node.update_state_embedding_dense(vec![1.0, 2.0, 3.0]);
+        node.update_state_embedding_dense(&[1.0, 2.0, 3.0]);
 
         let embedding = node.state_embedding.read();
         assert_eq!(embedding.to_dense(), vec![1.0, 2.0, 3.0]);
@@ -5110,6 +5464,55 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_request_vote_response_rejected_not_counted() {
+        // A rejected vote (vote_granted=false) at the same term must NOT count toward quorum.
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        node.start_election();
+        assert_eq!(node.state(), RaftState::Candidate);
+        let term = node.current_term();
+
+        // node2 rejects the vote
+        let rvr = RequestVoteResponse {
+            term,
+            vote_granted: false,
+            voter_id: "node2".to_string(),
+        };
+        node.handle_message(&"node2".to_string(), &Message::RequestVoteResponse(rvr));
+
+        // Must still be candidate (only has self-vote, needs 2 for quorum of 3)
+        assert_eq!(node.state(), RaftState::Candidate);
+        // votes_received should only contain self-vote
+        let votes = node.votes_received.read();
+        assert_eq!(votes.len(), 1);
+    }
+
+    #[test]
+    fn test_handle_request_vote_response_wrong_term_not_counted() {
+        // A granted vote from a stale (lower) term must NOT count toward quorum.
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        // Start election twice to get to term 2
+        node.start_election();
+        node.start_election();
+        assert_eq!(node.state(), RaftState::Candidate);
+        assert_eq!(node.current_term(), 2);
+
+        // node2 grants vote but for old term 1
+        let rvr = RequestVoteResponse {
+            term: 1,
+            vote_granted: true,
+            voter_id: "node2".to_string(),
+        };
+        node.handle_message(&"node2".to_string(), &Message::RequestVoteResponse(rvr));
+
+        // Must still be candidate (stale vote should be ignored)
+        assert_eq!(node.state(), RaftState::Candidate);
+        let votes = node.votes_received.read();
+        assert_eq!(votes.len(), 1);
+    }
+
+    #[test]
     fn test_handle_request_vote_response_duplicate_vote() {
         let node = create_test_node(
             "node1",
@@ -5306,6 +5709,81 @@ mod tests {
         }
 
         assert_eq!(node.log_length(), 3);
+    }
+
+    #[test]
+    fn test_try_advance_commit_index_5_node_quorum() {
+        // 5-node cluster exercises a different code path than 3-node:
+        // len=5, quorum=3 → 5-3=2 (correct median) vs 5/3=1 (wrong).
+        let node = create_test_node(
+            "node1",
+            vec![
+                "node2".to_string(),
+                "node3".to_string(),
+                "node4".to_string(),
+                "node5".to_string(),
+            ],
+        );
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            for i in 1..=3 {
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        // Majority (node2, node3) have replicated to index 3; minority (node4, node5) have 0
+        {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut state) = leadership.leader_volatile {
+                state.match_index.insert("node2".to_string(), 3);
+                state.match_index.insert("node3".to_string(), 3);
+                state.match_index.insert("node4".to_string(), 0);
+                state.match_index.insert("node5".to_string(), 0);
+            }
+        }
+
+        node.try_advance_commit_index();
+
+        // sorted match_indices = [0, 0, 3, 3, 3], quorum_idx = 5-3 = 2 → commit = 3
+        assert_eq!(node.commit_index(), 3);
+    }
+
+    #[test]
+    fn test_try_advance_commit_index_match_beyond_log() {
+        // Guard: if match_index exceeds log length, the bounds check must prevent commit.
+        // 3-node cluster so quorum median can exceed leader's log.
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        node.become_leader();
+
+        // Both peers claim match_index=2 but leader only has 1 log entry.
+        // sorted = [1, 2, 2], quorum_idx=1, new_commit=2, entry_idx=1, log.len()=1
+        // entry_idx < log.len() → 1 < 1 → false → must NOT commit.
+        {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut state) = leadership.leader_volatile {
+                state.match_index.insert("node2".to_string(), 2);
+                state.match_index.insert("node3".to_string(), 2);
+            }
+        }
+
+        node.try_advance_commit_index();
+
+        // Commit index should advance to 1 (the leader's own log length, the safe value)
+        // but NOT to 2 (which would be out of bounds).
+        assert!(node.commit_index() <= 1);
     }
 
     #[test]
@@ -5854,7 +6332,7 @@ mod tests {
         let node = create_test_node("node1", vec![]);
 
         // Set state embedding
-        node.update_state_embedding_dense(vec![1.0, 0.5, 0.25, 0.125]);
+        node.update_state_embedding_dense(&[1.0, 0.5, 0.25, 0.125]);
 
         // Set up term so there's state to save
         {
@@ -7211,6 +7689,69 @@ mod tests {
     }
 
     #[test]
+    fn test_install_snapshot_rejects_out_of_order() {
+        use sha2::{Digest, Sha256};
+        let node = create_test_node("node1", vec![]);
+
+        // Helper to create snapshot data + hash
+        let make_snapshot = |count: u64| -> (Vec<u8>, [u8; 32]) {
+            let entries: Vec<LogEntry> = (1..=count).map(create_test_log_entry).collect();
+            let data = bitcode::serialize(&entries).unwrap();
+            let hash: [u8; 32] = {
+                let mut h = Sha256::new();
+                h.update(&data);
+                h.finalize().into()
+            };
+            (data, hash)
+        };
+
+        // Install first snapshot at index 5
+        let (data_5, hash_5) = make_snapshot(5);
+        #[allow(clippy::cast_possible_truncation)]
+        let meta_5 = SnapshotMetadata::new(5, 1, hash_5, vec![], data_5.len() as u64);
+        node.install_snapshot(meta_5, &data_5).unwrap();
+
+        // Try to install older snapshot at index 3 - should be rejected
+        let (data_3, hash_3) = make_snapshot(3);
+        #[allow(clippy::cast_possible_truncation)]
+        let meta_3 = SnapshotMetadata::new(3, 1, hash_3, vec![], data_3.len() as u64);
+        let result = node.install_snapshot(meta_3, &data_3);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("out-of-order"));
+
+        // Install newer snapshot at index 10 - should succeed
+        let (data_10, hash_10) = make_snapshot(10);
+        #[allow(clippy::cast_possible_truncation)]
+        let meta_10 = SnapshotMetadata::new(10, 1, hash_10, vec![], data_10.len() as u64);
+        node.install_snapshot(meta_10, &data_10).unwrap();
+    }
+
+    #[test]
+    fn test_install_snapshot_rejects_same_index() {
+        use sha2::{Digest, Sha256};
+        let node = create_test_node("node1", vec![]);
+
+        // Install snapshot at index 5
+        let entries: Vec<LogEntry> = (1..=5).map(create_test_log_entry).collect();
+        let data = bitcode::serialize(&entries).unwrap();
+        let hash: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update(&data);
+            h.finalize().into()
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let meta = SnapshotMetadata::new(5, 1, hash, vec![], data.len() as u64);
+        node.install_snapshot(meta, &data).unwrap();
+
+        // Try same index again - should be rejected (not newer)
+        #[allow(clippy::cast_possible_truncation)]
+        let meta_same = SnapshotMetadata::new(5, 1, hash, vec![], data.len() as u64);
+        let result = node.install_snapshot(meta_same, &data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("out-of-order"));
+    }
+
+    #[test]
     fn test_startup_validates_snapshot_hash() {
         let store = tensor_store::TensorStore::new();
 
@@ -7853,7 +8394,7 @@ mod tests {
 
         // Dense vector with zeros that should be filtered
         let dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
-        node.update_state_embedding_dense(dense);
+        node.update_state_embedding_dense(&dense);
 
         let stored = node.state_embedding.read().clone();
         // Should have 4 non-zero elements (zeros filtered)
@@ -8456,5 +8997,539 @@ mod tests {
 
         // Should deserialize with codebook = None
         assert!(decoded.codebook.is_none());
+    }
+
+    // ========== Snapshot Transfer Timeout Tests ==========
+
+    // ========== Compaction Crash Safety Tests ==========
+
+    #[test]
+    fn test_compaction_epoch_in_snapshot_metadata() {
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec![], 100);
+        assert_eq!(meta.compaction_epoch, 0);
+    }
+
+    #[test]
+    fn test_compaction_epoch_backward_compatible() {
+        // Serialize without epoch, deserialize should default to 0
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
+        let bytes = bitcode::serialize(&meta).unwrap();
+        let decoded: SnapshotMetadata = bitcode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.compaction_epoch, 0);
+    }
+
+    #[test]
+    fn test_compaction_epoch_increments() {
+        let node = create_test_node("node1", vec![]);
+        assert_eq!(node.compaction_epoch.load(Ordering::SeqCst), 0);
+
+        node.compaction_epoch.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(node.compaction_epoch.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_recovery_re_truncates_incomplete_compaction() {
+        let store = tensor_store::TensorStore::new();
+
+        // Create a node and add log entries
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig {
+            snapshot_trailing_logs: 2,
+            ..RaftConfig::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            transport.clone(),
+            config.clone(),
+        );
+
+        // Add 10 log entries
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=10 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        // Save Raft state with all 10 log entries (simulating crash before truncation)
+        node.save_to_store(&store).unwrap();
+
+        // Create and save a snapshot at index 8 (simulating snapshot was saved but log wasn't truncated)
+        let entries: Vec<LogEntry> = (1..=8).map(create_test_log_entry).collect();
+        let data = bitcode::serialize(&entries).unwrap();
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let hash: [u8; 32] = hasher.finalize().into();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let mut meta =
+            SnapshotMetadata::new(8, 1, hash, vec!["node1".to_string()], data.len() as u64);
+        meta.compaction_epoch = 1;
+        node.save_snapshot(&meta, &data, &store).unwrap();
+
+        // Recovery: create node from store - should detect and re-truncate
+        let transport2 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let recovered =
+            RaftNode::with_store("node1".to_string(), vec![], transport2, config, &store);
+
+        // Verify compaction epoch was restored
+        assert_eq!(recovered.compaction_epoch.load(Ordering::SeqCst), 1);
+
+        // Verify log was re-truncated (should have entries after cut point)
+        let log_len = recovered.persistent.read().log.len();
+        // snapshot_idx=8, trailing=2, cut_point=6. Original 10 entries,
+        // drain(..6) leaves 4 entries
+        assert!(
+            log_len <= 4,
+            "Log should be truncated, got {} entries",
+            log_len
+        );
+    }
+
+    // ========== Snapshot Transfer Timeout Tests ==========
+
+    #[test]
+    fn test_snapshot_transfer_timeout_config_default() {
+        let config = RaftConfig::default();
+        assert_eq!(config.snapshot_transfer_timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn test_snapshot_transfer_not_timed_out_when_no_transfer() {
+        let node = create_test_node("node1", vec![]);
+        assert!(!node.is_snapshot_transfer_timed_out());
+    }
+
+    #[test]
+    fn test_snapshot_transfer_not_timed_out_when_fresh() {
+        let config = RaftConfig {
+            snapshot_transfer_timeout_ms: 60_000,
+            ..RaftConfig::default()
+        };
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new("node1".to_string(), vec![], transport, config);
+
+        // Start receiving a snapshot
+        node.receive_snapshot_chunk(0, &[1, 2, 3], 10, false)
+            .unwrap();
+
+        // Should not be timed out yet
+        assert!(!node.is_snapshot_transfer_timed_out());
+    }
+
+    #[test]
+    fn test_snapshot_transfer_timeout_aborts_transfer() {
+        let config = RaftConfig {
+            snapshot_transfer_timeout_ms: 1, // 1ms timeout for testing
+            ..RaftConfig::default()
+        };
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new("node1".to_string(), vec![], transport, config);
+
+        // Start receiving
+        node.receive_snapshot_chunk(0, &[1, 2, 3], 100, false)
+            .unwrap();
+
+        // Wait for timeout
+        std::thread::sleep(Duration::from_millis(5));
+
+        // Next chunk should fail with timeout
+        let result = node.receive_snapshot_chunk(3, &[4, 5, 6], 100, false);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("timed out"),
+            "Expected timeout error, got: {}",
+            err_msg
+        );
+
+        // Metric should be incremented
+        assert_eq!(
+            node.stats
+                .snapshot_transfer_timeouts
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn test_abort_timed_out_snapshot_transfer() {
+        let config = RaftConfig {
+            snapshot_transfer_timeout_ms: 1,
+            ..RaftConfig::default()
+        };
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new("node1".to_string(), vec![], transport, config);
+
+        // No transfer in progress
+        assert!(!node.abort_timed_out_snapshot_transfer());
+
+        // Start receiving
+        node.receive_snapshot_chunk(0, &[1, 2, 3], 100, false)
+            .unwrap();
+
+        // Wait for timeout
+        std::thread::sleep(Duration::from_millis(5));
+
+        // Should abort
+        assert!(node.abort_timed_out_snapshot_transfer());
+        assert_eq!(
+            node.stats
+                .snapshot_transfer_timeouts
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        // No more transfer in progress
+        assert!(!node.is_snapshot_transfer_timed_out());
+    }
+
+    #[test]
+    fn test_snapshot_transfer_timeout_stats_in_snapshot() {
+        let node = create_test_node("node1", vec![]);
+        node.stats
+            .snapshot_transfer_timeouts
+            .store(5, Ordering::Relaxed);
+
+        let snapshot = node.stats.snapshot();
+        assert_eq!(snapshot.snapshot_transfer_timeouts, 5);
+    }
+
+    // ========== Mutation-Catching Tests ==========
+
+    #[test]
+    fn test_handle_request_vote_stale_term_mutation() {
+        let node = create_test_node("voter", vec!["candidate".to_string()]);
+        // Advance voter to term 5
+        for _ in 0..5 {
+            node.start_election();
+        }
+        let voter_term = node.current_term();
+        assert!(voter_term >= 5);
+
+        // Candidate requests vote with stale term (term 1)
+        let rv = RequestVote {
+            term: 1,
+            candidate_id: "candidate".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+        let msg = Message::RequestVote(rv);
+        let response = node.handle_message(&"candidate".to_string(), &msg);
+
+        match response {
+            Some(Message::RequestVoteResponse(rvr)) => {
+                assert!(!rvr.vote_granted, "Must not grant vote to stale term");
+                assert!(rvr.term >= voter_term, "Response term must be at least voter's term");
+            },
+            other => panic!("Expected RequestVoteResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_request_vote_already_voted_mutation() {
+        let node = create_test_node(
+            "voter",
+            vec!["candidate_a".to_string(), "candidate_b".to_string()],
+        );
+
+        // candidate_a requests vote at term 1
+        let rv_a = RequestVote {
+            term: 1,
+            candidate_id: "candidate_a".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+        let response_a = node.handle_message(
+            &"candidate_a".to_string(),
+            &Message::RequestVote(rv_a),
+        );
+        match &response_a {
+            Some(Message::RequestVoteResponse(rvr)) => {
+                assert!(rvr.vote_granted, "First vote should be granted");
+            },
+            other => panic!("Expected RequestVoteResponse, got {other:?}"),
+        }
+
+        // candidate_b requests vote at same term 1 -- must be denied
+        let rv_b = RequestVote {
+            term: 1,
+            candidate_id: "candidate_b".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+        let response_b = node.handle_message(
+            &"candidate_b".to_string(),
+            &Message::RequestVote(rv_b),
+        );
+        match response_b {
+            Some(Message::RequestVoteResponse(rvr)) => {
+                assert!(!rvr.vote_granted, "Must not double-vote in same term");
+            },
+            other => panic!("Expected RequestVoteResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_request_vote_outdated_log() {
+        let node = create_test_node("voter", vec!["candidate".to_string()]);
+        // Voter at term 1, add a log entry directly via AppendEntries
+        let entry = LogEntry {
+            term: 1,
+            index: 1,
+            block: Block::new(
+                BlockHeader::new(
+                    1,
+                    [0u8; 32],
+                    [0u8; 32],
+                    [0u8; 32],
+                    "voter".to_string(),
+                ),
+                vec![],
+            ),
+            config_change: None,
+            codebook_change: None,
+        };
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "voter".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![entry],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        node.handle_message(&"voter".to_string(), &Message::AppendEntries(ae));
+        assert_eq!(node.log_length(), 1, "Voter should have 1 log entry");
+
+        let voter_term = node.current_term();
+
+        // Candidate has shorter log (no entries, higher term)
+        let rv = RequestVote {
+            term: voter_term + 1,
+            candidate_id: "candidate".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+        let response = node.handle_message(
+            &"candidate".to_string(),
+            &Message::RequestVote(rv),
+        );
+        match response {
+            Some(Message::RequestVoteResponse(rvr)) => {
+                assert!(
+                    !rvr.vote_granted,
+                    "Must not vote for candidate with outdated log"
+                );
+            },
+            other => panic!("Expected RequestVoteResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_append_entries_stale_term() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+        // Advance follower to term 5
+        for _ in 0..5 {
+            node.start_election();
+        }
+        let follower_term = node.current_term();
+
+        // Leader sends AppendEntries with stale term 1
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        let response = node.handle_message(
+            &"leader".to_string(),
+            &Message::AppendEntries(ae),
+        );
+        match response {
+            Some(Message::AppendEntriesResponse(aer)) => {
+                assert!(!aer.success, "Must reject AppendEntries with stale term");
+                assert!(
+                    aer.term >= follower_term,
+                    "Response term must be at least follower's current term"
+                );
+            },
+            other => panic!("Expected AppendEntriesResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_append_entries_prev_log_gap_rejects() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+
+        // Leader sends AppendEntries referencing a prev_log_index
+        // that doesn't exist in follower's log (gap)
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 5,
+            prev_log_term: 1,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        let response = node.handle_message(
+            &"leader".to_string(),
+            &Message::AppendEntries(ae),
+        );
+        match response {
+            Some(Message::AppendEntriesResponse(aer)) => {
+                assert!(
+                    !aer.success,
+                    "Must reject when prev_log_index references nonexistent entry"
+                );
+            },
+            other => panic!("Expected AppendEntriesResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_append_entries_advances_commit() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+
+        // First, accept a valid AppendEntries at term 1 with an entry
+        let entry = LogEntry {
+            term: 1,
+            index: 1,
+            block: Block::new(
+                BlockHeader::new(
+                    1,
+                    [0u8; 32],
+                    [0u8; 32],
+                    [0u8; 32],
+                    "leader".to_string(),
+                ),
+                vec![],
+            ),
+            config_change: None,
+            codebook_change: None,
+        };
+
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![entry],
+            leader_commit: 1,
+            block_embedding: None,
+        };
+        let response = node.handle_message(
+            &"leader".to_string(),
+            &Message::AppendEntries(ae),
+        );
+        match response {
+            Some(Message::AppendEntriesResponse(aer)) => {
+                assert!(aer.success, "Should accept valid AppendEntries");
+            },
+            other => panic!("Expected AppendEntriesResponse, got {other:?}"),
+        }
+
+        // Commit index should have advanced
+        assert_eq!(node.commit_index(), 1, "Commit index must advance to leader_commit");
+    }
+
+    #[test]
+    fn test_start_election_increments_term() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        let initial_term = node.current_term();
+        assert_eq!(initial_term, 0);
+
+        node.start_election();
+        assert_eq!(
+            node.current_term(),
+            1,
+            "First election must increment term to 1"
+        );
+
+        node.start_election();
+        assert_eq!(
+            node.current_term(),
+            2,
+            "Second election must increment term to 2"
+        );
+    }
+
+    #[test]
+    fn test_become_leader_initializes_next_index() {
+        let peers = vec!["peer1".to_string(), "peer2".to_string()];
+        let node = create_test_node("leader", peers.clone());
+
+        node.start_election();
+        node.become_leader();
+
+        assert_eq!(node.state(), RaftState::Leader);
+
+        // Verify leader volatile state is initialized
+        let leadership = node.leadership.read();
+        let lv = leadership
+            .leader_volatile
+            .as_ref()
+            .expect("Leader must have volatile state");
+
+        // next_index should be last_log_index + 1 for each peer
+        let last_log = node.log_length() as u64;
+        for peer in &peers {
+            let next_idx = lv.next_index.get(peer).expect("next_index must exist for peer");
+            assert_eq!(
+                *next_idx,
+                last_log + 1,
+                "next_index for {peer} should be last_log_index + 1"
+            );
+            let match_idx = lv.match_index.get(peer).expect("match_index must exist for peer");
+            assert_eq!(*match_idx, 0, "match_index for {peer} should start at 0");
+        }
+    }
+
+    #[test]
+    fn test_is_write_safe_no_quorum() {
+        let node = create_test_node(
+            "leader",
+            vec!["peer1".to_string(), "peer2".to_string()],
+        );
+        node.start_election();
+        node.become_leader();
+
+        // No heartbeat responses yet, quorum tracker has no successes
+        assert!(
+            !node.is_write_safe(),
+            "Must not report write-safe without quorum confirmation"
+        );
+    }
+
+    #[test]
+    fn test_transfer_leadership_validates_target() {
+        let node = create_test_node(
+            "leader",
+            vec!["peer1".to_string(), "peer2".to_string()],
+        );
+        node.start_election();
+        node.become_leader();
+
+        // Transfer to unknown peer should fail
+        let result = node.transfer_leadership(&"unknown_node".to_string());
+        assert!(result.is_err(), "Transfer to unknown peer must fail");
+
+        // Transfer to known peer should succeed
+        let result = node.transfer_leadership(&"peer1".to_string());
+        assert!(result.is_ok(), "Transfer to known peer should succeed");
+
+        // Duplicate transfer should fail
+        let result = node.transfer_leadership(&"peer2".to_string());
+        assert!(result.is_err(), "Duplicate transfer must fail");
     }
 }

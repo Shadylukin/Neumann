@@ -99,7 +99,7 @@ jobs:
           cargo check --workspace
           --exclude fuzz
           --exclude neumann-native
-          --all-features
+          --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote
 
   clippy:
     name: Clippy
@@ -133,7 +133,7 @@ jobs:
           cargo clippy --workspace
           --exclude fuzz
           --exclude neumann-native
-          --all-features
+          --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote
           -- -D warnings
 
   test:
@@ -167,7 +167,7 @@ jobs:
           cargo test --workspace
           --exclude fuzz
           --exclude neumann-native
-          --all-features
+          --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote
 
   coverage:
     name: Coverage
@@ -215,7 +215,7 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --all-features \
+            --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
             --fail-under-lines 95 \
             --html --output-dir target/llvm-cov/html
 
@@ -228,7 +228,7 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --all-features \
+            --features tls,metrics,full,graph,vector,fuzzing,test-internals,embedded,remote \
             --no-run \
             --codecov --output-path codecov.json
 
