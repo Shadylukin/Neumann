@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Abstract Syntax Tree (AST) nodes for the Neumann query language.
 //!
 //! Defines all AST node types for:

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TTL (Time-To-Live) tracking for vault grants.
 //!
 //! Enables time-limited access grants that automatically expire.

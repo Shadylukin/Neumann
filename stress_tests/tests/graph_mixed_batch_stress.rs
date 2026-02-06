@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Graph engine mixed batch operations stress test.
 //!
 //! Tests concurrent create and delete operations to verify no deadlocks.

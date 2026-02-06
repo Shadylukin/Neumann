@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Fuzz target for distributed transaction concurrency safety.
 //!
 //! Tests the fixes for TOCTOU race conditions:

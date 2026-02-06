@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Stress tests for rapid network partition creation and healing.
 //!
 //! Tests distributed transport behavior under high-frequency partition

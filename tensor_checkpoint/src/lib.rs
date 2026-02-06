@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! `TensorCheckpoint` - Rollback/Checkpoint System for Neumann
 //!
 //! Provides checkpoint and rollback capabilities for the Neumann database:

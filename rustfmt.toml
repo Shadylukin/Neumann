@@ -8,38 +8,16 @@ newline_style = "Unix"
 use_small_heuristics = "Default"
 
 # Imports
-imports_granularity = "Crate"
-group_imports = "StdExternalCrate"
 reorder_imports = true
 reorder_modules = true
 
-# Formatting options
-format_code_in_doc_comments = true
-format_macro_matchers = true
-format_strings = false
-wrap_comments = true
-comment_width = 100
-
 # Match arms
-match_arm_blocks = true
 match_arm_leading_pipes = "Never"
 match_block_trailing_comma = true
 
 # Functions
 fn_params_layout = "Tall"
-fn_single_line = false
-
-# Control flow
-brace_style = "SameLineWhere"
-control_brace_style = "AlwaysSameLine"
-
-# Struct/Enum
-struct_lit_single_line = true
-enum_discrim_align_threshold = 20
 
 # Other
-force_multiline_blocks = false
-hex_literal_case = "Lower"
-overflow_delimited_expr = false
 use_field_init_shorthand = true
 use_try_shorthand = true

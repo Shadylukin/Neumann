@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for message reordering behavior.
 //!
 //! Tests that the consensus system handles out-of-order message

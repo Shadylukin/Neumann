@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TCP transport implementation.
 //!
 //! Implements the `Transport` trait for TCP-based node communication.
@@ -80,6 +80,7 @@ impl TcpTransport {
     /// Create a new TCP transport.
     ///
     /// This does not start listening; call `start()` to begin accepting connections.
+    #[must_use]
     pub fn new(config: TcpTransportConfig) -> Self {
         let (incoming_tx, incoming_rx) = mpsc::channel(config.recv_buffer_size);
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -100,6 +101,8 @@ impl TcpTransport {
         }
     }
 
+    /// # Errors
+    /// Returns an error if binding fails or security configuration is invalid.
     pub async fn start(&self) -> TcpResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(()); // Already running
@@ -571,6 +574,9 @@ impl TcpTransport {
 
     /// Try to receive a single message without blocking.
     /// Returns None if no message is immediately available.
+    ///
+    /// # Errors
+    /// Returns an error if the channel is disconnected.
     pub async fn receive_one(&self) -> Result<Option<(NodeId, Message)>> {
         let mut rx = self.incoming_rx.lock().await;
         match rx.try_recv() {
@@ -634,15 +640,14 @@ impl Transport for TcpTransport {
         if !self.rate_limiter.check(to) {
             let available = self.rate_limiter.available_tokens(to);
             return Err(ChainError::NetworkError(format!(
-                "rate limited: peer {} (available tokens: {})",
-                to, available
+                "rate limited: peer {to} (available tokens: {available})"
             )));
         }
 
         let pool = self
             .connections
             .get_pool(to)
-            .ok_or_else(|| ChainError::NetworkError(format!("peer not found: {}", to)))?;
+            .ok_or_else(|| ChainError::NetworkError(format!("peer not found: {to}")))?;
 
         self.send_direct(&pool, &msg)
             .await
@@ -681,7 +686,7 @@ impl Transport for TcpTransport {
         let address: SocketAddr = peer
             .address
             .parse()
-            .map_err(|e| ChainError::NetworkError(format!("invalid address: {}", e)))?;
+            .map_err(|e| ChainError::NetworkError(format!("invalid address: {e}")))?;
 
         self.connect_to_peer(&peer.node_id, address)
             .await

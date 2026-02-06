@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Linearizability checking module using the Wing-Gong-Liu (WGL) algorithm.
 //!
 //! Verifies that concurrent operations on a distributed key-value store appear
@@ -121,6 +121,48 @@ impl Default for HistoryRecorder {
     }
 }
 
+/// Thread-safe wrapper around `HistoryRecorder` for concurrent operation
+/// recording from multiple tasks.
+pub struct ConcurrentHistoryRecorder {
+    inner: std::sync::Mutex<HistoryRecorder>,
+}
+
+impl ConcurrentHistoryRecorder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(HistoryRecorder::new()),
+        }
+    }
+
+    /// Record the invocation of an operation. Returns the operation id.
+    pub fn invoke(&self, client_id: u64, op_type: OpType, key: String, input: Value) -> u64 {
+        self.inner
+            .lock()
+            .expect("recorder lock poisoned")
+            .invoke(client_id, op_type, key, input)
+    }
+
+    /// Record the completion of an operation, attaching its output value.
+    pub fn complete(&self, op_id: u64, output: Value) {
+        self.inner
+            .lock()
+            .expect("recorder lock poisoned")
+            .complete(op_id, output);
+    }
+
+    /// Consume the wrapper and return the inner `HistoryRecorder`.
+    pub fn into_inner(self) -> HistoryRecorder {
+        self.inner.into_inner().expect("recorder lock poisoned")
+    }
+}
+
+impl Default for ConcurrentHistoryRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Result of linearizability checking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinearizabilityResult {
@@ -186,6 +228,36 @@ impl SequentialModel for RegisterModel {
                     (next, current)
                 }
             },
+        }
+    }
+}
+
+/// Sequential model for Raft log proposals.
+///
+/// Proposals are modeled as writes to a single "key" register. Successful
+/// proposals return `Value::Int(1)` and failed proposals return `Value::None`.
+/// This matches the DST harness convention (dst.rs:373-383).
+pub struct RaftLogModel;
+
+impl SequentialModel for RaftLogModel {
+    type State = HashMap<String, Value>;
+
+    fn init(&self) -> Self::State {
+        HashMap::new()
+    }
+
+    fn apply(&self, state: &Self::State, op: &Operation) -> (Self::State, Value) {
+        match op.op_type {
+            OpType::Write => {
+                let mut s = state.clone();
+                s.insert(op.key.clone(), op.input.clone());
+                (s, Value::Int(1)) // success
+            },
+            OpType::Read => {
+                let val = state.get(&op.key).cloned().unwrap_or(Value::None);
+                (state.clone(), val)
+            },
+            OpType::Cas => (state.clone(), Value::None),
         }
     }
 }

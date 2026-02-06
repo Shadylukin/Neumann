@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for tensor_chain module.
 //!
 //! Tests the tensor-native blockchain functionality including:
@@ -304,8 +304,8 @@ fn test_transaction_with_codebook_quantization() {
         data: vec![1, 2, 3],
     })
     .unwrap();
-    tx.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
-    tx.compute_delta(vec![0.95, 0.05, 0.0, 0.0]); // Close to [1,0,0,0]
+    tx.set_before_embedding(&[0.0, 0.0, 0.0, 0.0]);
+    tx.compute_delta(&[0.95, 0.05, 0.0, 0.0]); // Close to [1,0,0,0]
 
     chain.commit(tx).unwrap();
 

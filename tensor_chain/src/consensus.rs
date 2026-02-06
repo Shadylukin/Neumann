@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Semantic conflict detection and auto-merge for transactions.
 //!
 //! Uses tensor operations to detect and resolve conflicts:
@@ -78,7 +78,7 @@ pub enum ConflictClass {
 
 impl ConflictClass {
     #[must_use]
-    pub fn can_merge(&self) -> bool {
+    pub const fn can_merge(&self) -> bool {
         matches!(
             self,
             Self::Orthogonal | Self::LowConflict | Self::Identical | Self::Opposite
@@ -86,7 +86,7 @@ impl ConflictClass {
     }
 
     #[must_use]
-    pub fn should_reject(&self) -> bool {
+    pub const fn should_reject(&self) -> bool {
         matches!(self, Self::Ambiguous | Self::Conflicting)
     }
 }
@@ -162,7 +162,11 @@ impl DeltaVector {
     }
 
     #[must_use]
-    pub fn from_sparse(delta: SparseVector, affected_keys: HashSet<String>, tx_id: u64) -> Self {
+    pub const fn from_sparse(
+        delta: SparseVector,
+        affected_keys: HashSet<String>,
+        tx_id: u64,
+    ) -> Self {
         Self {
             delta,
             affected_keys,
@@ -225,7 +229,7 @@ impl DeltaVector {
     }
 
     #[must_use]
-    pub fn cosine_similarity(&self, other: &DeltaVector) -> f32 {
+    pub fn cosine_similarity(&self, other: &Self) -> f32 {
         self.delta.cosine_similarity(&other.delta)
     }
 
@@ -233,7 +237,7 @@ impl DeltaVector {
     ///
     /// Range: [0, PI] where 0 = identical direction.
     #[must_use]
-    pub fn angular_distance(&self, other: &DeltaVector) -> f32 {
+    pub fn angular_distance(&self, other: &Self) -> f32 {
         self.delta.angular_distance(&other.delta)
     }
 
@@ -242,17 +246,17 @@ impl DeltaVector {
     /// Measures overlap of non-zero positions, independent of values.
     /// Range: [0, 1] where 1 = same positions modified.
     #[must_use]
-    pub fn jaccard_index(&self, other: &DeltaVector) -> f32 {
+    pub fn jaccard_index(&self, other: &Self) -> f32 {
         self.delta.jaccard_index(&other.delta)
     }
 
     #[must_use]
-    pub fn structural_similarity(&self, other: &DeltaVector) -> f32 {
+    pub fn structural_similarity(&self, other: &Self) -> f32 {
         self.jaccard_index(other)
     }
 
     #[must_use]
-    pub fn geodesic_distance(&self, other: &DeltaVector) -> f32 {
+    pub fn geodesic_distance(&self, other: &Self) -> f32 {
         self.delta.geodesic_distance(&other.delta)
     }
 
@@ -260,17 +264,17 @@ impl DeltaVector {
     ///
     /// Considers both position overlap and value magnitudes.
     #[must_use]
-    pub fn weighted_jaccard(&self, other: &DeltaVector) -> f32 {
+    pub fn weighted_jaccard(&self, other: &Self) -> f32 {
         self.delta.weighted_jaccard(&other.delta)
     }
 
     #[must_use]
-    pub fn euclidean_distance(&self, other: &DeltaVector) -> f32 {
+    pub fn euclidean_distance(&self, other: &Self) -> f32 {
         self.delta.euclidean_distance(&other.delta)
     }
 
     #[must_use]
-    pub fn overlaps_with(&self, other: &DeltaVector) -> bool {
+    pub fn overlaps_with(&self, other: &Self) -> bool {
         self.affected_keys
             .intersection(&other.affected_keys)
             .next()
@@ -278,7 +282,7 @@ impl DeltaVector {
     }
 
     #[must_use]
-    pub fn overlapping_keys(&self, other: &DeltaVector) -> HashSet<String> {
+    pub fn overlapping_keys(&self, other: &Self) -> HashSet<String> {
         self.affected_keys
             .intersection(&other.affected_keys)
             .cloned()
@@ -289,26 +293,26 @@ impl DeltaVector {
     ///
     /// True if both deltas modify the same embedding positions.
     #[must_use]
-    pub fn overlaps_indices(&self, other: &DeltaVector) -> bool {
+    pub fn overlaps_indices(&self, other: &Self) -> bool {
         self.delta.jaccard_index(&other.delta) > 0.0
     }
 
     #[must_use]
-    pub fn add(&self, other: &DeltaVector) -> DeltaVector {
+    pub fn add(&self, other: &Self) -> Self {
         let delta = self.delta.add(&other.delta);
         let keys: HashSet<String> = self
             .affected_keys
             .union(&other.affected_keys)
             .cloned()
             .collect();
-        DeltaVector::from_sparse(delta, keys, 0) // New tx_id will be assigned
+        Self::from_sparse(delta, keys, 0) // New tx_id will be assigned
     }
 
     #[must_use]
-    pub fn weighted_average(&self, other: &DeltaVector, w1: f32, w2: f32) -> DeltaVector {
+    pub fn weighted_average(&self, other: &Self, w1: f32, w2: f32) -> Self {
         let total = w1 + w2;
         if total == 0.0 {
-            return DeltaVector::zero(0);
+            return Self::zero(0);
         }
         let delta = self.delta.weighted_average(&other.delta, w1, w2);
         let keys: HashSet<String> = self
@@ -316,25 +320,25 @@ impl DeltaVector {
             .union(&other.affected_keys)
             .cloned()
             .collect();
-        DeltaVector::from_sparse(delta, keys, 0)
+        Self::from_sparse(delta, keys, 0)
     }
 
     #[must_use]
-    pub fn project_non_conflicting(&self, conflict_direction: &SparseVector) -> DeltaVector {
+    pub fn project_non_conflicting(&self, conflict_direction: &SparseVector) -> Self {
         let delta = self.delta.project_orthogonal(conflict_direction);
-        DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
+        Self::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
     }
 
     #[must_use]
-    pub fn project_non_conflicting_dense(&self, conflict_direction: &[f32]) -> DeltaVector {
+    pub fn project_non_conflicting_dense(&self, conflict_direction: &[f32]) -> Self {
         let direction = SparseVector::from_dense(conflict_direction);
         self.project_non_conflicting(&direction)
     }
 
     #[must_use]
-    pub fn scale(&self, factor: f32) -> DeltaVector {
+    pub fn scale(&self, factor: f32) -> Self {
         let delta = self.delta.scale(factor);
-        DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
+        Self::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
     }
 }
 
@@ -353,7 +357,7 @@ pub struct ConsensusManager {
 
 impl ConsensusManager {
     #[must_use]
-    pub fn new(config: ConsensusConfig) -> Self {
+    pub const fn new(config: ConsensusConfig) -> Self {
         Self { config }
     }
 

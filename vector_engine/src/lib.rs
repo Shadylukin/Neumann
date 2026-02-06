@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Vector Engine - k-NN similarity search with HNSW support
 //!
 //! This crate provides embeddings storage and similarity search functionality

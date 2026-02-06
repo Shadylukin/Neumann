@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! REST API for vector operations.
 //!
 //! Provides Qdrant-style REST endpoints for vector point and collection operations.

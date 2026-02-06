@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Web UI for Neumann Server administration.
 //!
 //! Provides a modern, dark-mode admin interface for browsing and managing

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Durable blob storage with crash-safe chunk persistence.
 //!
 //! This module provides `DurableBlobStore`, which extends `BlobStore` with

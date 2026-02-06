@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Cryptographically secure transaction ID generation with time ordering.
 //!
 //! # Overview
@@ -431,5 +431,27 @@ mod tests {
                 count
             );
         }
+    }
+
+    #[test]
+    fn test_is_plausible_tx_id_wraparound() {
+        // Construct an ID where the ms component is far ahead of current time
+        // in the 16-bit field, triggering the wraparound branch
+        #[allow(clippy::cast_possible_truncation)]
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let current_ms_component = (now.wrapping_sub(CUSTOM_EPOCH_MS)) & 0xFFFF;
+
+        // Place the ID ms component just ahead of current, within window
+        let id_ms = (current_ms_component + 5) & 0xFFFF;
+        let tx_id = id_ms << 48;
+        assert!(is_plausible_tx_id(tx_id, 100));
+
+        // Place the ID ms component far ahead (near wraparound), outside window
+        let id_ms_far = (current_ms_component.wrapping_add(0x8000)) & 0xFFFF;
+        let tx_id_far = id_ms_far << 48;
+        assert!(!is_plausible_tx_id(tx_id_far, 100));
     }
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Binary Quantization for extreme vector compression.
 //!
 //! Binary quantization converts each dimension to a single bit, achieving

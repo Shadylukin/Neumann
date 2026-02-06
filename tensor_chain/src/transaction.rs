@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Transaction workspace for isolated execution and atomic commit.
 //!
 //! Provides ACID transaction semantics:
@@ -30,11 +30,14 @@ use crate::{
 /// Default embedding dimension for state snapshots.
 pub(crate) const DEFAULT_EMBEDDING_DIM: usize = 128;
 
-/// Apply a single transaction to the given TensorStore.
+/// Apply a single transaction to the given `TensorStore`.
 ///
 /// This is shared between the state machine (Raft log application) and
 /// local commit paths to ensure identical storage semantics.
-pub(crate) fn apply_transaction_to_store(store: &TensorStore, tx: &ChainTransaction) -> Result<()> {
+///
+/// # Errors
+/// Returns an error if the transaction cannot be applied to the store.
+pub fn apply_transaction_to_store(store: &TensorStore, tx: &ChainTransaction) -> Result<()> {
     use tensor_store::{ScalarValue, TensorData, TensorValue};
 
     match tx {
@@ -148,7 +151,7 @@ pub(crate) fn apply_transaction_to_store(store: &TensorStore, tx: &ChainTransact
 
 /// Embedding state for a transaction workspace.
 ///
-/// Wraps EmbeddingState to provide a mutable API for transaction lifecycle.
+/// Wraps `EmbeddingState` to provide a mutable API for transaction lifecycle.
 /// Uses type-safe state machine internally, eliminating Option ceremony.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkspaceEmbedding {
@@ -157,9 +160,9 @@ pub(crate) struct WorkspaceEmbedding {
 
 #[allow(dead_code)]
 impl WorkspaceEmbedding {
-    pub fn new(before: Vec<f32>) -> Self {
+    pub fn new(before: &[f32]) -> Self {
         Self {
-            state: EmbeddingState::from_dense(&before),
+            state: EmbeddingState::from_dense(before),
         }
     }
 
@@ -172,9 +175,9 @@ impl WorkspaceEmbedding {
     /// Set the after-state embedding and compute delta.
     ///
     /// If dimensions mismatch or delta already computed, this is a no-op.
-    pub fn set_after(&mut self, after: Vec<f32>) {
+    pub fn set_after(&mut self, after: &[f32]) {
         let current = self.state.clone();
-        if let Ok(computed) = current.compute_from_dense(&after) {
+        if let Ok(computed) = current.compute_from_dense(after) {
             self.state = computed;
         }
         // On error (dimension mismatch or already computed): keep original state
@@ -194,26 +197,26 @@ impl WorkspaceEmbedding {
     }
 
     pub fn after(&self) -> Option<Vec<f32>> {
-        self.state.after().map(|v| v.to_dense())
+        self.state.after().map(tensor_store::SparseVector::to_dense)
     }
 
     pub fn delta(&self) -> Option<Vec<f32>> {
-        self.state.delta().map(|v| v.to_dense())
+        self.state.delta().map(tensor_store::SparseVector::to_dense)
     }
 
     pub fn dimension(&self) -> usize {
         self.state.dimension()
     }
 
-    pub fn state(&self) -> &EmbeddingState {
+    pub const fn state(&self) -> &EmbeddingState {
         &self.state
     }
 
     /// Set the before-state embedding, resetting to Initial state.
     ///
     /// This is used when capturing the initial state after workspace creation.
-    pub fn set_before(&mut self, before: Vec<f32>) {
-        self.state = EmbeddingState::from_dense(&before);
+    pub fn set_before(&mut self, before: &[f32]) {
+        self.state = EmbeddingState::from_dense(before);
     }
 }
 
@@ -273,11 +276,16 @@ impl TransactionWorkspace {
     ///
     /// Captures the store's current state as a checkpoint. All reads within
     /// this transaction see the snapshot, providing repeatable-read isolation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store snapshot cannot be captured.
     pub fn begin(store: &TensorStore) -> Result<Self> {
         let checkpoint_bytes = store
             .snapshot_bytes()
             .map_err(|e| ChainError::WorkspaceError(e.to_string()))?;
 
+        #[allow(clippy::cast_possible_truncation)] // Epoch millis fits u64 for millennia
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -294,7 +302,8 @@ impl TransactionWorkspace {
         })
     }
 
-    pub fn id(&self) -> u64 {
+    #[must_use]
+    pub const fn id(&self) -> u64 {
         self.id
     }
 
@@ -302,7 +311,8 @@ impl TransactionWorkspace {
         *self.state.read()
     }
 
-    pub fn started_at(&self) -> u64 {
+    #[must_use]
+    pub const fn started_at(&self) -> u64 {
         self.started_at
     }
 
@@ -310,6 +320,11 @@ impl TransactionWorkspace {
         *self.state.read() == TransactionState::Active
     }
 
+    /// Add an operation to this transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not in the `Active` state.
     pub fn add_operation(&self, op: ChainTransaction) -> Result<()> {
         if !self.is_active() {
             return Err(ChainError::TransactionFailed(
@@ -339,15 +354,20 @@ impl TransactionWorkspace {
         self.operations.read().len()
     }
 
+    /// Transition this transaction to the `Committing` state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is not in the `Active` state.
     pub fn mark_committing(&self) -> Result<()> {
         let mut state = self.state.write();
         if *state != TransactionState::Active {
             return Err(ChainError::TransactionFailed(format!(
-                "cannot commit transaction in state {:?}",
-                *state
+                "cannot commit transaction in state {state:?}"
             )));
         }
         *state = TransactionState::Committing;
+        drop(state);
         Ok(())
     }
 
@@ -360,6 +380,11 @@ impl TransactionWorkspace {
     }
 
     /// Rollback this transaction, restoring the store to its original state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is already committed or if store
+    /// restoration fails.
     pub fn rollback(&self, store: &TensorStore) -> Result<()> {
         let mut state = self.state.write();
         if *state == TransactionState::Committed {
@@ -373,6 +398,7 @@ impl TransactionWorkspace {
             .map_err(|e| ChainError::WorkspaceError(e.to_string()))?;
 
         *state = TransactionState::RolledBack;
+        drop(state);
         Ok(())
     }
 
@@ -380,13 +406,13 @@ impl TransactionWorkspace {
         &self.checkpoint_bytes
     }
 
-    pub fn set_before_embedding(&self, embedding: Vec<f32>) {
+    pub fn set_before_embedding(&self, embedding: &[f32]) {
         self.embedding.write().set_before(embedding);
     }
 
     /// Compute the delta embedding from the current state.
     /// Call this at commit time after all operations are recorded.
-    pub fn compute_delta(&self, after_embedding: Vec<f32>) {
+    pub fn compute_delta(&self, after_embedding: &[f32]) {
         self.embedding.write().set_after(after_embedding);
     }
 
@@ -404,10 +430,9 @@ impl TransactionWorkspace {
         self.embedding.read().has_delta()
     }
 
-    /// Convert the delta embedding to a DeltaVector for conflict detection.
+    /// Convert the delta embedding to a `DeltaVector` for conflict detection.
     pub fn to_delta_vector(&self) -> DeltaVector {
-        let emb = self.embedding.read();
-        let delta = emb.delta_or_zero();
+        let delta = self.embedding.read().delta_or_zero();
         let affected = self.affected_keys.read().clone();
         DeltaVector::new(&delta, affected, self.id)
     }
@@ -439,7 +464,9 @@ pub struct TransactionDelta {
 }
 
 impl TransactionDelta {
+    #[must_use]
     pub fn from_workspace(workspace: &TransactionWorkspace) -> Self {
+        #[allow(clippy::cast_possible_truncation)] // Epoch millis fits u64 for millennia
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -456,6 +483,7 @@ impl TransactionDelta {
         }
     }
 
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             tx_id: 0,
@@ -468,25 +496,29 @@ impl TransactionDelta {
         }
     }
 
+    #[must_use]
     pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
         self.delta_embedding = embedding;
         self
     }
 
+    #[must_use]
     pub fn as_merge(mut self, parent_ids: Vec<u64>) -> Self {
         self.is_merge = true;
         self.merge_parents = parent_ids;
         self
     }
 
-    pub fn overlaps_with(&self, other: &TransactionDelta) -> bool {
+    #[must_use]
+    pub fn overlaps_with(&self, other: &Self) -> bool {
         self.affected_keys
             .intersection(&other.affected_keys)
             .next()
             .is_some()
     }
 
-    pub fn overlapping_keys(&self, other: &TransactionDelta) -> HashSet<String> {
+    #[must_use]
+    pub fn overlapping_keys(&self, other: &Self) -> HashSet<String> {
         self.affected_keys
             .intersection(&other.affected_keys)
             .cloned()
@@ -501,12 +533,18 @@ pub struct TransactionManager {
 }
 
 impl TransactionManager {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             active: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
+    /// Begin a new managed transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace cannot be created.
     pub fn begin(&self, store: &TensorStore) -> Result<Arc<TransactionWorkspace>> {
         let workspace = Arc::new(TransactionWorkspace::begin(store)?);
         self.active
@@ -552,47 +590,49 @@ impl TransactionManager {
             return Vec::new();
         }
 
+        #[allow(clippy::cast_possible_truncation)] // Epoch millis fits u64 for millennia
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let active = self.active.read();
         let mut candidates = Vec::new();
+        {
+            let active = self.active.read();
+            for (id, other) in active.iter() {
+                // Skip self
+                if *id == workspace.id() {
+                    continue;
+                }
 
-        for (id, other) in active.iter() {
-            // Skip self
-            if *id == workspace.id() {
-                continue;
-            }
+                // Skip non-active transactions
+                if !other.is_active() {
+                    continue;
+                }
 
-            // Skip non-active transactions
-            if !other.is_active() {
-                continue;
-            }
+                // Skip transactions outside the merge window
+                let elapsed = now.saturating_sub(other.started_at());
+                if elapsed > merge_window_ms {
+                    continue;
+                }
 
-            // Skip transactions outside the merge window
-            let elapsed = now.saturating_sub(other.started_at());
-            if elapsed > merge_window_ms {
-                continue;
-            }
+                let other_delta = other.to_delta_vector();
 
-            let other_delta = other.to_delta_vector();
+                // Skip zero-magnitude deltas
+                if other_delta.magnitude() == 0.0 {
+                    continue;
+                }
 
-            // Skip zero-magnitude deltas
-            if other_delta.magnitude() == 0.0 {
-                continue;
-            }
+                let similarity = target_delta.cosine_similarity(&other_delta).abs();
 
-            let similarity = target_delta.cosine_similarity(&other_delta).abs();
-
-            // Orthogonal if similarity is below threshold
-            if similarity < orthogonal_threshold {
-                candidates.push(MergeCandidate {
-                    workspace: other.clone(),
-                    delta: other_delta,
-                    similarity,
-                });
+                // Orthogonal if similarity is below threshold
+                if similarity < orthogonal_threshold {
+                    candidates.push(MergeCandidate {
+                        workspace: other.clone(),
+                        delta: other_delta,
+                        similarity,
+                    });
+                }
             }
         }
 
@@ -732,11 +772,11 @@ mod tests {
 
         // Set before embedding
         let before = vec![1.0, 0.0, 0.0, 0.0];
-        workspace.set_before_embedding(before.clone());
+        workspace.set_before_embedding(&before);
 
         // Set after embedding and compute delta
         let after = vec![1.0, 1.0, 0.0, 0.0];
-        workspace.compute_delta(after.clone());
+        workspace.compute_delta(&after);
 
         let embedding = workspace.embedding();
         assert_eq!(embedding.before(), before);
@@ -764,8 +804,8 @@ mod tests {
         // Set embeddings
         let before = vec![1.0, 0.0, 0.0, 0.0];
         let after = vec![1.0, 0.5, 0.0, 0.0];
-        workspace.set_before_embedding(before);
-        workspace.compute_delta(after);
+        workspace.set_before_embedding(&before);
+        workspace.compute_delta(&after);
 
         let delta_vector = workspace.to_delta_vector();
 
@@ -786,8 +826,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        ws1.set_before_embedding(vec![0.0; 4]);
-        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]); // Direction: X
+        ws1.set_before_embedding(&[0.0; 4]);
+        ws1.compute_delta(&[1.0, 0.0, 0.0, 0.0]); // Direction: X
 
         let ws2 = manager.begin(&store).unwrap();
         ws2.add_operation(ChainTransaction::Put {
@@ -795,8 +835,8 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        ws2.set_before_embedding(vec![0.0; 4]);
-        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Direction: Y (orthogonal to X)
+        ws2.set_before_embedding(&[0.0; 4]);
+        ws2.compute_delta(&[0.0, 1.0, 0.0, 0.0]); // Direction: Y (orthogonal to X)
 
         // Find merge candidates for ws1 (60s window to include all)
         let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
@@ -819,8 +859,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        ws1.set_before_embedding(vec![0.0; 4]);
-        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]); // Direction: X
+        ws1.set_before_embedding(&[0.0; 4]);
+        ws1.compute_delta(&[1.0, 0.0, 0.0, 0.0]); // Direction: X
 
         let ws2 = manager.begin(&store).unwrap();
         ws2.add_operation(ChainTransaction::Put {
@@ -828,8 +868,8 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        ws2.set_before_embedding(vec![0.0; 4]);
-        ws2.compute_delta(vec![0.9, 0.1, 0.0, 0.0]); // Similar to X (not orthogonal)
+        ws2.set_before_embedding(&[0.0; 4]);
+        ws2.compute_delta(&[0.9, 0.1, 0.0, 0.0]); // Similar to X (not orthogonal)
 
         // Find merge candidates for ws1 with strict threshold (60s window)
         let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
@@ -841,7 +881,7 @@ mod tests {
     #[test]
     fn test_workspace_embedding_new() {
         let before = vec![1.0, 2.0, 3.0];
-        let embedding = WorkspaceEmbedding::new(before.clone());
+        let embedding = WorkspaceEmbedding::new(&before);
 
         assert_eq!(embedding.before(), before);
         assert!(embedding.after().is_none());
@@ -858,24 +898,24 @@ mod tests {
 
     #[test]
     fn test_workspace_embedding_delta_or_zero() {
-        let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0, 3.0]);
+        let mut embedding = WorkspaceEmbedding::new(&[1.0, 2.0, 3.0]);
 
         // Before computing delta, should return zeros
         let delta = embedding.delta_or_zero();
         assert_eq!(delta, vec![0.0, 0.0, 0.0]);
 
         // After setting delta, should return actual delta
-        embedding.set_after(vec![2.0, 3.0, 4.0]);
+        embedding.set_after(&[2.0, 3.0, 4.0]);
         let delta = embedding.delta_or_zero();
         assert_eq!(delta, vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn test_workspace_embedding_set_after_mismatched_dimensions() {
-        let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0, 3.0]);
+        let mut embedding = WorkspaceEmbedding::new(&[1.0, 2.0, 3.0]);
 
         // Set after with different dimension - operation is a no-op
-        embedding.set_after(vec![1.0, 2.0]); // Only 2 dimensions vs 3
+        embedding.set_after(&[1.0, 2.0]); // Only 2 dimensions vs 3
 
         // With EmbeddingState, mismatched dimensions are silently ignored
         // The state remains in Initial, so after and delta are both None
@@ -888,10 +928,10 @@ mod tests {
 
     #[test]
     fn test_workspace_embedding_has_delta() {
-        let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0]);
+        let mut embedding = WorkspaceEmbedding::new(&[1.0, 2.0]);
         assert!(!embedding.has_delta());
 
-        embedding.set_after(vec![2.0, 3.0]);
+        embedding.set_after(&[2.0, 3.0]);
         assert!(embedding.has_delta());
     }
 
@@ -1096,8 +1136,8 @@ mod tests {
         assert!(delta.iter().all(|&x| x == 0.0));
 
         // After computing delta
-        workspace.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
-        workspace.compute_delta(vec![1.0, 2.0, 3.0, 4.0]);
+        workspace.set_before_embedding(&[0.0, 0.0, 0.0, 0.0]);
+        workspace.compute_delta(&[1.0, 2.0, 3.0, 4.0]);
 
         let delta = workspace.delta_embedding();
         assert_eq!(delta, vec![1.0, 2.0, 3.0, 4.0]);
@@ -1237,8 +1277,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        ws1.set_before_embedding(vec![0.0; 4]);
-        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+        ws1.set_before_embedding(&[0.0; 4]);
+        ws1.compute_delta(&[1.0, 0.0, 0.0, 0.0]);
 
         let ws2 = manager.begin(&store).unwrap();
         ws2.add_operation(ChainTransaction::Put {
@@ -1246,8 +1286,8 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        ws2.set_before_embedding(vec![0.0; 4]);
-        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]);
+        ws2.set_before_embedding(&[0.0; 4]);
+        ws2.compute_delta(&[0.0, 1.0, 0.0, 0.0]);
 
         // Mark ws2 as committed (inactive)
         ws2.mark_committed();
@@ -1268,13 +1308,13 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        ws1.set_before_embedding(vec![0.0; 4]);
-        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+        ws1.set_before_embedding(&[0.0; 4]);
+        ws1.compute_delta(&[1.0, 0.0, 0.0, 0.0]);
 
         let ws2 = manager.begin(&store).unwrap();
         // ws2 has zero delta (zero magnitude)
-        ws2.set_before_embedding(vec![0.0; 4]);
-        ws2.compute_delta(vec![0.0, 0.0, 0.0, 0.0]);
+        ws2.set_before_embedding(&[0.0; 4]);
+        ws2.compute_delta(&[0.0, 0.0, 0.0, 0.0]);
 
         // Should not find ws2 as a candidate
         let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
@@ -1293,8 +1333,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        ws1.set_before_embedding(vec![0.0; 4]);
-        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]); // X direction
+        ws1.set_before_embedding(&[0.0; 4]);
+        ws1.compute_delta(&[1.0, 0.0, 0.0, 0.0]); // X direction
 
         // Create orthogonal workspace (Y direction)
         let ws2 = manager.begin(&store).unwrap();
@@ -1303,8 +1343,8 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        ws2.set_before_embedding(vec![0.0; 4]);
-        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Perfectly orthogonal
+        ws2.set_before_embedding(&[0.0; 4]);
+        ws2.compute_delta(&[0.0, 1.0, 0.0, 0.0]); // Perfectly orthogonal
 
         // Create almost orthogonal workspace
         let ws3 = manager.begin(&store).unwrap();
@@ -1313,8 +1353,8 @@ mod tests {
             data: vec![3],
         })
         .unwrap();
-        ws3.set_before_embedding(vec![0.0; 4]);
-        ws3.compute_delta(vec![0.05, 0.99, 0.0, 0.0]); // Almost orthogonal
+        ws3.set_before_embedding(&[0.0; 4]);
+        ws3.compute_delta(&[0.05, 0.99, 0.0, 0.0]); // Almost orthogonal
 
         let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
 
@@ -1335,8 +1375,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        ws1.set_before_embedding(vec![0.0; 4]);
-        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+        ws1.set_before_embedding(&[0.0; 4]);
+        ws1.compute_delta(&[1.0, 0.0, 0.0, 0.0]);
 
         let ws2 = manager.begin(&store).unwrap();
         ws2.add_operation(ChainTransaction::Put {
@@ -1344,8 +1384,8 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        ws2.set_before_embedding(vec![0.0; 4]);
-        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Orthogonal
+        ws2.set_before_embedding(&[0.0; 4]);
+        ws2.compute_delta(&[0.0, 1.0, 0.0, 0.0]); // Orthogonal
 
         // With a large window (60s), ws2 should be included
         // since both transactions were just created (elapsed ~0ms)

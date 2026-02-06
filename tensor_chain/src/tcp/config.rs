@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TCP transport configuration.
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -11,14 +11,14 @@ use crate::block::NodeId;
 /// Security mode for TLS configuration.
 ///
 /// Controls the level of TLS enforcement:
-/// - `Strict`: Production-ready. Requires TLS, mTLS, and NodeId verification.
+/// - `Strict`: Production-ready. Requires TLS, mTLS, and `NodeId` verification.
 /// - `Permissive`: TLS required but mTLS is optional.
 /// - `Development`: No TLS required (logs warning). For local testing only.
 /// - `Legacy`: Current behavior for migration (TLS optional).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SecurityMode {
-    /// Production-ready: TLS + mTLS + NodeId verification required.
+    /// Production-ready: TLS + mTLS + `NodeId` verification required.
     #[default]
     Strict,
     /// TLS required but mTLS optional.
@@ -30,19 +30,23 @@ pub enum SecurityMode {
 }
 
 impl SecurityMode {
-    pub fn requires_tls(&self) -> bool {
+    #[must_use]
+    pub const fn requires_tls(&self) -> bool {
         matches!(self, Self::Strict | Self::Permissive)
     }
 
-    pub fn requires_mtls(&self) -> bool {
+    #[must_use]
+    pub const fn requires_mtls(&self) -> bool {
         matches!(self, Self::Strict)
     }
 
-    pub fn requires_node_id_verification(&self) -> bool {
+    #[must_use]
+    pub const fn requires_node_id_verification(&self) -> bool {
         matches!(self, Self::Strict)
     }
 
-    pub fn should_warn(&self) -> bool {
+    #[must_use]
+    pub const fn should_warn(&self) -> bool {
         matches!(self, Self::Development | Self::Legacy)
     }
 }
@@ -57,7 +61,7 @@ pub struct SecurityConfig {
     pub warn_on_insecure: bool,
 }
 
-fn default_warn_on_insecure() -> bool {
+const fn default_warn_on_insecure() -> bool {
     true
 }
 
@@ -71,35 +75,40 @@ impl Default for SecurityConfig {
 }
 
 impl SecurityConfig {
-    pub fn strict() -> Self {
+    #[must_use]
+    pub const fn strict() -> Self {
         Self {
             mode: SecurityMode::Strict,
             warn_on_insecure: true,
         }
     }
 
-    pub fn permissive() -> Self {
+    #[must_use]
+    pub const fn permissive() -> Self {
         Self {
             mode: SecurityMode::Permissive,
             warn_on_insecure: true,
         }
     }
 
-    pub fn development() -> Self {
+    #[must_use]
+    pub const fn development() -> Self {
         Self {
             mode: SecurityMode::Development,
             warn_on_insecure: true,
         }
     }
 
-    pub fn legacy() -> Self {
+    #[must_use]
+    pub const fn legacy() -> Self {
         Self {
             mode: SecurityMode::Legacy,
             warn_on_insecure: true,
         }
     }
 
-    pub fn without_warnings(mut self) -> Self {
+    #[must_use]
+    pub const fn without_warnings(mut self) -> Self {
         self.warn_on_insecure = false;
         self
     }
@@ -172,28 +181,28 @@ pub struct TcpTransportConfig {
     pub security: SecurityConfig,
 }
 
-fn default_pool_size() -> usize {
+const fn default_pool_size() -> usize {
     2
 }
-fn default_connect_timeout() -> u64 {
+const fn default_connect_timeout() -> u64 {
     5000
 }
-fn default_io_timeout() -> u64 {
+const fn default_io_timeout() -> u64 {
     30000
 }
-fn default_max_message_size() -> usize {
+const fn default_max_message_size() -> usize {
     16 * 1024 * 1024
 } // 16 MB
-fn default_keepalive() -> bool {
+const fn default_keepalive() -> bool {
     true
 }
-fn default_keepalive_interval() -> u64 {
+const fn default_keepalive_interval() -> u64 {
     30
 }
-fn default_max_pending() -> usize {
+const fn default_max_pending() -> usize {
     1000
 }
-fn default_recv_buffer() -> usize {
+const fn default_recv_buffer() -> usize {
     1000
 }
 
@@ -229,85 +238,106 @@ impl TcpTransportConfig {
         }
     }
 
-    pub fn with_pool_size(mut self, size: usize) -> Self {
+    #[must_use]
+    pub const fn with_pool_size(mut self, size: usize) -> Self {
         self.pool_size = size;
         self
     }
 
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout_ms = timeout.as_millis() as u64;
+    #[must_use]
+    pub const fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        #[allow(clippy::cast_possible_truncation)]
+        let ms = timeout.as_millis() as u64;
+        self.connect_timeout_ms = ms;
         self
     }
 
-    pub fn with_io_timeout(mut self, timeout: Duration) -> Self {
-        self.io_timeout_ms = timeout.as_millis() as u64;
+    #[must_use]
+    pub const fn with_io_timeout(mut self, timeout: Duration) -> Self {
+        #[allow(clippy::cast_possible_truncation)]
+        let ms = timeout.as_millis() as u64;
+        self.io_timeout_ms = ms;
         self
     }
 
-    pub fn with_max_message_size(mut self, size: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_message_size(mut self, size: usize) -> Self {
         self.max_message_size = size;
         self
     }
 
-    pub fn with_reconnect(mut self, config: ReconnectConfig) -> Self {
+    #[must_use]
+    pub const fn with_reconnect(mut self, config: ReconnectConfig) -> Self {
         self.reconnect = config;
         self
     }
 
-    pub fn with_keepalive(mut self, enabled: bool) -> Self {
+    #[must_use]
+    pub const fn with_keepalive(mut self, enabled: bool) -> Self {
         self.keepalive = enabled;
         self
     }
 
-    pub fn with_keepalive_interval_secs(mut self, secs: u64) -> Self {
+    #[must_use]
+    pub const fn with_keepalive_interval_secs(mut self, secs: u64) -> Self {
         self.keepalive_interval_secs = secs;
         self
     }
 
+    #[must_use]
     pub fn with_tls(mut self, config: TlsConfig) -> Self {
         self.tls = Some(config);
         self
     }
 
-    pub fn with_require_tls(mut self, require: bool) -> Self {
+    #[must_use]
+    pub const fn with_require_tls(mut self, require: bool) -> Self {
         self.require_tls = require;
         self
     }
 
-    /// Returns true if TLS is required based on both explicit require_tls and security mode.
-    pub fn effective_require_tls(&self) -> bool {
+    /// Returns true if TLS is required based on both explicit `require_tls` and security mode.
+    #[must_use]
+    pub const fn effective_require_tls(&self) -> bool {
         self.security.mode.requires_tls() || self.require_tls
     }
 
-    pub fn connect_timeout(&self) -> Duration {
+    #[must_use]
+    pub const fn connect_timeout(&self) -> Duration {
         Duration::from_millis(self.connect_timeout_ms)
     }
 
-    pub fn io_timeout(&self) -> Duration {
+    #[must_use]
+    pub const fn io_timeout(&self) -> Duration {
         Duration::from_millis(self.io_timeout_ms)
     }
 
-    pub fn with_compression(mut self, config: CompressionConfig) -> Self {
+    #[must_use]
+    pub const fn with_compression(mut self, config: CompressionConfig) -> Self {
         self.compression = config;
         self
     }
 
-    pub fn compression_disabled(mut self) -> Self {
+    #[must_use]
+    pub const fn compression_disabled(mut self) -> Self {
         self.compression.enabled = false;
         self
     }
 
-    pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
+    #[must_use]
+    pub const fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
         self.rate_limit = config;
         self
     }
 
-    pub fn rate_limit_disabled(mut self) -> Self {
+    #[must_use]
+    pub const fn rate_limit_disabled(mut self) -> Self {
         self.rate_limit.enabled = false;
         self
     }
 
-    pub fn with_security(mut self, config: SecurityConfig) -> Self {
+    #[must_use]
+    pub const fn with_security(mut self, config: SecurityConfig) -> Self {
         // Automatically adjust require_tls based on security mode
         if !config.mode.requires_tls() {
             self.require_tls = false;
@@ -316,7 +346,8 @@ impl TcpTransportConfig {
         self
     }
 
-    pub fn with_security_mode(mut self, mode: SecurityMode) -> Self {
+    #[must_use]
+    pub const fn with_security_mode(mut self, mode: SecurityMode) -> Self {
         self.security.mode = mode;
         // Automatically adjust require_tls based on security mode
         if !mode.requires_tls() {
@@ -328,6 +359,10 @@ impl TcpTransportConfig {
     /// Validate security configuration against current TLS settings.
     ///
     /// Returns an error if the security mode requires TLS but TLS is not configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation fails.
     pub fn validate_security(&self) -> TcpResult<()> {
         use super::error::TcpError;
 
@@ -362,7 +397,7 @@ impl TcpTransportConfig {
             }
         }
 
-        // Check NodeId verification requirements
+        // Check `NodeId` verification requirements
         if mode.requires_node_id_verification() {
             if let Some(ref tls) = self.tls {
                 if tls.node_id_verification == NodeIdVerification::None {
@@ -378,6 +413,7 @@ impl TcpTransportConfig {
     }
 
     /// Check if the current configuration is secure for production use.
+    #[must_use]
     pub fn is_secure(&self) -> bool {
         self.validate_security().is_ok()
             && matches!(
@@ -415,19 +451,19 @@ pub struct ReconnectConfig {
     pub jitter: f64,
 }
 
-fn default_reconnect_enabled() -> bool {
+const fn default_reconnect_enabled() -> bool {
     true
 }
-fn default_initial_backoff() -> u64 {
+const fn default_initial_backoff() -> u64 {
     100
 }
-fn default_max_backoff() -> u64 {
+const fn default_max_backoff() -> u64 {
     30000
 }
-fn default_multiplier() -> f64 {
+const fn default_multiplier() -> f64 {
     2.0
 }
-fn default_jitter() -> f64 {
+const fn default_jitter() -> f64 {
     0.1
 }
 
@@ -445,39 +481,45 @@ impl Default for ReconnectConfig {
 }
 
 impl ReconnectConfig {
+    #[must_use]
     pub fn backoff_for_attempt(&self, attempt: usize) -> Duration {
-        let base = self.initial_backoff_ms as f64 * self.multiplier.powi(attempt as i32);
-        let capped = base.min(self.max_backoff_ms as f64);
+        #[allow(clippy::cast_precision_loss)]
+        let base_ms = self.initial_backoff_ms as f64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let exp = attempt as i32;
+        let base = base_ms * self.multiplier.powi(exp);
+        #[allow(clippy::cast_precision_loss)]
+        let max_ms = self.max_backoff_ms as f64;
+        let capped = base.min(max_ms);
 
         // Apply jitter
         let jitter_range = capped * self.jitter;
-        let jitter_offset = rand::random::<f64>() * jitter_range * 2.0 - jitter_range;
+        let jitter_offset = rand::random::<f64>().mul_add(jitter_range * 2.0, -jitter_range);
         let final_ms = (capped + jitter_offset).max(0.0);
 
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Duration::from_millis(final_ms as u64)
     }
 
+    #[must_use]
     pub fn should_retry(&self, attempt: usize) -> bool {
         if !self.enabled {
             return false;
         }
-        match self.max_attempts {
-            Some(max) => attempt < max,
-            None => true,
-        }
+        self.max_attempts.map_or(true, |max| attempt < max)
     }
 }
 
-/// How to verify that a peer's NodeId matches their TLS certificate.
+/// How to verify that a peer's `NodeId` matches their TLS certificate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NodeIdVerification {
-    /// No verification - NodeId is trusted from handshake (testing only).
+    /// No verification - `NodeId` is trusted from handshake (testing only).
     #[default]
     None,
-    /// NodeId must match certificate Common Name (CN).
+    /// `NodeId` must match certificate Common Name (CN).
     CommonName,
-    /// NodeId must match a Subject Alternative Name (SAN) DNS entry.
+    /// `NodeId` must match a Subject Alternative Name (SAN) DNS entry.
     SubjectAltName,
 }
 
@@ -503,7 +545,7 @@ pub struct TlsConfig {
     #[serde(default)]
     pub insecure_skip_verify: bool,
 
-    /// How to verify NodeId against TLS certificate.
+    /// How to verify `NodeId` against TLS certificate.
     #[serde(default)]
     pub node_id_verification: NodeIdVerification,
 }
@@ -520,17 +562,20 @@ impl TlsConfig {
         }
     }
 
+    #[must_use]
     pub fn with_ca_cert(mut self, path: impl Into<PathBuf>) -> Self {
         self.ca_cert_path = Some(path.into());
         self
     }
 
-    pub fn with_client_auth(mut self) -> Self {
+    #[must_use]
+    pub const fn with_client_auth(mut self) -> Self {
         self.require_client_auth = true;
         self
     }
 
-    pub fn with_node_id_verification(mut self, mode: NodeIdVerification) -> Self {
+    #[must_use]
+    pub const fn with_node_id_verification(mut self, mode: NodeIdVerification) -> Self {
         self.node_id_verification = mode;
         self
     }
@@ -539,7 +584,7 @@ impl TlsConfig {
     ///
     /// This constructor enforces:
     /// - Mutual TLS (client certificate required)
-    /// - NodeId verification via Common Name
+    /// - `NodeId` verification via Common Name
     /// - Certificate verification (no insecure skip)
     pub fn new_secure(
         cert_path: impl Into<PathBuf>,
@@ -560,7 +605,8 @@ impl TlsConfig {
     /// SECURITY: In release builds, this ALWAYS returns true regardless of
     /// the `insecure_skip_verify` field, preventing TLS bypass in production.
     #[inline]
-    pub fn should_verify(&self) -> bool {
+    #[must_use]
+    pub const fn should_verify(&self) -> bool {
         #[cfg(any(test, debug_assertions))]
         {
             !self.insecure_skip_verify
@@ -794,7 +840,7 @@ mod tests {
     #[test]
     fn test_config_debug() {
         let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap());
-        let debug = format!("{:?}", config);
+        let debug = format!("{config:?}");
         assert!(debug.contains("TcpTransportConfig"));
         assert!(debug.contains("node1"));
     }
@@ -812,14 +858,14 @@ mod tests {
     #[test]
     fn test_reconnect_debug() {
         let config = ReconnectConfig::default();
-        let debug = format!("{:?}", config);
+        let debug = format!("{config:?}");
         assert!(debug.contains("ReconnectConfig"));
     }
 
     #[test]
     fn test_tls_debug() {
         let tls = TlsConfig::new("/cert.pem", "/key.pem");
-        let debug = format!("{:?}", tls);
+        let debug = format!("{tls:?}");
         assert!(debug.contains("TlsConfig"));
     }
 
@@ -939,9 +985,9 @@ mod tests {
         let cn = NodeIdVerification::CommonName;
         let san = NodeIdVerification::SubjectAltName;
 
-        assert_eq!(format!("{:?}", none), "None");
-        assert_eq!(format!("{:?}", cn), "CommonName");
-        assert_eq!(format!("{:?}", san), "SubjectAltName");
+        assert_eq!(format!("{none:?}"), "None");
+        assert_eq!(format!("{cn:?}"), "CommonName");
+        assert_eq!(format!("{san:?}"), "SubjectAltName");
     }
 
     #[test]

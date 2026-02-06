@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 use sha2::{Digest, Sha256};
 
 /// A content-addressed chunk of data.

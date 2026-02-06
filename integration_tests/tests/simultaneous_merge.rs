@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for simultaneous partition merge initiation.
 //!
 //! Validates that when both sides of a partition detect healing and attempt

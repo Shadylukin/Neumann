@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Atomic file operations for crash-safe writes.
 //!
 //! Provides utilities for atomic file creation and truncation that survive

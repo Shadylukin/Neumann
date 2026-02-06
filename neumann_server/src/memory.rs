@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Memory budget tracking for server resource management.
 //!
 //! Provides atomic memory usage tracking with load shedding support

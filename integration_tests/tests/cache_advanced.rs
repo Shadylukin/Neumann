@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Advanced cache integration tests.
 //!
 //! Tests TTL expiration, semantic cache, embedding cache, and eviction.

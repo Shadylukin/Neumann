@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Dense embedding storage with chunked allocation.
 //!
 //! `EmbeddingSlab` stores dense f32 embeddings in contiguous chunks to avoid

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Benchmarks for the web admin UI performance.
 // criterion_group! and criterion_main! macros generate items without documentation.
 // This allow is required because we cannot add doc comments to macro-generated code.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Graph engine TOCTOU (Time-Of-Check-To-Time-Of-Use) stress tests.
 //!
 //! Tests concurrent check-then-modify patterns to verify no lost updates

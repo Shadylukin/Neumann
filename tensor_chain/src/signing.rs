@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Ed25519 identity management with geometric embedding derivation.
 //!
 //! # Overview
@@ -150,7 +150,7 @@
 //!
 //! - [`Identity`] implements `ZeroizeOnDrop` to clear private key memory
 //! - The `Debug` impl redacts the private key to prevent accidental logging
-//! - ed25519_dalek handles internal zeroization of the signing key
+//! - `ed25519_dalek` handles internal zeroization of the signing key
 //!
 //! ## Replay Protection
 //!
@@ -187,7 +187,7 @@ use zeroize::ZeroizeOnDrop;
 
 use crate::{gossip::GossipMessage, ChainError, NodeId, Result};
 
-/// Domain separator for NodeId derivation.
+/// Domain separator for `NodeId` derivation.
 const NODE_ID_DOMAIN: &[u8] = b"neumann_node_id_v1";
 
 /// Domain separator for embedding derivation.
@@ -202,41 +202,51 @@ pub struct Identity {
 }
 
 impl Identity {
+    #[must_use]
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
         Self { signing_key }
     }
 
+    /// # Errors
+    /// Returns an error if the bytes don't form a valid signing key (currently infallible).
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let signing_key = SigningKey::from_bytes(bytes);
         Ok(Self { signing_key })
     }
 
+    #[must_use]
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.signing_key.verifying_key().to_bytes()
     }
 
+    #[must_use]
     pub fn verifying_key(&self) -> PublicIdentity {
         PublicIdentity {
             verifying_key: self.signing_key.verifying_key(),
         }
     }
 
+    #[must_use]
     pub fn node_id(&self) -> NodeId {
         self.verifying_key().to_node_id()
     }
 
+    #[must_use]
     pub fn to_embedding(&self) -> SparseVector {
         self.verifying_key().to_embedding()
     }
 
+    #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         let sig = self.signing_key.sign(message);
         sig.to_bytes().to_vec()
     }
 
-    /// Sign a message and return a SignedMessage envelope with replay protection.
+    /// Sign a message and return a `SignedMessage` envelope with replay protection.
+    #[must_use]
     pub fn sign_message(&self, payload: &[u8], sequence: u64) -> SignedMessage {
+        #[allow(clippy::cast_possible_truncation)]
         let timestamp_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -278,17 +288,21 @@ pub struct PublicIdentity {
 }
 
 impl PublicIdentity {
+    /// # Errors
+    /// Returns an error if the bytes don't form a valid Ed25519 public key.
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let verifying_key = VerifyingKey::from_bytes(bytes)
             .map_err(|e| ChainError::CryptoError(format!("Invalid public key: {e}")))?;
         Ok(Self { verifying_key })
     }
 
+    #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
     }
 
     /// Uses BLAKE2b-128 for a compact but collision-resistant ID.
+    #[must_use]
     pub fn to_node_id(&self) -> NodeId {
         let mut hasher = Blake2b::<U16>::new();
         hasher.update(NODE_ID_DOMAIN);
@@ -299,6 +313,7 @@ impl PublicIdentity {
 
     /// BLAKE2b-512 for speed + security. 64 bytes -> 16 f32 coordinates.
     /// Domain separation prevents cross-protocol attacks. Normalization to [-1,1].
+    #[must_use]
     pub fn to_embedding(&self) -> SparseVector {
         let mut hasher = Blake2b::<U64>::new();
         hasher.update(EMBEDDING_DOMAIN);
@@ -310,13 +325,17 @@ impl PublicIdentity {
             .chunks(4)
             .map(|c| {
                 let bits = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                (bits as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
+                #[allow(clippy::cast_possible_truncation)]
+                let val = (f64::from(bits) / f64::from(u32::MAX)).mul_add(2.0, -1.0) as f32;
+                val
             })
             .collect();
 
         SparseVector::from_dense(&coords)
     }
 
+    /// # Errors
+    /// Returns an error if the signature is invalid or has the wrong length.
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<()> {
         if signature.len() != 64 {
             return Err(ChainError::CryptoError(format!(
@@ -354,7 +373,7 @@ pub struct SequenceTrackerConfig {
     pub max_age_ms: u64,
     /// Maximum number of tracked senders (default: 10,000).
     pub max_entries: usize,
-    /// Cleanup is triggered every N calls to check_and_record (default: 100).
+    /// Cleanup is triggered every N calls to `check_and_record` (default: 100).
     pub cleanup_interval: usize,
 }
 
@@ -369,16 +388,19 @@ impl Default for SequenceTrackerConfig {
 }
 
 impl SequenceTrackerConfig {
+    #[must_use]
     pub fn with_max_age_ms(mut self, max_age_ms: u64) -> Self {
         self.max_age_ms = max_age_ms;
         self
     }
 
+    #[must_use]
     pub fn with_max_entries(mut self, max_entries: usize) -> Self {
         self.max_entries = max_entries;
         self
     }
 
+    #[must_use]
     pub fn with_cleanup_interval(mut self, cleanup_interval: usize) -> Self {
         self.cleanup_interval = cleanup_interval;
         self
@@ -407,14 +429,17 @@ impl Default for SequenceTracker {
 
 impl SequenceTracker {
     /// Create a new sequence tracker with default config (5 min max age, 10k max entries).
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(SequenceTrackerConfig::default())
     }
 
+    #[must_use]
     pub fn with_max_age_ms(max_age_ms: u64) -> Self {
         Self::with_config(SequenceTrackerConfig::default().with_max_age_ms(max_age_ms))
     }
 
+    #[must_use]
     pub fn with_config(config: SequenceTrackerConfig) -> Self {
         Self {
             sequences: dashmap::DashMap::new(),
@@ -424,7 +449,9 @@ impl SequenceTracker {
     }
 
     /// Check if a message is valid (not a replay) and record its sequence.
-    /// Returns Ok(()) if valid, Err if replay detected or timestamp too old.
+    ///
+    /// # Errors
+    /// Returns an error if replay detected, timestamp too old/future, or tracker at capacity.
     pub fn check_and_record(
         &self,
         sender: &NodeId,
@@ -438,6 +465,7 @@ impl SequenceTracker {
         }
 
         // Check timestamp freshness
+        #[allow(clippy::cast_possible_truncation)]
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -483,13 +511,16 @@ impl SequenceTracker {
         Ok(())
     }
 
-    /// Remove entries older than max_age_ms.
+    /// Remove entries older than `max_age_ms`.
     fn cleanup_stale_entries(&self) {
-        let cutoff = Instant::now() - Duration::from_millis(self.config.max_age_ms);
-        self.sequences
-            .retain(|_, (_, last_seen)| *last_seen > cutoff);
+        let cutoff = Instant::now().checked_sub(Duration::from_millis(self.config.max_age_ms));
+        if let Some(cutoff) = cutoff {
+            self.sequences
+                .retain(|_, (_, last_seen)| *last_seen > cutoff);
+        }
     }
 
+    #[must_use]
     pub fn last_sequence(&self, sender: &NodeId) -> Option<u64> {
         self.sequences.get(sender).map(|v| v.0)
     }
@@ -500,11 +531,13 @@ impl SequenceTracker {
     }
 
     /// Returns the number of tracked senders.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.sequences.len()
     }
 
     /// Returns true if no senders are tracked.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sequences.is_empty()
     }
@@ -513,7 +546,7 @@ impl SequenceTracker {
 /// A signed message envelope with identity binding and replay protection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedMessage {
-    /// Sender's NodeId (derived from public key).
+    /// Sender's `NodeId` (derived from public key).
     pub sender: NodeId,
     /// Sender's public key.
     pub public_key: [u8; 32],
@@ -540,6 +573,7 @@ impl Default for ValidatorRegistry {
 }
 
 impl ValidatorRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             validators: dashmap::DashMap::new(),
@@ -552,6 +586,8 @@ impl ValidatorRegistry {
         self.validators.insert(node_id, public);
     }
 
+    /// # Errors
+    /// Returns an error if the public key bytes are invalid.
     pub fn register_public_key(&self, public_key: &[u8; 32]) -> Result<NodeId> {
         let public = PublicIdentity::from_bytes(public_key)?;
         let node_id = public.to_node_id();
@@ -559,26 +595,32 @@ impl ValidatorRegistry {
         Ok(node_id)
     }
 
+    #[must_use]
     pub fn get(&self, node_id: &str) -> Option<PublicIdentity> {
         self.validators.get(node_id).map(|v| v.clone())
     }
 
+    #[must_use]
     pub fn contains(&self, node_id: &str) -> bool {
         self.validators.contains_key(node_id)
     }
 
+    #[must_use]
     pub fn remove(&self, node_id: &str) -> Option<PublicIdentity> {
         self.validators.remove(node_id).map(|(_, v)| v)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.validators.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.validators.is_empty()
     }
 
+    #[must_use]
     pub fn node_ids(&self) -> Vec<NodeId> {
         self.validators.iter().map(|v| v.key().clone()).collect()
     }
@@ -587,7 +629,10 @@ impl ValidatorRegistry {
 impl SignedMessage {
     /// Verify the signature and check identity binding.
     /// Returns the payload if valid.
-    /// Note: Does not check replay protection - use verify_with_tracker for that.
+    /// Note: Does not check replay protection - use `verify_with_tracker` for that.
+    ///
+    /// # Errors
+    /// Returns an error if the signature is invalid or `NodeId` doesn't match the public key.
     pub fn verify(&self) -> Result<&[u8]> {
         // 1. Reconstruct public identity
         let identity = PublicIdentity::from_bytes(&self.public_key)?;
@@ -615,7 +660,9 @@ impl SignedMessage {
     }
 
     /// Verify the signature, check identity binding, and check replay protection.
-    /// Returns the payload if valid and not a replay.
+    ///
+    /// # Errors
+    /// Returns an error if the signature is invalid, identity doesn't match, or replay detected.
     pub fn verify_with_tracker(&self, tracker: &SequenceTracker) -> Result<&[u8]> {
         // First verify the signature
         self.verify()?;
@@ -626,6 +673,8 @@ impl SignedMessage {
         Ok(&self.payload)
     }
 
+    /// # Errors
+    /// Returns an error if the public key is invalid or `NodeId` doesn't match.
     pub fn sender_embedding(&self) -> Result<SparseVector> {
         let identity = PublicIdentity::from_bytes(&self.public_key)?;
 
@@ -645,12 +694,12 @@ impl SignedMessage {
 ///
 /// Wraps a `GossipMessage` in a `SignedMessage` envelope to provide:
 /// - Authentication via Ed25519 signature
-/// - Identity binding (NodeId derived from public key)
+/// - Identity binding (`NodeId` derived from public key)
 /// - Replay protection via monotonic sequence numbers
 /// - Freshness via timestamp checking
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedGossipMessage {
-    /// The signed message envelope containing the serialized GossipMessage.
+    /// The signed message envelope containing the serialized `GossipMessage`.
     pub envelope: SignedMessage,
 }
 
@@ -658,6 +707,9 @@ impl SignedGossipMessage {
     /// Create a new signed gossip message.
     ///
     /// Serializes the gossip message and signs it with the given identity.
+    ///
+    /// # Errors
+    /// Returns an error if the gossip message fails to serialize.
     pub fn new(identity: &Identity, msg: &GossipMessage, sequence: u64) -> Result<Self> {
         let payload = bitcode::serialize(msg).map_err(|e| {
             ChainError::SerializationError(format!("failed to serialize gossip: {e}"))
@@ -670,6 +722,9 @@ impl SignedGossipMessage {
     ///
     /// Returns the deserialized `GossipMessage` if valid.
     /// Does not check replay protection - use `verify_with_tracker` for that.
+    ///
+    /// # Errors
+    /// Returns an error if sender is unknown, signature is invalid, or deserialization fails.
     pub fn verify(&self, registry: &ValidatorRegistry) -> Result<GossipMessage> {
         // Check that the sender is a known validator
         if !registry.contains(&self.envelope.sender) {
@@ -691,6 +746,9 @@ impl SignedGossipMessage {
     /// Verify the signature, identity binding, and replay protection.
     ///
     /// Returns the deserialized `GossipMessage` if valid and not a replay.
+    ///
+    /// # Errors
+    /// Returns an error if verification fails or replay detected.
     pub fn verify_with_tracker(
         &self,
         registry: &ValidatorRegistry,
@@ -713,17 +771,20 @@ impl SignedGossipMessage {
         })
     }
 
-    /// Get the sender's NodeId.
+    /// Get the sender's `NodeId`.
+    #[must_use]
     pub fn sender(&self) -> &NodeId {
         &self.envelope.sender
     }
 
     /// Get the sequence number.
+    #[must_use]
     pub fn sequence(&self) -> u64 {
         self.envelope.sequence
     }
 
     /// Get the timestamp in milliseconds.
+    #[must_use]
     pub fn timestamp_ms(&self) -> u64 {
         self.envelope.timestamp_ms
     }

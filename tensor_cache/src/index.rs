@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! HNSW index wrapper for cache semantic search.
 //!
 //! Supports both dense and sparse embeddings for memory-efficient caching.

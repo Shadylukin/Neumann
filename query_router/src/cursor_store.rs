@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Thread-safe cursor storage with TTL-based expiration.
 //!
 //! This module provides a cursor store for managing pagination cursors

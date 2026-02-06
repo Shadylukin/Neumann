@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Cursor state management for paginated query results.
 //!
 //! This module provides cursor-based pagination support, enabling efficient

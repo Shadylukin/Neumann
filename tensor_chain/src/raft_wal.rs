@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Write-Ahead Log (WAL) for Raft consensus.
 //!
 //! Ensures durability of Raft state transitions by persisting changes to disk
@@ -7,7 +7,7 @@
 //!
 //! ## Critical Invariants
 //!
-//! 1. Term and voted_for MUST be persisted before any state change
+//! 1. Term and `voted_for` MUST be persisted before any state change
 //! 2. All writes MUST be fsynced before returning
 //! 3. Recovery MUST restore the exact state from the WAL
 //!
@@ -53,13 +53,14 @@ impl From<WalError> for io::Error {
     fn from(e: WalError) -> Self {
         match e {
             WalError::Io(io_err) => io_err,
-            other => io::Error::other(other.to_string()),
+            other => Self::other(other.to_string()),
         }
     }
 }
 
 /// Configuration for WAL behavior.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct WalConfig {
     /// Enable CRC32 checksums for new entries (default: true).
     pub enable_checksums: bool,
@@ -135,11 +136,19 @@ pub struct RaftWal {
 
 impl RaftWal {
     /// Open or create a WAL file with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or created.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_with_config(path, WalConfig::default())
     }
 
     /// Open or create a WAL file with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened, created, or read for entry counting.
     pub fn open_with_config(path: impl AsRef<Path>, config: WalConfig) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -189,14 +198,8 @@ impl RaftWal {
             }
 
             // Detect format on first entry, then use consistently
-            let is_v2 = match detected_format {
-                Some(v2) => v2,
-                None => {
-                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
-                    detected_format = Some(v2);
-                    v2
-                },
-            };
+            let is_v2 = *detected_format
+                .get_or_insert_with(|| !Self::looks_like_bincode_start(checksum_buf));
 
             if is_v2 {
                 // V2: skip the remaining payload bytes
@@ -226,7 +229,7 @@ impl RaftWal {
 
     /// Check if bytes look like a bitcode discriminant start (legacy V1 format detection).
     /// After migration to bitcode, always returns false since V2 format is assumed.
-    fn looks_like_bincode_start(_bytes: &[u8; 4]) -> bool {
+    const fn looks_like_bincode_start(_bytes: [u8; 4]) -> bool {
         // After migrating to bitcode, we always assume V2 format.
         // Old bincode V1 files are not readable with bitcode anyway.
         false
@@ -236,7 +239,7 @@ impl RaftWal {
     fn available_disk_space(&self) -> io::Result<u64> {
         #[cfg(unix)]
         {
-            let parent = self.path.parent().unwrap_or(Path::new("."));
+            let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
             let stat = nix_statvfs(parent)?;
             Ok(stat.available_bytes)
         }
@@ -264,7 +267,7 @@ impl RaftWal {
     }
 
     /// Check if WAL size exceeds the limit.
-    fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
+    const fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
         let new_size = self.current_size + additional_size;
         if new_size > self.config.max_size_bytes {
             return Err(WalError::SizeLimitExceeded {
@@ -278,10 +281,14 @@ impl RaftWal {
     /// Get the path for a rotated WAL file.
     fn rotated_path(&self, index: usize) -> PathBuf {
         let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
-        self.path.with_file_name(format!("{}.{}", file_name, index))
+        self.path.with_file_name(format!("{file_name}.{index}"))
     }
 
     /// Rotate the WAL file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing, renaming, or creating the new file fails.
     pub fn rotate(&mut self) -> Result<(), WalError> {
         self.file.flush()?;
         self.file.get_ref().sync_all()?;
@@ -316,6 +323,10 @@ impl RaftWal {
     }
 
     /// Append an entry to the WAL with fsync.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, disk space checks, or writing fails.
     pub fn append(&mut self, entry: &RaftWalEntry) -> io::Result<()> {
         let bytes = bitcode::serialize(entry).map_err(io::Error::other)?;
         let write_size = 4 + 4 + bytes.len() as u64; // length + checksum + payload
@@ -344,7 +355,9 @@ impl RaftWal {
         };
 
         // Write length-prefixed entry with checksum (V2 format)
-        self.file.write_all(&(bytes.len() as u32).to_le_bytes())?;
+        #[allow(clippy::cast_possible_truncation)]
+        let len_u32 = bytes.len() as u32;
+        self.file.write_all(&len_u32.to_le_bytes())?;
         self.file.write_all(&checksum.to_le_bytes())?;
         self.file.write_all(&bytes)?;
         self.file.flush()?;
@@ -361,6 +374,10 @@ impl RaftWal {
     ///
     /// Uses atomic file operations to ensure crash safety. The old file
     /// is replaced atomically with an empty file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing or atomic truncation fails.
     pub fn truncate(&mut self) -> io::Result<()> {
         // Flush any pending writes before truncation
         self.file.flush()?;
@@ -380,11 +397,19 @@ impl RaftWal {
     }
 
     /// Replay all entries from the WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or deserializing entries fails.
     pub fn replay(&self) -> io::Result<Vec<RaftWalEntry>> {
         self.replay_with_validation(self.config.verify_on_replay)
     }
 
     /// Replay all entries with optional checksum verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading fails or a checksum mismatch is detected.
     pub fn replay_with_validation(&self, verify_checksums: bool) -> io::Result<Vec<RaftWalEntry>> {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
@@ -411,14 +436,8 @@ impl RaftWal {
             }
 
             // Detect format on first entry, then use consistently
-            let is_v2 = match detected_format {
-                Some(v2) => v2,
-                None => {
-                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
-                    detected_format = Some(v2);
-                    v2
-                },
-            };
+            let is_v2 = *detected_format
+                .get_or_insert_with(|| !Self::looks_like_bincode_start(checksum_buf));
 
             let data = if is_v2 {
                 // V2: checksum_buf contains CRC32, read payload separately
@@ -478,22 +497,26 @@ impl RaftWal {
     }
 
     /// Get the number of entries in the WAL.
-    pub fn entry_count(&self) -> u64 {
+    #[must_use]
+    pub const fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
     /// Get the path to the WAL file.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get the current size of the WAL in bytes.
-    pub fn current_size(&self) -> u64 {
+    #[must_use]
+    pub const fn current_size(&self) -> u64 {
         self.current_size
     }
 
     /// Get the current configuration.
-    pub fn config(&self) -> &WalConfig {
+    #[must_use]
+    pub const fn config(&self) -> &WalConfig {
         &self.config
     }
 }
@@ -522,7 +545,7 @@ fn nix_statvfs(path: &Path) -> io::Result<StatVfsResult> {
     Ok(StatVfsResult {
         // Cast needed for cross-platform compatibility (types differ between Linux/macOS)
         #[allow(clippy::unnecessary_cast)]
-        available_bytes: stat.f_bavail as u64 * stat.f_frsize as u64,
+        available_bytes: u64::from(stat.f_bavail) * stat.f_frsize as u64,
     })
 }
 
@@ -541,6 +564,7 @@ pub struct RaftRecoveryState {
 
 impl RaftRecoveryState {
     /// Reconstruct state from WAL entries.
+    #[must_use]
     pub fn from_entries(entries: &[RaftWalEntry]) -> Self {
         let mut state = Self::default();
 
@@ -565,10 +589,10 @@ impl RaftRecoveryState {
                 RaftWalEntry::TermAndVote { term, voted_for } => {
                     if *term > state.current_term {
                         state.current_term = *term;
-                        state.voted_for = voted_for.clone();
+                        state.voted_for.clone_from(voted_for);
                     } else if *term == state.current_term && state.voted_for.is_none() {
                         // Only accept first vote for same term
-                        state.voted_for = voted_for.clone();
+                        state.voted_for.clone_from(voted_for);
                     }
                     // Ignore duplicate votes for same term
                 },
@@ -594,6 +618,10 @@ impl RaftRecoveryState {
     }
 
     /// Reconstruct state directly from a WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL replay fails.
     pub fn from_wal(wal: &RaftWal) -> io::Result<Self> {
         let entries = wal.replay()?;
         Ok(Self::from_entries(&entries))

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Fuzz target for partition merge reconciliation.
 //!
 //! Tests the merge protocol state machine and reconciler logic with

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Region-aware memory-mapped storage for geometric locality.
 //!
 //! `RegionalMmapStore` extends the base mmap storage with Voronoi-region-aware

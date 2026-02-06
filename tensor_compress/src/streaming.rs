@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Streaming compression for memory-bounded snapshot I/O.
 //!
 //! Enables processing large snapshots without loading the entire dataset into memory.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TF-IDF embedding generator using feature hashing.
 
 use std::collections::{HashMap, HashSet};

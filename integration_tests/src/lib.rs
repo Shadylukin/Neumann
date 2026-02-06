@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration test helpers for Neumann.
 //!
 //! Provides utilities for setting up multi-engine test scenarios.
@@ -10,6 +10,7 @@
 #![allow(clippy::cast_precision_loss)] // Precision loss acceptable in test data generation
 
 pub mod chaos;
+pub mod dst;
 pub mod jepsen;
 pub mod linearizability;
 

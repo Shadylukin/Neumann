@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Network transport abstraction for distributed consensus.
 //!
 //! Provides a pluggable transport layer for node communication:
@@ -119,55 +119,58 @@ impl Message {
     /// Extract the routing embedding from a message for geometric routing decisions.
     ///
     /// Returns the most semantically relevant embedding for the message type:
-    /// - RequestVote/PreVote: candidate's state embedding
-    /// - AppendEntries: block embedding (if present)
-    /// - TxPrepare: transaction delta embedding
-    pub fn routing_embedding(&self) -> Option<&SparseVector> {
+    /// - `RequestVote`/`PreVote`: candidate's state embedding
+    /// - `AppendEntries`: block embedding (if present)
+    /// - `TxPrepare`: transaction delta embedding
+    #[must_use]
+    pub const fn routing_embedding(&self) -> Option<&SparseVector> {
         match self {
-            Message::RequestVote(rv) => Some(&rv.state_embedding),
-            Message::PreVote(pv) => Some(&pv.state_embedding),
-            Message::AppendEntries(ae) => ae.block_embedding.as_ref(),
-            Message::TxPrepare(tp) => Some(&tp.delta_embedding),
+            Self::RequestVote(rv) => Some(&rv.state_embedding),
+            Self::PreVote(pv) => Some(&pv.state_embedding),
+            Self::AppendEntries(ae) => ae.block_embedding.as_ref(),
+            Self::TxPrepare(tp) => Some(&tp.delta_embedding),
             _ => None,
         }
     }
 
-    pub fn has_routing_embedding(&self) -> bool {
+    #[must_use]
+    pub const fn has_routing_embedding(&self) -> bool {
         self.routing_embedding().is_some()
     }
 
-    pub fn type_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
         match self {
-            Message::RequestVote(_) => "RequestVote",
-            Message::RequestVoteResponse(_) => "RequestVoteResponse",
-            Message::PreVote(_) => "PreVote",
-            Message::PreVoteResponse(_) => "PreVoteResponse",
-            Message::TimeoutNow(_) => "TimeoutNow",
-            Message::AppendEntries(_) => "AppendEntries",
-            Message::AppendEntriesResponse(_) => "AppendEntriesResponse",
-            Message::BlockRequest(_) => "BlockRequest",
-            Message::BlockResponse(_) => "BlockResponse",
-            Message::SnapshotRequest(_) => "SnapshotRequest",
-            Message::SnapshotResponse(_) => "SnapshotResponse",
-            Message::Ping { .. } => "Ping",
-            Message::Pong { .. } => "Pong",
-            Message::TxPrepare(_) => "TxPrepare",
-            Message::TxPrepareResponse(_) => "TxPrepareResponse",
-            Message::TxCommit(_) => "TxCommit",
-            Message::TxAbort(_) => "TxAbort",
-            Message::TxAck(_) => "TxAck",
-            Message::QueryRequest(_) => "QueryRequest",
-            Message::QueryResponse(_) => "QueryResponse",
-            Message::Gossip(_) => "Gossip",
-            Message::SignedGossip(_) => "SignedGossip",
-            Message::MergeInit(_) => "MergeInit",
-            Message::MergeAck(_) => "MergeAck",
-            Message::ViewExchange(_) => "ViewExchange",
-            Message::DataMergeRequest(_) => "DataMergeRequest",
-            Message::DataMergeResponse(_) => "DataMergeResponse",
-            Message::TxReconcileRequest(_) => "TxReconcileRequest",
-            Message::TxReconcileResponse(_) => "TxReconcileResponse",
-            Message::MergeFinalize(_) => "MergeFinalize",
+            Self::RequestVote(_) => "RequestVote",
+            Self::RequestVoteResponse(_) => "RequestVoteResponse",
+            Self::PreVote(_) => "PreVote",
+            Self::PreVoteResponse(_) => "PreVoteResponse",
+            Self::TimeoutNow(_) => "TimeoutNow",
+            Self::AppendEntries(_) => "AppendEntries",
+            Self::AppendEntriesResponse(_) => "AppendEntriesResponse",
+            Self::BlockRequest(_) => "BlockRequest",
+            Self::BlockResponse(_) => "BlockResponse",
+            Self::SnapshotRequest(_) => "SnapshotRequest",
+            Self::SnapshotResponse(_) => "SnapshotResponse",
+            Self::Ping { .. } => "Ping",
+            Self::Pong { .. } => "Pong",
+            Self::TxPrepare(_) => "TxPrepare",
+            Self::TxPrepareResponse(_) => "TxPrepareResponse",
+            Self::TxCommit(_) => "TxCommit",
+            Self::TxAbort(_) => "TxAbort",
+            Self::TxAck(_) => "TxAck",
+            Self::QueryRequest(_) => "QueryRequest",
+            Self::QueryResponse(_) => "QueryResponse",
+            Self::Gossip(_) => "Gossip",
+            Self::SignedGossip(_) => "SignedGossip",
+            Self::MergeInit(_) => "MergeInit",
+            Self::MergeAck(_) => "MergeAck",
+            Self::ViewExchange(_) => "ViewExchange",
+            Self::DataMergeRequest(_) => "DataMergeRequest",
+            Self::DataMergeResponse(_) => "DataMergeResponse",
+            Self::TxReconcileRequest(_) => "TxReconcileRequest",
+            Self::TxReconcileResponse(_) => "TxReconcileResponse",
+            Self::MergeFinalize(_) => "MergeFinalize",
         }
     }
 }
@@ -248,7 +251,7 @@ pub struct AppendEntries {
     pub leader_id: NodeId,
     /// Index of log entry immediately preceding new ones.
     pub prev_log_index: u64,
-    /// Term of prev_log_index entry.
+    /// Term of `prev_log_index` entry.
     pub prev_log_term: u64,
     /// Log entries to store (empty for heartbeat).
     pub entries: Vec<LogEntry>,
@@ -263,7 +266,7 @@ pub struct AppendEntries {
 pub struct AppendEntriesResponse {
     /// Current term.
     pub term: u64,
-    /// True if follower contained entry matching prev_log.
+    /// True if follower contained entry matching `prev_log`.
     pub success: bool,
     /// Follower's node ID.
     pub follower_id: NodeId,
@@ -291,7 +294,8 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    pub fn new(term: u64, index: u64, block: Block) -> Self {
+    #[must_use]
+    pub const fn new(term: u64, index: u64, block: Block) -> Self {
         Self {
             term,
             index,
@@ -301,6 +305,7 @@ impl LogEntry {
         }
     }
 
+    #[must_use]
     pub fn config(term: u64, index: u64, change: ConfigChange) -> Self {
         Self {
             term,
@@ -311,6 +316,7 @@ impl LogEntry {
         }
     }
 
+    #[must_use]
     pub fn codebook(term: u64, index: u64, change: CodebookChange) -> Self {
         Self {
             term,
@@ -321,15 +327,18 @@ impl LogEntry {
         }
     }
 
-    pub fn is_config_change(&self) -> bool {
+    #[must_use]
+    pub const fn is_config_change(&self) -> bool {
         self.config_change.is_some()
     }
 
-    pub fn is_codebook_change(&self) -> bool {
+    #[must_use]
+    pub const fn is_codebook_change(&self) -> bool {
         self.codebook_change.is_some()
     }
 
     /// Add a codebook change to this log entry (builder pattern).
+    #[must_use]
     pub fn with_codebook_change(mut self, change: CodebookChange) -> Self {
         self.codebook_change = Some(change);
         self
@@ -444,16 +453,16 @@ impl From<crate::distributed_tx::PrepareVote> for TxVote {
     fn from(vote: crate::distributed_tx::PrepareVote) -> Self {
         use crate::distributed_tx::PrepareVote;
         match vote {
-            PrepareVote::Yes { lock_handle, delta } => TxVote::Yes {
+            PrepareVote::Yes { lock_handle, delta } => Self::Yes {
                 lock_handle,
                 delta: delta.delta.clone(),
                 affected_keys: delta.affected_keys.iter().cloned().collect(),
             },
-            PrepareVote::No { reason } => TxVote::No { reason },
+            PrepareVote::No { reason } => Self::No { reason },
             PrepareVote::Conflict {
                 similarity,
                 conflicting_tx,
-            } => TxVote::Conflict {
+            } => Self::Conflict {
                 similarity,
                 conflicting_tx,
             },
@@ -464,21 +473,20 @@ impl From<crate::distributed_tx::PrepareVote> for TxVote {
 impl From<TxVote> for crate::distributed_tx::PrepareVote {
     fn from(vote: TxVote) -> Self {
         use crate::consensus::DeltaVector;
-        use crate::distributed_tx::PrepareVote;
         match vote {
             TxVote::Yes {
                 lock_handle,
                 delta,
                 affected_keys,
-            } => PrepareVote::Yes {
+            } => Self::Yes {
                 lock_handle,
                 delta: DeltaVector::from_sparse(delta, affected_keys.into_iter().collect(), 0),
             },
-            TxVote::No { reason } => PrepareVote::No { reason },
+            TxVote::No { reason } => Self::No { reason },
             TxVote::Conflict {
                 similarity,
                 conflicting_tx,
-            } => PrepareVote::Conflict {
+            } => Self::Conflict {
                 similarity,
                 conflicting_tx,
             },
@@ -524,7 +532,7 @@ pub struct TxAckMsg {
 // ============================================================================
 
 /// Configuration change for Raft membership.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConfigChange {
     /// Add a new node as a non-voting learner.
     AddLearner { node_id: NodeId },
@@ -540,19 +548,23 @@ pub enum ConfigChange {
 }
 
 impl ConfigChange {
-    pub fn add_learner(node_id: NodeId) -> Self {
+    #[must_use]
+    pub const fn add_learner(node_id: NodeId) -> Self {
         Self::AddLearner { node_id }
     }
 
-    pub fn promote_learner(node_id: NodeId) -> Self {
+    #[must_use]
+    pub const fn promote_learner(node_id: NodeId) -> Self {
         Self::PromoteLearner { node_id }
     }
 
-    pub fn remove_node(node_id: NodeId) -> Self {
+    #[must_use]
+    pub const fn remove_node(node_id: NodeId) -> Self {
         Self::RemoveNode { node_id }
     }
 
-    pub fn joint_change(additions: Vec<NodeId>, removals: Vec<NodeId>) -> Self {
+    #[must_use]
+    pub const fn joint_change(additions: Vec<NodeId>, removals: Vec<NodeId>) -> Self {
         Self::JointChange {
             additions,
             removals,
@@ -565,6 +577,7 @@ impl ConfigChange {
 /// The global codebook stores the shared semantic vocabulary used for state
 /// quantization and fast-path validation. Changes to the codebook must be
 /// replicated through Raft to ensure all nodes have consistent state.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CodebookChange {
     /// Replace the entire global codebook.
@@ -574,7 +587,8 @@ pub enum CodebookChange {
 }
 
 impl CodebookChange {
-    pub fn replace(snapshot: crate::codebook::GlobalCodebookSnapshot) -> Self {
+    #[must_use]
+    pub const fn replace(snapshot: crate::codebook::GlobalCodebookSnapshot) -> Self {
         Self::Replace { snapshot }
     }
 }
@@ -583,7 +597,7 @@ impl CodebookChange {
 ///
 /// Implements Raft's joint consensus algorithm (Section 6) where both
 /// old and new configurations must agree during transitions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct JointConfig {
     /// Voters in the old configuration.
     pub old_voters: Vec<NodeId>,
@@ -592,7 +606,8 @@ pub struct JointConfig {
 }
 
 impl JointConfig {
-    pub fn new(old_voters: Vec<NodeId>, new_voters: Vec<NodeId>) -> Self {
+    #[must_use]
+    pub const fn new(old_voters: Vec<NodeId>, new_voters: Vec<NodeId>) -> Self {
         Self {
             old_voters,
             new_voters,
@@ -600,6 +615,7 @@ impl JointConfig {
     }
 
     /// Check if we have a joint quorum (majority in BOTH old and new configs).
+    #[must_use]
     pub fn has_joint_quorum(&self, votes: &HashSet<NodeId>) -> bool {
         let old_quorum = crate::quorum_size(self.old_voters.len());
         let new_quorum = crate::quorum_size(self.new_voters.len());
@@ -618,6 +634,7 @@ impl JointConfig {
         old_votes >= old_quorum && new_votes >= new_quorum
     }
 
+    #[must_use]
     pub fn all_voters(&self) -> Vec<NodeId> {
         let mut all: Vec<_> = self.old_voters.clone();
         for node in &self.new_voters {
@@ -632,7 +649,7 @@ impl JointConfig {
 /// Raft membership configuration.
 ///
 /// Tracks voters, learners, and joint consensus state for dynamic membership.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RaftMembershipConfig {
     /// Current voting members.
     pub voters: Vec<NodeId>,
@@ -645,7 +662,8 @@ pub struct RaftMembershipConfig {
 }
 
 impl RaftMembershipConfig {
-    pub fn new(voters: Vec<NodeId>) -> Self {
+    #[must_use]
+    pub const fn new(voters: Vec<NodeId>) -> Self {
         Self {
             voters,
             learners: Vec::new(),
@@ -655,16 +673,19 @@ impl RaftMembershipConfig {
     }
 
     /// Check if we have quorum (considering joint consensus if active).
+    #[must_use]
     pub fn has_quorum(&self, votes: &HashSet<NodeId>) -> bool {
-        if let Some(ref joint) = self.joint {
-            joint.has_joint_quorum(votes)
-        } else {
-            let quorum = crate::quorum_size(self.voters.len());
-            self.voters.iter().filter(|n| votes.contains(*n)).count() >= quorum
-        }
+        self.joint.as_ref().map_or_else(
+            || {
+                let quorum = crate::quorum_size(self.voters.len());
+                self.voters.iter().filter(|n| votes.contains(*n)).count() >= quorum
+            },
+            |joint| joint.has_joint_quorum(votes),
+        )
     }
 
     /// Get all nodes that should receive log entries (voters + learners + joint).
+    #[must_use]
     pub fn replication_targets(&self) -> Vec<NodeId> {
         let mut targets = self.voters.clone();
         targets.extend(self.learners.clone());
@@ -681,7 +702,8 @@ impl RaftMembershipConfig {
         targets
     }
 
-    pub fn in_joint_consensus(&self) -> bool {
+    #[must_use]
+    pub const fn in_joint_consensus(&self) -> bool {
         self.joint.is_some()
     }
 
@@ -713,10 +735,12 @@ impl RaftMembershipConfig {
         false
     }
 
+    #[must_use]
     pub fn is_voter(&self, node_id: &NodeId) -> bool {
         self.voters.contains(node_id)
     }
 
+    #[must_use]
     pub fn is_learner(&self, node_id: &NodeId) -> bool {
         self.learners.contains(node_id)
     }
@@ -986,6 +1010,7 @@ pub struct MemoryTransport {
 }
 
 impl MemoryTransport {
+    #[must_use]
     pub fn new(local_id: NodeId) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
@@ -1006,7 +1031,7 @@ impl MemoryTransport {
         }
     }
 
-    /// Set global simulated latency range (min_ms, max_ms).
+    /// Set global simulated latency range (`min_ms`, `max_ms`).
     ///
     /// Each message will be delayed by a random duration in this range.
     /// Use `None` to disable latency simulation.
@@ -1042,6 +1067,7 @@ impl MemoryTransport {
                 min_ms
             } else {
                 use std::time::{SystemTime, UNIX_EPOCH};
+                #[allow(clippy::cast_possible_truncation)]
                 let seed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -1187,10 +1213,12 @@ impl MemoryTransport {
         if drop_rate >= 1.0 {
             return true;
         }
+        #[allow(clippy::cast_possible_truncation)]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let threshold = (f64::from(drop_rate) * 1000.0) as u64;
         (seed % 1000) < threshold
     }
@@ -1200,11 +1228,13 @@ impl MemoryTransport {
         if prob <= 0.0 {
             return None;
         }
+        #[allow(clippy::cast_possible_truncation)]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
         if prob < 1.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let threshold = (f64::from(prob) * 1000.0) as u64;
             if (seed % 1000) >= threshold {
                 return None;
@@ -1225,10 +1255,12 @@ impl MemoryTransport {
         if rate >= 1.0 {
             return true;
         }
+        #[allow(clippy::cast_possible_truncation)]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let threshold = (f64::from(rate) * 1000.0) as u64;
         (seed % 1000) < threshold
     }
@@ -1294,16 +1326,15 @@ impl Transport for MemoryTransport {
 
         let sender = {
             let peers = self.peers.read();
-            match peers.get(to).cloned() {
-                Some(s) => s,
-                None => {
-                    tracing::debug!(
-                        from = %self.local_id,
-                        to = %to,
-                        "Send failed: peer not found"
-                    );
-                    return Err(ChainError::NetworkError(format!("peer not found: {}", to)));
-                },
+            if let Some(s) = peers.get(to).cloned() {
+                s
+            } else {
+                tracing::debug!(
+                    from = %self.local_id,
+                    to = %to,
+                    "Send failed: peer not found"
+                );
+                return Err(ChainError::NetworkError(format!("peer not found: {to}")));
             }
         };
 
@@ -1404,6 +1435,8 @@ impl NetworkManager {
         &self.transport
     }
 
+    /// # Errors
+    /// Returns an error if receiving or sending messages fails.
     pub async fn process_messages(&self) -> Result<()> {
         loop {
             let (from, msg) = self.transport.recv().await?;
@@ -1433,16 +1466,19 @@ impl NetworkManager {
 
 /// Trait for executing queries locally.
 ///
-/// Implemented by QueryRouter to enable distributed query execution.
-/// This trait lives in tensor_chain to avoid circular dependencies.
+/// Implemented by `QueryRouter` to enable distributed query execution.
+/// This trait lives in `tensor_chain` to avoid circular dependencies.
 pub trait QueryExecutor: Send + Sync {
     /// Execute a query and return serialized result.
+    ///
+    /// # Errors
+    /// Returns an error string if query execution fails.
     fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String>;
 }
 
 /// Handler for distributed query messages.
 ///
-/// Bridges network messages (QueryRequest, QueryResponse) to a QueryExecutor.
+/// Bridges network messages (`QueryRequest`, `QueryResponse`) to a `QueryExecutor`.
 pub struct QueryHandler {
     executor: Arc<dyn QueryExecutor>,
     local_shard_id: usize,
@@ -1482,6 +1518,7 @@ impl MessageHandler for QueryHandler {
                     },
                 };
 
+                #[allow(clippy::cast_possible_truncation)]
                 let execution_time_us = start.elapsed().as_micros() as u64;
 
                 Some(Message::QueryResponse(QueryResponse {
@@ -1500,13 +1537,14 @@ impl MessageHandler for QueryHandler {
 
 /// Handler for distributed transaction messages.
 ///
-/// Bridges network messages (TxPrepare, TxCommit, TxAbort) to TxParticipant.
+/// Bridges network messages (`TxPrepare`, `TxCommit`, `TxAbort`) to `TxParticipant`.
 pub struct TxHandler {
     participant: Arc<crate::distributed_tx::TxParticipant>,
 }
 
 impl TxHandler {
-    pub fn new(participant: Arc<crate::distributed_tx::TxParticipant>) -> Self {
+    #[must_use]
+    pub const fn new(participant: Arc<crate::distributed_tx::TxParticipant>) -> Self {
         Self { participant }
     }
 }

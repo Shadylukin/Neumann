@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Rate limiting for server operations.
 //!
 //! Prevents abuse by throttling requests per identity using a sliding window algorithm.

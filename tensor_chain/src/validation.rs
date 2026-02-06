@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Codebook-based transition validation for the tensor chain.
 //!
 //! Validates state transitions to ensure they stay within the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Delta-encoded vectors for efficient storage of clustered embeddings.
 //!
 //! Delta encoding stores vectors as differences from reference "archetype" vectors.

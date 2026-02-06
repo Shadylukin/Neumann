@@ -1,12 +1,18 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Hybrid Logical Clock (HLC) for distributed timestamp ordering.
 //!
 //! Provides monotonically increasing timestamps that combine wall clock
 //! time with logical counters to ensure ordering even when system time
 //! goes backwards or fails.
 
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(not(feature = "loom"))]
+use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "loom")]
+use loom::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +36,7 @@ pub struct HLCTimestamp {
 
 impl HLCTimestamp {
     #[must_use]
-    pub fn new(wall_ms: u64, logical: u64, node_id_hash: u32) -> Self {
+    pub const fn new(wall_ms: u64, logical: u64, node_id_hash: u32) -> Self {
         Self {
             wall_ms,
             logical,
@@ -43,7 +49,7 @@ impl HLCTimestamp {
     /// Uses upper 48 bits for `wall_ms`, lower 16 for logical.
     /// Node ID hash is set to 0.
     #[must_use]
-    pub fn from_u64(value: u64) -> Self {
+    pub const fn from_u64(value: u64) -> Self {
         Self {
             wall_ms: value >> 16,
             logical: value & 0xFFFF,
@@ -56,25 +62,25 @@ impl HLCTimestamp {
     /// Uses upper 48 bits for `wall_ms`, lower 16 for logical.
     /// Note: this loses the `node_id_hash` for compact storage.
     #[must_use]
-    pub fn as_u64(&self) -> u64 {
+    pub const fn as_u64(&self) -> u64 {
         (self.wall_ms << 16) | (self.logical & 0xFFFF)
     }
 
     /// Get the wall clock component in milliseconds.
     #[must_use]
-    pub fn wall_ms(&self) -> u64 {
+    pub const fn wall_ms(&self) -> u64 {
         self.wall_ms
     }
 
     /// Get the logical counter component.
     #[must_use]
-    pub fn logical(&self) -> u64 {
+    pub const fn logical(&self) -> u64 {
         self.logical
     }
 
     /// Get the node ID hash component.
     #[must_use]
-    pub fn node_id_hash(&self) -> u32 {
+    pub const fn node_id_hash(&self) -> u32 {
         self.node_id_hash
     }
 
@@ -105,6 +111,7 @@ pub struct HybridLogicalClock {
     /// Hash of the node ID for tie-breaking.
     node_id_hash: u32,
     /// Monotonic clock start time.
+    #[cfg(not(feature = "loom"))]
     monotonic_start: Instant,
     /// Wall clock time at start in milliseconds.
     wall_start_ms: u64,
@@ -131,10 +138,25 @@ impl HybridLogicalClock {
             last_wall_ms: AtomicU64::new(wall_start_ms),
             logical: AtomicU64::new(0),
             node_id_hash,
+            #[cfg(not(feature = "loom"))]
             monotonic_start: Instant::now(),
             wall_start_ms,
             drift_offset_ms: AtomicI64::new(0),
         })
+    }
+
+    /// Create an HLC with a fixed wall start time (for loom testing).
+    #[cfg(feature = "loom")]
+    pub fn new_with_fixed_time(node_id: u64, wall_start_ms: u64) -> Self {
+        #[allow(clippy::cast_possible_truncation)]
+        let node_id_hash = (node_id & 0xFFFF_FFFF) as u32;
+        Self {
+            last_wall_ms: AtomicU64::new(wall_start_ms),
+            logical: AtomicU64::new(0),
+            node_id_hash,
+            wall_start_ms,
+            drift_offset_ms: AtomicI64::new(0),
+        }
     }
 
     /// Create an HLC from a string node ID.
@@ -150,6 +172,7 @@ impl HybridLogicalClock {
     }
 
     /// Compute the current wall time with drift applied.
+    #[cfg(not(feature = "loom"))]
     fn wall_with_drift(&self) -> u64 {
         #[allow(clippy::cast_possible_truncation)]
         let elapsed_ms = self.monotonic_start.elapsed().as_millis() as u64;
@@ -162,37 +185,56 @@ impl HybridLogicalClock {
         }
     }
 
+    /// Compute wall time under loom (no real clock available).
+    #[cfg(feature = "loom")]
+    fn wall_with_drift(&self) -> u64 {
+        let drift = self.drift_offset_ms.load(Ordering::SeqCst);
+        if drift >= 0 {
+            self.wall_start_ms.saturating_add(drift.unsigned_abs())
+        } else {
+            self.wall_start_ms.saturating_sub(drift.unsigned_abs())
+        }
+    }
+
     /// Get the current timestamp.
     ///
-    /// This method is infallible after construction because it uses
-    /// the monotonic clock anchored to the initial wall clock reading.
+    /// Uses `compare_exchange` to prevent TOCTOU races where two threads
+    /// could both observe the same `last_wall_ms` and produce duplicate
+    /// timestamps.
     ///
     /// # Errors
     /// This method currently always succeeds after construction.
     pub fn now(&self) -> Result<HLCTimestamp, ChainError> {
-        let current_wall = self.wall_with_drift();
+        loop {
+            let current_wall = self.wall_with_drift();
+            let last = self.last_wall_ms.load(Ordering::SeqCst);
 
-        let last = self.last_wall_ms.load(Ordering::SeqCst);
+            if current_wall > last
+                && self
+                    .last_wall_ms
+                    .compare_exchange(last, current_wall, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                // We won the race - reset logical to 0
+                self.logical.store(0, Ordering::SeqCst);
+                return Ok(HLCTimestamp {
+                    wall_ms: current_wall,
+                    logical: 0,
+                    node_id_hash: self.node_id_hash,
+                });
+            }
 
-        if current_wall > last {
-            // Wall clock advanced - reset logical counter
-            self.last_wall_ms.store(current_wall, Ordering::SeqCst);
-            self.logical.store(0, Ordering::SeqCst);
-            Ok(HLCTimestamp {
-                wall_ms: current_wall,
-                logical: 0,
-                node_id_hash: self.node_id_hash,
-            })
-        } else {
-            // Same or earlier wall time - increment logical counter
-            // Use saturating_add to prevent overflow at u64::MAX
-            let prev = self.logical.fetch_add(1, Ordering::SeqCst);
-            let logical = prev.saturating_add(1);
-            Ok(HLCTimestamp {
-                wall_ms: last,
-                logical,
-                node_id_hash: self.node_id_hash,
-            })
+            if current_wall <= last {
+                // Same or earlier wall time - increment logical counter
+                let prev = self.logical.fetch_add(1, Ordering::SeqCst);
+                let logical = prev.saturating_add(1);
+                return Ok(HLCTimestamp {
+                    wall_ms: last,
+                    logical,
+                    node_id_hash: self.node_id_hash,
+                });
+            }
+            // compare_exchange failed, another thread updated last_wall_ms, retry
         }
     }
 
@@ -240,7 +282,7 @@ impl HybridLogicalClock {
 
     /// Get the node ID hash.
     #[must_use]
-    pub fn node_id_hash(&self) -> u32 {
+    pub const fn node_id_hash(&self) -> u32 {
         self.node_id_hash
     }
 
@@ -447,5 +489,94 @@ mod tests {
         let debug = format!("{:?}", ts);
         assert!(debug.contains("HLCTimestamp"));
         assert!(debug.contains("1000"));
+    }
+
+    #[test]
+    fn test_hlc_negative_drift_offset() {
+        let hlc = HybridLogicalClock::new(1).unwrap();
+        let before = hlc.estimated_wall_ms();
+
+        // Apply negative drift (clock behind)
+        hlc.set_drift_offset(-5000);
+        assert_eq!(hlc.drift_offset(), -5000);
+
+        let after = hlc.estimated_wall_ms();
+        // Wall time should be less with negative drift
+        assert!(after < before, "negative drift should reduce wall time");
+
+        // Monotonicity still preserved for now()
+        let ts1 = hlc.now().unwrap();
+        let ts2 = hlc.now().unwrap();
+        assert!(ts2 > ts1);
+    }
+
+    #[test]
+    fn test_hlc_inject_clock_jump() {
+        let hlc = HybridLogicalClock::new(1).unwrap();
+        assert_eq!(hlc.drift_offset(), 0);
+
+        hlc.inject_clock_jump(100);
+        assert_eq!(hlc.drift_offset(), 100);
+
+        hlc.inject_clock_jump(200);
+        assert_eq!(hlc.drift_offset(), 300);
+
+        hlc.inject_clock_jump(-50);
+        assert_eq!(hlc.drift_offset(), 250);
+    }
+
+    #[test]
+    fn test_hlc_now_wall_clock_advance() {
+        let hlc = HybridLogicalClock::new(1).unwrap();
+
+        // Generate several timestamps rapidly to build up logical counter
+        let mut ts = hlc.now().unwrap();
+        for _ in 0..5 {
+            ts = hlc.now().unwrap();
+        }
+        // At this point logical counter is likely > 0 (unless wall clock advanced)
+        let pre_jump = ts;
+
+        // Simulate wall clock jump forward via drift
+        hlc.set_drift_offset(10_000);
+        let post_jump = hlc.now().unwrap();
+        // After a big wall clock advance, logical should reset to 0
+        assert_eq!(post_jump.logical(), 0);
+        assert!(post_jump.wall_ms() > pre_jump.wall_ms());
+    }
+
+    #[test]
+    fn test_hlc_receive_local_ahead() {
+        let hlc = HybridLogicalClock::new(1).unwrap();
+
+        // Move local clock far ahead
+        hlc.set_drift_offset(50_000);
+        let local = hlc.now().unwrap();
+
+        // Receive a timestamp from the past
+        let remote = HLCTimestamp::new(local.wall_ms() - 10_000, 5, 2);
+        let after = hlc.receive(&remote).unwrap();
+
+        // Local is ahead, so result should use local wall time
+        assert!(after.wall_ms() >= local.wall_ms());
+        assert!(after > local);
+        assert!(after > remote);
+    }
+
+    #[test]
+    fn test_hlc_receive_current_wall_ahead() {
+        let hlc = HybridLogicalClock::new(1).unwrap();
+
+        // Get a local timestamp, then set very large drift to push wall clock way ahead
+        let _local = hlc.now().unwrap();
+
+        // Receive a timestamp from the far past
+        let remote = HLCTimestamp::new(1000, 0, 2);
+        hlc.set_drift_offset(100_000);
+        let after = hlc.receive(&remote).unwrap();
+
+        // Current wall is ahead of both last and received, logical should be 0
+        assert_eq!(after.logical(), 0);
+        assert!(after > remote);
     }
 }

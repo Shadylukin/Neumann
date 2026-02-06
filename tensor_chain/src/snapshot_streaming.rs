@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Memory-efficient streaming serialization for large Raft snapshots.
 //!
 //! # Overview
@@ -308,10 +308,9 @@ impl SnapshotWriter {
 
         // Copy existing data (skip placeholder header)
         if total_len > HEADER_SIZE as u64 {
-            let data = self.buffer.as_slice(
-                HEADER_SIZE as u64,
-                (total_len - HEADER_SIZE as u64) as usize,
-            )?;
+            #[allow(clippy::cast_possible_truncation)]
+            let data_len = (total_len - HEADER_SIZE as u64) as usize;
+            let data = self.buffer.as_slice(HEADER_SIZE as u64, data_len)?;
             new_buffer.write(data)?;
         }
 

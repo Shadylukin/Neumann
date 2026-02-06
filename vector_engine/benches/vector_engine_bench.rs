@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Benchmarks for `vector_engine` performance testing.
 //!
 //! Measures embedding storage, similarity search, and HNSW index operations.

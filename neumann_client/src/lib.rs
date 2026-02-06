@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Neumann Database Rust Client SDK
 //!
 //! This crate provides a Rust client for Neumann database with support for

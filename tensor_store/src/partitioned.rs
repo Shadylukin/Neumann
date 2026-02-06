@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Partition-aware store wrapper for distributed operations.
 //!
 //! Provides a wrapper around `TensorStore` that integrates with the partitioner

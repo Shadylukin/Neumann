@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Durable blob log with WAL-based crash recovery.
 //!
 //! `DurableBlobLog` provides persistent, content-addressable chunk storage

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Reloadable TLS configuration.
 //!
 //! This module provides TLS certificate loading with support for hot-reloading

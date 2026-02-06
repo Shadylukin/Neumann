@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Cluster orchestration for distributed Neumann nodes.
 //!
 //! Provides a unified API for starting and managing cluster nodes with:

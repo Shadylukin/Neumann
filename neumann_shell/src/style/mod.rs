@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Style system for terminal output.
 //!
 //! Provides themes (color palettes) and icons for consistent, visually appealing output.

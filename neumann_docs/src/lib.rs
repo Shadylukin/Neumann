@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Neumann Documentation Storage System
 //!
 //! Index and search Neumann documentation using all three engines:

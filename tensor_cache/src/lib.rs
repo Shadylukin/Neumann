@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Tensor-native LLM response cache - Module 10 of Neumann
 //!
 //! Tensor-native semantic caching for LLM responses with exact and semantic matching,

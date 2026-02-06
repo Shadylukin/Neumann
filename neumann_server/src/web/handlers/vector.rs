@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Handlers for vector engine browsing with dystopian terminal styling.
 
 use std::collections::HashMap;

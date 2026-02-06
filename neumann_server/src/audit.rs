@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Audit logging for server events.
 //!
 //! Records authentication events, queries, and blob operations for compliance and debugging.

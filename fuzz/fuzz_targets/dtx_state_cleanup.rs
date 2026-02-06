@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Fuzz target for distributed transaction state cleanup operations.
 //!
 //! Tests that clear_persisted_state handles various node IDs and shard IDs

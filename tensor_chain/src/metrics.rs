@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Centralized metrics infrastructure for `tensor_chain` observability.
 //!
 //! Provides thread-safe timing statistics using atomics, following the same

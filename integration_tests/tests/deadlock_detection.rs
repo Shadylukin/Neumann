@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for deadlock detection in 2PC.
 //!
 //! Tests the wait-for graph, cycle detection, and victim selection

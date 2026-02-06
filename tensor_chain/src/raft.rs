@@ -9223,7 +9223,10 @@ mod tests {
         match response {
             Some(Message::RequestVoteResponse(rvr)) => {
                 assert!(!rvr.vote_granted, "Must not grant vote to stale term");
-                assert!(rvr.term >= voter_term, "Response term must be at least voter's term");
+                assert!(
+                    rvr.term >= voter_term,
+                    "Response term must be at least voter's term"
+                );
             },
             other => panic!("Expected RequestVoteResponse, got {other:?}"),
         }
@@ -9244,10 +9247,8 @@ mod tests {
             last_log_term: 0,
             state_embedding: SparseVector::new(0),
         };
-        let response_a = node.handle_message(
-            &"candidate_a".to_string(),
-            &Message::RequestVote(rv_a),
-        );
+        let response_a =
+            node.handle_message(&"candidate_a".to_string(), &Message::RequestVote(rv_a));
         match &response_a {
             Some(Message::RequestVoteResponse(rvr)) => {
                 assert!(rvr.vote_granted, "First vote should be granted");
@@ -9263,10 +9264,8 @@ mod tests {
             last_log_term: 0,
             state_embedding: SparseVector::new(0),
         };
-        let response_b = node.handle_message(
-            &"candidate_b".to_string(),
-            &Message::RequestVote(rv_b),
-        );
+        let response_b =
+            node.handle_message(&"candidate_b".to_string(), &Message::RequestVote(rv_b));
         match response_b {
             Some(Message::RequestVoteResponse(rvr)) => {
                 assert!(!rvr.vote_granted, "Must not double-vote in same term");
@@ -9283,13 +9282,7 @@ mod tests {
             term: 1,
             index: 1,
             block: Block::new(
-                BlockHeader::new(
-                    1,
-                    [0u8; 32],
-                    [0u8; 32],
-                    [0u8; 32],
-                    "voter".to_string(),
-                ),
+                BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "voter".to_string()),
                 vec![],
             ),
             config_change: None,
@@ -9317,10 +9310,7 @@ mod tests {
             last_log_term: 0,
             state_embedding: SparseVector::new(0),
         };
-        let response = node.handle_message(
-            &"candidate".to_string(),
-            &Message::RequestVote(rv),
-        );
+        let response = node.handle_message(&"candidate".to_string(), &Message::RequestVote(rv));
         match response {
             Some(Message::RequestVoteResponse(rvr)) => {
                 assert!(
@@ -9351,10 +9341,7 @@ mod tests {
             leader_commit: 0,
             block_embedding: None,
         };
-        let response = node.handle_message(
-            &"leader".to_string(),
-            &Message::AppendEntries(ae),
-        );
+        let response = node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
         match response {
             Some(Message::AppendEntriesResponse(aer)) => {
                 assert!(!aer.success, "Must reject AppendEntries with stale term");
@@ -9382,10 +9369,7 @@ mod tests {
             leader_commit: 0,
             block_embedding: None,
         };
-        let response = node.handle_message(
-            &"leader".to_string(),
-            &Message::AppendEntries(ae),
-        );
+        let response = node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
         match response {
             Some(Message::AppendEntriesResponse(aer)) => {
                 assert!(
@@ -9406,13 +9390,7 @@ mod tests {
             term: 1,
             index: 1,
             block: Block::new(
-                BlockHeader::new(
-                    1,
-                    [0u8; 32],
-                    [0u8; 32],
-                    [0u8; 32],
-                    "leader".to_string(),
-                ),
+                BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "leader".to_string()),
                 vec![],
             ),
             config_change: None,
@@ -9428,10 +9406,7 @@ mod tests {
             leader_commit: 1,
             block_embedding: None,
         };
-        let response = node.handle_message(
-            &"leader".to_string(),
-            &Message::AppendEntries(ae),
-        );
+        let response = node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
         match response {
             Some(Message::AppendEntriesResponse(aer)) => {
                 assert!(aer.success, "Should accept valid AppendEntries");
@@ -9440,7 +9415,11 @@ mod tests {
         }
 
         // Commit index should have advanced
-        assert_eq!(node.commit_index(), 1, "Commit index must advance to leader_commit");
+        assert_eq!(
+            node.commit_index(),
+            1,
+            "Commit index must advance to leader_commit"
+        );
     }
 
     #[test]
@@ -9484,23 +9463,26 @@ mod tests {
         // next_index should be last_log_index + 1 for each peer
         let last_log = node.log_length() as u64;
         for peer in &peers {
-            let next_idx = lv.next_index.get(peer).expect("next_index must exist for peer");
+            let next_idx = lv
+                .next_index
+                .get(peer)
+                .expect("next_index must exist for peer");
             assert_eq!(
                 *next_idx,
                 last_log + 1,
                 "next_index for {peer} should be last_log_index + 1"
             );
-            let match_idx = lv.match_index.get(peer).expect("match_index must exist for peer");
+            let match_idx = lv
+                .match_index
+                .get(peer)
+                .expect("match_index must exist for peer");
             assert_eq!(*match_idx, 0, "match_index for {peer} should start at 0");
         }
     }
 
     #[test]
     fn test_is_write_safe_no_quorum() {
-        let node = create_test_node(
-            "leader",
-            vec!["peer1".to_string(), "peer2".to_string()],
-        );
+        let node = create_test_node("leader", vec!["peer1".to_string(), "peer2".to_string()]);
         node.start_election();
         node.become_leader();
 
@@ -9513,10 +9495,7 @@ mod tests {
 
     #[test]
     fn test_transfer_leadership_validates_target() {
-        let node = create_test_node(
-            "leader",
-            vec!["peer1".to_string(), "peer2".to_string()],
-        );
+        let node = create_test_node("leader", vec!["peer1".to_string(), "peer2".to_string()]);
         node.start_election();
         node.become_leader();
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Metrics dashboard handlers for the admin UI.
 //!
 //! Provides real-time metrics visualization with engine health,

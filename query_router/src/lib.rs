@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Query Router - Module 5 of Neumann
 //!
 //! Parses shell commands, routes to appropriate engine(s), and combines results.

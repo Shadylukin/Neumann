@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Cross-shard distributed transactions with 2PC and delta-based conflict detection.
 //!
 //! Coordinates transactions spanning multiple shards using two-phase commit:
@@ -134,6 +134,40 @@ impl UndoEntry {
         match self {
             Self::Restore { key, .. } | Self::Delete { key } => key,
         }
+    }
+
+    /// Compute a CRC32 checksum of this undo entry for integrity verification.
+    #[must_use]
+    pub fn checksum(&self) -> u32 {
+        let mut hasher = crc32fast::Hasher::new();
+        match self {
+            Self::Restore { key, data } => {
+                hasher.update(b"R"); // tag byte
+                hasher.update(key.as_bytes());
+                hasher.update(data);
+            },
+            Self::Delete { key } => {
+                hasher.update(b"D"); // tag byte
+                hasher.update(key.as_bytes());
+            },
+        }
+        hasher.finalize()
+    }
+
+    /// Apply this undo entry after verifying its checksum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checksum doesn't match or if apply fails.
+    pub fn apply_verified(&self, store: &TensorStore, expected_checksum: u32) -> Result<()> {
+        let actual = self.checksum();
+        if actual != expected_checksum {
+            return Err(ChainError::StorageError(format!(
+                "undo entry checksum mismatch for key '{}': expected {expected_checksum:#010X}, got {actual:#010X}",
+                self.key()
+            )));
+        }
+        self.apply(store)
     }
 }
 
@@ -344,6 +378,54 @@ impl KeyLock {
 /// Lock handle counter.
 static LOCK_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// High-water mark: 90% of `u64::MAX`. Beyond this, lock handle exhaustion is imminent.
+const LOCK_HANDLE_HIGH_WATER: u64 = u64::MAX / 10 * 9;
+
+/// Count of high-water warnings emitted (to avoid log spam).
+static LOCK_HIGH_WATER_WARNINGS: AtomicU64 = AtomicU64::new(0);
+
+/// Allocate the next lock handle, warning if approaching exhaustion.
+fn next_lock_handle() -> u64 {
+    let handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    if handle >= LOCK_HANDLE_HIGH_WATER {
+        // Warn once per million handles to avoid log spam
+        let warnings = LOCK_HIGH_WATER_WARNINGS.fetch_add(1, Ordering::Relaxed);
+        if warnings == 0 || warnings % 1_000_000 == 0 {
+            let pct_used = if handle == 0 {
+                0.0
+            } else {
+                #[allow(clippy::cast_precision_loss)]
+                let pct = (handle as f64 / u64::MAX as f64) * 100.0;
+                pct
+            };
+            tracing::warn!(
+                handle,
+                pct_used,
+                "Lock handle counter approaching u64::MAX exhaustion"
+            );
+        }
+    }
+    handle
+}
+
+/// Returns the current lock handle counter value (for monitoring).
+#[must_use]
+pub fn lock_handle_current() -> u64 {
+    LOCK_COUNTER.load(Ordering::Relaxed)
+}
+
+/// Returns the number of high-water warnings emitted.
+#[must_use]
+pub fn lock_handle_high_water_warnings() -> u64 {
+    LOCK_HIGH_WATER_WARNINGS.load(Ordering::Relaxed)
+}
+
+/// Returns the high-water threshold.
+#[must_use]
+pub const fn lock_handle_high_water_threshold() -> u64 {
+    LOCK_HANDLE_HIGH_WATER
+}
+
 /// Key-level lock manager for distributed transactions.
 #[derive(Debug, Default)]
 pub struct LockManager {
@@ -394,7 +476,7 @@ impl LockManager {
         }
 
         // Acquire all locks
-        let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let lock_handle = next_lock_handle();
         let now_ms = now_epoch_millis();
         #[allow(clippy::cast_possible_truncation)]
         let timeout_ms = self.default_timeout.as_millis() as u64;
@@ -417,6 +499,8 @@ impl LockManager {
             .or_default()
             .extend(keys.iter().cloned());
 
+        drop(locks);
+        drop(tx_locks);
         Ok(lock_handle)
     }
 
@@ -483,6 +567,8 @@ impl LockManager {
                     tx_keys.retain(|k| k != key);
                 }
             }
+            drop(locks);
+            drop(tx_locks);
             found_tx_id
         };
 
@@ -522,6 +608,8 @@ impl LockManager {
             }
         }
 
+        drop(locks);
+        drop(tx_locks);
         expired.len()
     }
 
@@ -640,7 +728,7 @@ impl LockManager {
         }
 
         // No conflicts - acquire all locks atomically
-        let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let lock_handle = next_lock_handle();
         let now_ms = now_epoch_millis();
         #[allow(clippy::cast_possible_truncation)]
         let timeout_ms = self.default_timeout.as_millis() as u64;
@@ -697,7 +785,7 @@ pub struct SerializableLockState {
 
 impl SerializableLockState {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         locks: HashMap<String, KeyLock>,
         tx_locks: HashMap<u64, Vec<String>>,
         default_timeout_ms: u64,
@@ -710,17 +798,17 @@ impl SerializableLockState {
     }
 
     #[must_use]
-    pub fn locks(&self) -> &HashMap<String, KeyLock> {
+    pub const fn locks(&self) -> &HashMap<String, KeyLock> {
         &self.locks
     }
 
     #[must_use]
-    pub fn tx_locks(&self) -> &HashMap<u64, Vec<String>> {
+    pub const fn tx_locks(&self) -> &HashMap<u64, Vec<String>> {
         &self.tx_locks
     }
 
     #[must_use]
-    pub fn default_timeout_ms(&self) -> u64 {
+    pub const fn default_timeout_ms(&self) -> u64 {
         self.default_timeout_ms
     }
 }
@@ -808,6 +896,12 @@ pub struct DistributedTxStats {
     // Queue pressure tracking
     /// Number of transactions that triggered the soft queue limit warning.
     pub tx_queue_soft_limit_warnings: AtomicU64,
+
+    // Abort delivery tracking
+    /// Number of abort delivery retries attempted.
+    pub abort_delivery_retries: AtomicU64,
+    /// Number of abort delivery send failures.
+    pub abort_delivery_failures: AtomicU64,
 }
 
 impl DistributedTxStats {
@@ -853,6 +947,10 @@ impl DistributedTxStats {
             participation_timeouts: self.participation_timeouts.load(Ordering::Relaxed),
             commit_rate: self.commit_rate(),
             conflict_rate: self.conflict_rate(),
+            lock_handle_current: lock_handle_current(),
+            lock_handle_high_water_warnings: lock_handle_high_water_warnings(),
+            abort_delivery_retries: self.abort_delivery_retries.load(Ordering::Relaxed),
+            abort_delivery_failures: self.abort_delivery_failures.load(Ordering::Relaxed),
         }
     }
 }
@@ -872,6 +970,18 @@ pub struct DistributedTxStatsSnapshot {
     pub participation_timeouts: u64,
     pub commit_rate: f32,
     pub conflict_rate: f32,
+    /// Current lock handle counter value.
+    #[serde(default)]
+    pub lock_handle_current: u64,
+    /// Number of high-water warnings emitted for lock handle exhaustion.
+    #[serde(default)]
+    pub lock_handle_high_water_warnings: u64,
+    /// Number of abort delivery retries attempted.
+    #[serde(default)]
+    pub abort_delivery_retries: u64,
+    /// Number of abort delivery send failures.
+    #[serde(default)]
+    pub abort_delivery_failures: u64,
 }
 
 /// Statistics from crash recovery of coordinator or participant state.
@@ -887,7 +997,7 @@ pub struct RecoveryStats {
     pub timed_out: usize,
     /// Transactions that were already completed (cleaned up).
     pub completed: usize,
-    /// Orphaned locks force-released during recovery (TxComplete logged
+    /// Orphaned locks force-released during recovery (`TxComplete` logged
     /// but lock release was interrupted before `AllLocksReleased`).
     pub lock_releases_recovered: usize,
 }
@@ -1069,6 +1179,7 @@ impl DistributedTxCoordinator {
             stats.pending_abort += 1;
         }
 
+        drop(pending);
         // Force-release orphaned locks from completed transactions
         for orphan in &recovery_state.orphaned_locks {
             tracing::warn!(
@@ -1138,7 +1249,8 @@ impl DistributedTxCoordinator {
                 );
             }
 
-            let tx = DistributedTransaction::new(coordinator.clone(), participants.to_vec());
+            let mut tx = DistributedTransaction::new(coordinator.clone(), participants.to_vec());
+            tx.timeout_ms = self.config.prepare_timeout_ms;
 
             // Write WAL INSIDE critical section - if this fails, tx is NOT in pending
             // This ensures WAL and pending state are always consistent
@@ -1279,7 +1391,7 @@ impl DistributedTxCoordinator {
     /// # Panics
     ///
     /// Panics if all votes are YES but the transaction snapshot is missing.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
     pub fn record_vote(
         &self,
         tx_id: u64,
@@ -1406,7 +1518,7 @@ impl DistributedTxCoordinator {
                                 self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
 
                                 // Queue abort for broadcast (after releasing pending)
-                                let shards = tx.participants.clone();
+                                let shards = tx.participants;
                                 self.pending_aborts.write().push((
                                     tx_id,
                                     "cross-shard conflict".to_string(),
@@ -1454,6 +1566,7 @@ impl DistributedTxCoordinator {
     /// # Errors
     ///
     /// Returns an error if the transaction is not found or not in the prepared phase.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn commit(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -1523,6 +1636,7 @@ impl DistributedTxCoordinator {
     /// # Errors
     ///
     /// Returns an error if the transaction is not found or not in the committing phase.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn complete_commit(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -1557,6 +1671,7 @@ impl DistributedTxCoordinator {
     /// # Errors
     ///
     /// Returns an error if the transaction is not found or not in the aborting phase.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn complete_abort(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -1588,6 +1703,7 @@ impl DistributedTxCoordinator {
     /// # Errors
     ///
     /// Returns an error if the transaction is not found or WAL logging fails.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn abort(&self, tx_id: u64, reason: &str) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -1701,15 +1817,15 @@ impl DistributedTxCoordinator {
         self.pending.read().len()
     }
 
-    pub fn lock_manager(&self) -> &LockManager {
+    pub const fn lock_manager(&self) -> &LockManager {
         &self.lock_manager
     }
 
-    pub fn wait_graph(&self) -> &crate::deadlock::WaitForGraph {
+    pub const fn wait_graph(&self) -> &crate::deadlock::WaitForGraph {
         &self.wait_graph
     }
 
-    pub fn stats(&self) -> &DistributedTxStats {
+    pub const fn stats(&self) -> &DistributedTxStats {
         &self.stats
     }
 
@@ -1719,18 +1835,26 @@ impl DistributedTxCoordinator {
 
     /// Process and broadcast pending abort messages to all participants.
     ///
-    /// This should be called periodically from the cluster run loop to ensure
-    /// abort messages are delivered to all shards that need to rollback.
+    /// Logs an `AbortIntent` WAL entry before sending to ensure abort delivery
+    /// can be retried on recovery. This should be called periodically from the
+    /// cluster run loop.
     pub async fn process_pending_aborts(&self, transport: &dyn Transport) {
         let pending = self.take_pending_aborts();
 
         for (tx_id, reason, shards) in pending {
+            // Log abort intent to WAL before sending so recovery can resend
+            if let Err(e) = self.log_wal_entry(&TxWalEntry::AbortIntent {
+                tx_id,
+                reason: reason.clone(),
+                shards: shards.clone(),
+            }) {
+                tracing::error!(tx_id, error = %e, "failed to log abort intent to WAL");
+            }
+
             // Track this abort for acknowledgment tracking
             self.track_abort(tx_id, shards.clone());
 
             // Send abort to all participant shards
-            // Note: In a real deployment, shard_id would map to actual node IDs
-            // For now we broadcast to a generic target based on shard
             for shard_id in &shards {
                 let abort_msg = TxAbortMsg {
                     tx_id,
@@ -1738,11 +1862,12 @@ impl DistributedTxCoordinator {
                     shards: vec![*shard_id],
                 };
 
-                // Fire-and-forget send to shard coordinator
-                // The target node ID would come from a shard->node mapping
                 let target = format!("shard-{shard_id}");
                 if let Err(e) = transport.send(&target, Message::TxAbort(abort_msg)).await {
                     tracing::warn!(tx_id, shard = shard_id, error = %e, "failed to send abort to shard");
+                    self.stats
+                        .abort_delivery_failures
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -1769,29 +1894,49 @@ impl DistributedTxCoordinator {
                 return true; // All acknowledged
             }
         }
+        drop(abort_states);
         false
     }
 
-    /// Get aborts that need to be retried.
+    /// Maximum number of abort delivery retry attempts before giving up.
+    const MAX_ABORT_RETRIES: u32 = 5;
+
+    /// Get aborts that need to be retried with exponential backoff.
     ///
     /// Returns list of (`tx_id`, shards) pairs for transactions that haven't
-    /// been acknowledged within the retry interval.
+    /// been acknowledged. Uses exponential backoff: 1s, 2s, 4s, 8s, 16s.
     pub fn get_retry_aborts(&self) -> Vec<(u64, Vec<usize>)> {
         let now = now_epoch_millis();
-        let retry_interval_ms = 3000u64; // 3 seconds between retries
 
         let mut to_retry = Vec::new();
         let mut abort_states = self.abort_states.write();
 
         for (tx_id, state) in abort_states.iter_mut() {
+            if state.retry_count >= Self::MAX_ABORT_RETRIES {
+                continue;
+            }
             let elapsed = now.saturating_sub(state.initiated_at);
-            let expected_elapsed = retry_interval_ms * (u64::from(state.retry_count) + 1);
+            // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            let backoff_ms = 1000u64 << state.retry_count;
+            // Cumulative delay: sum of all previous backoffs
+            let cumulative_ms = (1u64 << (state.retry_count + 1)).saturating_sub(1) * 1000;
 
-            if elapsed >= expected_elapsed && state.retry_count < 10 {
+            if elapsed >= cumulative_ms {
                 state.retry_count += 1;
+                self.stats
+                    .abort_delivery_retries
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    tx_id,
+                    retry = state.retry_count,
+                    backoff_ms,
+                    pending_shards = state.pending_acks.len(),
+                    "Retrying abort delivery"
+                );
                 to_retry.push((*tx_id, state.pending_acks.iter().copied().collect()));
             }
         }
+        drop(abort_states);
 
         to_retry
     }
@@ -1804,7 +1949,7 @@ impl DistributedTxCoordinator {
         let stale: Vec<_> = abort_states
             .iter()
             .filter(|(_, state)| {
-                state.retry_count >= 10
+                state.retry_count >= Self::MAX_ABORT_RETRIES
                     || now.saturating_sub(state.initiated_at) >= max_abort_wait_ms
             })
             .map(|(id, _)| *id)
@@ -2023,6 +2168,7 @@ impl DistributedTxCoordinator {
     /// # Errors
     ///
     /// Returns an error if the transaction is not found or cannot be committed.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn force_resolve(&self, tx_id: u64, commit: bool) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -2159,6 +2305,9 @@ pub struct PreparedTx {
     /// Undo log for rollback (captures previous state of modified keys).
     #[serde(default)]
     pub undo_log: Vec<UndoEntry>,
+    /// CRC32 checksums for each undo entry (parallel to `undo_log`).
+    #[serde(default)]
+    pub undo_checksums: Vec<u32>,
 }
 
 impl TxParticipant {
@@ -2176,6 +2325,12 @@ impl TxParticipant {
     #[must_use]
     pub fn new_in_memory() -> Self {
         Self::new(TensorStore::new())
+    }
+
+    /// Access the underlying store for reads (e.g. in integration tests).
+    #[must_use]
+    pub fn store(&self) -> &TensorStore {
+        &self.store
     }
 
     pub fn prepare(&self, request: PrepareRequest) -> PrepareVote {
@@ -2216,13 +2371,16 @@ impl TxParticipant {
             .map(|op| UndoEntry::capture(&op.storage_key(), &self.store))
             .collect();
 
+        // Compute checksums for integrity verification during rollback
+        let undo_checksums: Vec<u32> = undo_log.iter().map(UndoEntry::checksum).collect();
+
         let delta = DeltaVector::from_sparse(
             request.delta_embedding,
             lock_keys.into_iter().collect(),
             request.tx_id,
         );
 
-        // Store prepared state with undo log
+        // Store prepared state with undo log and checksums
         self.prepared.write().insert(
             request.tx_id,
             PreparedTx {
@@ -2232,6 +2390,7 @@ impl TxParticipant {
                 delta: delta.clone(),
                 prepared_at_ms: now_epoch_millis(),
                 undo_log,
+                undo_checksums,
             },
         );
 
@@ -2406,9 +2565,9 @@ impl TxParticipant {
     }
 
     pub fn abort(&self, tx_id: u64) -> TxResponse {
-        let mut prepared = self.prepared.write();
+        let tx = self.prepared.write().remove(&tx_id);
 
-        if let Some(tx) = prepared.remove(&tx_id) {
+        if let Some(tx) = tx {
             // Apply undo log in reverse order to restore previous state
             for entry in tx.undo_log.iter().rev() {
                 if let Err(e) = entry.apply(&self.store) {
@@ -3231,6 +3390,7 @@ mod tests {
                 delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 prepared_at_ms: old_prepared_at,
                 undo_log: Vec::new(),
+                undo_checksums: Vec::new(),
             },
         );
         assert_eq!(participant.prepared_count(), 1);
@@ -3398,6 +3558,80 @@ mod tests {
         let tx = prepared.get(&1).unwrap();
         assert_eq!(tx.undo_log.len(), 1);
         assert!(matches!(&tx.undo_log[0], UndoEntry::Delete { key } if key == "new_key"));
+        // Checksums should be populated
+        assert_eq!(tx.undo_checksums.len(), 1);
+        assert_eq!(tx.undo_checksums[0], tx.undo_log[0].checksum());
+    }
+
+    #[test]
+    fn test_undo_entry_checksum_deterministic() {
+        let store = TensorStore::new();
+        let mut data = TensorData::new();
+        data.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put("key1", data).unwrap();
+
+        let entry = UndoEntry::capture("key1", &store);
+        let c1 = entry.checksum();
+        let c2 = entry.checksum();
+        assert_eq!(c1, c2, "Checksums should be deterministic");
+    }
+
+    #[test]
+    fn test_undo_entry_checksum_differs_by_variant() {
+        let restore = UndoEntry::Restore {
+            key: "key1".to_string(),
+            data: vec![1, 2, 3],
+        };
+        let delete = UndoEntry::Delete {
+            key: "key1".to_string(),
+        };
+        assert_ne!(
+            restore.checksum(),
+            delete.checksum(),
+            "Different variants should produce different checksums"
+        );
+    }
+
+    #[test]
+    fn test_undo_entry_checksum_differs_by_key() {
+        let e1 = UndoEntry::Delete {
+            key: "key1".to_string(),
+        };
+        let e2 = UndoEntry::Delete {
+            key: "key2".to_string(),
+        };
+        assert_ne!(e1.checksum(), e2.checksum());
+    }
+
+    #[test]
+    fn test_undo_entry_apply_verified_succeeds() {
+        let store = TensorStore::new();
+        let mut data = TensorData::new();
+        data.set("value", TensorValue::Scalar(ScalarValue::Int(99)));
+        store.put("key1", data).unwrap();
+
+        let entry = UndoEntry::capture("key1", &store);
+        let checksum = entry.checksum();
+
+        // Delete the key then restore via verified apply
+        store.delete("key1").unwrap();
+        assert!(entry.apply_verified(&store, checksum).is_ok());
+        assert!(store.get("key1").is_ok());
+    }
+
+    #[test]
+    fn test_undo_entry_apply_verified_rejects_bad_checksum() {
+        let store = TensorStore::new();
+        let entry = UndoEntry::Delete {
+            key: "key1".to_string(),
+        };
+        let bad_checksum = entry.checksum() ^ 0xDEAD_BEEF;
+        let result = entry.apply_verified(&store, bad_checksum);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("checksum mismatch"));
     }
 
     #[test]
@@ -3414,6 +3648,7 @@ mod tests {
         // Manually insert a stale prepared transaction with undo log
         let old_prepared_at = now_epoch_millis().saturating_sub(10_000);
         let undo_entry = UndoEntry::capture("stale_key", &store);
+        let undo_checksum = undo_entry.checksum();
 
         // Modify the data (simulating what would happen during tx execution)
         let mut new_data = TensorData::new();
@@ -3430,6 +3665,7 @@ mod tests {
                 delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 prepared_at_ms: old_prepared_at,
                 undo_log: vec![undo_entry],
+                undo_checksums: vec![undo_checksum],
             },
         );
 
@@ -3827,6 +4063,7 @@ mod tests {
             delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
             prepared_at_ms: now_epoch_millis(),
             undo_log: Vec::new(),
+            undo_checksums: Vec::new(),
         };
         let _ = format!("{:?}", tx);
     }
@@ -3865,6 +4102,7 @@ mod tests {
             delta: DeltaVector::new(&[1.0, 2.0], ["key1".to_string()].into(), 100),
             prepared_at_ms: now_epoch_millis(),
             undo_log: Vec::new(),
+            undo_checksums: Vec::new(),
         };
 
         let bytes = bitcode::serialize(&tx).unwrap();
@@ -3942,6 +4180,7 @@ mod tests {
                 delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                 prepared_at_ms: 1000,
                 undo_log: Vec::new(),
+                undo_checksums: Vec::new(),
             },
         );
 
@@ -4386,6 +4625,7 @@ mod tests {
                     delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
                     prepared_at_ms: old_time,
                     undo_log: Vec::new(),
+                    undo_checksums: Vec::new(),
                 },
             );
         }
@@ -6839,5 +7079,365 @@ mod tests {
 
         // Verify all 7 transactions are pending (none rejected by soft limit)
         assert_eq!(coordinator.pending_count(), 7);
+    }
+
+    #[test]
+    fn test_next_lock_handle_increments() {
+        let h1 = next_lock_handle();
+        let h2 = next_lock_handle();
+        assert!(h2 > h1, "Lock handles should monotonically increase");
+    }
+
+    #[test]
+    fn test_lock_handle_current_returns_counter_value() {
+        let before = lock_handle_current();
+        let _ = next_lock_handle();
+        let after = lock_handle_current();
+        assert!(after > before);
+    }
+
+    #[test]
+    fn test_lock_handle_high_water_threshold() {
+        let threshold = lock_handle_high_water_threshold();
+        // 90% of u64::MAX
+        assert_eq!(threshold, u64::MAX / 10 * 9);
+        assert!(threshold > u64::MAX / 2, "Threshold should be above 50%");
+    }
+
+    #[test]
+    fn test_lock_handle_high_water_warnings_accessible() {
+        // Just verify the counter is accessible and returns a value
+        let warnings = lock_handle_high_water_warnings();
+        // In normal operation, this should be 0 since we never reach 90% of u64::MAX
+        // But other tests in the process may have run, so just check it doesn't panic
+        let _ = warnings;
+    }
+
+    #[test]
+    fn test_lock_handle_used_in_try_lock() {
+        let lm = LockManager::new();
+        let keys = vec!["key_a".to_string()];
+        let handle = lm.try_lock(100, &keys).unwrap();
+        // Handle should come from the global counter (non-zero)
+        assert!(handle > 0);
+    }
+
+    #[test]
+    fn test_lock_handle_used_in_try_lock_with_wait_tracking() {
+        let lm = LockManager::new();
+        let wg = crate::deadlock::WaitForGraph::new();
+        let keys = vec!["key_b".to_string()];
+        let handle = lm
+            .try_lock_with_wait_tracking(100, &keys, &wg, None)
+            .unwrap();
+        assert!(handle > 0);
+    }
+
+    #[test]
+    fn test_stats_snapshot_includes_lock_handle_metrics() {
+        let stats = DistributedTxStats::new();
+        let snap = stats.snapshot();
+        // lock_handle_current should reflect the global counter
+        assert!(snap.lock_handle_current > 0);
+        // high_water_warnings should be a valid value
+        let _ = snap.lock_handle_high_water_warnings;
+    }
+
+    #[test]
+    fn test_retry_aborts_exponential_backoff() {
+        let coordinator = create_test_coordinator();
+
+        // Track an abort that was just initiated
+        coordinator.track_abort(100, vec![0, 1]);
+
+        // Immediately, no retries should fire (need at least 1s)
+        let retries = coordinator.get_retry_aborts();
+        assert!(retries.is_empty());
+
+        // Simulate time passing by backdating the initiated_at
+        {
+            let mut states = coordinator.abort_states.write();
+            let state = states.get_mut(&100).unwrap();
+            // Set initiated 2 seconds ago
+            state.initiated_at = now_epoch_millis().saturating_sub(2000);
+        }
+
+        // First retry should fire (backoff: 1s, cumulative: 1s)
+        let retries = coordinator.get_retry_aborts();
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0].0, 100);
+        assert_eq!(retries[0].1.len(), 2); // shards 0 and 1
+
+        // retry_count should now be 1
+        {
+            let states = coordinator.abort_states.read();
+            assert_eq!(states.get(&100).unwrap().retry_count, 1);
+        }
+
+        // No immediate second retry (need 3s cumulative for retry 2)
+        let retries = coordinator.get_retry_aborts();
+        assert!(retries.is_empty());
+    }
+
+    #[test]
+    fn test_retry_aborts_max_retries_respected() {
+        let coordinator = create_test_coordinator();
+        coordinator.track_abort(200, vec![0]);
+
+        // Set retry_count to MAX_ABORT_RETRIES
+        {
+            let mut states = coordinator.abort_states.write();
+            let state = states.get_mut(&200).unwrap();
+            state.retry_count = DistributedTxCoordinator::MAX_ABORT_RETRIES;
+            state.initiated_at = 0; // Long time ago
+        }
+
+        // Should not retry since max retries reached
+        let retries = coordinator.get_retry_aborts();
+        assert!(retries.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_stale_aborts_uses_max_retries() {
+        let coordinator = create_test_coordinator();
+        coordinator.track_abort(300, vec![0]);
+
+        // Set retry_count to MAX_ABORT_RETRIES
+        {
+            let mut states = coordinator.abort_states.write();
+            let state = states.get_mut(&300).unwrap();
+            state.retry_count = DistributedTxCoordinator::MAX_ABORT_RETRIES;
+        }
+
+        // Should be cleaned up
+        let stale = coordinator.cleanup_stale_aborts();
+        assert_eq!(stale, vec![300]);
+    }
+
+    #[test]
+    fn test_stats_snapshot_includes_abort_delivery_metrics() {
+        let stats = DistributedTxStats::new();
+        stats.abort_delivery_retries.fetch_add(3, Ordering::Relaxed);
+        stats
+            .abort_delivery_failures
+            .fetch_add(1, Ordering::Relaxed);
+        let snap = stats.snapshot();
+        assert_eq!(snap.abort_delivery_retries, 3);
+        assert_eq!(snap.abort_delivery_failures, 1);
+    }
+
+    #[test]
+    fn test_abort_delivery_retries_stat_incremented() {
+        let coordinator = create_test_coordinator();
+        coordinator.track_abort(400, vec![0]);
+
+        // Backdate and trigger a retry
+        {
+            let mut states = coordinator.abort_states.write();
+            let state = states.get_mut(&400).unwrap();
+            state.initiated_at = now_epoch_millis().saturating_sub(2000);
+        }
+
+        let _ = coordinator.get_retry_aborts();
+        assert_eq!(
+            coordinator
+                .stats
+                .abort_delivery_retries
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    // ========== Mutation-Catching Tests ==========
+
+    #[test]
+    fn test_cleanup_timeouts_removes_expired() {
+        let coordinator = create_test_coordinator();
+        let tx = coordinator.begin(&"node1".to_string(), &[0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Force the tx timeout by setting started_at far in the past (epoch ms)
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(tx) = pending.get_mut(&tx_id) {
+                tx.started_at = 1000; // ancient epoch ms
+            }
+        }
+
+        let timed_out = coordinator.cleanup_timeouts();
+        assert!(
+            timed_out.contains(&tx_id),
+            "Timed-out tx {tx_id} should be in cleanup list"
+        );
+
+        // Tx should no longer be pending
+        assert!(
+            coordinator.pending.read().get(&tx_id).is_none(),
+            "Timed-out tx must be removed from pending"
+        );
+    }
+
+    #[test]
+    fn test_complete_commit_wrong_phase() {
+        let coordinator = create_test_coordinator();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Tx is in Preparing phase, not Committing
+        let result = coordinator.complete_commit(tx_id);
+        assert!(
+            result.is_err(),
+            "complete_commit must fail when tx is not in Committing phase"
+        );
+    }
+
+    #[test]
+    fn test_complete_abort_releases_locks() {
+        let coordinator = create_test_coordinator();
+        let tx = coordinator.begin(&"node1".to_string(), &[0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Manually move to Aborting phase
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(tx) = pending.get_mut(&tx_id) {
+                tx.phase = TxPhase::Aborting;
+            }
+        }
+
+        let result = coordinator.complete_abort(tx_id);
+        assert!(result.is_ok(), "complete_abort should succeed");
+
+        // Tx should be removed from pending
+        assert!(
+            coordinator.pending.read().get(&tx_id).is_none(),
+            "Aborted tx must be removed from pending"
+        );
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_age_filter() {
+        let coordinator = create_test_coordinator();
+        let lock_mgr = &coordinator.lock_manager;
+
+        // Acquire a lock for tx 999 (not in pending)
+        let keys = vec!["orphan_key".to_string()];
+        lock_mgr.try_lock(999, &keys).unwrap();
+
+        // Set acquired_at_ms to a value older than partition_start_ms
+        {
+            let mut locks = lock_mgr.locks.write();
+            if let Some(lock) = locks.get_mut("orphan_key") {
+                lock.acquired_at_ms = 1000; // ancient timestamp
+            }
+        }
+
+        // With partition_start_ms > lock's acquired_at_ms, lock should be orphaned
+        let released = coordinator.release_orphaned_locks(2000);
+        assert_eq!(released, 1, "Should release one orphaned lock");
+
+        // Lock should be gone
+        assert!(
+            lock_mgr.locks.read().get("orphan_key").is_none(),
+            "Orphaned lock must be removed"
+        );
+    }
+
+    #[test]
+    fn test_undo_entry_capture_existing_key_mutation() {
+        let store = TensorStore::new();
+        let mut data = TensorData::new();
+        data.set("v", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put("existing", data).unwrap();
+
+        let entry = UndoEntry::capture("existing", &store);
+        assert!(
+            matches!(entry, UndoEntry::Restore { .. }),
+            "Capture of existing key must produce Restore variant"
+        );
+        assert_eq!(entry.key(), "existing");
+    }
+
+    #[test]
+    fn test_undo_entry_capture_missing_key_mutation() {
+        let store = TensorStore::new();
+
+        let entry = UndoEntry::capture("nonexistent", &store);
+        assert!(
+            matches!(entry, UndoEntry::Delete { .. }),
+            "Capture of missing key must produce Delete variant"
+        );
+        assert_eq!(entry.key(), "nonexistent");
+    }
+
+    #[test]
+    fn test_undo_entry_apply_verified_bad_checksum() {
+        let store = TensorStore::new();
+        let mut data = TensorData::new();
+        data.set("v", TensorValue::Scalar(ScalarValue::Int(10)));
+        store.put("key1", data).unwrap();
+
+        let entry = UndoEntry::capture("key1", &store);
+        let correct_checksum = entry.checksum();
+
+        // Apply with wrong checksum should fail
+        let result = entry.apply_verified(&store, correct_checksum.wrapping_add(1));
+        assert!(
+            result.is_err(),
+            "apply_verified must fail with bad checksum"
+        );
+
+        // Apply with correct checksum should succeed
+        let result = entry.apply_verified(&store, correct_checksum);
+        assert!(
+            result.is_ok(),
+            "apply_verified must succeed with correct checksum"
+        );
+    }
+
+    #[test]
+    fn test_lock_manager_try_lock_conflict() {
+        let lock_mgr = LockManager::new();
+        let keys = vec!["shared".to_string()];
+
+        // tx 1 acquires the lock
+        lock_mgr.try_lock(1, &keys).unwrap();
+
+        // tx 2 should get conflict with holder = 1
+        let result = lock_mgr.try_lock(2, &keys);
+        assert_eq!(result, Err(1), "Conflicting lock must report holder tx_id");
+
+        // Same tx can re-lock (idempotent)
+        let result = lock_mgr.try_lock(1, &keys);
+        assert!(result.is_ok(), "Same tx re-locking should succeed");
+    }
+
+    #[test]
+    fn test_lock_manager_release_cleans_both() {
+        let lock_mgr = LockManager::new();
+        let keys = vec!["k1".to_string(), "k2".to_string()];
+
+        lock_mgr.try_lock(1, &keys).unwrap();
+
+        // Verify both locks and tx_locks are populated
+        assert!(lock_mgr.locks.read().contains_key("k1"));
+        assert!(lock_mgr.locks.read().contains_key("k2"));
+        assert!(lock_mgr.tx_locks.read().contains_key(&1));
+
+        lock_mgr.release(1);
+
+        // Both maps must be cleaned
+        assert!(
+            !lock_mgr.locks.read().contains_key("k1"),
+            "k1 lock must be removed after release"
+        );
+        assert!(
+            !lock_mgr.locks.read().contains_key("k2"),
+            "k2 lock must be removed after release"
+        );
+        assert!(
+            !lock_mgr.tx_locks.read().contains_key(&1),
+            "tx_locks entry must be removed after release"
+        );
     }
 }

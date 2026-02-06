@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Write-Ahead Log (WAL) for Two-Phase Commit (2PC) transactions.
 //!
 //! Ensures durability of transaction phase transitions by persisting changes
@@ -60,6 +60,16 @@ pub enum TxWalEntry {
 
     /// All locks for a transaction have been released.
     AllLocksReleased { tx_id: u64 },
+
+    /// Abort intent recorded before sending abort messages to participants.
+    ///
+    /// On recovery, any `AbortIntent` without a matching `TxComplete` (Aborted)
+    /// indicates abort messages may not have been delivered and must be resent.
+    AbortIntent {
+        tx_id: u64,
+        reason: String,
+        shards: Vec<usize>,
+    },
 }
 
 /// Vote type during prepare phase.
@@ -93,11 +103,19 @@ pub struct TxWal {
 
 impl TxWal {
     /// Open or create a WAL file with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or created.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_with_config(path, WalConfig::default())
     }
 
     /// Open or create a WAL file with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or created.
     pub fn open_with_config(path: impl AsRef<Path>, config: WalConfig) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -146,14 +164,8 @@ impl TxWal {
             }
 
             // Detect format on first entry, then use consistently
-            let is_v2 = match detected_format {
-                Some(v2) => v2,
-                None => {
-                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
-                    detected_format = Some(v2);
-                    v2
-                },
-            };
+            let is_v2 = *detected_format
+                .get_or_insert_with(|| !Self::looks_like_bincode_start(checksum_buf));
 
             if is_v2 {
                 // V2: skip the remaining payload bytes
@@ -183,7 +195,7 @@ impl TxWal {
 
     /// Check if bytes look like a bitcode discriminant start (legacy V1 format detection).
     /// After migration to bitcode, always returns false since V2 format is assumed.
-    fn looks_like_bincode_start(_bytes: &[u8; 4]) -> bool {
+    const fn looks_like_bincode_start(_bytes: [u8; 4]) -> bool {
         // After migrating to bitcode, we always assume V2 format.
         // Old bincode V1 files are not readable with bitcode anyway.
         false
@@ -196,7 +208,7 @@ impl TxWal {
             use std::ffi::CString;
             use std::os::unix::ffi::OsStrExt;
 
-            let parent = self.path.parent().unwrap_or(Path::new("."));
+            let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
             let c_path = CString::new(parent.as_os_str().as_bytes())
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid path"))?;
 
@@ -208,7 +220,7 @@ impl TxWal {
             }
 
             // Cast needed for cross-platform compatibility (types differ between Linux/macOS)
-            #[allow(clippy::unnecessary_cast)]
+            #[allow(clippy::unnecessary_cast, clippy::cast_lossless)]
             Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
         }
         #[cfg(not(unix))]
@@ -234,7 +246,7 @@ impl TxWal {
     }
 
     /// Check if WAL size exceeds the limit.
-    fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
+    const fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
         let new_size = self.current_size + additional_size;
         if new_size > self.config.max_size_bytes {
             return Err(WalError::SizeLimitExceeded {
@@ -248,10 +260,14 @@ impl TxWal {
     /// Get the path for a rotated WAL file.
     fn rotated_path(&self, index: usize) -> PathBuf {
         let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
-        self.path.with_file_name(format!("{}.{}", file_name, index))
+        self.path.with_file_name(format!("{file_name}.{index}"))
     }
 
     /// Rotate the WAL file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file I/O or renaming fails.
     pub fn rotate(&mut self) -> Result<(), WalError> {
         self.file.flush()?;
         self.file.get_ref().sync_all()?;
@@ -286,6 +302,10 @@ impl TxWal {
     }
 
     /// Append an entry to the WAL with fsync.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, disk space check, or I/O fails.
     pub fn append(&mut self, entry: &TxWalEntry) -> io::Result<()> {
         let bytes = bitcode::serialize(entry).map_err(io::Error::other)?;
         let write_size = 4 + 4 + bytes.len() as u64; // length + checksum + payload
@@ -314,7 +334,9 @@ impl TxWal {
         };
 
         // Write length-prefixed entry with checksum (V2 format)
-        self.file.write_all(&(bytes.len() as u32).to_le_bytes())?;
+        #[allow(clippy::cast_possible_truncation)]
+        let len_bytes = (bytes.len() as u32).to_le_bytes();
+        self.file.write_all(&len_bytes)?;
         self.file.write_all(&checksum.to_le_bytes())?;
         self.file.write_all(&bytes)?;
         self.file.flush()?;
@@ -331,6 +353,10 @@ impl TxWal {
     ///
     /// Uses atomic file operations to ensure crash safety. The old file
     /// is replaced atomically with an empty file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing, truncation, or reopening fails.
     pub fn truncate(&mut self) -> io::Result<()> {
         // Flush any pending writes before truncation
         self.file.flush()?;
@@ -350,11 +376,19 @@ impl TxWal {
     }
 
     /// Replay all entries from the WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or entries are corrupted.
     pub fn replay(&self) -> io::Result<Vec<TxWalEntry>> {
         self.replay_with_validation(self.config.verify_on_replay)
     }
 
     /// Replay all entries with optional checksum verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or a checksum mismatch is detected.
     pub fn replay_with_validation(&self, verify_checksums: bool) -> io::Result<Vec<TxWalEntry>> {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
@@ -381,14 +415,8 @@ impl TxWal {
             }
 
             // Detect format on first entry, then use consistently
-            let is_v2 = match detected_format {
-                Some(v2) => v2,
-                None => {
-                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
-                    detected_format = Some(v2);
-                    v2
-                },
-            };
+            let is_v2 = *detected_format
+                .get_or_insert_with(|| !Self::looks_like_bincode_start(checksum_buf));
 
             let data = if is_v2 {
                 // V2: checksum_buf contains CRC32, read payload separately
@@ -445,22 +473,26 @@ impl TxWal {
     }
 
     /// Get the number of entries in the WAL.
-    pub fn entry_count(&self) -> u64 {
+    #[must_use]
+    pub const fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
     /// Get the path to the WAL file.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get the current size of the WAL in bytes.
-    pub fn current_size(&self) -> u64 {
+    #[must_use]
+    pub const fn current_size(&self) -> u64 {
         self.current_size
     }
 
     /// Get the current configuration.
-    pub fn config(&self) -> &WalConfig {
+    #[must_use]
+    pub const fn config(&self) -> &WalConfig {
         &self.config
     }
 }
@@ -475,9 +507,23 @@ pub struct TxRecoveryState {
     /// Transactions that were in Aborting phase (need completion).
     pub aborting_txs: Vec<RecoveredPreparedTx>,
     /// Lock handles from completed transactions that were not fully released
-    /// (TxComplete logged but AllLocksReleased not seen). These are orphaned
+    /// (`TxComplete` logged but `AllLocksReleased` not seen). These are orphaned
     /// locks that must be force-released during recovery.
     pub orphaned_locks: Vec<OrphanedLock>,
+    /// Abort intents that were logged but never completed (no matching `TxComplete`).
+    /// These aborts must be resent to participants on recovery.
+    pub pending_abort_intents: Vec<RecoveredAbortIntent>,
+}
+
+/// An abort that was initiated but may not have been fully delivered.
+#[derive(Debug, Clone)]
+pub struct RecoveredAbortIntent {
+    /// Transaction being aborted.
+    pub tx_id: u64,
+    /// Reason for the abort.
+    pub reason: String,
+    /// Shards that need to receive the abort.
+    pub shards: Vec<usize>,
 }
 
 /// A lock handle that belongs to a completed transaction but was never released.
@@ -506,19 +552,51 @@ type InProgressTxState = (Vec<usize>, Vec<(usize, PrepareVoteKind)>, TxPhase);
 impl TxRecoveryState {
     /// Reconstruct state from WAL entries.
     ///
-    /// Tracks orphaned locks: if a TxComplete is logged but AllLocksReleased is not,
-    /// the lock handles from PrepareVote::Yes entries are considered orphaned and
+    /// Tracks orphaned locks: if a `TxComplete` is logged but `AllLocksReleased` is not,
+    /// the lock handles from `PrepareVote::Yes` entries are considered orphaned and
     /// must be force-released during recovery.
+    #[must_use]
     pub fn from_entries(entries: &[TxWalEntry]) -> Self {
+        let (
+            in_progress,
+            completed_lock_handles,
+            released_locks,
+            fully_released,
+            abort_intents,
+            completed_txs,
+        ) = Self::scan_entries(entries);
+
+        let mut state = Self::default();
+        Self::classify_in_progress(&mut state, in_progress);
+        Self::detect_orphaned_locks(
+            &mut state,
+            &completed_lock_handles,
+            &released_locks,
+            &fully_released,
+        );
+        Self::detect_pending_aborts(&mut state, abort_intents, &completed_txs);
+        state
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn scan_entries(
+        entries: &[TxWalEntry],
+    ) -> (
+        std::collections::HashMap<u64, InProgressTxState>,
+        std::collections::HashMap<u64, Vec<u64>>,
+        std::collections::HashMap<u64, std::collections::HashSet<u64>>,
+        std::collections::HashSet<u64>,
+        std::collections::HashMap<u64, (String, Vec<usize>)>,
+        std::collections::HashSet<u64>,
+    ) {
         use std::collections::{HashMap, HashSet};
 
         let mut in_progress: HashMap<u64, InProgressTxState> = HashMap::new();
-        // Track completed txs whose lock handles we collected from votes
         let mut completed_lock_handles: HashMap<u64, Vec<u64>> = HashMap::new();
-        // Track individual lock releases per tx
         let mut released_locks: HashMap<u64, HashSet<u64>> = HashMap::new();
-        // Track txs that have AllLocksReleased
         let mut fully_released: HashSet<u64> = HashSet::new();
+        let mut abort_intents: HashMap<u64, (String, Vec<usize>)> = HashMap::new();
+        let mut completed_txs: HashSet<u64> = HashSet::new();
 
         for entry in entries {
             match entry {
@@ -542,7 +620,6 @@ impl TxRecoveryState {
                     }
                 },
                 TxWalEntry::TxComplete { tx_id, .. } => {
-                    // Collect lock handles before removing from in_progress
                     if let Some((_, votes, _)) = in_progress.get(tx_id) {
                         let handles: Vec<u64> = votes
                             .iter()
@@ -556,6 +633,7 @@ impl TxRecoveryState {
                         }
                     }
                     in_progress.remove(tx_id);
+                    completed_txs.insert(*tx_id);
                 },
                 TxWalEntry::LockRelease { tx_id, lock_handle } => {
                     released_locks
@@ -566,37 +644,52 @@ impl TxRecoveryState {
                 TxWalEntry::AllLocksReleased { tx_id } => {
                     fully_released.insert(*tx_id);
                 },
+                TxWalEntry::AbortIntent {
+                    tx_id,
+                    reason,
+                    shards,
+                } => {
+                    abort_intents.insert(*tx_id, (reason.clone(), shards.clone()));
+                },
             }
         }
 
-        let mut state = TxRecoveryState::default();
+        (
+            in_progress,
+            completed_lock_handles,
+            released_locks,
+            fully_released,
+            abort_intents,
+            completed_txs,
+        )
+    }
 
+    fn classify_in_progress(
+        state: &mut Self,
+        in_progress: std::collections::HashMap<u64, InProgressTxState>,
+    ) {
         for (tx_id, (participants, votes, phase)) in in_progress {
             let recovered_tx = RecoveredPreparedTx {
                 tx_id,
                 participants,
                 votes,
             };
-
             match phase {
-                TxPhase::Prepared => {
-                    state.prepared_txs.push(recovered_tx);
-                },
-                TxPhase::Committing => {
-                    state.committing_txs.push(recovered_tx);
-                },
-                TxPhase::Aborting => {
-                    state.aborting_txs.push(recovered_tx);
-                },
-                TxPhase::Preparing | TxPhase::Committed | TxPhase::Aborted => {
-                    // Preparing: Transaction didn't reach decision, can be aborted
-                    // Committed/Aborted: Should have TxComplete entry, but may be safe to ignore
-                },
+                TxPhase::Prepared => state.prepared_txs.push(recovered_tx),
+                TxPhase::Committing => state.committing_txs.push(recovered_tx),
+                TxPhase::Aborting => state.aborting_txs.push(recovered_tx),
+                TxPhase::Preparing | TxPhase::Committed | TxPhase::Aborted => {},
             }
         }
+    }
 
-        // Detect orphaned locks: TxComplete seen but AllLocksReleased not seen
-        for (tx_id, handles) in &completed_lock_handles {
+    fn detect_orphaned_locks(
+        state: &mut Self,
+        completed_lock_handles: &std::collections::HashMap<u64, Vec<u64>>,
+        released_locks: &std::collections::HashMap<u64, std::collections::HashSet<u64>>,
+        fully_released: &std::collections::HashSet<u64>,
+    ) {
+        for (tx_id, handles) in completed_lock_handles {
             if fully_released.contains(tx_id) {
                 continue;
             }
@@ -611,11 +704,29 @@ impl TxRecoveryState {
                 }
             }
         }
+    }
 
-        state
+    fn detect_pending_aborts(
+        state: &mut Self,
+        abort_intents: std::collections::HashMap<u64, (String, Vec<usize>)>,
+        completed_txs: &std::collections::HashSet<u64>,
+    ) {
+        for (tx_id, (reason, shards)) in abort_intents {
+            if !completed_txs.contains(&tx_id) {
+                state.pending_abort_intents.push(RecoveredAbortIntent {
+                    tx_id,
+                    reason,
+                    shards,
+                });
+            }
+        }
     }
 
     /// Reconstruct state directly from a WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL cannot be replayed.
     pub fn from_wal(wal: &TxWal) -> io::Result<Self> {
         let entries = wal.replay()?;
         Ok(Self::from_entries(&entries))
@@ -1510,5 +1621,100 @@ mod tests {
             participants: vec![0],
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_abort_intent_wal_roundtrip() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("abort_intent.wal");
+        let mut wal = TxWal::open(&wal_path).unwrap();
+
+        wal.append(&TxWalEntry::AbortIntent {
+            tx_id: 42,
+            reason: "timeout".to_string(),
+            shards: vec![0, 1, 2],
+        })
+        .unwrap();
+
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            TxWalEntry::AbortIntent {
+                tx_id,
+                reason,
+                shards,
+            } => {
+                assert_eq!(*tx_id, 42);
+                assert_eq!(reason, "timeout");
+                assert_eq!(shards, &[0, 1, 2]);
+            },
+            other => panic!("Expected AbortIntent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_detects_pending_abort_intents() {
+        let entries = vec![
+            TxWalEntry::AbortIntent {
+                tx_id: 10,
+                reason: "conflict".to_string(),
+                shards: vec![0, 1],
+            },
+            // No TxComplete for tx 10 -- abort delivery was interrupted
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert_eq!(state.pending_abort_intents.len(), 1);
+        assert_eq!(state.pending_abort_intents[0].tx_id, 10);
+        assert_eq!(state.pending_abort_intents[0].reason, "conflict");
+        assert_eq!(state.pending_abort_intents[0].shards, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_recovery_no_pending_abort_when_completed() {
+        let entries = vec![
+            TxWalEntry::TxBegin {
+                tx_id: 20,
+                participants: vec![0],
+            },
+            TxWalEntry::AbortIntent {
+                tx_id: 20,
+                reason: "timeout".to_string(),
+                shards: vec![0],
+            },
+            TxWalEntry::TxComplete {
+                tx_id: 20,
+                outcome: TxOutcome::Aborted,
+            },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert!(state.pending_abort_intents.is_empty());
+    }
+
+    #[test]
+    fn test_recovery_mixed_abort_intents() {
+        let entries = vec![
+            // TX 30: abort intent without completion (pending)
+            TxWalEntry::AbortIntent {
+                tx_id: 30,
+                reason: "partition".to_string(),
+                shards: vec![0, 1],
+            },
+            // TX 31: abort intent with completion (resolved)
+            TxWalEntry::AbortIntent {
+                tx_id: 31,
+                reason: "conflict".to_string(),
+                shards: vec![2],
+            },
+            TxWalEntry::TxComplete {
+                tx_id: 31,
+                outcome: TxOutcome::Aborted,
+            },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert_eq!(state.pending_abort_intents.len(), 1);
+        assert_eq!(state.pending_abort_intents[0].tx_id, 30);
     }
 }

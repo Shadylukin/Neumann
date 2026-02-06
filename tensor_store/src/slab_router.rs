@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Slab router for directing operations to specialized storage backends.
 //!
 //! `SlabRouter` coordinates between the specialized slabs (`EntityIndex`, `EmbeddingSlab`,

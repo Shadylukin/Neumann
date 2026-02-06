@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Streaming TT decomposition for memory-bounded I/O.
 //!
 //! Enables processing large vector collections without loading all into memory.

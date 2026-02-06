@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Neumann Shell - Interactive CLI for Neumann database
 //!
 //! Provides a readline-based interface for executing queries against the

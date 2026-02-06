@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Product Quantization for memory-efficient vector storage.
 //!
 //! Product Quantization (PQ) compresses vectors by:

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Pratt expression parser for the Neumann query language.
 //!
 //! Implements a Pratt parser (top-down operator precedence parser) for
