@@ -73,9 +73,8 @@ skip = [
     { crate = "getrandom@0.2", reason = "crypto crates use 0.2, uuid uses 0.3" },
 
     # --- Collections ---
-    { crate = "hashbrown@0.12", reason = "indexmap 1.x (via tower 0.4) requires 0.12" },
     { crate = "hashbrown@0.14", reason = "dashmap 5.x requires 0.14" },
-    { crate = "indexmap@1", reason = "tower 0.4 requires 1.x, other crates use 2.x" },
+    { crate = "hashbrown@0.15", reason = "petgraph (via prost-build) uses 0.15, other crates use 0.16" },
     { crate = "rustc-hash@1", reason = "tiktoken-rs uses 1.x, tensor_store uses 2.x" },
 
     # --- String/Text ---
@@ -88,9 +87,13 @@ skip = [
     { crate = "thiserror@1", reason = "x509-parser/opentelemetry use 1.x, we use 2.x" },
     { crate = "thiserror-impl@1", reason = "thiserror 1.x requires thiserror-impl 1.x" },
 
+    # --- Random ---
+    { crate = "rand@0.8", reason = "proptest/tiktoken-rs use 0.8, opentelemetry uses 0.9" },
+    { crate = "rand_chacha@0.3", reason = "rand 0.8 requires rand_chacha 0.3" },
+    { crate = "rand_core@0.6", reason = "rand 0.8 requires rand_core 0.6" },
+
     # --- Networking ---
     { crate = "socket2@0.5", reason = "tensor_chain/tonic use 0.5, tokio uses 0.6" },
-    { crate = "tower@0.4", reason = "tonic 0.12 requires 0.4, axum uses 0.5" },
 ]
 
 # -----------------------------------------------------------------------------
