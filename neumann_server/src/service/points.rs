@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! PointsService implementation for vector point operations.
+//! `PointsService` implementation for vector point operations.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -14,15 +14,15 @@ fn json_to_tensor_value(value: &serde_json::Value) -> TensorValue {
     match value {
         serde_json::Value::Null => TensorValue::Scalar(ScalarValue::Null),
         serde_json::Value::Bool(b) => TensorValue::Scalar(ScalarValue::Bool(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                TensorValue::Scalar(ScalarValue::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                TensorValue::Scalar(ScalarValue::Float(f))
-            } else {
-                TensorValue::Scalar(ScalarValue::Null)
-            }
-        },
+        serde_json::Value::Number(n) => n.as_i64().map_or_else(
+            || {
+                n.as_f64()
+                    .map_or(TensorValue::Scalar(ScalarValue::Null), |f| {
+                        TensorValue::Scalar(ScalarValue::Float(f))
+                    })
+            },
+            |i| TensorValue::Scalar(ScalarValue::Int(i)),
+        ),
         serde_json::Value::String(s) => TensorValue::Scalar(ScalarValue::String(s.clone())),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
             TensorValue::Scalar(ScalarValue::String(value.to_string()))
@@ -55,7 +55,7 @@ use crate::service::health::HealthState;
 /// Threshold for consecutive failures before marking unhealthy.
 const FAILURE_THRESHOLD: u32 = 5;
 
-/// Implementation of the PointsService gRPC service.
+/// Implementation of the `PointsService` gRPC service.
 pub struct PointsServiceImpl {
     engine: Arc<VectorEngine>,
     auth_config: Option<AuthConfig>,
@@ -69,7 +69,7 @@ pub struct PointsServiceImpl {
 impl PointsServiceImpl {
     /// Create a new points service.
     #[must_use]
-    pub fn new(engine: Arc<VectorEngine>) -> Self {
+    pub const fn new(engine: Arc<VectorEngine>) -> Self {
         Self {
             engine,
             auth_config: None,
@@ -83,7 +83,7 @@ impl PointsServiceImpl {
 
     /// Create a new points service with authentication.
     #[must_use]
-    pub fn with_auth(engine: Arc<VectorEngine>, auth_config: AuthConfig) -> Self {
+    pub const fn with_auth(engine: Arc<VectorEngine>, auth_config: AuthConfig) -> Self {
         Self {
             engine,
             auth_config: Some(auth_config),
@@ -97,7 +97,7 @@ impl PointsServiceImpl {
 
     /// Create a new points service with health state monitoring.
     #[must_use]
-    pub fn with_config(
+    pub const fn with_config(
         engine: Arc<VectorEngine>,
         auth_config: Option<AuthConfig>,
         health_state: Arc<HealthState>,
@@ -115,7 +115,7 @@ impl PointsServiceImpl {
 
     /// Create a new points service with all options.
     #[must_use]
-    pub fn with_full_config(
+    pub const fn with_full_config(
         engine: Arc<VectorEngine>,
         auth_config: Option<AuthConfig>,
         health_state: Option<Arc<HealthState>>,
@@ -559,13 +559,11 @@ impl PointsService for PointsServiceImpl {
         let keys = self.engine.list_collection_keys(&req.collection);
 
         // Find the starting position
-        let start_idx = if let Some(ref offset_id) = req.offset_id {
+        let start_idx = req.offset_id.as_ref().map_or(0, |offset_id| {
             keys.iter()
                 .position(|k| k > offset_id)
                 .unwrap_or(keys.len())
-        } else {
-            0
-        };
+        });
 
         // Get the page of keys
         let page_keys: Vec<_> = keys.iter().skip(start_idx).take(limit + 1).collect();

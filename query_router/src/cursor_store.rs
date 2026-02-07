@@ -107,7 +107,7 @@ impl CursorStore {
 
     /// Get the store configuration.
     #[must_use]
-    pub fn config(&self) -> &CursorStoreConfig {
+    pub const fn config(&self) -> &CursorStoreConfig {
         &self.config
     }
 
@@ -174,6 +174,7 @@ impl CursorStore {
 
         entry.state = cursor;
         entry.last_access = current_timestamp();
+        drop(entry);
         Ok(())
     }
 

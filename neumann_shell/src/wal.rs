@@ -18,6 +18,9 @@ pub struct Wal {
 
 impl Wal {
     /// Opens or creates a WAL file for appending.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the file cannot be opened or created.
     pub fn open_append(path: &Path) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
@@ -27,12 +30,18 @@ impl Wal {
     }
 
     /// Appends a command to the WAL.
+    ///
+    /// # Errors
+    /// Returns an I/O error if writing or flushing the file fails.
     pub fn append(&mut self, cmd: &str) -> std::io::Result<()> {
         writeln!(self.file, "{cmd}")?;
         self.file.flush()
     }
 
     /// Truncates the WAL (after a successful save).
+    ///
+    /// # Errors
+    /// Returns an I/O error if the file cannot be truncated.
     pub fn truncate(&mut self) -> std::io::Result<()> {
         self.file = File::create(&self.path)?;
         Ok(())
@@ -45,11 +54,17 @@ impl Wal {
     }
 
     /// Returns the current WAL file size in bytes.
+    ///
+    /// # Errors
+    /// Returns an I/O error if file metadata cannot be read.
     pub fn size(&self) -> std::io::Result<u64> {
         std::fs::metadata(&self.path).map(|m| m.len())
     }
 
     /// Reads all commands from the WAL file.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the file cannot be opened or read.
     pub fn read_commands(path: &Path) -> std::io::Result<Vec<String>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);

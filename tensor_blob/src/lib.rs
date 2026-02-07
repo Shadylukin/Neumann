@@ -1044,4 +1044,212 @@ mod tests {
 
         blob_store.shutdown().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_blob_store_max_artifact_size() {
+        let store = TensorStore::new();
+        let config = BlobConfig::new().with_max_artifact_size(10);
+        let blob_store = BlobStore::new(store, config).await.unwrap();
+
+        let result = blob_store
+            .put("big.bin", &[0u8; 20], PutOptions::default())
+            .await;
+        assert!(matches!(result, Err(BlobError::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_metadata_not_found() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let result = blob_store.metadata("nonexistent").await;
+        assert!(matches!(result, Err(BlobError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_update_metadata_not_found() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let result = blob_store
+            .update_metadata("nonexistent", MetadataUpdates::new())
+            .await;
+        assert!(matches!(result, Err(BlobError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_get_not_found() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let result = blob_store.get("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_delete_not_found() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let result = blob_store.delete("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_exists_false() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        assert!(!blob_store.exists("nonexistent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_start_idempotent() {
+        let store = TensorStore::new();
+        let mut blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        blob_store.start().await.unwrap();
+        blob_store.start().await.unwrap(); // Second start should be no-op
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        blob_store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_shutdown_without_start() {
+        let store = TensorStore::new();
+        let mut blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        // Shutdown without starting GC should be fine
+        blob_store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_store_accessor() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        // store() should return a reference
+        let _store_ref = blob_store.store();
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_writer_empty_write() {
+        let store = TensorStore::new();
+        let config = BlobConfig::new().with_chunk_size(10);
+        let blob_store = BlobStore::new(store, config).await.unwrap();
+
+        let mut writer = blob_store
+            .writer("empty.bin", PutOptions::default())
+            .await
+            .unwrap();
+
+        // Writing empty data should be a no-op
+        writer.write(&[]).await.unwrap();
+        writer.write(b"hello").await.unwrap();
+
+        let artifact_id = writer.finish().await.unwrap();
+        let data = blob_store.get(&artifact_id).await.unwrap();
+        assert_eq!(data, b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_list_with_prefix() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        blob_store
+            .put("photos/a.jpg", b"img1", PutOptions::default())
+            .await
+            .unwrap();
+        blob_store
+            .put("docs/b.pdf", b"pdf1", PutOptions::default())
+            .await
+            .unwrap();
+
+        // List all should return both
+        let all = blob_store.list(None).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_i64_to_usize_helpers() {
+        assert_eq!(i64_to_usize(42), 42);
+        assert_eq!(i64_to_usize(-1), 0);
+        assert_eq!(i64_to_usize(0), 0);
+
+        assert_eq!(i64_to_u64(42), 42);
+        assert_eq!(i64_to_u64(-1), 0);
+        assert_eq!(i64_to_u64(0), 0);
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_put_with_all_options() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let options = PutOptions::new()
+            .with_content_type("application/pdf")
+            .with_created_by("user:bob")
+            .with_tag("important")
+            .with_tag("quarterly")
+            .with_link("project:123")
+            .with_meta("version", "1.0");
+
+        let artifact_id = blob_store
+            .put("report.pdf", b"pdf data", options)
+            .await
+            .unwrap();
+
+        let metadata = blob_store.metadata(&artifact_id).await.unwrap();
+        assert_eq!(metadata.content_type, "application/pdf");
+        assert_eq!(metadata.created_by, "user:bob");
+        assert_eq!(metadata.custom.get("version"), Some(&"1.0".to_string()));
+        assert!(metadata.linked_to.contains(&"project:123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_verify_not_found() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let result = blob_store.verify("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_links_not_found() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let result = blob_store.links("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_artifacts_for_empty() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let artifacts = blob_store.artifacts_for("user:nobody").await.unwrap();
+        assert!(artifacts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_by_tag_empty() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let results = blob_store.by_tag("nonexistent").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_blob_store_by_content_type_empty() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let results = blob_store.by_content_type("video/mp4").await.unwrap();
+        assert!(results.is_empty());
+    }
 }

@@ -65,7 +65,7 @@ pub struct NemesisSchedule {
 
 impl NemesisSchedule {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             actions: Vec::new(),
             heal_at_end: true,
@@ -79,7 +79,7 @@ impl NemesisSchedule {
     }
 
     #[must_use]
-    pub fn with_heal_at_end(mut self, heal: bool) -> Self {
+    pub const fn with_heal_at_end(mut self, heal: bool) -> Self {
         self.heal_at_end = heal;
         self
     }
@@ -144,6 +144,7 @@ pub struct ChaosRaftCluster {
 
 impl ChaosRaftCluster {
     /// Create a new chaos-enabled Raft cluster.
+    #[allow(clippy::unused_async)]
     pub async fn new(
         node_count: usize,
         raft_config: RaftConfig,
@@ -207,6 +208,9 @@ impl ChaosRaftCluster {
         self.nodes.iter().position(|n| n.is_leader())
     }
 
+    /// # Errors
+    ///
+    /// Returns `Err` if the put times out before the entry is committed.
     pub async fn put(&self, key: &str, data: &[u8], timeout: Duration) -> Result<(), String> {
         let start = std::time::Instant::now();
         let mut log_index: Option<u64> = None;
@@ -233,12 +237,11 @@ impl ChaosRaftCluster {
                     }],
                 );
 
-                match self.nodes[leader_idx].propose(block) {
-                    Ok(idx) => log_index = Some(idx),
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                        continue;
-                    },
+                if let Ok(idx) = self.nodes[leader_idx].propose(block) {
+                    log_index = Some(idx);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
                 }
             }
 
@@ -255,12 +258,7 @@ impl ChaosRaftCluster {
 
     pub fn get(&self, node_idx: usize, key: &str) -> Option<Vec<u8>> {
         self.apply_committed(node_idx);
-        let data = self.stores[node_idx].get(key).ok()?;
-        if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
-            Some(bytes.clone())
-        } else {
-            None
-        }
+        self.get_raw(node_idx, key)
     }
 
     pub fn apply_committed(&self, node_idx: usize) -> usize {
@@ -331,15 +329,23 @@ impl ChaosRaftCluster {
         result
     }
 
-    /// Compare-and-swap: read current value, if it matches `expected`, write
-    /// `expected + 1`. Returns `Ok(old_value)` on success, `Ok(current)` on
-    /// CAS mismatch, or `Err` on Raft failure.
+    /// Atomic compare-and-swap through Raft consensus: proposes a
+    /// `CompareAndSwap` transaction that the state machine evaluates
+    /// atomically. Returns `Ok(old_value)` where `old_value` is the pre-CAS
+    /// read. On mismatch the block is valid but the CAS is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if no leader is available or the CAS times out.
     pub async fn cas(
         &self,
         key: &str,
         expected: &Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        let start = std::time::Instant::now();
+        let mut log_index: Option<u64> = None;
+
         let leader = self.leader_index().ok_or("no leader")?;
         let current = self
             .get(leader, key)
@@ -353,12 +359,54 @@ impl ChaosRaftCluster {
             Value::Int(v) => Value::Int(v + 1),
             other => other.clone(),
         };
-        let data = value_to_bytes(&new_value);
-        self.put(key, &data, timeout).await?;
-        Ok(current)
+
+        while start.elapsed() < timeout {
+            let Some(leader_idx) = self.leader_index() else {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            };
+
+            if log_index.is_none() {
+                let header = BlockHeader::new(
+                    0,
+                    [0u8; 32],
+                    [0u8; 32],
+                    [0u8; 32],
+                    format!("node-{leader_idx}"),
+                );
+                let block = Block::new(
+                    header,
+                    vec![ChainTransaction::CompareAndSwap {
+                        key: key.to_string(),
+                        expected_data: value_to_bytes(expected),
+                        new_data: value_to_bytes(&new_value),
+                    }],
+                );
+
+                if let Ok(idx) = self.nodes[leader_idx].propose(block) {
+                    log_index = Some(idx);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+            }
+
+            if let Some(idx) = log_index {
+                if self.nodes[leader_idx].commit_index() >= idx {
+                    self.apply_committed(leader_idx);
+                    return Ok(current);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Err("cas timed out".to_string())
     }
 
     /// Perform a CAS and record it in a concurrent history recorder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the CAS operation fails at the Raft level.
     pub async fn concurrent_cas(
         &self,
         history: &ConcurrentHistoryRecorder,
@@ -369,24 +417,25 @@ impl ChaosRaftCluster {
     ) -> Result<Value, String> {
         let op_id = history.invoke(client_id, OpType::Cas, key.to_string(), expected.clone());
         let result = self.cas(key, expected, timeout).await;
-        match &result {
-            Ok(old_val) => history.complete(op_id, old_val.clone()),
-            Err(_) => {
-                // CAS failed at Raft level -- leave incomplete
-            },
+        if let Ok(old_val) = &result {
+            history.complete(op_id, old_val.clone());
         }
         result
     }
 
-    pub fn chaos(&self) -> &ChaosCluster {
+    pub fn node(&self, idx: usize) -> &Arc<RaftNode> {
+        &self.nodes[idx]
+    }
+
+    pub const fn chaos(&self) -> &ChaosCluster {
         &self.chaos
     }
 
-    pub fn chaos_mut(&mut self) -> &mut ChaosCluster {
+    pub const fn chaos_mut(&mut self) -> &mut ChaosCluster {
         &mut self.chaos
     }
 
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
@@ -597,7 +646,7 @@ impl TxKVCluster {
         }
     }
 
-    pub fn coordinator(&self) -> &DistributedTxCoordinator {
+    pub const fn coordinator(&self) -> &DistributedTxCoordinator {
         &self.coordinator
     }
 
@@ -712,7 +761,7 @@ impl Real2PCCluster {
         }
     }
 
-    pub fn coordinator(&self) -> &DistributedTxCoordinator {
+    pub const fn coordinator(&self) -> &DistributedTxCoordinator {
         &self.coordinator
     }
 
@@ -780,6 +829,11 @@ impl Real2PCCluster {
 
     /// Execute a full 2PC round with real participant voting.
     /// Returns `Ok(tx_id)` on commit, `Err(reason)` on abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if a participant votes no/conflict and the transaction
+    /// is aborted.
     pub fn execute_tx(
         &self,
         coordinator_id: &str,
@@ -808,15 +862,1019 @@ impl Real2PCCluster {
     /// Read from a participant's real store and convert to `Value`.
     pub fn read_value(&self, shard: usize, key: &str) -> Value {
         let store = self.participants[shard].store();
-        match store.get(key) {
-            Ok(data) => {
-                if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
-                    bytes_to_value(bytes)
-                } else {
-                    Value::None
+        store.get(key).map_or(Value::None, |data| {
+            if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
+                bytes_to_value(bytes)
+            } else {
+                Value::None
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Crash-Recovery Raft Cluster (persistent Raft state across restarts)
+// ---------------------------------------------------------------------------
+
+/// Raft cluster that supports true crash-recovery.
+///
+/// Each node persists its Raft state (term, `voted_for`, log) to a dedicated
+/// `TensorStore`. A crashed node drops its `RaftNode` and run task; restarting
+/// creates a fresh `RaftNode` via `RaftNode::with_store()` that loads persisted
+/// state, then catches up via log replication.
+pub struct CrashRecoveryRaftCluster {
+    nodes: Vec<Option<Arc<RaftNode>>>,
+    stores: Vec<TensorStore>,
+    raft_stores: Vec<TensorStore>,
+    chaos: ChaosCluster,
+    raft_config: RaftConfig,
+    node_count: usize,
+    shutdown_txs: Vec<broadcast::Sender<()>>,
+    handles: Vec<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl CrashRecoveryRaftCluster {
+    #[allow(clippy::unused_async)]
+    pub async fn new(
+        node_count: usize,
+        raft_config: RaftConfig,
+        chaos_config: ChaosConfig,
+    ) -> Self {
+        let chaos = ChaosCluster::new(node_count, chaos_config);
+        let mut stores = Vec::with_capacity(node_count);
+        let mut raft_stores = Vec::with_capacity(node_count);
+        let mut nodes = Vec::with_capacity(node_count);
+        let mut shutdown_txs = Vec::with_capacity(node_count);
+        let mut handles = Vec::with_capacity(node_count);
+
+        for i in 0..node_count {
+            stores.push(TensorStore::new());
+            raft_stores.push(TensorStore::new());
+            let transport = chaos.transport(i).expect("transport must exist");
+
+            let peers: Vec<String> = (0..node_count)
+                .filter(|&j| j != i)
+                .map(|j| format!("node-{j}"))
+                .collect();
+
+            let node = Arc::new(RaftNode::new(
+                format!("node-{i}"),
+                peers,
+                transport,
+                raft_config.clone(),
+            ));
+
+            let (tx, _) = broadcast::channel(1);
+            let n = Arc::clone(&node);
+            let rx = tx.subscribe();
+            handles.push(Some(tokio::spawn(async move {
+                let _ = n.run(rx).await;
+            })));
+
+            shutdown_txs.push(tx);
+            nodes.push(Some(node));
+        }
+
+        Self {
+            nodes,
+            stores,
+            raft_stores,
+            chaos,
+            raft_config,
+            node_count,
+            shutdown_txs,
+            handles,
+        }
+    }
+
+    pub async fn wait_for_leader(&self, timeout: Duration) -> Option<usize> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            for (i, node) in self.nodes.iter().enumerate() {
+                if let Some(n) = node {
+                    if n.is_leader() {
+                        return Some(i);
+                    }
                 }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    pub fn leader_index(&self) -> Option<usize> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .find_map(|(i, n)| n.as_ref().filter(|n| n.is_leader()).map(|_| i))
+    }
+
+    /// Crash a node: persist Raft state, send shutdown, partition transport.
+    pub async fn crash_node(&mut self, idx: usize) {
+        if let Some(node) = self.nodes[idx].take() {
+            // Persist Raft state before crash
+            let _ = node.save_to_store(&self.raft_stores[idx]);
+
+            // Shutdown the run task
+            let _ = self.shutdown_txs[idx].send(());
+            if let Some(handle) = self.handles[idx].take() {
+                let _ = handle.await;
+            }
+
+            // Partition transport so no messages reach/leave this node
+            if let Some(t) = self.chaos.transport(idx) {
+                t.partition_all();
+            }
+        }
+    }
+
+    /// Restart a crashed node: create new `RaftNode` from persisted state.
+    #[allow(clippy::unused_async)]
+    pub async fn restart_node(&mut self, idx: usize) {
+        if self.nodes[idx].is_some() {
+            return; // Already running
+        }
+
+        // Heal transport
+        if let Some(t) = self.chaos.transport(idx) {
+            t.heal_all();
+        }
+
+        let transport = self.chaos.transport(idx).expect("transport must exist");
+        let peers: Vec<String> = (0..self.node_count)
+            .filter(|&j| j != idx)
+            .map(|j| format!("node-{j}"))
+            .collect();
+
+        // Create node from persisted state
+        let node = Arc::new(RaftNode::with_store(
+            format!("node-{idx}"),
+            peers,
+            transport,
+            self.raft_config.clone(),
+            &self.raft_stores[idx],
+        ));
+
+        let (tx, _) = broadcast::channel(1);
+        let n = Arc::clone(&node);
+        let rx = tx.subscribe();
+        self.handles[idx] = Some(tokio::spawn(async move {
+            let _ = n.run(rx).await;
+        }));
+
+        self.shutdown_txs[idx] = tx;
+        self.nodes[idx] = Some(node);
+    }
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the put times out or the leader node has crashed.
+    pub async fn put(&self, key: &str, data: &[u8], timeout: Duration) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        let mut log_index: Option<u64> = None;
+
+        while start.elapsed() < timeout {
+            let Some(leader_idx) = self.leader_index() else {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            };
+
+            if log_index.is_none() {
+                let header = BlockHeader::new(
+                    0,
+                    [0u8; 32],
+                    [0u8; 32],
+                    [0u8; 32],
+                    format!("node-{leader_idx}"),
+                );
+                let block = Block::new(
+                    header,
+                    vec![ChainTransaction::Put {
+                        key: key.to_string(),
+                        data: data.to_vec(),
+                    }],
+                );
+
+                if let Ok(idx) = self.nodes[leader_idx]
+                    .as_ref()
+                    .ok_or("node crashed")?
+                    .propose(block)
+                {
+                    log_index = Some(idx);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+            }
+
+            if let Some(idx) = log_index {
+                if let Some(node) = &self.nodes[leader_idx] {
+                    if node.commit_index() >= idx {
+                        self.apply_committed(leader_idx);
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Err("put timed out".to_string())
+    }
+
+    pub fn get(&self, node_idx: usize, key: &str) -> Option<Vec<u8>> {
+        self.apply_committed(node_idx);
+        let data = self.stores[node_idx].get(key).ok()?;
+        if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
+            Some(bytes.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn apply_committed(&self, node_idx: usize) -> usize {
+        let Some(node) = &self.nodes[node_idx] else {
+            return 0;
+        };
+        let entries = node.get_uncommitted_entries();
+        let count = entries.len();
+        for entry in &entries {
+            for tx in &entry.block.transactions {
+                let _ = tensor_chain::apply_transaction_to_store(&self.stores[node_idx], tx);
+            }
+        }
+        if count > 0 {
+            let max_idx = entries.last().map_or(0, |e| e.index);
+            node.mark_applied(max_idx);
+        }
+        count
+    }
+
+    pub fn apply_committed_all(&self) -> usize {
+        let mut total = 0;
+        for i in 0..self.node_count {
+            total += self.apply_committed(i);
+        }
+        total
+    }
+
+    pub const fn chaos(&self) -> &ChaosCluster {
+        &self.chaos
+    }
+
+    pub async fn shutdown(mut self) {
+        for i in 0..self.node_count {
+            let _ = self.shutdown_txs[i].send(());
+            if let Some(handle) = self.handles[i].take() {
+                let _ = handle.await;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WAL-based Crash-Recovery Raft Cluster (persistent via RaftNode::with_wal)
+// ---------------------------------------------------------------------------
+
+/// Raft cluster that uses `RaftNode::with_wal()` for true WAL-based crash recovery.
+///
+/// Unlike `CrashRecoveryRaftCluster` which uses `save_to_store()`/`with_store()`,
+/// this cluster persists only term and vote to the WAL file. Restarted nodes
+/// must catch up via `AppendEntries` from the leader.
+pub struct WalCrashRecoveryCluster {
+    nodes: Vec<Option<Arc<RaftNode>>>,
+    wal_paths: Vec<std::path::PathBuf>,
+    stores: Vec<TensorStore>,
+    chaos: ChaosCluster,
+    raft_config: RaftConfig,
+    node_count: usize,
+    shutdown_txs: Vec<broadcast::Sender<()>>,
+    handles: Vec<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl WalCrashRecoveryCluster {
+    /// Create a new WAL-based crash recovery cluster.
+    ///
+    /// `wal_base_dir` must be a directory that persists across crash/restart
+    /// cycles (typically a `tempfile::TempDir` owned by the test).
+    #[allow(clippy::unused_async)]
+    pub async fn new(
+        node_count: usize,
+        raft_config: RaftConfig,
+        chaos_config: ChaosConfig,
+        wal_base_dir: &std::path::Path,
+    ) -> Self {
+        let chaos = ChaosCluster::new(node_count, chaos_config);
+        let mut stores = Vec::with_capacity(node_count);
+        let mut wal_paths = Vec::with_capacity(node_count);
+        let mut nodes = Vec::with_capacity(node_count);
+        let mut shutdown_txs = Vec::with_capacity(node_count);
+        let mut handles = Vec::with_capacity(node_count);
+
+        for i in 0..node_count {
+            stores.push(TensorStore::new());
+            let wal_path = wal_base_dir.join(format!("node_{i}.wal"));
+
+            let transport = chaos.transport(i).expect("transport must exist");
+            let peers: Vec<String> = (0..node_count)
+                .filter(|&j| j != i)
+                .map(|j| format!("node-{j}"))
+                .collect();
+
+            let node = Arc::new(
+                RaftNode::with_wal(
+                    format!("node-{i}"),
+                    peers,
+                    transport,
+                    raft_config.clone(),
+                    &wal_path,
+                )
+                .expect("create raft node with WAL"),
+            );
+
+            let (tx, _) = broadcast::channel(1);
+            let n = Arc::clone(&node);
+            let rx = tx.subscribe();
+            handles.push(Some(tokio::spawn(async move {
+                let _ = n.run(rx).await;
+            })));
+
+            shutdown_txs.push(tx);
+            nodes.push(Some(node));
+            wal_paths.push(wal_path);
+        }
+
+        Self {
+            nodes,
+            wal_paths,
+            stores,
+            chaos,
+            raft_config,
+            node_count,
+            shutdown_txs,
+            handles,
+        }
+    }
+
+    pub async fn wait_for_leader(&self, timeout: Duration) -> Option<usize> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            for (i, node) in self.nodes.iter().enumerate() {
+                if let Some(n) = node {
+                    if n.is_leader() {
+                        return Some(i);
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    pub fn leader_index(&self) -> Option<usize> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .find_map(|(i, n)| n.as_ref().filter(|n| n.is_leader()).map(|_| i))
+    }
+
+    /// Crash a node: shutdown run task, partition transport. WAL stays on disk.
+    pub async fn crash_node(&mut self, idx: usize) {
+        if let Some(_node) = self.nodes[idx].take() {
+            let _ = self.shutdown_txs[idx].send(());
+            if let Some(handle) = self.handles[idx].take() {
+                let _ = handle.await;
+            }
+            if let Some(t) = self.chaos.transport(idx) {
+                t.partition_all();
+            }
+        }
+    }
+
+    /// Crash a node with simulated torn write: after shutting down the node,
+    /// randomly truncate the WAL file at a point in the last ~64 bytes (50%
+    /// probability). On restart, `RaftNode::with_wal()` must recover all
+    /// complete entries before the torn point.
+    pub async fn crash_node_with_torn_write(&mut self, idx: usize, rng: &mut impl rand::Rng) {
+        self.crash_node(idx).await;
+        if rng.gen_bool(0.5) {
+            let wal_path = &self.wal_paths[idx];
+            if let Ok(meta) = std::fs::metadata(wal_path) {
+                let size = meta.len();
+                if size > 8 {
+                    let truncate_at = rng.gen_range(size.saturating_sub(64)..size);
+                    let f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(wal_path)
+                        .unwrap();
+                    f.set_len(truncate_at).unwrap();
+                }
+            }
+        }
+    }
+
+    /// Restart a crashed node from WAL. Creates new `RaftNode::with_wal()`
+    /// that recovers term+vote from the WAL file. Log is empty -- the node
+    /// must catch up via `AppendEntries` from the leader.
+    #[allow(clippy::unused_async)]
+    pub async fn restart_node(&mut self, idx: usize) {
+        if self.nodes[idx].is_some() {
+            return;
+        }
+
+        if let Some(t) = self.chaos.transport(idx) {
+            t.heal_all();
+        }
+
+        let transport = self.chaos.transport(idx).expect("transport must exist");
+        let peers: Vec<String> = (0..self.node_count)
+            .filter(|&j| j != idx)
+            .map(|j| format!("node-{j}"))
+            .collect();
+
+        let wal_path = &self.wal_paths[idx];
+        let node = Arc::new(
+            RaftNode::with_wal(
+                format!("node-{idx}"),
+                peers,
+                transport,
+                self.raft_config.clone(),
+                wal_path,
+            )
+            .expect("restart raft node with WAL"),
+        );
+
+        let (tx, _) = broadcast::channel(1);
+        let n = Arc::clone(&node);
+        let rx = tx.subscribe();
+        self.handles[idx] = Some(tokio::spawn(async move {
+            let _ = n.run(rx).await;
+        }));
+
+        self.shutdown_txs[idx] = tx;
+        self.nodes[idx] = Some(node);
+    }
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the put times out or the leader node has crashed.
+    pub async fn put(&self, key: &str, data: &[u8], timeout: Duration) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        let mut log_index: Option<u64> = None;
+
+        while start.elapsed() < timeout {
+            let Some(leader_idx) = self.leader_index() else {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            };
+
+            if log_index.is_none() {
+                let header = BlockHeader::new(
+                    0,
+                    [0u8; 32],
+                    [0u8; 32],
+                    [0u8; 32],
+                    format!("node-{leader_idx}"),
+                );
+                let block = Block::new(
+                    header,
+                    vec![ChainTransaction::Put {
+                        key: key.to_string(),
+                        data: data.to_vec(),
+                    }],
+                );
+
+                if let Ok(idx) = self.nodes[leader_idx]
+                    .as_ref()
+                    .ok_or("node crashed")?
+                    .propose(block)
+                {
+                    log_index = Some(idx);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+            }
+
+            if let Some(idx) = log_index {
+                if let Some(node) = &self.nodes[leader_idx] {
+                    if node.commit_index() >= idx {
+                        self.apply_committed(leader_idx);
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Err("put timed out".to_string())
+    }
+
+    pub fn get(&self, node_idx: usize, key: &str) -> Option<Vec<u8>> {
+        self.apply_committed(node_idx);
+        let data = self.stores[node_idx].get(key).ok()?;
+        if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
+            Some(bytes.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn apply_committed(&self, node_idx: usize) -> usize {
+        let Some(node) = &self.nodes[node_idx] else {
+            return 0;
+        };
+        let entries = node.get_uncommitted_entries();
+        let count = entries.len();
+        for entry in &entries {
+            for tx in &entry.block.transactions {
+                let _ = tensor_chain::apply_transaction_to_store(&self.stores[node_idx], tx);
+            }
+        }
+        if count > 0 {
+            let max_idx = entries.last().map_or(0, |e| e.index);
+            node.mark_applied(max_idx);
+        }
+        count
+    }
+
+    pub fn apply_committed_all(&self) -> usize {
+        let mut total = 0;
+        for i in 0..self.node_count {
+            total += self.apply_committed(i);
+        }
+        total
+    }
+
+    /// Partition a node so it cannot send/receive any messages.
+    pub fn partition_node(&self, idx: usize) {
+        if let Some(t) = self.chaos.transport(idx) {
+            t.partition_all();
+        }
+    }
+
+    /// Heal a node's partition so it can communicate again.
+    pub fn heal_node(&self, idx: usize) {
+        if let Some(t) = self.chaos.transport(idx) {
+            t.heal_all();
+        }
+    }
+
+    /// Get the node's current term (from the live node if available).
+    pub fn node_term(&self, idx: usize) -> Option<u64> {
+        self.nodes[idx].as_ref().map(|n| n.current_term())
+    }
+
+    pub async fn shutdown(mut self) {
+        for i in 0..self.node_count {
+            let _ = self.shutdown_txs[i].send(());
+            if let Some(handle) = self.handles[i].take() {
+                let _ = handle.await;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Networked 2PC Cluster (partition-aware 2PC with simulated transport)
+// ---------------------------------------------------------------------------
+
+/// 2PC cluster with simulated network partitions.
+///
+/// Wraps real `TxParticipant` instances but gates message delivery on
+/// partition state. When a participant is partitioned, `prepare()`, `commit()`,
+/// and `abort()` return `None`/`false` (simulating message loss/timeout).
+pub struct Networked2PCCluster {
+    coordinator: DistributedTxCoordinator,
+    participants: Vec<TxParticipant>,
+    partitioned: Vec<bool>,
+}
+
+impl Networked2PCCluster {
+    pub fn new(shard_count: usize) -> Self {
+        Self::with_config(shard_count, DistributedTxConfig::default())
+    }
+
+    pub fn with_config(shard_count: usize, config: DistributedTxConfig) -> Self {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::new(consensus, config);
+        let participants = (0..shard_count)
+            .map(|_| TxParticipant::new_in_memory())
+            .collect();
+        let partitioned = vec![false; shard_count];
+        Self {
+            coordinator,
+            participants,
+            partitioned,
+        }
+    }
+
+    pub const fn coordinator(&self) -> &DistributedTxCoordinator {
+        &self.coordinator
+    }
+
+    pub fn participant(&self, shard: usize) -> &TxParticipant {
+        &self.participants[shard]
+    }
+
+    /// Partition a participant (simulate network failure).
+    pub fn partition_participant(&mut self, shard: usize) {
+        self.partitioned[shard] = true;
+    }
+
+    /// Heal a participant (restore connectivity).
+    pub fn heal_participant(&mut self, shard: usize) {
+        self.partitioned[shard] = false;
+    }
+
+    /// Partition all participants.
+    pub fn partition_all(&mut self) {
+        for p in &mut self.partitioned {
+            *p = true;
+        }
+    }
+
+    /// Heal all participants.
+    pub fn heal_all(&mut self) {
+        for p in &mut self.partitioned {
+            *p = false;
+        }
+    }
+
+    pub fn is_reachable(&self, shard: usize) -> bool {
+        !self.partitioned[shard]
+    }
+
+    pub fn begin(
+        &self,
+        coordinator_id: &str,
+        shards: &[usize],
+    ) -> tensor_chain::distributed_tx::DistributedTransaction {
+        self.coordinator
+            .begin(&coordinator_id.to_string(), shards)
+            .expect("begin should succeed")
+    }
+
+    /// Send prepare to a participant. Returns `None` if partitioned.
+    pub fn prepare(
+        &self,
+        tx_id: u64,
+        shard: usize,
+        operations: Vec<ChainTransaction>,
+    ) -> Option<PrepareVote> {
+        if self.partitioned[shard] {
+            return None;
+        }
+        let request = PrepareRequest {
+            tx_id,
+            coordinator: "coordinator".to_string(),
+            operations,
+            delta_embedding: SparseVector::new(128),
+            timeout_ms: 5000,
+        };
+        Some(self.participants[shard].prepare(request))
+    }
+
+    /// Record a vote with the coordinator.
+    pub fn record_vote(&self, tx_id: u64, shard: usize, vote: PrepareVote) -> Option<TxPhase> {
+        self.coordinator
+            .record_vote(tx_id, shard, vote)
+            .expect("record_vote should succeed")
+    }
+
+    /// Deliver commit to a participant. Returns false if partitioned.
+    pub fn deliver_commit(&self, tx_id: u64, shard: usize) -> bool {
+        if self.partitioned[shard] {
+            return false;
+        }
+        self.participants[shard].commit(tx_id);
+        true
+    }
+
+    /// Deliver abort to a participant. Returns false if partitioned.
+    pub fn deliver_abort(&self, tx_id: u64, shard: usize) -> bool {
+        if self.partitioned[shard] {
+            return false;
+        }
+        self.participants[shard].abort(tx_id);
+        true
+    }
+
+    /// Commit on the coordinator side only.
+    pub fn coordinator_commit(&self, tx_id: u64) {
+        self.coordinator
+            .commit(tx_id)
+            .expect("coordinator commit should succeed");
+    }
+
+    /// Abort on the coordinator side only.
+    pub fn coordinator_abort(&self, tx_id: u64, reason: &str) {
+        self.coordinator
+            .abort(tx_id, reason)
+            .expect("coordinator abort should succeed");
+    }
+
+    /// Read from a participant's real store.
+    pub fn read_value(&self, shard: usize, key: &str) -> Value {
+        let store = self.participants[shard].store();
+        store.get(key).map_or(Value::None, |data| {
+            if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
+                bytes_to_value(bytes)
+            } else {
+                Value::None
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Random Nemesis Schedule generator
+// ---------------------------------------------------------------------------
+
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+
+/// Generate a random nemesis schedule from a seed.
+///
+/// Produces a sequence of random faults (partition, crash, clock drift,
+/// link degradation, heal) at random intervals over `duration_secs`.
+#[must_use]
+pub fn random_nemesis_schedule(seed: u64, duration_secs: u64) -> NemesisSchedule {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut schedule = NemesisSchedule::new();
+    let mut elapsed_ms: u64 = 0;
+    let end_ms = duration_secs * 1000;
+
+    while elapsed_ms < end_ms {
+        let interval_ms = rng.gen_range(2000..5000);
+        elapsed_ms += interval_ms;
+        if elapsed_ms >= end_ms {
+            break;
+        }
+
+        let action = match rng.gen_range(0..5) {
+            0 => NemesisAction::MajorityPartition,
+            1 => NemesisAction::RandomCrash,
+            2 => NemesisAction::ClockDrift {
+                drift_ms: rng.gen_range(-5000..5000),
             },
-            Err(_) => Value::None,
+            3 => NemesisAction::LinkDegradation {
+                drop_rate: rng.gen_range(0.05..0.3),
+            },
+            _ => NemesisAction::HealAll,
+        };
+        schedule = schedule.add(Duration::from_millis(elapsed_ms), action);
+    }
+
+    // Always heal at the end
+    schedule.add(Duration::from_millis(end_ms), NemesisAction::HealAll)
+}
+
+// ---------------------------------------------------------------------------
+// Full Recovery Cluster (Raft WAL + TensorStore persistence)
+// ---------------------------------------------------------------------------
+
+/// Raft cluster that persists both Raft state (via WAL) and application state.
+///
+/// On crash, `save_to_store()` is called; on restart, `with_store()` loads the
+/// full log from the store, and the WAL provides additional entries written
+/// since the last save.
+pub struct FullRecoveryCluster {
+    nodes: Vec<Option<Arc<RaftNode>>>,
+    stores: Vec<TensorStore>,
+    raft_stores: Vec<TensorStore>,
+    chaos: ChaosCluster,
+    raft_config: RaftConfig,
+    node_count: usize,
+    shutdown_txs: Vec<broadcast::Sender<()>>,
+    handles: Vec<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl FullRecoveryCluster {
+    #[allow(clippy::unused_async)]
+    pub async fn new(
+        node_count: usize,
+        raft_config: RaftConfig,
+        chaos_config: ChaosConfig,
+    ) -> Self {
+        let chaos = ChaosCluster::new(node_count, chaos_config);
+        let mut stores = Vec::with_capacity(node_count);
+        let mut raft_stores = Vec::with_capacity(node_count);
+        let mut nodes = Vec::with_capacity(node_count);
+        let mut shutdown_txs = Vec::with_capacity(node_count);
+        let mut handles = Vec::with_capacity(node_count);
+
+        for i in 0..node_count {
+            stores.push(TensorStore::new());
+            raft_stores.push(TensorStore::new());
+
+            let transport = chaos.transport(i).expect("transport must exist");
+            let peers: Vec<String> = (0..node_count)
+                .filter(|&j| j != i)
+                .map(|j| format!("node-{j}"))
+                .collect();
+
+            let node = Arc::new(RaftNode::new(
+                format!("node-{i}"),
+                peers,
+                transport,
+                raft_config.clone(),
+            ));
+
+            let (tx, _) = broadcast::channel(1);
+            let n = Arc::clone(&node);
+            let rx = tx.subscribe();
+            handles.push(Some(tokio::spawn(async move {
+                let _ = n.run(rx).await;
+            })));
+
+            shutdown_txs.push(tx);
+            nodes.push(Some(node));
+        }
+
+        Self {
+            nodes,
+            stores,
+            raft_stores,
+            chaos,
+            raft_config,
+            node_count,
+            shutdown_txs,
+            handles,
+        }
+    }
+
+    pub async fn wait_for_leader(&self, timeout: Duration) -> Option<usize> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            for (i, node) in self.nodes.iter().enumerate() {
+                if let Some(n) = node {
+                    if n.is_leader() {
+                        return Some(i);
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    pub fn leader_index(&self) -> Option<usize> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .find_map(|(i, n)| n.as_ref().filter(|n| n.is_leader()).map(|_| i))
+    }
+
+    /// Crash a node: persist Raft state to store, shutdown, partition.
+    pub async fn crash_node(&mut self, idx: usize) {
+        if let Some(node) = self.nodes[idx].take() {
+            let _ = node.save_to_store(&self.raft_stores[idx]);
+
+            let _ = self.shutdown_txs[idx].send(());
+            if let Some(handle) = self.handles[idx].take() {
+                let _ = handle.await;
+            }
+
+            if let Some(t) = self.chaos.transport(idx) {
+                t.partition_all();
+            }
+        }
+    }
+
+    /// Restart a crashed node from store state.
+    #[allow(clippy::unused_async)]
+    pub async fn restart_node(&mut self, idx: usize) {
+        if self.nodes[idx].is_some() {
+            return;
+        }
+
+        if let Some(t) = self.chaos.transport(idx) {
+            t.heal_all();
+        }
+
+        let transport = self.chaos.transport(idx).expect("transport must exist");
+        let peers: Vec<String> = (0..self.node_count)
+            .filter(|&j| j != idx)
+            .map(|j| format!("node-{j}"))
+            .collect();
+
+        let node = Arc::new(RaftNode::with_store(
+            format!("node-{idx}"),
+            peers,
+            transport,
+            self.raft_config.clone(),
+            &self.raft_stores[idx],
+        ));
+
+        let (tx, _) = broadcast::channel(1);
+        let n = Arc::clone(&node);
+        let rx = tx.subscribe();
+        self.handles[idx] = Some(tokio::spawn(async move {
+            let _ = n.run(rx).await;
+        }));
+
+        self.shutdown_txs[idx] = tx;
+        self.nodes[idx] = Some(node);
+    }
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the put times out or the leader node has crashed.
+    pub async fn put(&self, key: &str, data: &[u8], timeout: Duration) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        let mut log_index: Option<u64> = None;
+
+        while start.elapsed() < timeout {
+            let Some(leader_idx) = self.leader_index() else {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            };
+
+            if log_index.is_none() {
+                let header = BlockHeader::new(
+                    0,
+                    [0u8; 32],
+                    [0u8; 32],
+                    [0u8; 32],
+                    format!("node-{leader_idx}"),
+                );
+                let block = Block::new(
+                    header,
+                    vec![ChainTransaction::Put {
+                        key: key.to_string(),
+                        data: data.to_vec(),
+                    }],
+                );
+
+                if let Ok(idx) = self.nodes[leader_idx]
+                    .as_ref()
+                    .ok_or("node crashed")?
+                    .propose(block)
+                {
+                    log_index = Some(idx);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+            }
+
+            if let Some(idx) = log_index {
+                if let Some(node) = &self.nodes[leader_idx] {
+                    if node.commit_index() >= idx {
+                        self.apply_committed(leader_idx);
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Err("put timed out".to_string())
+    }
+
+    pub fn get(&self, node_idx: usize, key: &str) -> Option<Vec<u8>> {
+        self.apply_committed(node_idx);
+        let data = self.stores[node_idx].get(key).ok()?;
+        if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("data") {
+            Some(bytes.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn apply_committed(&self, node_idx: usize) -> usize {
+        let Some(node) = &self.nodes[node_idx] else {
+            return 0;
+        };
+        let entries = node.get_uncommitted_entries();
+        let count = entries.len();
+        for entry in &entries {
+            for tx in &entry.block.transactions {
+                let _ = tensor_chain::apply_transaction_to_store(&self.stores[node_idx], tx);
+            }
+        }
+        if count > 0 {
+            let max_idx = entries.last().map_or(0, |e| e.index);
+            node.mark_applied(max_idx);
+        }
+        count
+    }
+
+    pub fn apply_committed_all(&self) -> usize {
+        let mut total = 0;
+        for i in 0..self.node_count {
+            total += self.apply_committed(i);
+        }
+        total
+    }
+
+    pub fn node_log_len(&self, idx: usize) -> usize {
+        self.nodes[idx].as_ref().map_or(0, |n| n.log_length())
+    }
+
+    pub async fn shutdown(mut self) {
+        for i in 0..self.node_count {
+            let _ = self.shutdown_txs[i].send(());
+            if let Some(handle) = self.handles[i].take() {
+                let _ = handle.await;
+            }
         }
     }
 }

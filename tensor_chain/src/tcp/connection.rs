@@ -169,6 +169,7 @@ impl Connection {
     /// holding their write locks simultaneously. This prevents a concurrent
     /// observer from seeing a partially-updated connection (e.g. new reader
     /// but stale writer) during the handshake-to-connected transition.
+    #[allow(clippy::significant_drop_tightening)] // Guards held simultaneously for atomicity
     pub fn set_stream<S>(&self, stream: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -183,6 +184,7 @@ impl Connection {
         *state_guard = ConnectionState::Connected;
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Guards held simultaneously for atomicity
     pub fn mark_disconnected(&self) {
         let mut state_guard = self.state.write();
         let mut reader_guard = self.reader.write();
@@ -192,6 +194,7 @@ impl Connection {
         *writer_guard = None;
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Guards held simultaneously for atomicity
     pub fn mark_reconnecting(&self, attempt: usize, next_retry: Instant) {
         let mut state_guard = self.state.write();
         let mut reader_guard = self.reader.write();
@@ -213,7 +216,7 @@ impl Connection {
         self.writer.write().take()
     }
 
-    pub fn codec(&self) -> &LengthDelimitedCodec {
+    pub const fn codec(&self) -> &LengthDelimitedCodec {
         &self.codec
     }
 }
@@ -297,6 +300,7 @@ impl ConnectionPool {
 
         // Find connected connections
         let connected: Vec<_> = conns.iter().filter(|c| c.is_connected()).cloned().collect();
+        drop(conns);
 
         if connected.is_empty() {
             return None;
@@ -342,7 +346,7 @@ impl ConnectionPool {
         self.active_count() < self.pool_size
     }
 
-    pub fn target_size(&self) -> usize {
+    pub const fn target_size(&self) -> usize {
         self.pool_size
     }
 
@@ -399,6 +403,7 @@ impl ConnectionPool {
 
         let after = conns.len();
         let active = conns.iter().filter(|c| c.is_connected()).count();
+        drop(conns);
 
         PoolHealthStatus {
             removed: before - after,
@@ -476,11 +481,11 @@ impl ConnectionManager {
         self.pools.read().keys().cloned().collect()
     }
 
-    pub fn local_id(&self) -> &NodeId {
+    pub const fn local_id(&self) -> &NodeId {
         &self.local_id
     }
 
-    pub fn config(&self) -> &TcpTransportConfig {
+    pub const fn config(&self) -> &TcpTransportConfig {
         &self.config
     }
 
@@ -493,6 +498,7 @@ impl ConnectionManager {
     /// Removes dead connections and returns a list of peer IDs whose pools
     /// need reconnection (below target size). Intended to be called
     /// periodically (e.g., every 10 seconds).
+    #[allow(clippy::significant_drop_tightening)] // Read guard needed throughout iteration
     pub fn health_sweep_all(
         &self,
         stale_timeout: std::time::Duration,

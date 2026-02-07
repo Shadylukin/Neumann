@@ -44,7 +44,7 @@ impl std::fmt::Display for CursorResultType {
 ///
 /// The cursor state is serialized to a base64-encoded token that clients
 /// can use to resume pagination from a specific position.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, PartialEq, Eq)]
 pub struct CursorState {
     /// Unique cursor identifier.
     pub id: CursorId,
@@ -123,7 +123,7 @@ impl CursorState {
 
     /// Check if there are more results after the current page.
     #[must_use]
-    pub fn has_more(&self) -> bool {
+    pub const fn has_more(&self) -> bool {
         match self.total_count {
             Some(total) => self.offset + self.page_size < total,
             None => true, // Unknown total - assume more
@@ -170,7 +170,7 @@ impl CursorState {
             .map_err(|e| CursorError::InvalidToken(format!("bitcode decode failed: {e}")))?;
 
         if state.is_expired() {
-            return Err(CursorError::Expired(state.id.clone()));
+            return Err(CursorError::Expired(state.id));
         }
 
         Ok(state)

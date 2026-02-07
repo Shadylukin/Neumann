@@ -424,6 +424,7 @@ pub async fn search_submit(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_search_page(
     ctx: &AdminContext,
     collection: &str,

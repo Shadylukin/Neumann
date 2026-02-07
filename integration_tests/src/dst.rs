@@ -27,6 +27,19 @@ pub enum FaultAction {
         inbound_blocked: bool,
         outbound_blocked: bool,
     },
+    /// Probabilistic message drops (0.0 = none, 1.0 = all).
+    MessageDrop {
+        rate: f64,
+    },
+    /// Extra delivery latency for a specific node.
+    LatencySpike {
+        node: usize,
+        extra_ticks: u64,
+    },
+    /// Enable/disable random message reordering within each tick.
+    MessageReorder {
+        enabled: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -91,10 +104,8 @@ pub struct SimulationResult {
 
 /// Deterministic simulation harness for Raft.
 pub struct DSTHarness {
-    #[allow(dead_code)]
     rng: rand_chacha::ChaCha8Rng,
     nodes: Vec<Arc<RaftNode>>,
-    #[allow(dead_code)]
     transports: Vec<Arc<MemoryTransport>>,
     node_ids: Vec<String>,
     event_queue: BinaryHeap<ScheduledEvent>,
@@ -106,6 +117,11 @@ pub struct DSTHarness {
     history: HistoryRecorder,
     scheduled_faults: Vec<(u64, FaultAction)>,
     max_ticks: u64,
+
+    // Network non-determinism state
+    message_drop_rate: f64,
+    per_node_extra_latency: HashMap<usize, u64>,
+    reorder_messages: bool,
 
     messages_delivered: u64,
     elections_triggered: u64,
@@ -175,6 +191,9 @@ impl DSTHarness {
             history: HistoryRecorder::new(),
             scheduled_faults: Vec::new(),
             max_ticks,
+            message_drop_rate: 0.0,
+            per_node_extra_latency: HashMap::new(),
+            reorder_messages: false,
             messages_delivered: 0,
             elections_triggered: 0,
             proposals_attempted: 0,
@@ -184,7 +203,7 @@ impl DSTHarness {
         }
     }
 
-    fn next_seq(&mut self) -> u64 {
+    const fn next_seq(&mut self) -> u64 {
         let s = self.seq;
         self.seq += 1;
         s
@@ -217,6 +236,7 @@ impl DSTHarness {
             node_idx as u64,
             OpType::Write,
             "key".to_string(),
+            #[allow(clippy::cast_possible_wrap)]
             Value::Int(tick as i64),
         );
         let seq = self.next_seq();
@@ -233,15 +253,36 @@ impl DSTHarness {
             .position(|n| n.state() == RaftState::Leader)
     }
 
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
     /// Enqueue a message for delivery to a specific node.
+    ///
+    /// Applies network non-determinism: probabilistic drops, per-node latency
+    /// spikes, and random jitter when reordering is enabled.
     fn enqueue_message(&mut self, from: NodeId, to_idx: usize, msg: Message, delay: u64) {
+        use rand::Rng;
+
+        // Probabilistic message drop
+        if self.message_drop_rate > 0.0 && self.rng.gen::<f64>() < self.message_drop_rate {
+            return;
+        }
+
+        // Base delay + per-node extra latency
+        let mut effective_delay = delay;
+        if let Some(&extra) = self.per_node_extra_latency.get(&to_idx) {
+            effective_delay += extra;
+        }
+
+        // Random jitter when reordering is enabled (0..=2 ticks)
+        if self.reorder_messages {
+            effective_delay += self.rng.gen_range(0..=2);
+        }
+
         let seq = self.next_seq();
         self.event_queue.push(ScheduledEvent {
-            tick: self.tick + delay,
+            tick: self.tick + effective_delay,
             seq,
             event: SimEvent::DeliverMessage {
                 from,
@@ -292,11 +333,14 @@ impl DSTHarness {
         let leader_id = self.node_ids[leader_idx].clone();
         let commit_index = self.nodes[leader_idx].commit_index();
 
+        let prev_log_index = self.nodes[leader_idx].last_log_index();
+        let prev_log_term = self.nodes[leader_idx].last_log_term();
+
         let ae = Message::AppendEntries(AppendEntries {
             term,
             leader_id: leader_id.clone(),
-            prev_log_index: 0,
-            prev_log_term: 0,
+            prev_log_index,
+            prev_log_term,
             entries: vec![],
             leader_commit: commit_index,
             block_embedding: None,
@@ -322,17 +366,44 @@ impl DSTHarness {
         }
 
         while self.tick < self.max_ticks {
-            // Process all events at current tick
-            let mut processed_any = true;
-            while processed_any {
-                processed_any = false;
+            // Collect all events at current tick
+            let mut tick_events = Vec::new();
+            while let Some(event) = self.event_queue.peek() {
+                if event.tick > self.tick {
+                    break;
+                }
+                tick_events.push(self.event_queue.pop().unwrap());
+            }
+
+            // Shuffle same-tick events when reordering is enabled
+            if self.reorder_messages && tick_events.len() > 1 {
+                use rand::seq::SliceRandom;
+                tick_events.shuffle(&mut self.rng);
+            }
+
+            // Process all same-tick events, which may enqueue new events at this tick
+            for event in tick_events {
+                self.process_event(event.event);
+            }
+
+            // Process any newly enqueued events for the current tick
+            loop {
+                let mut batch = Vec::new();
                 while let Some(event) = self.event_queue.peek() {
                     if event.tick > self.tick {
                         break;
                     }
-                    let event = self.event_queue.pop().unwrap();
+                    batch.push(self.event_queue.pop().unwrap());
+                }
+                if batch.is_empty() {
+                    break;
+                }
+                if self.reorder_messages && batch.len() > 1 {
+                    use rand::seq::SliceRandom;
+                    batch.shuffle(&mut self.rng);
+                }
+                for event in batch {
                     self.process_event(event.event);
-                    processed_any = true;
                 }
             }
 
@@ -362,10 +433,26 @@ impl DSTHarness {
                     RaftLogModel,
                     std::time::Duration::from_secs(5),
                 );
-                matches!(
-                    checker.check(&completed),
-                    LinearizabilityResult::Ok | LinearizabilityResult::Unknown(_)
-                )
+                let result = checker.check(&completed);
+                match result {
+                    LinearizabilityResult::Ok => true,
+                    LinearizabilityResult::Violation(_) => false,
+                    LinearizabilityResult::Unknown(ref reason) => {
+                        if completed.len() <= 50 {
+                            eprintln!(
+                                "WARNING: checker returned Unknown for small history ({} ops): {reason}",
+                                completed.len()
+                            );
+                            false
+                        } else {
+                            eprintln!(
+                                "INFO: checker timed out on large history ({} ops): {reason}",
+                                completed.len()
+                            );
+                            true
+                        }
+                    },
+                }
             }
         };
 
@@ -448,6 +535,7 @@ impl DSTHarness {
                 self.partitioned.remove(idx);
                 self.inbound_blocked.remove(idx);
                 self.outbound_blocked.remove(idx);
+                self.per_node_extra_latency.remove(idx);
                 for j in 0..self.transports.len() {
                     if j != *idx {
                         self.transports[*idx].heal(&self.node_ids[j]);
@@ -470,6 +558,19 @@ impl DSTHarness {
                 } else {
                     self.outbound_blocked.remove(node);
                 }
+            },
+            FaultAction::MessageDrop { rate } => {
+                self.message_drop_rate = *rate;
+            },
+            FaultAction::LatencySpike { node, extra_ticks } => {
+                if *extra_ticks == 0 {
+                    self.per_node_extra_latency.remove(node);
+                } else {
+                    self.per_node_extra_latency.insert(*node, *extra_ticks);
+                }
+            },
+            FaultAction::MessageReorder { enabled } => {
+                self.reorder_messages = *enabled;
             },
         }
     }

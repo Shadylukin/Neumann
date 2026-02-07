@@ -4,14 +4,6 @@
 //! Implements pure-Rust SVD and matrix operations required for Tensor Train decomposition.
 //! No external LAPACK or BLAS dependencies.
 
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::return_self_not_must_use)]
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::missing_panics_doc)]
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -37,6 +29,8 @@ pub struct Matrix {
 }
 
 impl Matrix {
+    /// # Errors
+    /// Returns error if `data.len()` does not equal `rows * cols`.
     pub fn new(data: Vec<f32>, rows: usize, cols: usize) -> Result<Self, DecomposeError> {
         if data.len() != rows * cols {
             return Err(DecomposeError::InvalidShape {
@@ -47,6 +41,7 @@ impl Matrix {
         Ok(Self { data, rows, cols })
     }
 
+    #[must_use]
     pub fn zeros(rows: usize, cols: usize) -> Self {
         Self {
             data: vec![0.0; rows * cols],
@@ -56,6 +51,7 @@ impl Matrix {
     }
 
     #[inline]
+    #[must_use]
     pub fn get(&self, row: usize, col: usize) -> f32 {
         self.data[row * self.cols + col]
     }
@@ -65,6 +61,7 @@ impl Matrix {
         self.data[row * self.cols + col] = value;
     }
 
+    #[must_use]
     pub fn transpose(&self) -> Self {
         let mut result = Self::zeros(self.cols, self.rows);
         for i in 0..self.rows {
@@ -75,6 +72,7 @@ impl Matrix {
         result
     }
 
+    #[must_use]
     pub fn frobenius_norm(&self) -> f32 {
         self.data.iter().map(|x| x * x).sum::<f32>().sqrt()
     }
@@ -97,6 +95,8 @@ pub struct TensorView<'a> {
 }
 
 impl<'a> TensorView<'a> {
+    /// # Errors
+    /// Returns error if the product of shape dimensions does not match data length.
     pub fn new(data: &'a [f32], shape: Vec<usize>) -> Result<Self, DecomposeError> {
         let product: usize = shape.iter().product();
         if product != data.len() {
@@ -108,12 +108,16 @@ impl<'a> TensorView<'a> {
         Ok(Self { data, shape })
     }
 
+    #[must_use]
     pub const fn ndim(&self) -> usize {
         self.shape.len()
     }
 }
 
 /// Reshape a 1D vector into a tensor view with the given shape.
+///
+/// # Errors
+/// Returns error if the product of shape dimensions does not match vector length.
 pub fn reshape_to_tensor<'a>(
     vector: &'a [f32],
     shape: &[usize],
@@ -135,6 +139,9 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 /// Mode-k unfolding arranges the tensor as a matrix where:
 /// - Rows correspond to index `i_k`
 /// - Columns correspond to all other indices in order
+///
+/// # Errors
+/// Returns error if `mode` exceeds the tensor's number of dimensions.
 pub fn unfold(tensor: &TensorView<'_>, mode: usize) -> Result<Matrix, DecomposeError> {
     if mode >= tensor.ndim() {
         return Err(DecomposeError::DimensionMismatch {
@@ -184,6 +191,9 @@ pub fn unfold(tensor: &TensorView<'_>, mode: usize) -> Result<Matrix, DecomposeE
 }
 
 /// Matrix multiplication: C = A * B
+///
+/// # Errors
+/// Returns error if inner dimensions do not match.
 pub fn matmul(a: &Matrix, b: &Matrix) -> Result<Matrix, DecomposeError> {
     if a.cols != b.rows {
         return Err(DecomposeError::DimensionMismatch {
@@ -251,7 +261,9 @@ impl Lcg {
     }
 
     fn next_f32(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+        #[allow(clippy::cast_precision_loss)]
+        let val = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
+        val
     }
 }
 
@@ -340,7 +352,11 @@ fn power_iteration(
 
     // Initialize v randomly (deterministic seed for reproducibility)
     let mut v: Vec<f32> = (0..a.cols)
-        .map(|i| ((i * 7 + 3) % 13) as f32 / 13.0 - 0.5)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let val = ((i * 7 + 3) % 13) as f32 / 13.0 - 0.5;
+            val
+        })
         .collect();
     normalize(&mut v);
 
@@ -349,20 +365,14 @@ fn power_iteration(
 
     for _ in 0..max_iter {
         // u = A * v
-        for i in 0..a.rows {
-            u[i] = 0.0;
-            for j in 0..a.cols {
-                u[i] += a.get(i, j) * v[j];
-            }
+        for (i, u_val) in u.iter_mut().enumerate() {
+            *u_val = (0..a.cols).map(|j| a.get(i, j) * v[j]).sum();
         }
         let new_sigma = normalize(&mut u);
 
         // v = A^T * u
-        for j in 0..a.cols {
-            v[j] = 0.0;
-            for i in 0..a.rows {
-                v[j] += a.get(i, j) * u[i];
-            }
+        for (j, v_val) in v.iter_mut().enumerate() {
+            *v_val = (0..a.rows).map(|i| a.get(i, j) * u[i]).sum();
         }
         normalize(&mut v);
 
@@ -381,6 +391,9 @@ fn power_iteration(
 /// For matrices where min(m,n) > 2*k, uses random projection to reduce
 /// the problem size before computing SVD. Falls back to direct power
 /// iteration for small matrices.
+///
+/// # Errors
+/// Returns error if the matrix is empty or internal decomposition fails.
 #[allow(clippy::many_single_char_names)]
 pub fn svd_truncated(
     matrix: &Matrix,
@@ -491,10 +504,10 @@ fn svd_power_iteration(
         v_cols.push(v.clone());
 
         // Deflate: A = A - sigma * u * v^T
-        for i in 0..a.rows {
-            for j in 0..a.cols {
+        for (i, &u_val) in u.iter().enumerate() {
+            for (j, &v_val) in v.iter().enumerate() {
                 let idx = i * a.cols + j;
-                a_data[idx] -= sigma * u[i] * v[j];
+                a_data[idx] -= sigma * u_val * v_val;
             }
         }
         a = Matrix::new(a_data.clone(), matrix.rows, matrix.cols)?;
@@ -536,9 +549,13 @@ fn svd_power_iteration(
     })
 }
 
-/// Left-unfold for TT-SVD: reshape tensor core for left-to-right sweep.
-/// Input shape: (r_{k-1}, n_k, remaining...)
-/// Output: matrix of shape (r_{k-1} * n_k, remaining_product)
+/// Left-unfold for `TT-SVD`: reshape tensor core for left-to-right sweep.
+/// Input shape: (`r_{k-1}`, `n_k`, remaining...)
+/// Output: matrix of shape (`r_{k-1}` * `n_k`, `remaining_product`)
+///
+/// # Panics
+/// Panics if data length is not divisible by `left_size * mode_size`.
+#[must_use]
 pub fn left_unfold_for_tt(data: &[f32], left_size: usize, mode_size: usize) -> Matrix {
     let rows = left_size * mode_size;
     if rows == 0 || data.is_empty() {

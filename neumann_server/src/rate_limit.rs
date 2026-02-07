@@ -95,7 +95,7 @@ impl RateLimitConfig {
 
     /// Strict rate limiting preset for testing.
     #[must_use]
-    pub fn strict() -> Self {
+    pub const fn strict() -> Self {
         Self {
             max_requests: 10,
             max_queries: 5,
@@ -108,7 +108,7 @@ impl RateLimitConfig {
 
     /// Permissive rate limiting preset.
     #[must_use]
-    pub fn permissive() -> Self {
+    pub const fn permissive() -> Self {
         Self {
             max_requests: 10_000,
             max_queries: 5_000,
@@ -134,7 +134,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Request => "request",
             Self::Query => "query",
@@ -143,7 +143,7 @@ impl Operation {
         }
     }
 
-    fn limit(self, config: &RateLimitConfig) -> u32 {
+    const fn limit(self, config: &RateLimitConfig) -> u32 {
         match self {
             Self::Request => config.max_requests,
             Self::Query => config.max_queries,
@@ -172,6 +172,10 @@ impl RateLimiter {
     /// Check and record an operation atomically.
     ///
     /// Returns `Ok(())` if allowed, `Err` with message if rate limited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the rate limit for the given operation is exceeded.
     #[allow(clippy::cast_possible_truncation)]
     pub fn check_and_record(&self, identity: &str, op: Operation) -> Result<(), String> {
         if !self.config.enabled {

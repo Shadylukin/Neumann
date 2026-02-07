@@ -54,7 +54,7 @@ pub struct HistoryRecorder {
 
 impl HistoryRecorder {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             operations: Vec::new(),
             next_id: 0,
@@ -105,12 +105,12 @@ impl HistoryRecorder {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.operations.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.operations.is_empty()
     }
 }
@@ -129,7 +129,7 @@ pub struct ConcurrentHistoryRecorder {
 
 impl ConcurrentHistoryRecorder {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             inner: std::sync::Mutex::new(HistoryRecorder::new()),
         }
@@ -223,10 +223,8 @@ impl SequentialModel for RegisterModel {
                         other => other.clone(),
                     };
                     next.insert(op.key.clone(), new_value);
-                    (next, current)
-                } else {
-                    (next, current)
                 }
+                (next, current)
             },
         }
     }
@@ -277,7 +275,7 @@ pub struct LinearizabilityChecker<M: SequentialModel> {
 
 impl<M: SequentialModel> LinearizabilityChecker<M> {
     #[must_use]
-    pub fn new(model: M) -> Self {
+    pub const fn new(model: M) -> Self {
         Self {
             model,
             timeout: Duration::from_secs(30),
@@ -285,7 +283,7 @@ impl<M: SequentialModel> LinearizabilityChecker<M> {
     }
 
     #[must_use]
-    pub fn with_timeout(model: M, timeout: Duration) -> Self {
+    pub const fn with_timeout(model: M, timeout: Duration) -> Self {
         Self { model, timeout }
     }
 
@@ -378,20 +376,11 @@ fn find_candidates(ops: &[&Operation], remaining: &[usize]) -> Vec<usize> {
             // `op` can be next if no other operation completed strictly
             // before `op` was invoked (meaning `op` is not forced to come
             // after `other`).
-            match other.complete_time {
-                Some(ct) => op.invoke_time <= ct,
-                Option::None => true,
-            }
+            other.complete_time.is_none_or(|ct| op.invoke_time <= ct)
         });
         if can_go_next {
             candidates.push(idx);
         }
-    }
-
-    // If no candidate was found due to timing constraints, fall back to
-    // allowing all remaining operations (conservative approach).
-    if candidates.is_empty() {
-        candidates = remaining.to_vec();
     }
 
     candidates
@@ -620,5 +609,51 @@ mod tests {
         assert_eq!(ok, LinearizabilityResult::Ok);
         assert_ne!(ok, violation);
         assert_ne!(violation, unknown);
+    }
+
+    #[test]
+    fn test_checker_no_silent_fallback() {
+        // Craft a history where timing forces a violation that the old fallback
+        // would have masked. Write x=1 (completes), write x=2 (completes after
+        // first), read x -> 1 (starts after both writes complete).
+        // Without the fallback, the checker correctly returns Violation.
+        let ops = vec![
+            make_op(0, OpType::Write, "x", Value::Int(1), Value::None, 0, 10, 1),
+            make_op(1, OpType::Write, "x", Value::Int(2), Value::None, 20, 10, 1),
+            make_op(2, OpType::Read, "x", Value::None, Value::Int(1), 40, 10, 2),
+        ];
+        let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(5));
+        let result = checker.check(&ops);
+        assert!(
+            matches!(result, LinearizabilityResult::Violation(_)),
+            "stale read after sequential writes must be detected as violation, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_checker_concurrent_ops_linearizable() {
+        // Overlapping concurrent ops that ARE linearizable: two writes overlap,
+        // then a concurrent read returns one valid value. The checker must not
+        // produce false negatives after the fallback removal.
+        //
+        // Timeline:
+        //   W(x=1): [0ms, 50ms]
+        //   W(x=2): [10ms, 40ms]   (overlaps with W(x=1))
+        //   R(x):   [20ms, 60ms]   (overlaps with both writes)
+        //
+        // Valid linearization: W(x=1) -> W(x=2) -> R(x)=2
+        // or: W(x=2) -> W(x=1) -> R(x)=1, etc.
+        let ops = vec![
+            make_op(0, OpType::Write, "x", Value::Int(1), Value::None, 0, 50, 1),
+            make_op(1, OpType::Write, "x", Value::Int(2), Value::None, 10, 30, 2),
+            make_op(2, OpType::Read, "x", Value::None, Value::Int(2), 20, 40, 3),
+        ];
+        let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(5));
+        let result = checker.check(&ops);
+        assert_eq!(
+            result,
+            LinearizabilityResult::Ok,
+            "concurrent ops with valid linearization must pass: {result:?}"
+        );
     }
 }

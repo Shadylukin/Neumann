@@ -3575,45 +3575,35 @@ mod tests {
     #[test]
     fn test_select_columns() {
         let stmt = parse_stmt("SELECT id, name, email FROM users");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.columns.len(), 3);
     }
 
     #[test]
     fn test_select_with_alias() {
         let stmt = parse_stmt("SELECT name AS user_name FROM users");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.columns[0].alias.is_some());
     }
 
     #[test]
     fn test_select_distinct() {
         let stmt = parse_stmt("SELECT DISTINCT name FROM users");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.distinct);
     }
 
     #[test]
     fn test_select_where() {
         let stmt = parse_stmt("SELECT * FROM users WHERE id = 1");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.where_clause.is_some());
     }
 
     #[test]
     fn test_select_order_by() {
         let stmt = parse_stmt("SELECT * FROM users ORDER BY name ASC");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.order_by.len(), 1);
         assert_eq!(select.order_by[0].direction, SortDirection::Asc);
     }
@@ -3621,9 +3611,7 @@ mod tests {
     #[test]
     fn test_select_limit_offset() {
         let stmt = parse_stmt("SELECT * FROM users LIMIT 10 OFFSET 5");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.limit.is_some());
         assert!(select.offset.is_some());
     }
@@ -3631,18 +3619,14 @@ mod tests {
     #[test]
     fn test_select_join() {
         let stmt = parse_stmt("SELECT * FROM users u JOIN orders o ON u.id = o.user_id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.from.as_ref().unwrap().joins.len(), 1);
     }
 
     #[test]
     fn test_select_left_join() {
         let stmt = parse_stmt("SELECT * FROM users LEFT JOIN orders ON users.id = orders.user_id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Left);
     }
@@ -3650,9 +3634,7 @@ mod tests {
     #[test]
     fn test_select_group_by_having() {
         let stmt = parse_stmt("SELECT name, COUNT(*) FROM users GROUP BY name HAVING COUNT(*) > 1");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(!select.group_by.is_empty());
         assert!(select.having.is_some());
     }
@@ -3661,9 +3643,7 @@ mod tests {
     fn test_insert() {
         let stmt =
             parse_stmt("INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')");
-        let StatementKind::Insert(insert) = stmt.kind else {
-            panic!("expected INSERT")
-        };
+        let insert = unwrap_insert(stmt);
         assert_eq!(insert.table.name, "users");
         assert!(insert.columns.is_some());
     }
@@ -3671,9 +3651,7 @@ mod tests {
     #[test]
     fn test_update() {
         let stmt = parse_stmt("UPDATE users SET name = 'Bob' WHERE id = 1");
-        let StatementKind::Update(update) = stmt.kind else {
-            panic!("expected UPDATE")
-        };
+        let update = unwrap_update(stmt);
         assert_eq!(update.table.name, "users");
         assert_eq!(update.assignments.len(), 1);
         assert!(update.where_clause.is_some());
@@ -3682,9 +3660,7 @@ mod tests {
     #[test]
     fn test_delete() {
         let stmt = parse_stmt("DELETE FROM users WHERE id = 1");
-        let StatementKind::Delete(delete) = stmt.kind else {
-            panic!("expected DELETE")
-        };
+        let delete = unwrap_delete(stmt);
         assert_eq!(delete.table.name, "users");
         assert!(delete.where_clause.is_some());
     }
@@ -3693,9 +3669,7 @@ mod tests {
     fn test_create_table() {
         let stmt =
             parse_stmt("CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(100) NOT NULL)");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert_eq!(create.table.name, "users");
         assert_eq!(create.columns.len(), 2);
     }
@@ -3703,18 +3677,14 @@ mod tests {
     #[test]
     fn test_create_table_if_not_exists() {
         let stmt = parse_stmt("CREATE TABLE IF NOT EXISTS users (id INT)");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert!(create.if_not_exists);
     }
 
     #[test]
     fn test_create_index() {
         let stmt = parse_stmt("CREATE INDEX idx_name ON users (name)");
-        let StatementKind::CreateIndex(create) = stmt.kind else {
-            panic!("expected CREATE INDEX")
-        };
+        let create = unwrap_createindex(stmt);
         assert_eq!(create.name.name, "idx_name");
         assert!(!create.unique);
     }
@@ -3722,18 +3692,14 @@ mod tests {
     #[test]
     fn test_create_unique_index() {
         let stmt = parse_stmt("CREATE UNIQUE INDEX idx_email ON users (email)");
-        let StatementKind::CreateIndex(create) = stmt.kind else {
-            panic!("expected CREATE INDEX")
-        };
+        let create = unwrap_createindex(stmt);
         assert!(create.unique);
     }
 
     #[test]
     fn test_drop_table() {
         let stmt = parse_stmt("DROP TABLE users");
-        let StatementKind::DropTable(drop) = stmt.kind else {
-            panic!("expected DROP TABLE")
-        };
+        let drop = unwrap_droptable(stmt);
         assert_eq!(drop.table.name, "users");
         assert!(!drop.if_exists);
     }
@@ -3741,9 +3707,7 @@ mod tests {
     #[test]
     fn test_drop_table_if_exists() {
         let stmt = parse_stmt("DROP TABLE IF EXISTS users CASCADE");
-        let StatementKind::DropTable(drop) = stmt.kind else {
-            panic!("expected DROP TABLE")
-        };
+        let drop = unwrap_droptable(stmt);
         assert!(drop.if_exists);
         assert!(drop.cascade);
     }
@@ -3751,25 +3715,19 @@ mod tests {
     #[test]
     fn test_drop_index() {
         let stmt = parse_stmt("DROP INDEX IF EXISTS idx_name");
-        let StatementKind::DropIndex(drop) = stmt.kind else {
-            panic!("expected DROP INDEX")
-        };
+        let drop = unwrap_dropindex(stmt);
         assert!(drop.if_exists);
     }
 
     #[test]
     fn test_node_create() {
         let stmt = parse_stmt("NODE CREATE user {name: 'Alice', age: 30}");
-        if let StatementKind::Node(node) = stmt.kind {
-            if let NodeOp::Create { label, properties } = node.operation {
-                assert_eq!(label.name, "user");
-                assert_eq!(properties.len(), 2);
-            } else {
-                panic!("expected NODE CREATE");
-            }
-        } else {
-            panic!("expected NODE");
-        }
+        let node = unwrap_node(stmt);
+        let NodeOp::Create { label, properties } = node.operation else {
+            panic!("expected NODE CREATE")
+        };
+        assert_eq!(label.name, "user");
+        assert_eq!(properties.len(), 2);
     }
 
     #[test]
@@ -3808,32 +3766,24 @@ mod tests {
     #[test]
     fn test_edge_create() {
         let stmt = parse_stmt("EDGE CREATE 1 -> 2 : knows {since: 2020}");
-        if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::Create { edge_type, .. } = edge.operation {
-                assert_eq!(edge_type.name, "knows");
-            } else {
-                panic!("expected EDGE CREATE");
-            }
-        } else {
-            panic!("expected EDGE");
-        }
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::Create { edge_type, .. } = edge.operation else {
+            panic!("expected EDGE CREATE")
+        };
+        assert_eq!(edge_type.name, "knows");
     }
 
     #[test]
     fn test_neighbors() {
         let stmt = parse_stmt("NEIGHBORS 1 OUTGOING");
-        let StatementKind::Neighbors(neighbors) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let neighbors = unwrap_neighbors(stmt);
         assert_eq!(neighbors.direction, Direction::Outgoing);
     }
 
     #[test]
     fn test_path() {
         let stmt = parse_stmt("PATH SHORTEST 1 -> 2 LIMIT 5");
-        let StatementKind::Path(path) = stmt.kind else {
-            panic!("expected PATH")
-        };
+        let path = unwrap_path(stmt);
         assert_eq!(path.algorithm, PathAlgorithm::Shortest);
         assert!(path.max_depth.is_some());
     }
@@ -3841,15 +3791,11 @@ mod tests {
     #[test]
     fn test_embed_store() {
         let stmt = parse_stmt("EMBED STORE 'doc1' [0.1, 0.2, 0.3]");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            if let EmbedOp::Store { vector, .. } = embed.operation {
-                assert_eq!(vector.len(), 3);
-            } else {
-                panic!("expected EMBED STORE");
-            }
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Store { vector, .. } = embed.operation else {
+            panic!("expected EMBED STORE")
+        };
+        assert_eq!(vector.len(), 3);
     }
 
     #[test]
@@ -3867,9 +3813,7 @@ mod tests {
     #[test]
     fn test_similar() {
         let stmt = parse_stmt("SIMILAR 'doc1' LIMIT 10 COSINE");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert!(matches!(similar.query, SimilarQuery::Key(_)));
         assert!(similar.limit.is_some());
         assert_eq!(similar.metric, Some(DistanceMetric::Cosine));
@@ -3878,25 +3822,20 @@ mod tests {
     #[test]
     fn test_similar_vector() {
         let stmt = parse_stmt("SIMILAR [0.1, 0.2] LIMIT 5");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert!(matches!(similar.query, SimilarQuery::Vector(_)));
     }
 
     #[test]
     fn test_find_nodes() {
         let stmt = parse_stmt("FIND NODE user WHERE age > 18 LIMIT 10");
-        if let StatementKind::Find(find) = stmt.kind {
-            assert!(matches!(
-                find.pattern,
-                FindPattern::Nodes { label: Some(_) }
-            ));
-            assert!(find.where_clause.is_some());
-            assert!(find.limit.is_some());
-        } else {
-            panic!("expected FIND");
-        }
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes { label: Some(_) }
+        ));
+        assert!(find.where_clause.is_some());
+        assert!(find.limit.is_some());
     }
 
     #[test]
@@ -3921,9 +3860,7 @@ mod tests {
     fn test_data_types() {
         let stmt =
             parse_stmt("CREATE TABLE t (a INT, b VARCHAR(255), c DECIMAL(10, 2), d BOOLEAN)");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert_eq!(create.columns.len(), 4);
         assert!(matches!(create.columns[0].data_type, DataType::Int));
         assert!(matches!(
@@ -3941,18 +3878,14 @@ mod tests {
     fn test_table_constraints() {
         let stmt =
             parse_stmt("CREATE TABLE t (id INT, name TEXT, PRIMARY KEY (id), UNIQUE (name))");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert_eq!(create.constraints.len(), 2);
     }
 
     #[test]
     fn test_join_using() {
         let stmt = parse_stmt("SELECT * FROM a JOIN b USING (id)");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert!(matches!(
             from.joins[0].condition,
@@ -3963,9 +3896,7 @@ mod tests {
     #[test]
     fn test_order_by_nulls() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY x NULLS FIRST");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.order_by[0].nulls, Some(NullsOrder::First));
     }
 
@@ -4002,9 +3933,7 @@ mod tests {
     #[test]
     fn test_char_with_length() {
         let stmt = parse_stmt("CREATE TABLE t (x CHAR(10))");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert!(matches!(
             create.columns[0].data_type,
             DataType::Char(Some(10))
@@ -4014,9 +3943,7 @@ mod tests {
     #[test]
     fn test_numeric_precision_scale() {
         let stmt = parse_stmt("CREATE TABLE t (x NUMERIC(5, 2))");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert!(matches!(
             create.columns[0].data_type,
             DataType::Numeric(Some(5), Some(2))
@@ -4026,9 +3953,7 @@ mod tests {
     #[test]
     fn test_right_join() {
         let stmt = parse_stmt("SELECT * FROM a RIGHT JOIN b ON a.id = b.id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Right);
     }
@@ -4036,9 +3961,7 @@ mod tests {
     #[test]
     fn test_full_join() {
         let stmt = parse_stmt("SELECT * FROM a FULL OUTER JOIN b ON a.id = b.id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Full);
     }
@@ -4046,9 +3969,7 @@ mod tests {
     #[test]
     fn test_cross_join() {
         let stmt = parse_stmt("SELECT * FROM a CROSS JOIN b");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Cross);
     }
@@ -4056,9 +3977,7 @@ mod tests {
     #[test]
     fn test_natural_join() {
         let stmt = parse_stmt("SELECT * FROM a NATURAL JOIN b");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Natural);
     }
@@ -4088,105 +4007,84 @@ mod tests {
     #[test]
     fn test_edge_list() {
         let stmt = parse_stmt("EDGE LIST FOLLOWS");
-        if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::List { edge_type, .. } = edge.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected EDGE LIST");
-            }
-        } else {
-            panic!("expected EDGE");
-        }
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::List { edge_type, .. } = edge.operation else {
+            panic!("expected EDGE LIST")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_edge_list_no_type() {
         let stmt = parse_stmt("EDGE LIST");
-        if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::List { edge_type, .. } = edge.operation {
-                assert!(edge_type.is_none());
-            } else {
-                panic!("expected EDGE LIST");
-            }
-        } else {
-            panic!("expected EDGE");
-        }
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::List { edge_type, .. } = edge.operation else {
+            panic!("expected EDGE LIST")
+        };
+        assert!(edge_type.is_none());
     }
 
     #[test]
     fn test_node_list_no_label() {
         let stmt = parse_stmt("NODE LIST");
-        if let StatementKind::Node(node) = stmt.kind {
-            if let NodeOp::List { label, .. } = node.operation {
-                assert!(label.is_none());
-            } else {
-                panic!("expected NODE LIST");
-            }
-        } else {
-            panic!("expected NODE");
-        }
+        let node = unwrap_node(stmt);
+        let NodeOp::List { label, .. } = node.operation else {
+            panic!("expected NODE LIST")
+        };
+        assert!(label.is_none());
     }
 
     #[test]
     fn test_node_list_with_limit() {
         let stmt = parse_stmt("NODE LIST LIMIT 10");
-        if let StatementKind::Node(node) = stmt.kind {
-            if let NodeOp::List {
-                label,
-                limit,
-                offset,
-            } = node.operation
-            {
-                assert!(label.is_none());
-                assert!(limit.is_some());
-                assert!(offset.is_none());
-            } else {
-                panic!("expected NODE LIST");
-            }
+        let node = unwrap_node(stmt);
+        if let NodeOp::List {
+            label,
+            limit,
+            offset,
+        } = node.operation
+        {
+            assert!(label.is_none());
+            assert!(limit.is_some());
+            assert!(offset.is_none());
         } else {
-            panic!("expected NODE");
+            panic!("expected NODE LIST");
         }
     }
 
     #[test]
     fn test_node_list_with_limit_offset() {
         let stmt = parse_stmt("NODE LIST user LIMIT 50 OFFSET 100");
-        if let StatementKind::Node(node) = stmt.kind {
-            if let NodeOp::List {
-                label,
-                limit,
-                offset,
-            } = node.operation
-            {
-                assert!(label.is_some());
-                assert!(limit.is_some());
-                assert!(offset.is_some());
-            } else {
-                panic!("expected NODE LIST");
-            }
+        let node = unwrap_node(stmt);
+        if let NodeOp::List {
+            label,
+            limit,
+            offset,
+        } = node.operation
+        {
+            assert!(label.is_some());
+            assert!(limit.is_some());
+            assert!(offset.is_some());
         } else {
-            panic!("expected NODE");
+            panic!("expected NODE LIST");
         }
     }
 
     #[test]
     fn test_edge_list_with_limit_offset() {
         let stmt = parse_stmt("EDGE LIST FOLLOWS LIMIT 25 OFFSET 50");
-        if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::List {
-                edge_type,
-                limit,
-                offset,
-            } = edge.operation
-            {
-                assert!(edge_type.is_some());
-                assert!(limit.is_some());
-                assert!(offset.is_some());
-            } else {
-                panic!("expected EDGE LIST");
-            }
+        let edge = unwrap_edge(stmt);
+        if let EdgeOp::List {
+            edge_type,
+            limit,
+            offset,
+        } = edge.operation
+        {
+            assert!(edge_type.is_some());
+            assert!(limit.is_some());
+            assert!(offset.is_some());
         } else {
-            panic!("expected EDGE");
+            panic!("expected EDGE LIST");
         }
     }
 
@@ -4205,117 +4103,90 @@ mod tests {
     #[test]
     fn test_neighbors_incoming() {
         let stmt = parse_stmt("NEIGHBORS 1 INCOMING");
-        let StatementKind::Neighbors(neighbors) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let neighbors = unwrap_neighbors(stmt);
         assert_eq!(neighbors.direction, Direction::Incoming);
     }
 
     #[test]
     fn test_neighbors_both() {
         let stmt = parse_stmt("NEIGHBORS 1 BOTH");
-        let StatementKind::Neighbors(neighbors) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let neighbors = unwrap_neighbors(stmt);
         assert_eq!(neighbors.direction, Direction::Both);
     }
 
     #[test]
     fn test_neighbors_with_type() {
         let stmt = parse_stmt("NEIGHBORS 1 OUTGOING : FOLLOWS");
-        let StatementKind::Neighbors(neighbors) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let neighbors = unwrap_neighbors(stmt);
         assert!(neighbors.edge_type.is_some());
     }
 
     #[test]
     fn test_path_without_shortest() {
         let stmt = parse_stmt("PATH 1 -> 2");
-        let StatementKind::Path(path) = stmt.kind else {
-            panic!("expected PATH")
-        };
+        let path = unwrap_path(stmt);
         assert_eq!(path.algorithm, PathAlgorithm::Shortest);
     }
 
     #[test]
     fn test_path_with_limit() {
         let stmt = parse_stmt("PATH 1 -> 2 LIMIT 5");
-        let StatementKind::Path(path) = stmt.kind else {
-            panic!("expected PATH")
-        };
+        let path = unwrap_path(stmt);
         assert!(path.max_depth.is_some());
     }
 
     #[test]
     fn test_find_edge() {
         let stmt = parse_stmt("FIND EDGE FOLLOWS WHERE weight > 0.5");
-        if let StatementKind::Find(find) = stmt.kind {
-            assert!(matches!(
-                find.pattern,
-                FindPattern::Edges { edge_type: Some(_) }
-            ));
-        } else {
-            panic!("expected FIND");
-        }
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Edges { edge_type: Some(_) }
+        ));
     }
 
     #[test]
     fn test_find_vertex() {
         let stmt = parse_stmt("FIND VERTEX person");
-        if let StatementKind::Find(find) = stmt.kind {
-            assert!(matches!(
-                find.pattern,
-                FindPattern::Nodes { label: Some(_) }
-            ));
-        } else {
-            panic!("expected FIND");
-        }
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes { label: Some(_) }
+        ));
     }
 
     #[test]
     fn test_find_with_return() {
         let stmt = parse_stmt("FIND NODE user RETURN name, age");
-        let StatementKind::Find(find) = stmt.kind else {
-            panic!("expected FIND")
-        };
+        let find = unwrap_find(stmt);
         assert_eq!(find.return_items.len(), 2);
     }
 
     #[test]
     fn test_find_no_pattern() {
         let stmt = parse_stmt("FIND WHERE x > 1");
-        if let StatementKind::Find(find) = stmt.kind {
-            assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
-        } else {
-            panic!("expected FIND");
-        }
+        let find = unwrap_find(stmt);
+        assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
     }
 
     #[test]
     fn test_similar_euclidean() {
         let stmt = parse_stmt("SIMILAR 'doc' EUCLIDEAN");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert_eq!(similar.metric, Some(DistanceMetric::Euclidean));
     }
 
     #[test]
     fn test_similar_dot_product() {
         let stmt = parse_stmt("SIMILAR 'doc' DOT_PRODUCT");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert_eq!(similar.metric, Some(DistanceMetric::DotProduct));
     }
 
     #[test]
     fn test_column_not_null() {
         let stmt = parse_stmt("CREATE TABLE t (x INT NOT NULL)");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert!(create.columns[0]
             .constraints
             .contains(&ColumnConstraint::NotNull));
@@ -4324,9 +4195,7 @@ mod tests {
     #[test]
     fn test_column_default() {
         let stmt = parse_stmt("CREATE TABLE t (x INT DEFAULT 0)");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert!(create.columns[0]
             .constraints
             .iter()
@@ -4336,44 +4205,34 @@ mod tests {
     #[test]
     fn test_column_references() {
         let stmt = parse_stmt("CREATE TABLE t (x INT REFERENCES other(id))");
-        if let StatementKind::CreateTable(create) = stmt.kind {
-            assert!(create.columns[0]
-                .constraints
-                .iter()
-                .any(|c| matches!(c, ColumnConstraint::References { .. })));
-        } else {
-            panic!("expected CREATE TABLE");
-        }
+        let create = unwrap_createtable(stmt);
+        assert!(create.columns[0]
+            .constraints
+            .iter()
+            .any(|c| matches!(c, ColumnConstraint::References { .. })));
     }
 
     #[test]
     fn test_insert_multiple_rows() {
         let stmt = parse_stmt("INSERT INTO t (a, b) VALUES (1, 2), (3, 4)");
-        let StatementKind::Insert(insert) = stmt.kind else {
-            panic!("expected VALUES")
+        let insert = unwrap_insert(stmt);
+        let InsertSource::Values(rows) = insert.source else {
+            panic!("expected INSERT")
         };
-        if let InsertSource::Values(rows) = insert.source {
-            assert_eq!(rows.len(), 2);
-        } else {
-            panic!("expected INSERT");
-        }
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]
     fn test_insert_with_select() {
         let stmt = parse_stmt("INSERT INTO t SELECT * FROM other");
-        let StatementKind::Insert(insert) = stmt.kind else {
-            panic!("expected INSERT")
-        };
+        let insert = unwrap_insert(stmt);
         assert!(matches!(insert.source, InsertSource::Query(_)));
     }
 
     #[test]
     fn test_order_by_nulls_last() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY x DESC NULLS LAST");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.order_by[0].direction, SortDirection::Desc);
         assert_eq!(select.order_by[0].nulls, Some(NullsOrder::Last));
     }
@@ -4381,27 +4240,21 @@ mod tests {
     #[test]
     fn test_select_multiple_columns() {
         let stmt = parse_stmt("SELECT a, b, c FROM t");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.columns.len(), 3);
     }
 
     #[test]
     fn test_select_all_keyword() {
         let stmt = parse_stmt("SELECT ALL * FROM t");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(!select.distinct); // ALL is the default (not distinct)
     }
 
     #[test]
     fn test_inner_join() {
         let stmt = parse_stmt("SELECT * FROM a INNER JOIN b ON a.id = b.id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Inner);
     }
@@ -4409,9 +4262,7 @@ mod tests {
     #[test]
     fn test_right_outer_join() {
         let stmt = parse_stmt("SELECT * FROM a RIGHT OUTER JOIN b ON a.id = b.id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Right);
     }
@@ -4419,9 +4270,7 @@ mod tests {
     #[test]
     fn test_left_outer_join() {
         let stmt = parse_stmt("SELECT * FROM a LEFT OUTER JOIN b ON a.id = b.id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins[0].kind, JoinKind::Left);
     }
@@ -4429,9 +4278,7 @@ mod tests {
     #[test]
     fn test_table_alias_implicit() {
         let stmt = parse_stmt("SELECT * FROM users u");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.table.alias.as_ref().unwrap().name, "u");
     }
@@ -4439,31 +4286,24 @@ mod tests {
     #[test]
     fn test_select_item_alias() {
         let stmt = parse_stmt("SELECT x AS y FROM t");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.columns[0].alias.is_some());
     }
 
     #[test]
     fn test_foreign_key_constraint() {
         let stmt = parse_stmt("CREATE TABLE t (x INT, FOREIGN KEY (x) REFERENCES other(id))");
-        if let StatementKind::CreateTable(create) = stmt.kind {
-            assert!(create
-                .constraints
-                .iter()
-                .any(|c| matches!(c, TableConstraint::ForeignKey { .. })));
-        } else {
-            panic!("expected CREATE TABLE");
-        }
+        let create = unwrap_createtable(stmt);
+        assert!(create
+            .constraints
+            .iter()
+            .any(|c| matches!(c, TableConstraint::ForeignKey { .. })));
     }
 
     #[test]
     fn test_check_constraint() {
         let stmt = parse_stmt("CREATE TABLE t (x INT, CHECK (x > 0))");
-        let StatementKind::CreateTable(create) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let create = unwrap_createtable(stmt);
         assert!(create
             .constraints
             .iter()
@@ -4545,56 +4385,42 @@ mod tests {
     #[test]
     fn test_node_create_empty_properties() {
         let stmt = parse_stmt("NODE CREATE user {}");
-        if let StatementKind::Node(node) = stmt.kind {
-            if let NodeOp::Create { properties, .. } = node.operation {
-                assert!(properties.is_empty());
-            } else {
-                panic!("expected NODE CREATE");
-            }
-        } else {
-            panic!("expected NODE");
-        }
+        let node = unwrap_node(stmt);
+        let NodeOp::Create { properties, .. } = node.operation else {
+            panic!("expected NODE CREATE")
+        };
+        assert!(properties.is_empty());
     }
 
     #[test]
     fn test_edge_create_empty_properties() {
         let stmt = parse_stmt("EDGE CREATE 1 -> 2 : knows {}");
-        if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::Create { properties, .. } = edge.operation {
-                assert!(properties.is_empty());
-            } else {
-                panic!("expected EDGE CREATE");
-            }
-        } else {
-            panic!("expected EDGE");
-        }
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::Create { properties, .. } = edge.operation else {
+            panic!("expected EDGE CREATE")
+        };
+        assert!(properties.is_empty());
     }
 
     // More SQL tests
     #[test]
     fn test_update_multiple_columns() {
         let stmt = parse_stmt("UPDATE t SET a = 1, b = 2, c = 3 WHERE id = 1");
-        let StatementKind::Update(update) = stmt.kind else {
-            panic!("expected UPDATE")
-        };
+        let update = unwrap_update(stmt);
         assert_eq!(update.assignments.len(), 3);
     }
 
     #[test]
     fn test_delete_without_where() {
         let stmt = parse_stmt("DELETE FROM users");
-        let StatementKind::Delete(delete) = stmt.kind else {
-            panic!("expected DELETE")
-        };
+        let delete = unwrap_delete(stmt);
         assert!(delete.where_clause.is_none());
     }
 
     #[test]
     fn test_select_with_offset() {
         let stmt = parse_stmt("SELECT * FROM t LIMIT 10 OFFSET 5");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.limit.is_some());
         assert!(select.offset.is_some());
     }
@@ -4602,9 +4428,7 @@ mod tests {
     #[test]
     fn test_multiple_joins() {
         let stmt = parse_stmt("SELECT * FROM a JOIN b ON a.id = b.a_id JOIN c ON b.id = c.b_id");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         assert_eq!(from.joins.len(), 2);
     }
@@ -4618,9 +4442,7 @@ mod tests {
     #[test]
     fn test_aggregate_with_filter() {
         let stmt = parse_stmt("SELECT COUNT(*), SUM(amount), AVG(price) FROM orders");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert_eq!(select.columns.len(), 3);
     }
 
@@ -4628,9 +4450,7 @@ mod tests {
     #[test]
     fn test_similar_no_options() {
         let stmt = parse_stmt("SIMILAR 'query'");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert!(similar.limit.is_none());
         assert!(similar.metric.is_none());
     }
@@ -4639,24 +4459,18 @@ mod tests {
     #[test]
     fn test_find_edge_no_type() {
         let stmt = parse_stmt("FIND EDGE WHERE weight > 0.5");
-        if let StatementKind::Find(find) = stmt.kind {
-            assert!(matches!(
-                find.pattern,
-                FindPattern::Edges { edge_type: None }
-            ));
-        } else {
-            panic!("expected FIND");
-        }
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Edges { edge_type: None }
+        ));
     }
 
     #[test]
     fn test_find_node_no_label() {
         let stmt = parse_stmt("FIND NODE WHERE active = TRUE");
-        if let StatementKind::Find(find) = stmt.kind {
-            assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
-        } else {
-            panic!("expected FIND");
-        }
+        let find = unwrap_find(stmt);
+        assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
     }
 
     // SHOW TABLES tests
@@ -4688,9 +4502,7 @@ mod tests {
     #[test]
     fn test_bit_or() {
         let stmt = parse_stmt("SELECT 1 | 2");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::BitOr, _)
@@ -4700,9 +4512,7 @@ mod tests {
     #[test]
     fn test_bit_and() {
         let stmt = parse_stmt("SELECT 1 & 2");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::BitAnd, _)
@@ -4712,9 +4522,7 @@ mod tests {
     #[test]
     fn test_bit_xor() {
         let stmt = parse_stmt("SELECT 1 ^ 2");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::BitXor, _)
@@ -4724,9 +4532,7 @@ mod tests {
     #[test]
     fn test_bit_shift_left() {
         let stmt = parse_stmt("SELECT 1 << 2");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Shl, _)
@@ -4736,9 +4542,7 @@ mod tests {
     #[test]
     fn test_bit_shift_right() {
         let stmt = parse_stmt("SELECT 1 >> 2");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Shr, _)
@@ -4748,9 +4552,7 @@ mod tests {
     #[test]
     fn test_bit_not() {
         let stmt = parse_stmt("SELECT ~1");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Unary(UnaryOp::BitNot, _)
@@ -4761,36 +4563,28 @@ mod tests {
     #[test]
     fn test_aggregate_sum() {
         let stmt = parse_stmt("SELECT SUM(x) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
     }
 
     #[test]
     fn test_aggregate_avg() {
         let stmt = parse_stmt("SELECT AVG(x) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
     }
 
     #[test]
     fn test_aggregate_min() {
         let stmt = parse_stmt("SELECT MIN(x) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
     }
 
     #[test]
     fn test_aggregate_max() {
         let stmt = parse_stmt("SELECT MAX(x) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
     }
 
@@ -4798,9 +4592,7 @@ mod tests {
     #[test]
     fn test_not_in_list() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x NOT IN (1, 2, 3)");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
@@ -4808,9 +4600,7 @@ mod tests {
     #[test]
     fn test_exists_subquery() {
         let stmt = parse_stmt("SELECT * FROM t WHERE EXISTS (SELECT 1 FROM u)");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
@@ -4818,9 +4608,7 @@ mod tests {
     #[test]
     fn test_order_by_asc() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY x ASC");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(!sel.order_by.is_empty());
         assert!(matches!(sel.order_by[0].direction, SortDirection::Asc));
     }
@@ -4828,9 +4616,7 @@ mod tests {
     #[test]
     fn test_order_by_desc() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY x DESC");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(!sel.order_by.is_empty());
         assert!(matches!(sel.order_by[0].direction, SortDirection::Desc));
     }
@@ -4865,18 +4651,14 @@ mod tests {
     #[test]
     fn test_is_null() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x IS NULL");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
     #[test]
     fn test_is_not_null() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x IS NOT NULL");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
@@ -4884,18 +4666,14 @@ mod tests {
     #[test]
     fn test_between() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x BETWEEN 1 AND 10");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
     #[test]
     fn test_not_between() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x NOT BETWEEN 1 AND 10");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
@@ -4903,18 +4681,14 @@ mod tests {
     #[test]
     fn test_like() {
         let stmt = parse_stmt("SELECT * FROM t WHERE name LIKE '%foo%'");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
     #[test]
     fn test_not_like() {
         let stmt = parse_stmt("SELECT * FROM t WHERE name NOT LIKE '%bar%'");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
@@ -4922,9 +4696,7 @@ mod tests {
     #[test]
     fn test_qualified_wildcard() {
         let stmt = parse_stmt("SELECT t.* FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(!sel.columns.is_empty());
         assert!(matches!(
             sel.columns[0].expr.kind,
@@ -4936,9 +4708,7 @@ mod tests {
     #[test]
     fn test_array_expr() {
         let stmt = parse_stmt("SELECT [1, 2, 3] FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Array(_)));
     }
 
@@ -4946,9 +4716,7 @@ mod tests {
     #[test]
     fn test_division() {
         let stmt = parse_stmt("SELECT a / b FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Div, _)
@@ -4958,9 +4726,7 @@ mod tests {
     #[test]
     fn test_modulo() {
         let stmt = parse_stmt("SELECT a % b FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Mod, _)
@@ -4971,9 +4737,7 @@ mod tests {
     #[test]
     fn test_addition() {
         let stmt = parse_stmt("SELECT a + b FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Add, _)
@@ -4983,9 +4747,7 @@ mod tests {
     #[test]
     fn test_subtraction() {
         let stmt = parse_stmt("SELECT a - b FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Sub, _)
@@ -4996,9 +4758,7 @@ mod tests {
     #[test]
     fn test_multiplication() {
         let stmt = parse_stmt("SELECT a * b FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Mul, _)
@@ -5009,9 +4769,7 @@ mod tests {
     #[test]
     fn test_concat() {
         let stmt = parse_stmt("SELECT a || b FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Binary(_, BinaryOp::Concat, _)
@@ -5022,9 +4780,7 @@ mod tests {
     #[test]
     fn test_less_equal() {
         let stmt = parse_stmt("SELECT * FROM t WHERE a <= b");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected WHERE clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref where_clause) = sel.where_clause {
             assert!(matches!(
                 where_clause.kind,
@@ -5038,9 +4794,7 @@ mod tests {
     #[test]
     fn test_greater_equal() {
         let stmt = parse_stmt("SELECT * FROM t WHERE a >= b");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected WHERE clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref where_clause) = sel.where_clause {
             assert!(matches!(
                 where_clause.kind,
@@ -5055,48 +4809,38 @@ mod tests {
     #[test]
     fn test_tuple_expr() {
         let stmt = parse_stmt("SELECT (1, 2, 3) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Tuple(_)));
     }
 
     #[test]
     fn test_empty_tuple_expr() {
         let stmt = parse_stmt("SELECT () FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected tuple")
+        let sel = unwrap_select(stmt);
+        let ExprKind::Tuple(items) = &sel.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Tuple(items) = &sel.columns[0].expr.kind {
-            assert!(items.is_empty());
-        } else {
-            panic!("expected SELECT");
-        }
+        assert!(items.is_empty());
     }
 
     // CASE with operand (simple CASE)
     #[test]
     fn test_case_with_operand() {
         let stmt = parse_stmt("SELECT CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected CASE expression")
+        let sel = unwrap_select(stmt);
+        let ExprKind::Case(case) = &sel.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Case(case) = &sel.columns[0].expr.kind {
-            assert!(case.operand.is_some());
-            assert!(!case.when_clauses.is_empty());
-            assert!(case.else_clause.is_some());
-        } else {
-            panic!("expected SELECT");
-        }
+        assert!(case.operand.is_some());
+        assert!(!case.when_clauses.is_empty());
+        assert!(case.else_clause.is_some());
     }
 
     // Subquery in FROM
     #[test]
     fn test_subquery_from() {
         let stmt = parse_stmt("SELECT * FROM (SELECT 1 AS x) AS sub");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected FROM clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref from) = sel.from {
             assert!(matches!(from.table.kind, TableRefKind::Subquery(_)));
         } else {
@@ -5108,9 +4852,7 @@ mod tests {
     #[test]
     fn test_insert_select() {
         let stmt = parse_stmt("INSERT INTO t (a, b) SELECT x, y FROM s");
-        let StatementKind::Insert(ins) = stmt.kind else {
-            panic!("expected INSERT")
-        };
+        let ins = unwrap_insert(stmt);
         assert!(matches!(ins.source, InsertSource::Query(_)));
     }
 
@@ -5118,9 +4860,7 @@ mod tests {
     #[test]
     fn test_function_call() {
         let stmt = parse_stmt("SELECT UPPER(name) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
     }
 
@@ -5128,9 +4868,7 @@ mod tests {
     #[test]
     fn test_cast_expr() {
         let stmt = parse_stmt("SELECT CAST(x AS INT) FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(sel.columns[0].expr.kind, ExprKind::Cast(_, _)));
     }
 
@@ -5138,23 +4876,18 @@ mod tests {
     #[test]
     fn test_case_no_else() {
         let stmt = parse_stmt("SELECT CASE WHEN x > 0 THEN 1 END FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected CASE expression")
+        let sel = unwrap_select(stmt);
+        let ExprKind::Case(case) = &sel.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Case(case) = &sel.columns[0].expr.kind {
-            assert!(case.else_clause.is_none());
-        } else {
-            panic!("expected SELECT");
-        }
+        assert!(case.else_clause.is_none());
     }
 
     // Subquery with alias
     #[test]
     fn test_subquery_with_alias() {
         let stmt = parse_stmt("SELECT sub.x FROM (SELECT 1 AS x) sub");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected FROM clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref from) = sel.from {
             assert!(from.table.alias.is_some());
         } else {
@@ -5166,9 +4899,7 @@ mod tests {
     #[test]
     fn test_table_alias_no_as() {
         let stmt = parse_stmt("SELECT t.x FROM users t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected FROM clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref from) = sel.from {
             assert!(from.table.alias.is_some());
         } else {
@@ -5180,9 +4911,7 @@ mod tests {
     #[test]
     fn test_join_on_clause() {
         let stmt = parse_stmt("SELECT * FROM a JOIN b ON a.id = b.id");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected FROM clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref from) = sel.from {
             assert!(!from.joins.is_empty());
             assert!(from.joins[0].condition.is_some());
@@ -5209,9 +4938,7 @@ mod tests {
     #[test]
     fn test_order_by_multiple() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY a ASC, b DESC");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert_eq!(sel.order_by.len(), 2);
     }
 
@@ -5219,9 +4946,7 @@ mod tests {
     #[test]
     fn test_group_by_multiple() {
         let stmt = parse_stmt("SELECT a, b, COUNT(*) FROM t GROUP BY a, b");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert_eq!(sel.group_by.len(), 2);
     }
 
@@ -5229,9 +4954,7 @@ mod tests {
     #[test]
     fn test_float_literal() {
         let stmt = parse_stmt("SELECT 3.14 FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Literal(Literal::Float(_))
@@ -5242,9 +4965,7 @@ mod tests {
     #[test]
     fn test_string_literal() {
         let stmt = parse_stmt("SELECT 'hello' FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Literal(Literal::String(_))
@@ -5255,9 +4976,7 @@ mod tests {
     #[test]
     fn test_integer_literal() {
         let stmt = parse_stmt("SELECT 42 FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Literal(Literal::Integer(42))
@@ -5268,9 +4987,7 @@ mod tests {
     #[test]
     fn test_true_literal() {
         let stmt = parse_stmt("SELECT TRUE FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Literal(Literal::Boolean(true))
@@ -5281,9 +4998,7 @@ mod tests {
     #[test]
     fn test_qualified_column() {
         let stmt = parse_stmt("SELECT t.x FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Qualified(_, _)
@@ -5294,9 +5009,7 @@ mod tests {
     #[test]
     fn test_logical_and_or() {
         let stmt = parse_stmt("SELECT * FROM t WHERE a = 1 AND b = 2 OR c = 3");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.where_clause.is_some());
     }
 
@@ -5365,9 +5078,7 @@ mod tests {
     #[test]
     fn test_bit_not_expr() {
         let stmt = parse_stmt("SELECT ~x FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(matches!(
             sel.columns[0].expr.kind,
             ExprKind::Unary(UnaryOp::BitNot, _)
@@ -5385,14 +5096,11 @@ mod tests {
     #[test]
     fn test_case_multiple_when() {
         let stmt = parse_stmt("SELECT CASE WHEN a THEN 1 WHEN b THEN 2 WHEN c THEN 3 END FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected CASE expression")
+        let sel = unwrap_select(stmt);
+        let ExprKind::Case(case) = &sel.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Case(case) = &sel.columns[0].expr.kind {
-            assert_eq!(case.when_clauses.len(), 3);
-        } else {
-            panic!("expected SELECT");
-        }
+        assert_eq!(case.when_clauses.len(), 3);
     }
 
     // Float with exponent
@@ -5420,9 +5128,7 @@ mod tests {
     #[test]
     fn test_three_way_join() {
         let stmt = parse_stmt("SELECT * FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected FROM clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref from) = sel.from {
             assert_eq!(from.joins.len(), 2);
         } else {
@@ -5434,9 +5140,7 @@ mod tests {
     #[test]
     fn test_select_limit_only() {
         let stmt = parse_stmt("SELECT * FROM t LIMIT 10");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.limit.is_some());
         assert!(sel.offset.is_none());
     }
@@ -5445,9 +5149,7 @@ mod tests {
     #[test]
     fn test_update_three_columns() {
         let stmt = parse_stmt("UPDATE t SET a = 1, b = 2, c = 3 WHERE id = 1");
-        let StatementKind::Update(upd) = stmt.kind else {
-            panic!("expected UPDATE")
-        };
+        let upd = unwrap_update(stmt);
         assert_eq!(upd.assignments.len(), 3);
     }
 
@@ -5455,9 +5157,7 @@ mod tests {
     #[test]
     fn test_implicit_column_alias() {
         let stmt = parse_stmt("SELECT x alias FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.columns[0].alias.is_some());
     }
 
@@ -5465,9 +5165,7 @@ mod tests {
     #[test]
     fn test_table_followed_by_keyword() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x = 1");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected FROM clause")
-        };
+        let sel = unwrap_select(stmt);
         if let Some(ref from) = sel.from {
             assert!(from.table.alias.is_none());
         } else {
@@ -5479,9 +5177,7 @@ mod tests {
     #[test]
     fn test_column_alias_followed_by_keyword() {
         let stmt = parse_stmt("SELECT x y FROM t WHERE y = 1");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.columns[0].alias.is_some());
     }
 
@@ -5489,9 +5185,7 @@ mod tests {
     #[test]
     fn test_delete_complex_where() {
         let stmt = parse_stmt("DELETE FROM t WHERE a = 1 AND b = 2 OR c = 3");
-        let StatementKind::Delete(del) = stmt.kind else {
-            panic!("expected DELETE")
-        };
+        let del = unwrap_delete(stmt);
         assert!(del.where_clause.is_some());
     }
 
@@ -5499,23 +5193,18 @@ mod tests {
     #[test]
     fn test_insert_three_rows() {
         let stmt = parse_stmt("INSERT INTO t (a, b) VALUES (1, 2), (3, 4), (5, 6)");
-        let StatementKind::Insert(ins) = stmt.kind else {
-            panic!("expected VALUES")
+        let ins = unwrap_insert(stmt);
+        let InsertSource::Values(rows) = ins.source else {
+            panic!("expected INSERT")
         };
-        if let InsertSource::Values(rows) = ins.source {
-            assert_eq!(rows.len(), 3);
-        } else {
-            panic!("expected INSERT");
-        }
+        assert_eq!(rows.len(), 3);
     }
 
     // OFFSET without LIMIT
     #[test]
     fn test_offset_only() {
         let stmt = parse_stmt("SELECT * FROM t OFFSET 10");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert!(sel.offset.is_some());
         assert!(sel.limit.is_none());
     }
@@ -5524,9 +5213,7 @@ mod tests {
     #[test]
     fn test_simple_group_by() {
         let stmt = parse_stmt("SELECT a, COUNT(*) FROM t GROUP BY a");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert_eq!(sel.group_by.len(), 1);
     }
 
@@ -5555,9 +5242,7 @@ mod tests {
     #[test]
     fn test_select_five_columns() {
         let stmt = parse_stmt("SELECT a, b, c, d, e FROM t");
-        let StatementKind::Select(sel) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let sel = unwrap_select(stmt);
         assert_eq!(sel.columns.len(), 5);
     }
 
@@ -5978,27 +5663,21 @@ mod tests {
     #[test]
     fn test_cache_init() {
         let stmt = parse_stmt("CACHE INIT");
-        let StatementKind::Cache(cache) = stmt.kind else {
-            panic!("expected CACHE")
-        };
+        let cache = unwrap_cache(stmt);
         assert!(matches!(cache.operation, CacheOp::Init));
     }
 
     #[test]
     fn test_cache_stats() {
         let stmt = parse_stmt("CACHE STATS");
-        let StatementKind::Cache(cache) = stmt.kind else {
-            panic!("expected CACHE")
-        };
+        let cache = unwrap_cache(stmt);
         assert!(matches!(cache.operation, CacheOp::Stats));
     }
 
     #[test]
     fn test_cache_clear() {
         let stmt = parse_stmt("CACHE CLEAR");
-        let StatementKind::Cache(cache) = stmt.kind else {
-            panic!("expected CACHE")
-        };
+        let cache = unwrap_cache(stmt);
         assert!(matches!(cache.operation, CacheOp::Clear));
     }
 
@@ -6017,57 +5696,42 @@ mod tests {
     #[test]
     fn test_cache_evict() {
         let stmt = parse_stmt("CACHE EVICT");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            assert!(matches!(cache.operation, CacheOp::Evict { count: None }));
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        assert!(matches!(cache.operation, CacheOp::Evict { count: None }));
     }
 
     #[test]
     fn test_cache_evict_with_count() {
         let stmt = parse_stmt("CACHE EVICT 100");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::Evict { count: Some(expr) } = cache.operation {
-                assert!(matches!(
-                    expr.kind,
-                    ExprKind::Literal(Literal::Integer(100))
-                ));
-            } else {
-                panic!("expected EVICT with count");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::Evict { count: Some(expr) } = cache.operation else {
+            panic!("expected EVICT with count")
+        };
+        assert!(matches!(
+            expr.kind,
+            ExprKind::Literal(Literal::Integer(100))
+        ));
     }
 
     #[test]
     fn test_cache_get() {
         let stmt = parse_stmt("CACHE GET 'mykey'");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::Get { key } = cache.operation {
-                assert!(matches!(key.kind, ExprKind::Literal(Literal::String(_))));
-            } else {
-                panic!("expected GET");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::Get { key } = cache.operation else {
+            panic!("expected GET")
+        };
+        assert!(matches!(key.kind, ExprKind::Literal(Literal::String(_))));
     }
 
     #[test]
     fn test_cache_put() {
         let stmt = parse_stmt("CACHE PUT 'mykey' 'myvalue'");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::Put { key, value } = cache.operation {
-                assert!(matches!(key.kind, ExprKind::Literal(Literal::String(_))));
-                assert!(matches!(value.kind, ExprKind::Literal(Literal::String(_))));
-            } else {
-                panic!("expected PUT");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::Put { key, value } = cache.operation else {
+            panic!("expected PUT")
+        };
+        assert!(matches!(key.kind, ExprKind::Literal(Literal::String(_))));
+        assert!(matches!(value.kind, ExprKind::Literal(Literal::String(_))));
     }
 
     #[test]
@@ -6079,27 +5743,21 @@ mod tests {
     #[test]
     fn test_blob_init() {
         let stmt = parse_stmt("BLOB INIT");
-        let StatementKind::Blob(blob) = stmt.kind else {
-            panic!("expected BLOB")
-        };
+        let blob = unwrap_blob(stmt);
         assert!(matches!(blob.operation, BlobOp::Init));
     }
 
     #[test]
     fn test_embed_build_index() {
         let stmt = parse_stmt("EMBED BUILD INDEX");
-        let StatementKind::Embed(embed) = stmt.kind else {
-            panic!("expected EMBED")
-        };
+        let embed = unwrap_embed(stmt);
         assert!(matches!(embed.operation, EmbedOp::BuildIndex));
     }
 
     #[test]
     fn test_drop_index_on_syntax() {
         let stmt = parse_stmt("DROP INDEX ON users(name)");
-        let StatementKind::DropIndex(drop) = stmt.kind else {
-            panic!("expected DropIndex")
-        };
+        let drop = unwrap_dropindex(stmt);
         assert!(!drop.if_exists);
         assert!(drop.name.is_none());
         assert_eq!(drop.table.as_ref().unwrap().name, "users");
@@ -6109,9 +5767,7 @@ mod tests {
     #[test]
     fn test_drop_index_if_exists_on_syntax() {
         let stmt = parse_stmt("DROP INDEX IF EXISTS ON products(sku)");
-        let StatementKind::DropIndex(drop) = stmt.kind else {
-            panic!("expected DropIndex")
-        };
+        let drop = unwrap_dropindex(stmt);
         assert!(drop.if_exists);
         assert_eq!(drop.table.as_ref().unwrap().name, "products");
         assert_eq!(drop.column.as_ref().unwrap().name, "sku");
@@ -6120,9 +5776,7 @@ mod tests {
     #[test]
     fn test_insert_select_query() {
         let stmt = parse_stmt("INSERT INTO target SELECT * FROM source");
-        let StatementKind::Insert(insert) = stmt.kind else {
-            panic!("expected Insert")
-        };
+        let insert = unwrap_insert(stmt);
         assert_eq!(insert.table.name, "target");
         assert!(matches!(insert.source, InsertSource::Query(_)));
     }
@@ -6131,141 +5785,104 @@ mod tests {
     #[test]
     fn test_embed_batch() {
         let stmt = parse_stmt("EMBED BATCH [('doc1', [1.0, 0.0]), ('doc2', [0.0, 1.0])]");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            if let EmbedOp::Batch { items } = embed.operation {
-                assert_eq!(items.len(), 2);
-            } else {
-                panic!("expected BATCH operation");
-            }
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Batch { items } = embed.operation else {
+            panic!("expected BATCH operation")
+        };
+        assert_eq!(items.len(), 2);
     }
 
     #[test]
     fn test_embed_batch_empty() {
         let stmt = parse_stmt("EMBED BATCH []");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            if let EmbedOp::Batch { items } = embed.operation {
-                assert!(items.is_empty());
-            } else {
-                panic!("expected BATCH operation");
-            }
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Batch { items } = embed.operation else {
+            panic!("expected BATCH operation")
+        };
+        assert!(items.is_empty());
     }
 
     #[test]
     fn test_embed_batch_single() {
         let stmt = parse_stmt("EMBED BATCH [('key', [1.0, 2.0, 3.0])]");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            if let EmbedOp::Batch { items } = embed.operation {
-                assert_eq!(items.len(), 1);
-            } else {
-                panic!("expected BATCH operation");
-            }
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Batch { items } = embed.operation else {
+            panic!("expected BATCH operation")
+        };
+        assert_eq!(items.len(), 1);
     }
 
     // Phase 5: CACHE SEMANTIC GET
     #[test]
     fn test_cache_semantic_get() {
         let stmt = parse_stmt("CACHE SEMANTIC GET 'query text'");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::SemanticGet { threshold, .. } = cache.operation {
-                assert!(threshold.is_none());
-            } else {
-                panic!("expected SEMANTIC GET operation");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::SemanticGet { threshold, .. } = cache.operation else {
+            panic!("expected SEMANTIC GET operation")
+        };
+        assert!(threshold.is_none());
     }
 
     #[test]
     fn test_cache_semantic_get_with_threshold() {
         let stmt = parse_stmt("CACHE SEMANTIC GET 'query' THRESHOLD 0.85");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::SemanticGet { threshold, .. } = cache.operation {
-                assert!(threshold.is_some());
-            } else {
-                panic!("expected SEMANTIC GET operation");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::SemanticGet { threshold, .. } = cache.operation else {
+            panic!("expected SEMANTIC GET operation")
+        };
+        assert!(threshold.is_some());
     }
 
     // Phase 5: CACHE SEMANTIC PUT
     #[test]
     fn test_cache_semantic_put() {
         let stmt = parse_stmt("CACHE SEMANTIC PUT 'query' 'response' EMBEDDING [1.0, 0.0]");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::SemanticPut { embedding, .. } = cache.operation {
-                assert_eq!(embedding.len(), 2);
-            } else {
-                panic!("expected SEMANTIC PUT operation");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::SemanticPut { embedding, .. } = cache.operation else {
+            panic!("expected SEMANTIC PUT operation")
+        };
+        assert_eq!(embedding.len(), 2);
     }
 
     #[test]
     fn test_cache_semantic_put_large_embedding() {
         let stmt = parse_stmt("CACHE SEMANTIC PUT 'q' 'r' EMBEDDING [1.0, 2.0, 3.0, 4.0, 5.0]");
-        if let StatementKind::Cache(cache) = stmt.kind {
-            if let CacheOp::SemanticPut { embedding, .. } = cache.operation {
-                assert_eq!(embedding.len(), 5);
-            } else {
-                panic!("expected SEMANTIC PUT operation");
-            }
-        } else {
-            panic!("expected CACHE");
-        }
+        let cache = unwrap_cache(stmt);
+        let CacheOp::SemanticPut { embedding, .. } = cache.operation else {
+            panic!("expected SEMANTIC PUT operation")
+        };
+        assert_eq!(embedding.len(), 5);
     }
 
     // Phase 5: DESCRIBE
     #[test]
     fn test_describe_table() {
         let stmt = parse_stmt("DESCRIBE TABLE users");
-        let StatementKind::Describe(desc) = stmt.kind else {
-            panic!("expected TABLE target")
+        let desc = unwrap_describe(stmt);
+        let DescribeTarget::Table(ident) = desc.target else {
+            panic!("expected DESCRIBE")
         };
-        if let DescribeTarget::Table(ident) = desc.target {
-            assert_eq!(ident.name, "users");
-        } else {
-            panic!("expected DESCRIBE");
-        }
+        assert_eq!(ident.name, "users");
     }
 
     #[test]
     fn test_describe_node() {
         let stmt = parse_stmt("DESCRIBE NODE person");
-        let StatementKind::Describe(desc) = stmt.kind else {
-            panic!("expected NODE target")
+        let desc = unwrap_describe(stmt);
+        let DescribeTarget::Node(ident) = desc.target else {
+            panic!("expected DESCRIBE")
         };
-        if let DescribeTarget::Node(ident) = desc.target {
-            assert_eq!(ident.name, "person");
-        } else {
-            panic!("expected DESCRIBE");
-        }
+        assert_eq!(ident.name, "person");
     }
 
     #[test]
     fn test_describe_edge() {
         let stmt = parse_stmt("DESCRIBE EDGE follows");
-        let StatementKind::Describe(desc) = stmt.kind else {
-            panic!("expected EDGE target")
+        let desc = unwrap_describe(stmt);
+        let DescribeTarget::Edge(ident) = desc.target else {
+            panic!("expected DESCRIBE")
         };
-        if let DescribeTarget::Edge(ident) = desc.target {
-            assert_eq!(ident.name, "follows");
-        } else {
-            panic!("expected DESCRIBE");
-        }
+        assert_eq!(ident.name, "follows");
     }
 
     // Phase 5: SHOW EMBEDDINGS
@@ -6300,54 +5917,42 @@ mod tests {
     #[test]
     fn test_checkpoint_no_name() {
         let stmt = parse_stmt("CHECKPOINT");
-        let StatementKind::Checkpoint(cp) = stmt.kind else {
-            panic!("expected CHECKPOINT")
-        };
+        let cp = unwrap_checkpoint(stmt);
         assert!(cp.name.is_none());
     }
 
     #[test]
     fn test_checkpoint_with_name() {
         let stmt = parse_stmt("CHECKPOINT 'my-checkpoint'");
-        let StatementKind::Checkpoint(cp) = stmt.kind else {
-            panic!("expected CHECKPOINT")
-        };
+        let cp = unwrap_checkpoint(stmt);
         assert!(cp.name.is_some());
     }
 
     #[test]
     fn test_checkpoint_with_double_quoted_name() {
         let stmt = parse_stmt("CHECKPOINT \"my-checkpoint\"");
-        let StatementKind::Checkpoint(cp) = stmt.kind else {
-            panic!("expected CHECKPOINT")
-        };
+        let cp = unwrap_checkpoint(stmt);
         assert!(cp.name.is_some());
     }
 
     #[test]
     fn test_rollback_to() {
         let stmt = parse_stmt("ROLLBACK TO 'checkpoint-id'");
-        let StatementKind::Rollback(rb) = stmt.kind else {
-            panic!("expected ROLLBACK")
-        };
+        let rb = unwrap_rollback(stmt);
         assert!(matches!(rb.target.kind, ExprKind::Literal(_)));
     }
 
     #[test]
     fn test_checkpoints_no_limit() {
         let stmt = parse_stmt("CHECKPOINTS");
-        let StatementKind::Checkpoints(cps) = stmt.kind else {
-            panic!("expected CHECKPOINTS")
-        };
+        let cps = unwrap_checkpoints(stmt);
         assert!(cps.limit.is_none());
     }
 
     #[test]
     fn test_checkpoints_with_limit() {
         let stmt = parse_stmt("CHECKPOINTS LIMIT 5");
-        let StatementKind::Checkpoints(cps) = stmt.kind else {
-            panic!("expected CHECKPOINTS")
-        };
+        let cps = unwrap_checkpoints(stmt);
         assert!(cps.limit.is_some());
     }
 
@@ -6358,34 +5963,27 @@ mod tests {
     #[test]
     fn test_graph_pagerank_simple() {
         let stmt = parse_stmt("GRAPH PAGERANK");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            assert!(matches!(
-                algo.operation,
-                GraphAlgorithmOp::PageRank {
-                    damping: None,
-                    tolerance: None,
-                    max_iterations: None,
-                    direction: None,
-                    edge_type: None,
-                }
-            ));
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        assert!(matches!(
+            algo.operation,
+            GraphAlgorithmOp::PageRank {
+                damping: None,
+                tolerance: None,
+                max_iterations: None,
+                direction: None,
+                edge_type: None,
+            }
+        ));
     }
 
     #[test]
     fn test_graph_pagerank_with_damping() {
         let stmt = parse_stmt("GRAPH PAGERANK DAMPING 0.85");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::PageRank { damping, .. } = algo.operation {
-                assert!(damping.is_some());
-            } else {
-                panic!("expected PageRank");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::PageRank { damping, .. } = algo.operation else {
+            panic!("expected PageRank")
+        };
+        assert!(damping.is_some());
     }
 
     #[test]
@@ -6393,173 +5991,137 @@ mod tests {
         let stmt = parse_stmt(
             "GRAPH PAGERANK DAMPING 0.85 TOLERANCE 0.001 ITERATIONS 100 OUTGOING EDGE TYPE follows",
         );
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::PageRank {
-                damping,
-                tolerance,
-                max_iterations,
-                direction,
-                edge_type,
-            } = algo.operation
-            {
-                assert!(damping.is_some());
-                assert!(tolerance.is_some());
-                assert!(max_iterations.is_some());
-                assert!(direction.is_some());
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected PageRank");
-            }
+        let algo = unwrap_graphalgorithm(stmt);
+        if let GraphAlgorithmOp::PageRank {
+            damping,
+            tolerance,
+            max_iterations,
+            direction,
+            edge_type,
+        } = algo.operation
+        {
+            assert!(damping.is_some());
+            assert!(tolerance.is_some());
+            assert!(max_iterations.is_some());
+            assert!(direction.is_some());
+            assert!(edge_type.is_some());
         } else {
-            panic!("expected GraphAlgorithm");
+            panic!("expected PageRank");
         }
     }
 
     #[test]
     fn test_graph_betweenness_centrality() {
         let stmt = parse_stmt("GRAPH BETWEENNESS CENTRALITY");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            assert!(matches!(
-                algo.operation,
-                GraphAlgorithmOp::BetweennessCentrality { .. }
-            ));
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        assert!(matches!(
+            algo.operation,
+            GraphAlgorithmOp::BetweennessCentrality { .. }
+        ));
     }
 
     #[test]
     fn test_graph_betweenness_with_sampling() {
         let stmt = parse_stmt("GRAPH BETWEENNESS CENTRALITY SAMPLING 0.5");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::BetweennessCentrality { sampling_ratio, .. } = algo.operation {
-                assert!(sampling_ratio.is_some());
-            } else {
-                panic!("expected BetweennessCentrality");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::BetweennessCentrality { sampling_ratio, .. } = algo.operation else {
+            panic!("expected BetweennessCentrality")
+        };
+        assert!(sampling_ratio.is_some());
     }
 
     #[test]
     fn test_graph_closeness_centrality() {
         let stmt = parse_stmt("GRAPH CLOSENESS CENTRALITY");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            assert!(matches!(
-                algo.operation,
-                GraphAlgorithmOp::ClosenessCentrality { .. }
-            ));
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        assert!(matches!(
+            algo.operation,
+            GraphAlgorithmOp::ClosenessCentrality { .. }
+        ));
     }
 
     #[test]
     fn test_graph_closeness_with_direction() {
         let stmt = parse_stmt("GRAPH CLOSENESS CENTRALITY INCOMING");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::ClosenessCentrality { direction, .. } = algo.operation {
-                assert!(direction.is_some());
-            } else {
-                panic!("expected ClosenessCentrality");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::ClosenessCentrality { direction, .. } = algo.operation else {
+            panic!("expected ClosenessCentrality")
+        };
+        assert!(direction.is_some());
     }
 
     #[test]
     fn test_graph_eigenvector_centrality() {
         let stmt = parse_stmt("GRAPH EIGENVECTOR CENTRALITY");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            assert!(matches!(
-                algo.operation,
-                GraphAlgorithmOp::EigenvectorCentrality { .. }
-            ));
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        assert!(matches!(
+            algo.operation,
+            GraphAlgorithmOp::EigenvectorCentrality { .. }
+        ));
     }
 
     #[test]
     fn test_graph_eigenvector_with_options() {
         let stmt = parse_stmt("GRAPH EIGENVECTOR CENTRALITY ITERATIONS 50 TOLERANCE 0.0001");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::EigenvectorCentrality {
-                max_iterations,
-                tolerance,
-                ..
-            } = algo.operation
-            {
-                assert!(max_iterations.is_some());
-                assert!(tolerance.is_some());
-            } else {
-                panic!("expected EigenvectorCentrality");
-            }
+        let algo = unwrap_graphalgorithm(stmt);
+        if let GraphAlgorithmOp::EigenvectorCentrality {
+            max_iterations,
+            tolerance,
+            ..
+        } = algo.operation
+        {
+            assert!(max_iterations.is_some());
+            assert!(tolerance.is_some());
         } else {
-            panic!("expected GraphAlgorithm");
+            panic!("expected EigenvectorCentrality");
         }
     }
 
     #[test]
     fn test_graph_louvain_communities() {
         let stmt = parse_stmt("GRAPH LOUVAIN COMMUNITIES");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            assert!(matches!(
-                algo.operation,
-                GraphAlgorithmOp::LouvainCommunities { .. }
-            ));
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        assert!(matches!(
+            algo.operation,
+            GraphAlgorithmOp::LouvainCommunities { .. }
+        ));
     }
 
     #[test]
     fn test_graph_louvain_with_resolution() {
         let stmt = parse_stmt("GRAPH LOUVAIN COMMUNITIES RESOLUTION 1.5 PASSES 10");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::LouvainCommunities {
-                resolution,
-                max_passes,
-                ..
-            } = algo.operation
-            {
-                assert!(resolution.is_some());
-                assert!(max_passes.is_some());
-            } else {
-                panic!("expected LouvainCommunities");
-            }
+        let algo = unwrap_graphalgorithm(stmt);
+        if let GraphAlgorithmOp::LouvainCommunities {
+            resolution,
+            max_passes,
+            ..
+        } = algo.operation
+        {
+            assert!(resolution.is_some());
+            assert!(max_passes.is_some());
         } else {
-            panic!("expected GraphAlgorithm");
+            panic!("expected LouvainCommunities");
         }
     }
 
     #[test]
     fn test_graph_label_propagation() {
         let stmt = parse_stmt("GRAPH LABEL PROPAGATION");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            assert!(matches!(
-                algo.operation,
-                GraphAlgorithmOp::LabelPropagation { .. }
-            ));
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        assert!(matches!(
+            algo.operation,
+            GraphAlgorithmOp::LabelPropagation { .. }
+        ));
     }
 
     #[test]
     fn test_graph_label_propagation_with_iterations() {
         let stmt = parse_stmt("GRAPH LABEL PROPAGATION ITERATIONS 20");
-        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
-            if let GraphAlgorithmOp::LabelPropagation { max_iterations, .. } = algo.operation {
-                assert!(max_iterations.is_some());
-            } else {
-                panic!("expected LabelPropagation");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let algo = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::LabelPropagation { max_iterations, .. } = algo.operation else {
+            panic!("expected LabelPropagation")
+        };
+        assert!(max_iterations.is_some());
     }
 
     // =========================================================================
@@ -6569,92 +6131,68 @@ mod tests {
     #[test]
     fn test_graph_index_create_node_property() {
         let stmt = parse_stmt("GRAPH INDEX CREATE ON NODE PROPERTY name");
-        if let StatementKind::GraphIndex(idx) = stmt.kind {
-            if let GraphIndexOp::CreateNodeProperty { property } = idx.operation {
-                assert_eq!(property.name, "name");
-            } else {
-                panic!("expected CreateNodeProperty");
-            }
-        } else {
-            panic!("expected GraphIndex");
-        }
+        let idx = unwrap_graphindex(stmt);
+        let GraphIndexOp::CreateNodeProperty { property } = idx.operation else {
+            panic!("expected CreateNodeProperty")
+        };
+        assert_eq!(property.name, "name");
     }
 
     #[test]
     fn test_graph_index_create_edge_property() {
         let stmt = parse_stmt("GRAPH INDEX CREATE ON EDGE PROPERTY weight");
-        if let StatementKind::GraphIndex(idx) = stmt.kind {
-            if let GraphIndexOp::CreateEdgeProperty { property } = idx.operation {
-                assert_eq!(property.name, "weight");
-            } else {
-                panic!("expected CreateEdgeProperty");
-            }
-        } else {
-            panic!("expected GraphIndex");
-        }
+        let idx = unwrap_graphindex(stmt);
+        let GraphIndexOp::CreateEdgeProperty { property } = idx.operation else {
+            panic!("expected CreateEdgeProperty")
+        };
+        assert_eq!(property.name, "weight");
     }
 
     #[test]
     fn test_graph_index_create_label() {
         let stmt = parse_stmt("GRAPH INDEX CREATE ON LABEL");
-        let StatementKind::GraphIndex(idx) = stmt.kind else {
-            panic!("expected GraphIndex")
-        };
+        let idx = unwrap_graphindex(stmt);
         assert!(matches!(idx.operation, GraphIndexOp::CreateLabel));
     }
 
     #[test]
     fn test_graph_index_create_edge_type() {
         let stmt = parse_stmt("GRAPH INDEX CREATE ON EDGE TYPE");
-        let StatementKind::GraphIndex(idx) = stmt.kind else {
-            panic!("expected GraphIndex")
-        };
+        let idx = unwrap_graphindex(stmt);
         assert!(matches!(idx.operation, GraphIndexOp::CreateEdgeType));
     }
 
     #[test]
     fn test_graph_index_drop_node() {
         let stmt = parse_stmt("GRAPH INDEX DROP ON NODE PROPERTY age");
-        if let StatementKind::GraphIndex(idx) = stmt.kind {
-            if let GraphIndexOp::DropNode { property } = idx.operation {
-                assert_eq!(property.name, "age");
-            } else {
-                panic!("expected DropNode");
-            }
-        } else {
-            panic!("expected GraphIndex");
-        }
+        let idx = unwrap_graphindex(stmt);
+        let GraphIndexOp::DropNode { property } = idx.operation else {
+            panic!("expected DropNode")
+        };
+        assert_eq!(property.name, "age");
     }
 
     #[test]
     fn test_graph_index_drop_edge() {
         let stmt = parse_stmt("GRAPH INDEX DROP ON EDGE PROPERTY weight");
-        if let StatementKind::GraphIndex(idx) = stmt.kind {
-            if let GraphIndexOp::DropEdge { property } = idx.operation {
-                assert_eq!(property.name, "weight");
-            } else {
-                panic!("expected DropEdge");
-            }
-        } else {
-            panic!("expected GraphIndex");
-        }
+        let idx = unwrap_graphindex(stmt);
+        let GraphIndexOp::DropEdge { property } = idx.operation else {
+            panic!("expected DropEdge")
+        };
+        assert_eq!(property.name, "weight");
     }
 
     #[test]
     fn test_graph_index_show_node() {
         let stmt = parse_stmt("GRAPH INDEX SHOW ON NODE");
-        let StatementKind::GraphIndex(idx) = stmt.kind else {
-            panic!("expected GraphIndex")
-        };
+        let idx = unwrap_graphindex(stmt);
         assert!(matches!(idx.operation, GraphIndexOp::ShowNodeIndexes));
     }
 
     #[test]
     fn test_graph_index_show_edge() {
         let stmt = parse_stmt("GRAPH INDEX SHOW ON EDGE");
-        let StatementKind::GraphIndex(idx) = stmt.kind else {
-            panic!("expected GraphIndex")
-        };
+        let idx = unwrap_graphindex(stmt);
         assert!(matches!(idx.operation, GraphIndexOp::ShowEdgeIndexes));
     }
 
@@ -6665,57 +6203,48 @@ mod tests {
     #[test]
     fn test_constraint_create_unique() {
         let stmt = parse_stmt("CONSTRAINT CREATE email_unique ON NODE User PROPERTY email UNIQUE");
-        if let StatementKind::GraphConstraint(c) = stmt.kind {
-            if let GraphConstraintOp::Create {
-                name,
-                target,
-                property,
-                constraint_type,
-            } = c.operation
-            {
-                assert_eq!(name.name, "email_unique");
-                assert!(matches!(target, ConstraintTarget::Node { label: Some(_) }));
-                assert_eq!(property.name, "email");
-                assert_eq!(constraint_type, ConstraintType::Unique);
-            } else {
-                panic!("expected Create");
-            }
+        let c = unwrap_graphconstraint(stmt);
+        if let GraphConstraintOp::Create {
+            name,
+            target,
+            property,
+            constraint_type,
+        } = c.operation
+        {
+            assert_eq!(name.name, "email_unique");
+            assert!(matches!(target, ConstraintTarget::Node { label: Some(_) }));
+            assert_eq!(property.name, "email");
+            assert_eq!(constraint_type, ConstraintType::Unique);
         } else {
-            panic!("expected GraphConstraint");
+            panic!("expected Create");
         }
     }
 
     #[test]
     fn test_constraint_create_exists() {
         let stmt = parse_stmt("CONSTRAINT CREATE name_required ON NODE PROPERTY name EXISTS");
-        if let StatementKind::GraphConstraint(c) = stmt.kind {
-            if let GraphConstraintOp::Create {
-                constraint_type, ..
-            } = c.operation
-            {
-                assert_eq!(constraint_type, ConstraintType::Exists);
-            } else {
-                panic!("expected Create");
-            }
+        let c = unwrap_graphconstraint(stmt);
+        if let GraphConstraintOp::Create {
+            constraint_type, ..
+        } = c.operation
+        {
+            assert_eq!(constraint_type, ConstraintType::Exists);
         } else {
-            panic!("expected GraphConstraint");
+            panic!("expected Create");
         }
     }
 
     #[test]
     fn test_constraint_create_type() {
         let stmt = parse_stmt("CONSTRAINT CREATE age_int ON NODE PROPERTY age TYPE int");
-        if let StatementKind::GraphConstraint(c) = stmt.kind {
-            if let GraphConstraintOp::Create {
-                constraint_type, ..
-            } = c.operation
-            {
-                assert!(matches!(constraint_type, ConstraintType::Type(_)));
-            } else {
-                panic!("expected Create");
-            }
+        let c = unwrap_graphconstraint(stmt);
+        if let GraphConstraintOp::Create {
+            constraint_type, ..
+        } = c.operation
+        {
+            assert!(matches!(constraint_type, ConstraintType::Type(_)));
         } else {
-            panic!("expected GraphConstraint");
+            panic!("expected Create");
         }
     }
 
@@ -6723,55 +6252,41 @@ mod tests {
     fn test_constraint_create_on_edge() {
         let stmt =
             parse_stmt("CONSTRAINT CREATE weight_exists ON EDGE knows PROPERTY weight EXISTS");
-        if let StatementKind::GraphConstraint(c) = stmt.kind {
-            if let GraphConstraintOp::Create { target, .. } = c.operation {
-                assert!(matches!(
-                    target,
-                    ConstraintTarget::Edge { edge_type: Some(_) }
-                ));
-            } else {
-                panic!("expected Create");
-            }
-        } else {
-            panic!("expected GraphConstraint");
-        }
+        let c = unwrap_graphconstraint(stmt);
+        let GraphConstraintOp::Create { target, .. } = c.operation else {
+            panic!("expected Create")
+        };
+        assert!(matches!(
+            target,
+            ConstraintTarget::Edge { edge_type: Some(_) }
+        ));
     }
 
     #[test]
     fn test_constraint_drop() {
         let stmt = parse_stmt("CONSTRAINT DROP email_unique");
-        if let StatementKind::GraphConstraint(c) = stmt.kind {
-            if let GraphConstraintOp::Drop { name } = c.operation {
-                assert_eq!(name.name, "email_unique");
-            } else {
-                panic!("expected Drop");
-            }
-        } else {
-            panic!("expected GraphConstraint");
-        }
+        let c = unwrap_graphconstraint(stmt);
+        let GraphConstraintOp::Drop { name } = c.operation else {
+            panic!("expected Drop")
+        };
+        assert_eq!(name.name, "email_unique");
     }
 
     #[test]
     fn test_constraint_list() {
         let stmt = parse_stmt("CONSTRAINT LIST");
-        let StatementKind::GraphConstraint(c) = stmt.kind else {
-            panic!("expected GraphConstraint")
-        };
+        let c = unwrap_graphconstraint(stmt);
         assert!(matches!(c.operation, GraphConstraintOp::List));
     }
 
     #[test]
     fn test_constraint_get() {
         let stmt = parse_stmt("CONSTRAINT GET my_constraint");
-        if let StatementKind::GraphConstraint(c) = stmt.kind {
-            if let GraphConstraintOp::Get { name } = c.operation {
-                assert_eq!(name.name, "my_constraint");
-            } else {
-                panic!("expected Get");
-            }
-        } else {
-            panic!("expected GraphConstraint");
-        }
+        let c = unwrap_graphconstraint(stmt);
+        let GraphConstraintOp::Get { name } = c.operation else {
+            panic!("expected Get")
+        };
+        assert_eq!(name.name, "my_constraint");
     }
 
     // =========================================================================
@@ -6781,16 +6296,12 @@ mod tests {
     #[test]
     fn test_batch_create_nodes_simple() {
         let stmt = parse_stmt("BATCH CREATE NODES [{labels: [Person], name: 'Alice'}]");
-        if let StatementKind::GraphBatch(batch) = stmt.kind {
-            if let GraphBatchOp::CreateNodes { nodes } = batch.operation {
-                assert_eq!(nodes.len(), 1);
-                assert_eq!(nodes[0].labels.len(), 1);
-            } else {
-                panic!("expected CreateNodes");
-            }
-        } else {
-            panic!("expected GraphBatch");
-        }
+        let batch = unwrap_graphbatch(stmt);
+        let GraphBatchOp::CreateNodes { nodes } = batch.operation else {
+            panic!("expected CreateNodes")
+        };
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].labels.len(), 1);
     }
 
     #[test]
@@ -6798,72 +6309,52 @@ mod tests {
         let stmt = parse_stmt(
             "BATCH CREATE NODES [{labels: [Person], name: 'Alice'}, {labels: [Person], name: 'Bob'}]",
         );
-        if let StatementKind::GraphBatch(batch) = stmt.kind {
-            if let GraphBatchOp::CreateNodes { nodes } = batch.operation {
-                assert_eq!(nodes.len(), 2);
-            } else {
-                panic!("expected CreateNodes");
-            }
-        } else {
-            panic!("expected GraphBatch");
-        }
+        let batch = unwrap_graphbatch(stmt);
+        let GraphBatchOp::CreateNodes { nodes } = batch.operation else {
+            panic!("expected CreateNodes")
+        };
+        assert_eq!(nodes.len(), 2);
     }
 
     #[test]
     fn test_batch_create_edges() {
         let stmt = parse_stmt("BATCH CREATE EDGES [{from: 1, to: 2, type: knows, weight: 0.5}]");
-        if let StatementKind::GraphBatch(batch) = stmt.kind {
-            if let GraphBatchOp::CreateEdges { edges } = batch.operation {
-                assert_eq!(edges.len(), 1);
-                assert_eq!(edges[0].edge_type.name, "knows");
-            } else {
-                panic!("expected CreateEdges");
-            }
-        } else {
-            panic!("expected GraphBatch");
-        }
+        let batch = unwrap_graphbatch(stmt);
+        let GraphBatchOp::CreateEdges { edges } = batch.operation else {
+            panic!("expected CreateEdges")
+        };
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].edge_type.name, "knows");
     }
 
     #[test]
     fn test_batch_delete_nodes() {
         let stmt = parse_stmt("BATCH DELETE NODES [1, 2, 3]");
-        if let StatementKind::GraphBatch(batch) = stmt.kind {
-            if let GraphBatchOp::DeleteNodes { ids } = batch.operation {
-                assert_eq!(ids.len(), 3);
-            } else {
-                panic!("expected DeleteNodes");
-            }
-        } else {
-            panic!("expected GraphBatch");
-        }
+        let batch = unwrap_graphbatch(stmt);
+        let GraphBatchOp::DeleteNodes { ids } = batch.operation else {
+            panic!("expected DeleteNodes")
+        };
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]
     fn test_batch_delete_edges() {
         let stmt = parse_stmt("BATCH DELETE EDGES [10, 20]");
-        if let StatementKind::GraphBatch(batch) = stmt.kind {
-            if let GraphBatchOp::DeleteEdges { ids } = batch.operation {
-                assert_eq!(ids.len(), 2);
-            } else {
-                panic!("expected DeleteEdges");
-            }
-        } else {
-            panic!("expected GraphBatch");
-        }
+        let batch = unwrap_graphbatch(stmt);
+        let GraphBatchOp::DeleteEdges { ids } = batch.operation else {
+            panic!("expected DeleteEdges")
+        };
+        assert_eq!(ids.len(), 2);
     }
 
     #[test]
     fn test_batch_update_nodes() {
         let stmt = parse_stmt("BATCH UPDATE NODES [{id: 1, name: 'Alice Updated'}]");
-        if let StatementKind::GraphBatch(batch) = stmt.kind {
-            if let GraphBatchOp::UpdateNodes { updates } = batch.operation {
-                assert_eq!(updates.len(), 1);
-            } else {
-                panic!("expected UpdateNodes");
-            }
-        } else {
-            panic!("expected GraphBatch");
-        }
+        let batch = unwrap_graphbatch(stmt);
+        let GraphBatchOp::UpdateNodes { updates } = batch.operation else {
+            panic!("expected UpdateNodes")
+        };
+        assert_eq!(updates.len(), 1);
     }
 
     // =========================================================================
@@ -6873,100 +6364,78 @@ mod tests {
     #[test]
     fn test_aggregate_node_property_sum() {
         let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM");
-        if let StatementKind::GraphAggregate(agg) = stmt.kind {
-            if let GraphAggregateOp::AggregateNodeProperty {
-                function,
-                property,
-                label,
-                filter,
-            } = agg.operation
-            {
-                assert_eq!(function, AggregateFunction::Sum);
-                assert_eq!(property.name, "age");
-                assert!(label.is_none());
-                assert!(filter.is_none());
-            } else {
-                panic!("expected AggregateNodeProperty");
-            }
+        let agg = unwrap_graphaggregate(stmt);
+        if let GraphAggregateOp::AggregateNodeProperty {
+            function,
+            property,
+            label,
+            filter,
+        } = agg.operation
+        {
+            assert_eq!(function, AggregateFunction::Sum);
+            assert_eq!(property.name, "age");
+            assert!(label.is_none());
+            assert!(filter.is_none());
         } else {
-            panic!("expected GraphAggregate");
+            panic!("expected AggregateNodeProperty");
         }
     }
 
     #[test]
     fn test_aggregate_node_property_avg() {
         let stmt = parse_stmt("AGGREGATE NODE PROPERTY salary AVG");
-        if let StatementKind::GraphAggregate(agg) = stmt.kind {
-            if let GraphAggregateOp::AggregateNodeProperty { function, .. } = agg.operation {
-                assert_eq!(function, AggregateFunction::Avg);
-            } else {
-                panic!("expected AggregateNodeProperty");
-            }
-        } else {
-            panic!("expected GraphAggregate");
-        }
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty { function, .. } = agg.operation else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert_eq!(function, AggregateFunction::Avg);
     }
 
     #[test]
     fn test_aggregate_node_property_with_label() {
         let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM BY LABEL Person");
-        if let StatementKind::GraphAggregate(agg) = stmt.kind {
-            if let GraphAggregateOp::AggregateNodeProperty { label, .. } = agg.operation {
-                assert!(label.is_some());
-                assert_eq!(label.unwrap().name, "Person");
-            } else {
-                panic!("expected AggregateNodeProperty");
-            }
-        } else {
-            panic!("expected GraphAggregate");
-        }
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty { label, .. } = agg.operation else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert!(label.is_some());
+        assert_eq!(label.unwrap().name, "Person");
     }
 
     #[test]
     fn test_aggregate_node_property_with_filter() {
         let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM WHERE age > 18");
-        if let StatementKind::GraphAggregate(agg) = stmt.kind {
-            if let GraphAggregateOp::AggregateNodeProperty { filter, .. } = agg.operation {
-                assert!(filter.is_some());
-            } else {
-                panic!("expected AggregateNodeProperty");
-            }
-        } else {
-            panic!("expected GraphAggregate");
-        }
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty { filter, .. } = agg.operation else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert!(filter.is_some());
     }
 
     #[test]
     fn test_aggregate_edge_property() {
         let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight AVG");
-        if let StatementKind::GraphAggregate(agg) = stmt.kind {
-            if let GraphAggregateOp::AggregateEdgeProperty {
-                function, property, ..
-            } = agg.operation
-            {
-                assert_eq!(function, AggregateFunction::Avg);
-                assert_eq!(property.name, "weight");
-            } else {
-                panic!("expected AggregateEdgeProperty");
-            }
+        let agg = unwrap_graphaggregate(stmt);
+        if let GraphAggregateOp::AggregateEdgeProperty {
+            function, property, ..
+        } = agg.operation
+        {
+            assert_eq!(function, AggregateFunction::Avg);
+            assert_eq!(property.name, "weight");
         } else {
-            panic!("expected GraphAggregate");
+            panic!("expected AggregateEdgeProperty");
         }
     }
 
     #[test]
     fn test_aggregate_edge_property_with_type() {
         let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight SUM BY TYPE knows");
-        if let StatementKind::GraphAggregate(agg) = stmt.kind {
-            if let GraphAggregateOp::AggregateEdgeProperty { edge_type, .. } = agg.operation {
-                assert!(edge_type.is_some());
-                assert_eq!(edge_type.unwrap().name, "knows");
-            } else {
-                panic!("expected AggregateEdgeProperty");
-            }
-        } else {
-            panic!("expected GraphAggregate");
-        }
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateEdgeProperty { edge_type, .. } = agg.operation else {
+            panic!("expected AggregateEdgeProperty")
+        };
+        assert!(edge_type.is_some());
+        assert_eq!(edge_type.unwrap().name, "knows");
     }
 
     #[test]
@@ -6977,15 +6446,11 @@ mod tests {
             ("COUNT", AggregateFunction::Count),
         ] {
             let stmt = parse_stmt(&format!("AGGREGATE NODE PROPERTY x {}", func_name));
-            if let StatementKind::GraphAggregate(agg) = stmt.kind {
-                if let GraphAggregateOp::AggregateNodeProperty { function, .. } = agg.operation {
-                    assert_eq!(function, expected_func);
-                } else {
-                    panic!("expected AggregateNodeProperty");
-                }
-            } else {
-                panic!("expected GraphAggregate");
-            }
+            let agg = unwrap_graphaggregate(stmt);
+            let GraphAggregateOp::AggregateNodeProperty { function, .. } = agg.operation else {
+                panic!("expected AggregateNodeProperty")
+            };
+            assert_eq!(function, expected_func);
         }
     }
 
@@ -6996,51 +6461,38 @@ mod tests {
     #[test]
     fn test_embed_store_in_collection() {
         let stmt = parse_stmt("EMBED STORE 'doc1' [1.0, 2.0, 3.0] INTO my_collection");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            assert!(matches!(embed.operation, EmbedOp::Store { .. }));
-            assert_eq!(embed.collection, Some("my_collection".to_string()));
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        assert!(matches!(embed.operation, EmbedOp::Store { .. }));
+        assert_eq!(embed.collection, Some("my_collection".to_string()));
     }
 
     #[test]
     fn test_embed_get_in_collection() {
         let stmt = parse_stmt("EMBED GET 'doc1' INTO my_collection");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            assert!(matches!(embed.operation, EmbedOp::Get { .. }));
-            assert_eq!(embed.collection, Some("my_collection".to_string()));
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        assert!(matches!(embed.operation, EmbedOp::Get { .. }));
+        assert_eq!(embed.collection, Some("my_collection".to_string()));
     }
 
     #[test]
     fn test_embed_delete_in_collection() {
         let stmt = parse_stmt("EMBED DELETE 'doc1' INTO my_collection");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            assert!(matches!(embed.operation, EmbedOp::Delete { .. }));
-            assert_eq!(embed.collection, Some("my_collection".to_string()));
-        } else {
-            panic!("expected EMBED");
-        }
+        let embed = unwrap_embed(stmt);
+        assert!(matches!(embed.operation, EmbedOp::Delete { .. }));
+        assert_eq!(embed.collection, Some("my_collection".to_string()));
     }
 
     #[test]
     fn test_embed_without_collection() {
         let stmt = parse_stmt("EMBED STORE 'doc1' [1.0, 2.0]");
-        let StatementKind::Embed(embed) = stmt.kind else {
-            panic!("expected EMBED")
-        };
+        let embed = unwrap_embed(stmt);
         assert!(embed.collection.is_none());
     }
 
     #[test]
     fn test_similar_in_collection() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 10 INTO my_collection");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert!(matches!(similar.query, SimilarQuery::Vector(_)));
         assert!(similar.limit.is_some());
         assert_eq!(similar.collection, Some("my_collection".to_string()));
@@ -7050,9 +6502,7 @@ mod tests {
     #[test]
     fn test_similar_with_where() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 10 WHERE category = 'science'");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert!(matches!(similar.query, SimilarQuery::Vector(_)));
         assert!(similar.limit.is_some());
         assert!(similar.collection.is_none());
@@ -7062,9 +6512,7 @@ mod tests {
     #[test]
     fn test_similar_with_collection_and_where() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 5 INTO docs WHERE author = 'Alice'");
-        let StatementKind::Similar(similar) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let similar = unwrap_similar(stmt);
         assert!(matches!(similar.query, SimilarQuery::Vector(_)));
         assert!(similar.limit.is_some());
         assert_eq!(similar.collection, Some("docs".to_string()));
@@ -7074,46 +6522,37 @@ mod tests {
     #[test]
     fn test_similar_where_with_and() {
         let stmt = parse_stmt("SIMILAR 'doc1' LIMIT 10 WHERE category = 'tech' AND score > 5");
-        if let StatementKind::Similar(similar) = stmt.kind {
-            assert!(matches!(similar.query, SimilarQuery::Key(_)));
-            assert!(similar.where_clause.is_some());
-            // WHERE clause is an AND expression
-            if let Some(ref where_expr) = similar.where_clause {
-                assert!(matches!(
-                    where_expr.kind,
-                    ExprKind::Binary(_, BinaryOp::And, _)
-                ));
-            }
-        } else {
-            panic!("expected SIMILAR");
+        let similar = unwrap_similar(stmt);
+        assert!(matches!(similar.query, SimilarQuery::Key(_)));
+        assert!(similar.where_clause.is_some());
+        // WHERE clause is an AND expression
+        if let Some(ref where_expr) = similar.where_clause {
+            assert!(matches!(
+                where_expr.kind,
+                ExprKind::Binary(_, BinaryOp::And, _)
+            ));
         }
     }
 
     #[test]
     fn test_similar_where_with_or() {
         let stmt = parse_stmt("SIMILAR [1.0] WHERE status = 'active' OR status = 'pending'");
-        if let StatementKind::Similar(similar) = stmt.kind {
-            assert!(similar.where_clause.is_some());
-            if let Some(ref where_expr) = similar.where_clause {
-                assert!(matches!(
-                    where_expr.kind,
-                    ExprKind::Binary(_, BinaryOp::Or, _)
-                ));
-            }
-        } else {
-            panic!("expected SIMILAR");
+        let similar = unwrap_similar(stmt);
+        assert!(similar.where_clause.is_some());
+        if let Some(ref where_expr) = similar.where_clause {
+            assert!(matches!(
+                where_expr.kind,
+                ExprKind::Binary(_, BinaryOp::Or, _)
+            ));
         }
     }
 
     #[test]
     fn test_embed_batch_in_collection() {
         let stmt = parse_stmt("EMBED BATCH [('k1', [1.0]), ('k2', [2.0])] INTO batch_coll");
-        if let StatementKind::Embed(embed) = stmt.kind {
-            assert!(matches!(embed.operation, EmbedOp::Batch { .. }));
-            assert_eq!(embed.collection, Some("batch_coll".to_string()));
-        } else {
-            panic!("expected EMBED BATCH");
-        }
+        let embed = unwrap_embed(stmt);
+        assert!(matches!(embed.operation, EmbedOp::Batch { .. }));
+        assert_eq!(embed.collection, Some("batch_coll".to_string()));
     }
 
     // =========================================================================
@@ -7123,89 +6562,63 @@ mod tests {
     #[test]
     fn test_vault_set() {
         let stmt = parse_stmt("VAULT SET 'key1' 'value1'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            assert!(matches!(v.operation, VaultOp::Set { .. }));
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        assert!(matches!(v.operation, VaultOp::Set { .. }));
     }
 
     #[test]
     fn test_vault_get() {
         let stmt = parse_stmt("VAULT GET 'mykey'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            assert!(matches!(v.operation, VaultOp::Get { .. }));
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        assert!(matches!(v.operation, VaultOp::Get { .. }));
     }
 
     #[test]
     fn test_vault_delete() {
         let stmt = parse_stmt("VAULT DELETE 'mykey'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            assert!(matches!(v.operation, VaultOp::Delete { .. }));
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        assert!(matches!(v.operation, VaultOp::Delete { .. }));
     }
 
     #[test]
     fn test_vault_list_all() {
         let stmt = parse_stmt("VAULT LIST");
-        if let StatementKind::Vault(v) = stmt.kind {
-            if let VaultOp::List { pattern } = v.operation {
-                assert!(pattern.is_none());
-            } else {
-                panic!("expected VaultOp::List");
-            }
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        let VaultOp::List { pattern } = v.operation else {
+            panic!("expected VaultOp::List")
+        };
+        assert!(pattern.is_none());
     }
 
     #[test]
     fn test_vault_list_with_pattern() {
         let stmt = parse_stmt("VAULT LIST 'secret*'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            if let VaultOp::List { pattern } = v.operation {
-                assert!(pattern.is_some());
-            } else {
-                panic!("expected VaultOp::List");
-            }
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        let VaultOp::List { pattern } = v.operation else {
+            panic!("expected VaultOp::List")
+        };
+        assert!(pattern.is_some());
     }
 
     #[test]
     fn test_vault_rotate() {
         let stmt = parse_stmt("VAULT ROTATE 'mykey' 'newvalue'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            assert!(matches!(v.operation, VaultOp::Rotate { .. }));
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        assert!(matches!(v.operation, VaultOp::Rotate { .. }));
     }
 
     #[test]
     fn test_vault_grant() {
         let stmt = parse_stmt("VAULT GRANT 'user123' ON 'secret/key'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            assert!(matches!(v.operation, VaultOp::Grant { .. }));
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        assert!(matches!(v.operation, VaultOp::Grant { .. }));
     }
 
     #[test]
     fn test_vault_revoke() {
         let stmt = parse_stmt("VAULT REVOKE 'user123' ON 'secret/key'");
-        if let StatementKind::Vault(v) = stmt.kind {
-            assert!(matches!(v.operation, VaultOp::Revoke { .. }));
-        } else {
-            panic!("expected VAULT");
-        }
+        let v = unwrap_vault(stmt);
+        assert!(matches!(v.operation, VaultOp::Revoke { .. }));
     }
 
     #[test]
@@ -7221,46 +6634,35 @@ mod tests {
     #[test]
     fn test_cluster_connect() {
         let stmt = parse_stmt("CLUSTER CONNECT '127.0.0.1:8080'");
-        if let StatementKind::Cluster(c) = stmt.kind {
-            assert!(matches!(c.operation, ClusterOp::Connect { .. }));
-        } else {
-            panic!("expected CLUSTER");
-        }
+        let c = unwrap_cluster(stmt);
+        assert!(matches!(c.operation, ClusterOp::Connect { .. }));
     }
 
     #[test]
     fn test_cluster_disconnect() {
         let stmt = parse_stmt("CLUSTER DISCONNECT");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Disconnect));
     }
 
     #[test]
     fn test_cluster_status() {
         let stmt = parse_stmt("CLUSTER STATUS");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Status));
     }
 
     #[test]
     fn test_cluster_nodes() {
         let stmt = parse_stmt("CLUSTER NODES");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Nodes));
     }
 
     #[test]
     fn test_cluster_leader() {
         let stmt = parse_stmt("CLUSTER LEADER");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Leader));
     }
 
@@ -7277,218 +6679,156 @@ mod tests {
     #[test]
     fn test_blob_put_from_path() {
         let stmt = parse_stmt("BLOB PUT 'myfile.txt' FROM '/path/to/file'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Put { from_path, .. } = b.operation {
-                assert!(from_path.is_some());
-            } else {
-                panic!("expected BlobOp::Put");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Put { from_path, .. } = b.operation else {
+            panic!("expected BlobOp::Put")
+        };
+        assert!(from_path.is_some());
     }
 
     #[test]
     fn test_blob_put_with_data() {
         let stmt = parse_stmt("BLOB PUT 'myfile.txt' 'inline data here'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Put { data, .. } = b.operation {
-                assert!(data.is_some());
-            } else {
-                panic!("expected BlobOp::Put");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Put { data, .. } = b.operation else {
+            panic!("expected BlobOp::Put")
+        };
+        assert!(data.is_some());
     }
 
     #[test]
     fn test_blob_put_with_link_and_tag() {
         let stmt = parse_stmt("BLOB PUT 'doc.pdf' FROM '/path' LINK 'entity1' TAG 'important'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Put { options, .. } = b.operation {
-                assert!(!options.link.is_empty());
-                assert!(!options.tag.is_empty());
-            } else {
-                panic!("expected BlobOp::Put");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Put { options, .. } = b.operation else {
+            panic!("expected BlobOp::Put")
+        };
+        assert!(!options.link.is_empty());
+        assert!(!options.tag.is_empty());
     }
 
     #[test]
     fn test_blob_get() {
         let stmt = parse_stmt("BLOB GET 'artifact123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Get { to_path, .. } = b.operation {
-                assert!(to_path.is_none());
-            } else {
-                panic!("expected BlobOp::Get");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Get { to_path, .. } = b.operation else {
+            panic!("expected BlobOp::Get")
+        };
+        assert!(to_path.is_none());
     }
 
     #[test]
     fn test_blob_get_to_path() {
         let stmt = parse_stmt("BLOB GET 'artifact123' TO '/output/file.txt'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Get { to_path, .. } = b.operation {
-                assert!(to_path.is_some());
-            } else {
-                panic!("expected BlobOp::Get");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Get { to_path, .. } = b.operation else {
+            panic!("expected BlobOp::Get")
+        };
+        assert!(to_path.is_some());
     }
 
     #[test]
     fn test_blob_delete() {
         let stmt = parse_stmt("BLOB DELETE 'artifact123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Delete { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Delete { .. }));
     }
 
     #[test]
     fn test_blob_info() {
         let stmt = parse_stmt("BLOB INFO 'artifact123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Info { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Info { .. }));
     }
 
     #[test]
     fn test_blob_link() {
         let stmt = parse_stmt("BLOB LINK 'artifact123' TO 'entity456'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Link { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Link { .. }));
     }
 
     #[test]
     fn test_blob_unlink() {
         let stmt = parse_stmt("BLOB UNLINK 'artifact123' FROM 'entity456'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Unlink { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Unlink { .. }));
     }
 
     #[test]
     fn test_blob_links() {
         let stmt = parse_stmt("BLOB LINKS 'artifact123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Links { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Links { .. }));
     }
 
     #[test]
     fn test_blob_tag() {
         let stmt = parse_stmt("BLOB TAG 'artifact123' 'important'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Tag { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Tag { .. }));
     }
 
     #[test]
     fn test_blob_untag() {
         let stmt = parse_stmt("BLOB UNTAG 'artifact123' 'important'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Untag { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Untag { .. }));
     }
 
     #[test]
     fn test_blob_verify() {
         let stmt = parse_stmt("BLOB VERIFY 'artifact123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Verify { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Verify { .. }));
     }
 
     #[test]
     fn test_blob_gc() {
         let stmt = parse_stmt("BLOB GC");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Gc { full } = b.operation {
-                assert!(!full);
-            } else {
-                panic!("expected BlobOp::Gc");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Gc { full } = b.operation else {
+            panic!("expected BlobOp::Gc")
+        };
+        assert!(!full);
     }
 
     #[test]
     fn test_blob_gc_full() {
         let stmt = parse_stmt("BLOB GC FULL");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Gc { full } = b.operation {
-                assert!(full);
-            } else {
-                panic!("expected BlobOp::Gc");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Gc { full } = b.operation else {
+            panic!("expected BlobOp::Gc")
+        };
+        assert!(full);
     }
 
     #[test]
     fn test_blob_repair() {
         let stmt = parse_stmt("BLOB REPAIR");
-        let StatementKind::Blob(b) = stmt.kind else {
-            panic!("expected BLOB")
-        };
+        let b = unwrap_blob(stmt);
         assert!(matches!(b.operation, BlobOp::Repair));
     }
 
     #[test]
     fn test_blob_stats() {
         let stmt = parse_stmt("BLOB STATS");
-        let StatementKind::Blob(b) = stmt.kind else {
-            panic!("expected BLOB")
-        };
+        let b = unwrap_blob(stmt);
         assert!(matches!(b.operation, BlobOp::Stats));
     }
 
     #[test]
     fn test_blob_meta_set() {
         let stmt = parse_stmt("BLOB META SET 'artifact123' 'description' 'A test file'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::MetaSet { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::MetaSet { .. }));
     }
 
     #[test]
     fn test_blob_meta_get() {
         let stmt = parse_stmt("BLOB META GET 'artifact123' 'description'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::MetaGet { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::MetaGet { .. }));
     }
 
     #[test]
@@ -7510,83 +6850,59 @@ mod tests {
     #[test]
     fn test_blobs_list_all() {
         let stmt = parse_stmt("BLOBS");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::List { pattern: None }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::List { pattern: None }));
     }
 
     #[test]
     fn test_blobs_list_pattern() {
         let stmt = parse_stmt("BLOBS '*.txt'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            if let BlobsOp::List { pattern } = b.operation {
-                assert!(pattern.is_some());
-            } else {
-                panic!("expected BlobsOp::List");
-            }
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        let BlobsOp::List { pattern } = b.operation else {
+            panic!("expected BlobsOp::List")
+        };
+        assert!(pattern.is_some());
     }
 
     #[test]
     fn test_blobs_for_entity() {
         let stmt = parse_stmt("BLOBS FOR 'entity123'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::For { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::For { .. }));
     }
 
     #[test]
     fn test_blobs_by_tag() {
         let stmt = parse_stmt("BLOBS BY TAG 'important'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::ByTag { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::ByTag { .. }));
     }
 
     #[test]
     fn test_blobs_where_type() {
         let stmt = parse_stmt("BLOBS WHERE TYPE = 'application/pdf'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::ByType { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::ByType { .. }));
     }
 
     #[test]
     fn test_blobs_similar() {
         let stmt = parse_stmt("BLOBS SIMILAR TO 'artifact123' LIMIT 10");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            if let BlobsOp::Similar { limit, .. } = b.operation {
-                assert!(limit.is_some());
-            } else {
-                panic!("expected BlobsOp::Similar");
-            }
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        let BlobsOp::Similar { limit, .. } = b.operation else {
+            panic!("expected BlobsOp::Similar")
+        };
+        assert!(limit.is_some());
     }
 
     #[test]
     fn test_blobs_similar_no_limit() {
         let stmt = parse_stmt("BLOBS SIMILAR TO 'artifact123'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            if let BlobsOp::Similar { limit, .. } = b.operation {
-                assert!(limit.is_none());
-            } else {
-                panic!("expected BlobsOp::Similar");
-            }
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        let BlobsOp::Similar { limit, .. } = b.operation else {
+            panic!("expected BlobsOp::Similar")
+        };
+        assert!(limit.is_none());
     }
 
     // =========================================================================
@@ -7596,100 +6912,74 @@ mod tests {
     #[test]
     fn test_chain_begin() {
         let stmt = parse_stmt("BEGIN CHAIN TRANSACTION");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Begin));
     }
 
     #[test]
     fn test_chain_commit() {
         let stmt = parse_stmt("COMMIT CHAIN");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Commit));
     }
 
     #[test]
     fn test_chain_rollback_height() {
         let stmt = parse_stmt("ROLLBACK CHAIN TO 100");
-        if let StatementKind::Chain(c) = stmt.kind {
-            assert!(matches!(c.operation, ChainOp::Rollback { .. }));
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        assert!(matches!(c.operation, ChainOp::Rollback { .. }));
     }
 
     #[test]
     fn test_chain_height() {
         let stmt = parse_stmt("CHAIN HEIGHT");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Height));
     }
 
     #[test]
     fn test_chain_tip() {
         let stmt = parse_stmt("CHAIN TIP");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Tip));
     }
 
     #[test]
     fn test_chain_block() {
         let stmt = parse_stmt("CHAIN BLOCK 42");
-        if let StatementKind::Chain(c) = stmt.kind {
-            assert!(matches!(c.operation, ChainOp::Block { .. }));
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        assert!(matches!(c.operation, ChainOp::Block { .. }));
     }
 
     #[test]
     fn test_chain_verify() {
         let stmt = parse_stmt("CHAIN VERIFY");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Verify));
     }
 
     #[test]
     fn test_chain_history() {
         let stmt = parse_stmt("CHAIN HISTORY 'users:123'");
-        if let StatementKind::Chain(c) = stmt.kind {
-            assert!(matches!(c.operation, ChainOp::History { .. }));
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        assert!(matches!(c.operation, ChainOp::History { .. }));
     }
 
     #[test]
     fn test_chain_similar() {
         let stmt = parse_stmt("CHAIN SIMILAR [1.0, 2.0] LIMIT 5");
-        if let StatementKind::Chain(c) = stmt.kind {
-            if let ChainOp::Similar { limit, .. } = c.operation {
-                assert!(limit.is_some());
-            } else {
-                panic!("expected ChainOp::Similar");
-            }
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        let ChainOp::Similar { limit, .. } = c.operation else {
+            panic!("expected ChainOp::Similar")
+        };
+        assert!(limit.is_some());
     }
 
     #[test]
     fn test_chain_drift() {
         let stmt = parse_stmt("CHAIN DRIFT FROM 0 TO 100");
-        if let StatementKind::Chain(c) = stmt.kind {
-            assert!(matches!(c.operation, ChainOp::Drift { .. }));
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        assert!(matches!(c.operation, ChainOp::Drift { .. }));
     }
 
     #[test]
@@ -7701,28 +6991,21 @@ mod tests {
     #[test]
     fn test_show_codebook_global() {
         let stmt = parse_stmt("SHOW CODEBOOK GLOBAL");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::ShowCodebookGlobal));
     }
 
     #[test]
     fn test_show_codebook_local() {
         let stmt = parse_stmt("SHOW CODEBOOK LOCAL 'users'");
-        if let StatementKind::Chain(c) = stmt.kind {
-            assert!(matches!(c.operation, ChainOp::ShowCodebookLocal { .. }));
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        assert!(matches!(c.operation, ChainOp::ShowCodebookLocal { .. }));
     }
 
     #[test]
     fn test_analyze_codebook_transitions() {
         let stmt = parse_stmt("ANALYZE CODEBOOK TRANSITIONS");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::AnalyzeTransitions));
     }
 
@@ -7795,9 +7078,7 @@ mod tests {
     #[test]
     fn test_rollback_to_checkpoint() {
         let stmt = parse_stmt("ROLLBACK TO 'checkpoint1'");
-        let StatementKind::Rollback(r) = stmt.kind else {
-            panic!("expected ROLLBACK")
-        };
+        let r = unwrap_rollback(stmt);
         assert!(matches!(
             r.target.kind,
             ExprKind::Literal(Literal::String(_))
@@ -7807,9 +7088,7 @@ mod tests {
     #[test]
     fn test_checkpoints_list() {
         let stmt = parse_stmt("CHECKPOINTS");
-        let StatementKind::Checkpoints(c) = stmt.kind else {
-            panic!("expected CHECKPOINTS")
-        };
+        let c = unwrap_checkpoints(stmt);
         assert!(c.limit.is_none());
     }
 
@@ -7820,31 +7099,22 @@ mod tests {
     #[test]
     fn test_entity_get() {
         let stmt = parse_stmt("ENTITY GET 'user:123'");
-        if let StatementKind::Entity(e) = stmt.kind {
-            assert!(matches!(e.operation, EntityOp::Get { .. }));
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        assert!(matches!(e.operation, EntityOp::Get { .. }));
     }
 
     #[test]
     fn test_entity_update() {
         let stmt = parse_stmt("ENTITY UPDATE 'user:123' { name: 'Bob' }");
-        if let StatementKind::Entity(e) = stmt.kind {
-            assert!(matches!(e.operation, EntityOp::Update { .. }));
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        assert!(matches!(e.operation, EntityOp::Update { .. }));
     }
 
     #[test]
     fn test_entity_delete() {
         let stmt = parse_stmt("ENTITY DELETE 'user:123'");
-        if let StatementKind::Entity(e) = stmt.kind {
-            assert!(matches!(e.operation, EntityOp::Delete { .. }));
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        assert!(matches!(e.operation, EntityOp::Delete { .. }));
     }
 
     #[test]
@@ -7860,27 +7130,21 @@ mod tests {
     #[test]
     fn test_between_expr() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x BETWEEN 1 AND 10");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(s.where_clause.is_some());
     }
 
     #[test]
     fn test_like_expr() {
         let stmt = parse_stmt("SELECT * FROM t WHERE name LIKE '%test%'");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(s.where_clause.is_some());
     }
 
     #[test]
     fn test_is_null_expr() {
         let stmt = parse_stmt("SELECT * FROM t WHERE x IS NULL");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(s.where_clause.is_some());
     }
 
@@ -7910,9 +7174,7 @@ mod tests {
     fn test_neighbors_with_limit() {
         // NEIGHBORS parses limit correctly
         let stmt = parse_stmt("NEIGHBORS 1 LIMIT 10");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(n.limit.is_some());
     }
 
@@ -7988,27 +7250,21 @@ mod tests {
     #[test]
     fn test_find_node_with_label() {
         let stmt = parse_stmt("FIND NODE Person WHERE age > 18");
-        let StatementKind::Find(f) = stmt.kind else {
-            panic!("expected FIND")
-        };
+        let f = unwrap_find(stmt);
         assert!(f.where_clause.is_some());
     }
 
     #[test]
     fn test_find_edge_with_type() {
         let stmt = parse_stmt("FIND EDGE knows WHERE weight > 0.5");
-        let StatementKind::Find(f) = stmt.kind else {
-            panic!("expected FIND")
-        };
+        let f = unwrap_find(stmt);
         assert!(f.where_clause.is_some());
     }
 
     #[test]
     fn test_find_with_limit() {
         let stmt = parse_stmt("FIND NODE Person LIMIT 10");
-        let StatementKind::Find(f) = stmt.kind else {
-            panic!("expected FIND")
-        };
+        let f = unwrap_find(stmt);
         assert!(f.limit.is_some());
     }
 
@@ -8019,18 +7275,14 @@ mod tests {
     #[test]
     fn test_similar_connected_to() {
         let stmt = parse_stmt("SIMILAR 'key' CONNECTED TO 'hub' LIMIT 10");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.connected_to.is_some());
     }
 
     #[test]
     fn test_similar_with_metric_cosine() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 5 COSINE");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.metric.is_some());
     }
 
@@ -8041,18 +7293,14 @@ mod tests {
     #[test]
     fn test_neighbors_by_similarity() {
         let stmt = parse_stmt("NEIGHBORS 'entity' BY SIMILAR [1.0, 0.0] LIMIT 5");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(n.by_similarity.is_some());
     }
 
     #[test]
     fn test_neighbors_outgoing_with_limit() {
         let stmt = parse_stmt("NEIGHBORS 123 OUTGOING LIMIT 20");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(n.limit.is_some());
     }
 
@@ -8063,18 +7311,14 @@ mod tests {
     #[test]
     fn test_path_with_depth_limit() {
         let stmt = parse_stmt("PATH 1 -> 10 LIMIT 5");
-        let StatementKind::Path(p) = stmt.kind else {
-            panic!("expected PATH")
-        };
+        let p = unwrap_path(stmt);
         assert!(p.max_depth.is_some());
     }
 
     #[test]
     fn test_path_shortest() {
         let stmt = parse_stmt("PATH SHORTEST 1 -> 10");
-        let StatementKind::Path(p) = stmt.kind else {
-            panic!("expected PATH")
-        };
+        let p = unwrap_path(stmt);
         assert!(matches!(p.algorithm, PathAlgorithm::Shortest));
     }
 
@@ -8085,9 +7329,7 @@ mod tests {
     #[test]
     fn test_neighbors_both_direction() {
         let stmt = parse_stmt("NEIGHBORS 1 BOTH LIMIT 5");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(matches!(n.direction, Direction::Both));
     }
 
@@ -8124,27 +7366,21 @@ mod tests {
     #[test]
     fn test_qualified_wildcard_expr() {
         let stmt = parse_stmt("SELECT t.* FROM t");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(s.columns.len() == 1);
     }
 
     #[test]
     fn test_similar_into_collection() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 10 INTO my_collection");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.collection.is_some());
     }
 
     #[test]
     fn test_select_with_having() {
         let stmt = parse_stmt("SELECT name, COUNT(*) FROM users GROUP BY name HAVING COUNT(*) > 1");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(s.having.is_some());
     }
 
@@ -8270,9 +7506,7 @@ mod tests {
     #[test]
     fn test_named_checkpoint() {
         let stmt = parse_stmt("CHECKPOINT 'my_checkpoint'");
-        let StatementKind::Checkpoint(c) = stmt.kind else {
-            panic!("expected CHECKPOINT")
-        };
+        let c = unwrap_checkpoint(stmt);
         assert!(c.name.is_some());
     }
 
@@ -8285,9 +7519,7 @@ mod tests {
     #[test]
     fn test_similar_with_euclidean() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 5 EUCLIDEAN");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.metric.is_some());
     }
 
@@ -8329,9 +7561,7 @@ mod tests {
     fn test_table_alias_keyword_not_taken() {
         // When the next token is a keyword, it should not be taken as alias
         let stmt = parse_stmt("SELECT * FROM users WHERE id = 1");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let from = select.from.unwrap();
         // The alias should be None because WHERE is a keyword
         assert!(from.table.alias.is_none());
@@ -8430,9 +7660,7 @@ mod tests {
     #[test]
     fn test_join_no_condition() {
         let stmt = parse_stmt("SELECT * FROM a JOIN b");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         let join = &select.from.as_ref().unwrap().joins[0];
         assert!(join.condition.is_none());
     }
@@ -8444,9 +7672,7 @@ mod tests {
     #[test]
     fn test_coverage_exists_expr() {
         let stmt = parse_stmt("SELECT * FROM t WHERE EXISTS (SELECT 1 FROM s)");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.where_clause.is_some());
     }
 
@@ -8459,9 +7685,7 @@ mod tests {
     #[test]
     fn test_coverage_empty_tuple() {
         let stmt = parse_stmt("SELECT ()");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(matches!(select.columns[0].expr.kind, ExprKind::Tuple(_)));
     }
 
@@ -8474,9 +7698,7 @@ mod tests {
     #[test]
     fn test_coverage_select_all_modifier() {
         let stmt = parse_stmt("SELECT ALL x FROM t");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(!select.distinct);
     }
 
@@ -8519,9 +7741,7 @@ mod tests {
     #[test]
     fn test_coverage_subquery_in_from() {
         let stmt = parse_stmt("SELECT * FROM (SELECT 1 AS x) AS sub");
-        let StatementKind::Select(select) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let select = unwrap_select(stmt);
         assert!(select.from.is_some());
     }
 
@@ -8546,75 +7766,56 @@ mod tests {
     #[test]
     fn test_coverage_blobs_for() {
         let stmt = parse_stmt("BLOBS FOR 'entity1'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::For { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::For { .. }));
     }
 
     #[test]
     fn test_coverage_find_edges() {
         let stmt = parse_stmt("FIND EDGE FOLLOWS WHERE weight > 0.5");
-        if let StatementKind::Find(f) = stmt.kind {
-            assert!(matches!(f.pattern, FindPattern::Edges { .. }));
-        } else {
-            panic!("expected FIND");
-        }
+        let f = unwrap_find(stmt);
+        assert!(matches!(f.pattern, FindPattern::Edges { .. }));
     }
 
     #[test]
     fn test_coverage_find_rows() {
         let stmt = parse_stmt("FIND ROWS FROM users WHERE age > 18");
-        if let StatementKind::Find(f) = stmt.kind {
-            assert!(matches!(f.pattern, FindPattern::Rows { .. }));
-        } else {
-            panic!("expected FIND");
-        }
+        let f = unwrap_find(stmt);
+        assert!(matches!(f.pattern, FindPattern::Rows { .. }));
     }
 
     #[test]
     fn test_coverage_update_with_where() {
         let stmt = parse_stmt("UPDATE users SET name = 'Bob' WHERE id = 1");
-        let StatementKind::Update(u) = stmt.kind else {
-            panic!("expected UPDATE")
-        };
+        let u = unwrap_update(stmt);
         assert!(u.where_clause.is_some());
     }
 
     #[test]
     fn test_coverage_delete_with_where() {
         let stmt = parse_stmt("DELETE FROM users WHERE id = 1");
-        let StatementKind::Delete(d) = stmt.kind else {
-            panic!("expected DELETE")
-        };
+        let d = unwrap_delete(stmt);
         assert!(d.where_clause.is_some());
     }
 
     #[test]
     fn test_coverage_similar_with_connected() {
         let stmt = parse_stmt("SIMILAR 'entity' CONNECTED TO 'hub' LIMIT 5");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.connected_to.is_some());
     }
 
     #[test]
     fn test_coverage_similar_with_cosine_metric() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 5 COSINE");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.metric.is_some());
     }
 
     #[test]
     fn test_coverage_similar_with_dot_product_metric() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 5 DOT_PRODUCT");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.metric.is_some());
     }
 
@@ -8719,9 +7920,7 @@ mod tests {
     #[test]
     fn test_coverage_join_using_multiple_columns() {
         let stmt = parse_stmt("SELECT * FROM a JOIN b USING (x, y, z)");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected USING")
-        };
+        let s = unwrap_select(stmt);
         if let Some(from) = s.from {
             assert!(!from.joins.is_empty());
             if let Some(JoinCondition::Using(cols)) = &from.joins[0].condition {
@@ -8736,9 +7935,7 @@ mod tests {
     #[test]
     fn test_coverage_update_without_where() {
         let stmt = parse_stmt("UPDATE users SET active = TRUE");
-        let StatementKind::Update(u) = stmt.kind else {
-            panic!("expected UPDATE")
-        };
+        let u = unwrap_update(stmt);
         assert!(u.where_clause.is_none());
     }
 
@@ -8746,9 +7943,7 @@ mod tests {
     #[test]
     fn test_coverage_delete_without_where() {
         let stmt = parse_stmt("DELETE FROM users");
-        let StatementKind::Delete(d) = stmt.kind else {
-            panic!("expected DELETE")
-        };
+        let d = unwrap_delete(stmt);
         assert!(d.where_clause.is_none());
     }
 
@@ -8757,13 +7952,10 @@ mod tests {
     fn test_coverage_table_ref_keyword_not_alias() {
         // SELECT ... FROM table WHERE ... (WHERE is keyword, not alias)
         let stmt = parse_stmt("SELECT * FROM users WHERE id = 1");
-        if let StatementKind::Select(s) = stmt.kind {
-            if let Some(from) = s.from {
-                // The table should not have an alias since WHERE is a keyword
-                assert!(from.table.alias.is_none());
-            }
-        } else {
-            panic!("expected SELECT");
+        let s = unwrap_select(stmt);
+        if let Some(from) = s.from {
+            // The table should not have an alias since WHERE is a keyword
+            assert!(from.table.alias.is_none());
         }
     }
 
@@ -8771,9 +7963,7 @@ mod tests {
     #[test]
     fn test_coverage_insert_select() {
         let stmt = parse_stmt("INSERT INTO archive (name) SELECT name FROM users");
-        let StatementKind::Insert(i) = stmt.kind else {
-            panic!("expected INSERT")
-        };
+        let i = unwrap_insert(stmt);
         assert!(matches!(i.source, InsertSource::Query(_)));
     }
 
@@ -8801,16 +7991,12 @@ mod tests {
     #[test]
     fn test_coverage_is_not_null() {
         let stmt = parse_stmt("SELECT * FROM users WHERE email IS NOT NULL");
-        if let StatementKind::Select(s) = stmt.kind {
-            if let Some(where_clause) = s.where_clause {
-                if let ExprKind::IsNull { negated, .. } = where_clause.kind {
-                    assert!(negated);
-                } else {
-                    panic!("expected IS NULL");
-                }
-            }
-        } else {
-            panic!("expected SELECT");
+        let s = unwrap_select(stmt);
+        if let Some(where_clause) = s.where_clause {
+            let ExprKind::IsNull { negated, .. } = where_clause.kind else {
+                panic!("expected IS NULL")
+            };
+            assert!(negated);
         }
     }
 
@@ -8826,37 +8012,29 @@ mod tests {
     #[test]
     fn test_coverage_function_distinct() {
         let stmt = parse_stmt("SELECT COUNT(DISTINCT name) FROM users");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected CALL")
+        let s = unwrap_select(stmt);
+        let ExprKind::Call(call) = &s.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Call(call) = &s.columns[0].expr.kind {
-            assert!(call.distinct);
-        } else {
-            panic!("expected SELECT");
-        }
+        assert!(call.distinct);
     }
 
     // Multiple function arguments
     #[test]
     fn test_coverage_function_multiple_args() {
         let stmt = parse_stmt("SELECT COALESCE(a, b, c, d) FROM t");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected CALL")
+        let s = unwrap_select(stmt);
+        let ExprKind::Call(call) = &s.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Call(call) = &s.columns[0].expr.kind {
-            assert_eq!(call.args.len(), 4);
-        } else {
-            panic!("expected SELECT");
-        }
+        assert_eq!(call.args.len(), 4);
     }
 
     // CREATE UNIQUE INDEX
     #[test]
     fn test_coverage_create_unique_index() {
         let stmt = parse_stmt("CREATE UNIQUE INDEX idx ON users (email)");
-        let StatementKind::CreateIndex(ci) = stmt.kind else {
-            panic!("expected CREATE INDEX")
-        };
+        let ci = unwrap_createindex(stmt);
         assert!(ci.unique);
     }
 
@@ -8865,9 +8043,7 @@ mod tests {
     fn test_coverage_update_multiple_assignments() {
         let stmt =
             parse_stmt("UPDATE users SET name = 'Bob', age = 30, active = TRUE WHERE id = 1");
-        let StatementKind::Update(u) = stmt.kind else {
-            panic!("expected UPDATE")
-        };
+        let u = unwrap_update(stmt);
         assert_eq!(u.assignments.len(), 3);
     }
 
@@ -8875,38 +8051,29 @@ mod tests {
     #[test]
     fn test_coverage_cluster_status() {
         let stmt = parse_stmt("CLUSTER STATUS");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Status));
     }
 
     #[test]
     fn test_coverage_cluster_nodes() {
         let stmt = parse_stmt("CLUSTER NODES");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Nodes));
     }
 
     #[test]
     fn test_coverage_cluster_leader() {
         let stmt = parse_stmt("CLUSTER LEADER");
-        let StatementKind::Cluster(c) = stmt.kind else {
-            panic!("expected CLUSTER")
-        };
+        let c = unwrap_cluster(stmt);
         assert!(matches!(c.operation, ClusterOp::Leader));
     }
 
     #[test]
     fn test_coverage_cluster_connect() {
         let stmt = parse_stmt("CLUSTER CONNECT '127.0.0.1:9000'");
-        if let StatementKind::Cluster(c) = stmt.kind {
-            assert!(matches!(c.operation, ClusterOp::Connect { .. }));
-        } else {
-            panic!("expected CLUSTER");
-        }
+        let c = unwrap_cluster(stmt);
+        assert!(matches!(c.operation, ClusterOp::Connect { .. }));
     }
 
     // GRAPH PAGERANK with all options
@@ -8921,9 +8088,7 @@ mod tests {
     #[test]
     fn test_coverage_similar_euclidean() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 10 EUCLIDEAN");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.metric.is_some());
     }
 
@@ -8931,49 +8096,36 @@ mod tests {
     #[test]
     fn test_coverage_blob_get() {
         let stmt = parse_stmt("BLOB GET 'hash123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Get { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Get { .. }));
     }
 
     #[test]
     fn test_coverage_blob_delete() {
         let stmt = parse_stmt("BLOB DELETE 'hash123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Delete { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Delete { .. }));
     }
 
     #[test]
     fn test_coverage_blob_info() {
         let stmt = parse_stmt("BLOB INFO 'hash123'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Info { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Info { .. }));
     }
 
     // CHECKPOINT operations
     #[test]
     fn test_coverage_checkpoint_named() {
         let stmt = parse_stmt("CHECKPOINT 'backup1'");
-        let StatementKind::Checkpoint(c) = stmt.kind else {
-            panic!("expected CHECKPOINT")
-        };
+        let c = unwrap_checkpoint(stmt);
         assert!(c.name.is_some());
     }
 
     #[test]
     fn test_coverage_checkpoints_list() {
         let stmt = parse_stmt("CHECKPOINTS LIMIT 10");
-        let StatementKind::Checkpoints(c) = stmt.kind else {
-            panic!("expected CHECKPOINTS")
-        };
+        let c = unwrap_checkpoints(stmt);
         assert!(c.limit.is_some());
     }
 
@@ -8987,14 +8139,11 @@ mod tests {
     #[test]
     fn test_coverage_function_no_args() {
         let stmt = parse_stmt("SELECT NOW() FROM dual");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected CALL")
+        let s = unwrap_select(stmt);
+        let ExprKind::Call(call) = &s.columns[0].expr.kind else {
+            panic!("expected SELECT")
         };
-        if let ExprKind::Call(call) = &s.columns[0].expr.kind {
-            assert!(call.args.is_empty());
-        } else {
-            panic!("expected SELECT");
-        }
+        assert!(call.args.is_empty());
     }
 
     // GRAPH INDEX create label
@@ -9023,9 +8172,7 @@ mod tests {
     #[test]
     fn test_coverage_not_in() {
         let stmt = parse_stmt("SELECT * FROM users WHERE id NOT IN (1, 2, 3)");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(s.where_clause.is_some());
     }
 
@@ -9069,12 +8216,9 @@ mod tests {
     #[test]
     fn test_coverage_table_alias_implicit() {
         let stmt = parse_stmt("SELECT u.name FROM users u");
-        if let StatementKind::Select(s) = stmt.kind {
-            if let Some(from) = s.from {
-                assert!(from.table.alias.is_some());
-            }
-        } else {
-            panic!("expected SELECT");
+        let s = unwrap_select(stmt);
+        if let Some(from) = s.from {
+            assert!(from.table.alias.is_some());
         }
     }
 
@@ -9082,9 +8226,7 @@ mod tests {
     #[test]
     fn test_coverage_neighbors_with_direction() {
         let stmt = parse_stmt("NEIGHBORS 1 OUTGOING");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(matches!(n.direction, Direction::Outgoing));
     }
 
@@ -9092,9 +8234,7 @@ mod tests {
     #[test]
     fn test_coverage_neighbors_edge_type_colon() {
         let stmt = parse_stmt("NEIGHBORS 1 : FOLLOWS");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(n.edge_type.is_some());
     }
 
@@ -9102,45 +8242,34 @@ mod tests {
     #[test]
     fn test_coverage_entity_get() {
         let stmt = parse_stmt("ENTITY GET 'user:1'");
-        if let StatementKind::Entity(e) = stmt.kind {
-            assert!(matches!(e.operation, EntityOp::Get { .. }));
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        assert!(matches!(e.operation, EntityOp::Get { .. }));
     }
 
     // ENTITY DELETE
     #[test]
     fn test_coverage_entity_delete() {
         let stmt = parse_stmt("ENTITY DELETE 'user:1'");
-        if let StatementKind::Entity(e) = stmt.kind {
-            assert!(matches!(e.operation, EntityOp::Delete { .. }));
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        assert!(matches!(e.operation, EntityOp::Delete { .. }));
     }
 
     // INSERT with multiple value rows
     #[test]
     fn test_coverage_insert_multiple_rows() {
         let stmt = parse_stmt("INSERT INTO users (name) VALUES ('Alice'), ('Bob'), ('Carol')");
-        let StatementKind::Insert(i) = stmt.kind else {
-            panic!("expected VALUES")
+        let i = unwrap_insert(stmt);
+        let InsertSource::Values(rows) = i.source else {
+            panic!("expected INSERT")
         };
-        if let InsertSource::Values(rows) = i.source {
-            assert_eq!(rows.len(), 3);
-        } else {
-            panic!("expected INSERT");
-        }
+        assert_eq!(rows.len(), 3);
     }
 
     // SELECT with GROUP BY multiple columns
     #[test]
     fn test_coverage_group_by_multiple() {
         let stmt = parse_stmt("SELECT a, b, COUNT(*) FROM t GROUP BY a, b");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert_eq!(s.group_by.len(), 2);
     }
 
@@ -9148,9 +8277,7 @@ mod tests {
     #[test]
     fn test_coverage_order_by_multiple_mixed() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY a ASC, b DESC, c");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert_eq!(s.order_by.len(), 3);
     }
 
@@ -9165,48 +8292,35 @@ mod tests {
     #[test]
     fn test_coverage_blob_put_from_path() {
         let stmt = parse_stmt("BLOB PUT 'file.txt' FROM '/path/to/file'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            if let BlobOp::Put { from_path, .. } = b.operation {
-                assert!(from_path.is_some());
-            } else {
-                panic!("expected PUT");
-            }
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        let BlobOp::Put { from_path, .. } = b.operation else {
+            panic!("expected PUT")
+        };
+        assert!(from_path.is_some());
     }
 
     // BLOBS BY TAG
     #[test]
     fn test_coverage_blobs_by_tag() {
         let stmt = parse_stmt("BLOBS BY TAG 'important'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::ByTag { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::ByTag { .. }));
     }
 
     // BLOBS BY TYPE
     #[test]
     fn test_coverage_blobs_by_type() {
         let stmt = parse_stmt("BLOBS WHERE TYPE = 'image/png'");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::ByType { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::ByType { .. }));
     }
 
     // BLOBS SIMILAR
     #[test]
     fn test_coverage_blobs_similar() {
         let stmt = parse_stmt("BLOBS SIMILAR TO 'hash123' LIMIT 5");
-        if let StatementKind::Blobs(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobsOp::Similar { .. }));
-        } else {
-            panic!("expected BLOBS");
-        }
+        let b = unwrap_blobs(stmt);
+        assert!(matches!(b.operation, BlobsOp::Similar { .. }));
     }
 
     // Error: invalid table constraint
@@ -9220,9 +8334,7 @@ mod tests {
     #[test]
     fn test_coverage_decimal_precision_scale() {
         let stmt = parse_stmt("CREATE TABLE t (price DECIMAL(10, 2))");
-        let StatementKind::CreateTable(ct) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let ct = unwrap_createtable(stmt);
         assert_eq!(ct.columns.len(), 1);
     }
 
@@ -9230,9 +8342,7 @@ mod tests {
     #[test]
     fn test_coverage_varchar_length() {
         let stmt = parse_stmt("CREATE TABLE t (name VARCHAR(255))");
-        let StatementKind::CreateTable(ct) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let ct = unwrap_createtable(stmt);
         assert_eq!(ct.columns.len(), 1);
     }
 
@@ -9240,9 +8350,7 @@ mod tests {
     #[test]
     fn test_coverage_create_index_if_not_exists() {
         let stmt = parse_stmt("CREATE INDEX IF NOT EXISTS idx ON users (email)");
-        let StatementKind::CreateIndex(ci) = stmt.kind else {
-            panic!("expected CREATE INDEX")
-        };
+        let ci = unwrap_createindex(stmt);
         assert!(ci.if_not_exists);
     }
 
@@ -9250,9 +8358,7 @@ mod tests {
     #[test]
     fn test_coverage_create_index_multiple_columns() {
         let stmt = parse_stmt("CREATE INDEX idx ON users (first_name, last_name)");
-        let StatementKind::CreateIndex(ci) = stmt.kind else {
-            panic!("expected CREATE INDEX")
-        };
+        let ci = unwrap_createindex(stmt);
         assert_eq!(ci.columns.len(), 2);
     }
 
@@ -9260,9 +8366,7 @@ mod tests {
     #[test]
     fn test_coverage_table_check_constraint() {
         let stmt = parse_stmt("CREATE TABLE t (age INT, CHECK (age >= 0))");
-        let StatementKind::CreateTable(ct) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let ct = unwrap_createtable(stmt);
         assert_eq!(ct.constraints.len(), 1);
     }
 
@@ -9277,9 +8381,7 @@ mod tests {
     #[test]
     fn test_coverage_drop_table_if_exists() {
         let stmt = parse_stmt("DROP TABLE IF EXISTS users");
-        let StatementKind::DropTable(dt) = stmt.kind else {
-            panic!("expected DROP TABLE")
-        };
+        let dt = unwrap_droptable(stmt);
         assert!(dt.if_exists);
     }
 
@@ -9347,9 +8449,7 @@ mod tests {
     #[test]
     fn test_coverage_column_default() {
         let stmt = parse_stmt("CREATE TABLE t (active BOOLEAN DEFAULT TRUE)");
-        let StatementKind::CreateTable(ct) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let ct = unwrap_createtable(stmt);
         assert!(!ct.columns[0].constraints.is_empty());
     }
 
@@ -9371,80 +8471,59 @@ mod tests {
     #[test]
     fn test_coverage_node_get() {
         let stmt = parse_stmt("NODE GET 1");
-        if let StatementKind::Node(n) = stmt.kind {
-            assert!(matches!(n.operation, NodeOp::Get { .. }));
-        } else {
-            panic!("expected NODE");
-        }
+        let n = unwrap_node(stmt);
+        assert!(matches!(n.operation, NodeOp::Get { .. }));
     }
 
     // NODE DELETE
     #[test]
     fn test_coverage_node_delete() {
         let stmt = parse_stmt("NODE DELETE 1");
-        if let StatementKind::Node(n) = stmt.kind {
-            assert!(matches!(n.operation, NodeOp::Delete { .. }));
-        } else {
-            panic!("expected NODE");
-        }
+        let n = unwrap_node(stmt);
+        assert!(matches!(n.operation, NodeOp::Delete { .. }));
     }
 
     // EDGE GET
     #[test]
     fn test_coverage_edge_get() {
         let stmt = parse_stmt("EDGE GET 1");
-        if let StatementKind::Edge(e) = stmt.kind {
-            assert!(matches!(e.operation, EdgeOp::Get { .. }));
-        } else {
-            panic!("expected EDGE");
-        }
+        let e = unwrap_edge(stmt);
+        assert!(matches!(e.operation, EdgeOp::Get { .. }));
     }
 
     // EDGE DELETE
     #[test]
     fn test_coverage_edge_delete() {
         let stmt = parse_stmt("EDGE DELETE 1");
-        if let StatementKind::Edge(e) = stmt.kind {
-            assert!(matches!(e.operation, EdgeOp::Delete { .. }));
-        } else {
-            panic!("expected EDGE");
-        }
+        let e = unwrap_edge(stmt);
+        assert!(matches!(e.operation, EdgeOp::Delete { .. }));
     }
 
     // EDGE LIST
     #[test]
     fn test_coverage_edge_list() {
         let stmt = parse_stmt("EDGE LIST FOLLOWS LIMIT 10");
-        if let StatementKind::Edge(e) = stmt.kind {
-            assert!(matches!(e.operation, EdgeOp::List { .. }));
-        } else {
-            panic!("expected EDGE");
-        }
+        let e = unwrap_edge(stmt);
+        assert!(matches!(e.operation, EdgeOp::List { .. }));
     }
 
     // NODE LIST with LIMIT
     #[test]
     fn test_coverage_node_list_limit() {
         let stmt = parse_stmt("NODE LIST Person LIMIT 10 OFFSET 5");
-        if let StatementKind::Node(n) = stmt.kind {
-            if let NodeOp::List { limit, offset, .. } = n.operation {
-                assert!(limit.is_some());
-                assert!(offset.is_some());
-            } else {
-                panic!("expected LIST");
-            }
-        } else {
-            panic!("expected NODE");
-        }
+        let n = unwrap_node(stmt);
+        let NodeOp::List { limit, offset, .. } = n.operation else {
+            panic!("expected LIST")
+        };
+        assert!(limit.is_some());
+        assert!(offset.is_some());
     }
 
     // SIMILAR without LIMIT (no default, returns None)
     #[test]
     fn test_coverage_similar_no_limit() {
         let stmt = parse_stmt("SIMILAR [1.0, 2.0]");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected SIMILAR")
-        };
+        let s = unwrap_similar(stmt);
         assert!(s.limit.is_none()); // No LIMIT clause means None
     }
 
@@ -9452,9 +8531,7 @@ mod tests {
     #[test]
     fn test_coverage_neighbors_limit() {
         let stmt = parse_stmt("NEIGHBORS 1 LIMIT 5");
-        let StatementKind::Neighbors(n) = stmt.kind else {
-            panic!("expected NEIGHBORS")
-        };
+        let n = unwrap_neighbors(stmt);
         assert!(n.limit.is_some());
     }
 
@@ -9462,20 +8539,15 @@ mod tests {
     #[test]
     fn test_coverage_entity_update() {
         let stmt = parse_stmt("ENTITY UPDATE 'user:1' { name: 'Bob' }");
-        if let StatementKind::Entity(e) = stmt.kind {
-            assert!(matches!(e.operation, EntityOp::Update { .. }));
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        assert!(matches!(e.operation, EntityOp::Update { .. }));
     }
 
     // FIND NODES with WHERE
     #[test]
     fn test_coverage_find_nodes_where() {
         let stmt = parse_stmt("FIND NODE Person WHERE age > 18");
-        let StatementKind::Find(f) = stmt.kind else {
-            panic!("expected FIND")
-        };
+        let f = unwrap_find(stmt);
         assert!(f.where_clause.is_some());
     }
 
@@ -9483,9 +8555,7 @@ mod tests {
     #[test]
     fn test_coverage_chain_tip() {
         let stmt = parse_stmt("CHAIN TIP");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Tip));
     }
 
@@ -9493,9 +8563,7 @@ mod tests {
     #[test]
     fn test_coverage_chain_height() {
         let stmt = parse_stmt("CHAIN HEIGHT");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Height));
     }
 
@@ -9503,9 +8571,7 @@ mod tests {
     #[test]
     fn test_coverage_chain_verify() {
         let stmt = parse_stmt("CHAIN VERIFY");
-        let StatementKind::Chain(c) = stmt.kind else {
-            panic!("expected CHAIN")
-        };
+        let c = unwrap_chain(stmt);
         assert!(matches!(c.operation, ChainOp::Verify));
     }
 
@@ -9555,20 +8621,15 @@ mod tests {
     #[test]
     fn test_coverage_blob_link() {
         let stmt = parse_stmt("BLOB LINK 'hash123' TO 'entity1'");
-        if let StatementKind::Blob(b) = stmt.kind {
-            assert!(matches!(b.operation, BlobOp::Link { .. }));
-        } else {
-            panic!("expected BLOB");
-        }
+        let b = unwrap_blob(stmt);
+        assert!(matches!(b.operation, BlobOp::Link { .. }));
     }
 
     // BLOB INIT
     #[test]
     fn test_coverage_blob_init() {
         let stmt = parse_stmt("BLOB INIT");
-        let StatementKind::Blob(b) = stmt.kind else {
-            panic!("expected BLOB")
-        };
+        let b = unwrap_blob(stmt);
         assert!(matches!(b.operation, BlobOp::Init));
     }
 
@@ -9578,6 +8639,225 @@ mod tests {
 
     fn parse_fails(source: &str) -> ParseError {
         parse(source).unwrap_err()
+    }
+
+    // === Statement extraction helpers (covered via #[should_panic] tests) ===
+
+    fn unwrap_blob(stmt: Statement) -> BlobStmt {
+        match stmt.kind {
+            StatementKind::Blob(v) => v,
+            _ => panic!("expected Blob"),
+        }
+    }
+
+    fn unwrap_blobs(stmt: Statement) -> BlobsStmt {
+        match stmt.kind {
+            StatementKind::Blobs(v) => v,
+            _ => panic!("expected Blobs"),
+        }
+    }
+
+    fn unwrap_cache(stmt: Statement) -> CacheStmt {
+        match stmt.kind {
+            StatementKind::Cache(v) => v,
+            _ => panic!("expected Cache"),
+        }
+    }
+
+    fn unwrap_chain(stmt: Statement) -> ChainStmt {
+        match stmt.kind {
+            StatementKind::Chain(v) => v,
+            _ => panic!("expected Chain"),
+        }
+    }
+
+    fn unwrap_checkpoint(stmt: Statement) -> CheckpointStmt {
+        match stmt.kind {
+            StatementKind::Checkpoint(v) => v,
+            _ => panic!("expected Checkpoint"),
+        }
+    }
+
+    fn unwrap_checkpoints(stmt: Statement) -> CheckpointsStmt {
+        match stmt.kind {
+            StatementKind::Checkpoints(v) => v,
+            _ => panic!("expected Checkpoints"),
+        }
+    }
+
+    fn unwrap_cluster(stmt: Statement) -> ClusterStmt {
+        match stmt.kind {
+            StatementKind::Cluster(v) => v,
+            _ => panic!("expected Cluster"),
+        }
+    }
+
+    fn unwrap_createindex(stmt: Statement) -> CreateIndexStmt {
+        match stmt.kind {
+            StatementKind::CreateIndex(v) => v,
+            _ => panic!("expected CreateIndex"),
+        }
+    }
+
+    fn unwrap_createtable(stmt: Statement) -> CreateTableStmt {
+        match stmt.kind {
+            StatementKind::CreateTable(v) => v,
+            _ => panic!("expected CreateTable"),
+        }
+    }
+
+    fn unwrap_delete(stmt: Statement) -> DeleteStmt {
+        match stmt.kind {
+            StatementKind::Delete(v) => v,
+            _ => panic!("expected Delete"),
+        }
+    }
+
+    fn unwrap_describe(stmt: Statement) -> DescribeStmt {
+        match stmt.kind {
+            StatementKind::Describe(v) => v,
+            _ => panic!("expected Describe"),
+        }
+    }
+
+    fn unwrap_dropindex(stmt: Statement) -> DropIndexStmt {
+        match stmt.kind {
+            StatementKind::DropIndex(v) => v,
+            _ => panic!("expected DropIndex"),
+        }
+    }
+
+    fn unwrap_droptable(stmt: Statement) -> DropTableStmt {
+        match stmt.kind {
+            StatementKind::DropTable(v) => v,
+            _ => panic!("expected DropTable"),
+        }
+    }
+
+    fn unwrap_edge(stmt: Statement) -> EdgeStmt {
+        match stmt.kind {
+            StatementKind::Edge(v) => v,
+            _ => panic!("expected Edge"),
+        }
+    }
+
+    fn unwrap_embed(stmt: Statement) -> EmbedStmt {
+        match stmt.kind {
+            StatementKind::Embed(v) => v,
+            _ => panic!("expected Embed"),
+        }
+    }
+
+    fn unwrap_entity(stmt: Statement) -> EntityStmt {
+        match stmt.kind {
+            StatementKind::Entity(v) => v,
+            _ => panic!("expected Entity"),
+        }
+    }
+
+    fn unwrap_find(stmt: Statement) -> FindStmt {
+        match stmt.kind {
+            StatementKind::Find(v) => v,
+            _ => panic!("expected Find"),
+        }
+    }
+
+    fn unwrap_graphaggregate(stmt: Statement) -> GraphAggregateStmt {
+        match stmt.kind {
+            StatementKind::GraphAggregate(v) => v,
+            _ => panic!("expected GraphAggregate"),
+        }
+    }
+
+    fn unwrap_graphalgorithm(stmt: Statement) -> GraphAlgorithmStmt {
+        match stmt.kind {
+            StatementKind::GraphAlgorithm(v) => v,
+            _ => panic!("expected GraphAlgorithm"),
+        }
+    }
+
+    fn unwrap_graphbatch(stmt: Statement) -> GraphBatchStmt {
+        match stmt.kind {
+            StatementKind::GraphBatch(v) => v,
+            _ => panic!("expected GraphBatch"),
+        }
+    }
+
+    fn unwrap_graphconstraint(stmt: Statement) -> GraphConstraintStmt {
+        match stmt.kind {
+            StatementKind::GraphConstraint(v) => v,
+            _ => panic!("expected GraphConstraint"),
+        }
+    }
+
+    fn unwrap_graphindex(stmt: Statement) -> GraphIndexStmt {
+        match stmt.kind {
+            StatementKind::GraphIndex(v) => v,
+            _ => panic!("expected GraphIndex"),
+        }
+    }
+
+    fn unwrap_insert(stmt: Statement) -> InsertStmt {
+        match stmt.kind {
+            StatementKind::Insert(v) => v,
+            _ => panic!("expected Insert"),
+        }
+    }
+
+    fn unwrap_neighbors(stmt: Statement) -> NeighborsStmt {
+        match stmt.kind {
+            StatementKind::Neighbors(v) => v,
+            _ => panic!("expected Neighbors"),
+        }
+    }
+
+    fn unwrap_node(stmt: Statement) -> NodeStmt {
+        match stmt.kind {
+            StatementKind::Node(v) => v,
+            _ => panic!("expected Node"),
+        }
+    }
+
+    fn unwrap_path(stmt: Statement) -> PathStmt {
+        match stmt.kind {
+            StatementKind::Path(v) => v,
+            _ => panic!("expected Path"),
+        }
+    }
+
+    fn unwrap_rollback(stmt: Statement) -> RollbackStmt {
+        match stmt.kind {
+            StatementKind::Rollback(v) => v,
+            _ => panic!("expected Rollback"),
+        }
+    }
+
+    fn unwrap_select(stmt: Statement) -> SelectStmt {
+        match stmt.kind {
+            StatementKind::Select(v) => v,
+            _ => panic!("expected Select"),
+        }
+    }
+
+    fn unwrap_similar(stmt: Statement) -> SimilarStmt {
+        match stmt.kind {
+            StatementKind::Similar(v) => v,
+            _ => panic!("expected Similar"),
+        }
+    }
+
+    fn unwrap_update(stmt: Statement) -> UpdateStmt {
+        match stmt.kind {
+            StatementKind::Update(v) => v,
+            _ => panic!("expected Update"),
+        }
+    }
+
+    fn unwrap_vault(stmt: Statement) -> VaultStmt {
+        match stmt.kind {
+            StatementKind::Vault(v) => v,
+            _ => panic!("expected Vault"),
+        }
     }
 
     #[test]
@@ -9700,43 +8980,31 @@ mod tests {
     #[test]
     fn test_graph_pagerank_with_direction() {
         let stmt = parse_stmt("GRAPH PAGERANK OUTGOING");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::PageRank { direction, .. } = g.operation {
-                assert!(direction.is_some());
-            } else {
-                panic!("expected PageRank");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::PageRank { direction, .. } = g.operation else {
+            panic!("expected PageRank")
+        };
+        assert!(direction.is_some());
     }
 
     #[test]
     fn test_graph_pagerank_with_edge_type() {
         let stmt = parse_stmt("GRAPH PAGERANK EDGE TYPE follows");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::PageRank { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected PageRank");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::PageRank { edge_type, .. } = g.operation else {
+            panic!("expected PageRank")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_graph_betweenness_with_direction() {
         let stmt = parse_stmt("GRAPH BETWEENNESS CENTRALITY INCOMING");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::BetweennessCentrality { direction, .. } = g.operation {
-                assert!(direction.is_some());
-            } else {
-                panic!("expected BetweennessCentrality");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::BetweennessCentrality { direction, .. } = g.operation else {
+            panic!("expected BetweennessCentrality")
+        };
+        assert!(direction.is_some());
     }
 
     // Error path tests for coverage
@@ -9870,15 +9138,11 @@ mod tests {
     #[test]
     fn test_entity_update_with_embedding() {
         let stmt = parse_stmt("ENTITY UPDATE 'user:1' {name: 'Bob'} EMBEDDING [1.0, 2.0]");
-        if let StatementKind::Entity(e) = stmt.kind {
-            if let EntityOp::Update { embedding, .. } = e.operation {
-                assert!(embedding.is_some());
-            } else {
-                panic!("expected ENTITY UPDATE");
-            }
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        let EntityOp::Update { embedding, .. } = e.operation else {
+            panic!("expected ENTITY UPDATE")
+        };
+        assert!(embedding.is_some());
     }
 
     #[test]
@@ -9896,125 +9160,91 @@ mod tests {
     #[test]
     fn test_graph_algorithm_pagerank_edge_type() {
         let stmt = parse_stmt("GRAPH PAGERANK EDGE TYPE follows");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::PageRank { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected PageRank");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::PageRank { edge_type, .. } = g.operation else {
+            panic!("expected PageRank")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_graph_algorithm_betweenness_edge_type() {
         let stmt = parse_stmt("GRAPH BETWEENNESS CENTRALITY EDGE TYPE follows");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::BetweennessCentrality { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected BetweennessCentrality");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::BetweennessCentrality { edge_type, .. } = g.operation else {
+            panic!("expected BetweennessCentrality")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_chain_similar_no_limit() {
         let stmt = parse_stmt("CHAIN SIMILAR [1.0, 2.0, 3.0]");
-        if let StatementKind::Chain(c) = stmt.kind {
-            if let ChainOp::Similar { limit, .. } = c.operation {
-                assert!(limit.is_none());
-            } else {
-                panic!("expected CHAIN SIMILAR");
-            }
-        } else {
-            panic!("expected CHAIN");
-        }
+        let c = unwrap_chain(stmt);
+        let ChainOp::Similar { limit, .. } = c.operation else {
+            panic!("expected CHAIN SIMILAR")
+        };
+        assert!(limit.is_none());
     }
 
     #[test]
     fn test_graph_algorithm_closeness_edge_type() {
         let stmt = parse_stmt("GRAPH CLOSENESS CENTRALITY EDGE TYPE knows");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::ClosenessCentrality { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected ClosenessCentrality");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::ClosenessCentrality { edge_type, .. } = g.operation else {
+            panic!("expected ClosenessCentrality")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_graph_algorithm_eigenvector_edge_type() {
         let stmt = parse_stmt("GRAPH EIGENVECTOR CENTRALITY EDGE TYPE likes");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::EigenvectorCentrality { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected EigenvectorCentrality");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::EigenvectorCentrality { edge_type, .. } = g.operation else {
+            panic!("expected EigenvectorCentrality")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_graph_algorithm_louvain_edge_type() {
         let stmt = parse_stmt("GRAPH LOUVAIN COMMUNITIES EDGE TYPE friend");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::LouvainCommunities { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected LouvainCommunities");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::LouvainCommunities { edge_type, .. } = g.operation else {
+            panic!("expected LouvainCommunities")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_graph_algorithm_label_propagation_edge_type() {
         let stmt = parse_stmt("GRAPH LABEL PROPAGATION EDGE TYPE connects");
-        if let StatementKind::GraphAlgorithm(g) = stmt.kind {
-            if let GraphAlgorithmOp::LabelPropagation { edge_type, .. } = g.operation {
-                assert!(edge_type.is_some());
-            } else {
-                panic!("expected LabelPropagation");
-            }
-        } else {
-            panic!("expected GraphAlgorithm");
-        }
+        let g = unwrap_graphalgorithm(stmt);
+        let GraphAlgorithmOp::LabelPropagation { edge_type, .. } = g.operation else {
+            panic!("expected LabelPropagation")
+        };
+        assert!(edge_type.is_some());
     }
 
     #[test]
     fn test_graph_aggregate_node_property() {
         let stmt = parse_stmt("AGGREGATE NODE PROPERTY score SUM ON Person");
-        if let StatementKind::GraphAggregate(a) = stmt.kind {
-            assert!(matches!(
-                a.operation,
-                GraphAggregateOp::AggregateNodeProperty { .. }
-            ));
-        } else {
-            panic!("expected GRAPH AGGREGATE");
-        }
+        let a = unwrap_graphaggregate(stmt);
+        assert!(matches!(
+            a.operation,
+            GraphAggregateOp::AggregateNodeProperty { .. }
+        ));
     }
 
     #[test]
     fn test_graph_aggregate_edge_property() {
         let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight AVG ON FOLLOWS");
-        if let StatementKind::GraphAggregate(a) = stmt.kind {
-            assert!(matches!(
-                a.operation,
-                GraphAggregateOp::AggregateEdgeProperty { .. }
-            ));
-        } else {
-            panic!("expected GRAPH AGGREGATE");
-        }
+        let a = unwrap_graphaggregate(stmt);
+        assert!(matches!(
+            a.operation,
+            GraphAggregateOp::AggregateEdgeProperty { .. }
+        ));
     }
 
     #[test]
@@ -10049,11 +9279,8 @@ mod tests {
     #[test]
     fn test_find_edge_pattern() {
         let stmt = parse_stmt("FIND EDGE FOLLOWS");
-        if let StatementKind::Find(f) = stmt.kind {
-            assert!(matches!(f.pattern, FindPattern::Edges { .. }));
-        } else {
-            panic!("expected FIND");
-        }
+        let f = unwrap_find(stmt);
+        assert!(matches!(f.pattern, FindPattern::Edges { .. }));
     }
 
     // Targeted error path tests for coverage
@@ -10085,15 +9312,11 @@ mod tests {
     #[test]
     fn test_edge_create_with_properties() {
         let stmt = parse_stmt("EDGE CREATE 1 -> 2 : FOLLOWS {since: 2020}");
-        if let StatementKind::Edge(e) = stmt.kind {
-            if let EdgeOp::Create { properties, .. } = e.operation {
-                assert!(!properties.is_empty());
-            } else {
-                panic!("expected EDGE CREATE");
-            }
-        } else {
-            panic!("expected EDGE");
-        }
+        let e = unwrap_edge(stmt);
+        let EdgeOp::Create { properties, .. } = e.operation else {
+            panic!("expected EDGE CREATE")
+        };
+        assert!(!properties.is_empty());
     }
 
     #[test]
@@ -10135,27 +9358,21 @@ mod tests {
     #[test]
     fn test_create_table_with_check_constraint() {
         let stmt = parse_stmt("CREATE TABLE t (id INT, CHECK (id > 0))");
-        let StatementKind::CreateTable(c) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let c = unwrap_createtable(stmt);
         assert!(!c.constraints.is_empty());
     }
 
     #[test]
     fn test_select_order_by_nulls_first() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY x NULLS FIRST");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(!s.order_by.is_empty());
     }
 
     #[test]
     fn test_select_order_by_nulls_last() {
         let stmt = parse_stmt("SELECT * FROM t ORDER BY x NULLS LAST");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(!s.order_by.is_empty());
     }
 
@@ -10212,14 +9429,11 @@ mod tests {
     #[test]
     fn test_similar_empty_vector() {
         let stmt = parse_stmt("SIMILAR [] LIMIT 5");
-        let StatementKind::Similar(s) = stmt.kind else {
-            panic!("expected vector query")
+        let s = unwrap_similar(stmt);
+        let SimilarQuery::Vector(v) = s.query else {
+            panic!("expected SIMILAR")
         };
-        if let SimilarQuery::Vector(v) = s.query {
-            assert!(v.is_empty());
-        } else {
-            panic!("expected SIMILAR");
-        }
+        assert!(v.is_empty());
     }
 
     #[test]
@@ -10245,9 +9459,7 @@ mod tests {
     #[test]
     fn test_references_without_column() {
         let stmt = parse_stmt("CREATE TABLE t (user_id INT REFERENCES users)");
-        let StatementKind::CreateTable(ct) = stmt.kind else {
-            panic!("expected CREATE TABLE")
-        };
+        let ct = unwrap_createtable(stmt);
         assert!(!ct.columns.is_empty());
     }
 
@@ -10255,15 +9467,11 @@ mod tests {
     fn test_entity_batch_empty_array() {
         // Empty batch array is valid and produces empty entities list
         let stmt = parse_stmt("ENTITY BATCH CREATE []");
-        if let StatementKind::Entity(e) = stmt.kind {
-            if let EntityOp::Batch { entities } = e.operation {
-                assert!(entities.is_empty());
-            } else {
-                panic!("expected BATCH");
-            }
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        let EntityOp::Batch { entities } = e.operation else {
+            panic!("expected BATCH")
+        };
+        assert!(entities.is_empty());
     }
 
     #[test]
@@ -10274,37 +9482,27 @@ mod tests {
     #[test]
     fn test_node_without_properties() {
         let stmt = parse_stmt("NODE CREATE person");
-        if let StatementKind::Node(n) = stmt.kind {
-            if let NodeOp::Create { properties, .. } = n.operation {
-                assert!(properties.is_empty());
-            } else {
-                panic!("expected CREATE");
-            }
-        } else {
-            panic!("expected NODE");
-        }
+        let n = unwrap_node(stmt);
+        let NodeOp::Create { properties, .. } = n.operation else {
+            panic!("expected CREATE")
+        };
+        assert!(properties.is_empty());
     }
 
     #[test]
     fn test_edge_without_properties() {
         let stmt = parse_stmt("EDGE CREATE 1 -> 2 : follows");
-        if let StatementKind::Edge(e) = stmt.kind {
-            if let EdgeOp::Create { properties, .. } = e.operation {
-                assert!(properties.is_empty());
-            } else {
-                panic!("expected CREATE");
-            }
-        } else {
-            panic!("expected EDGE");
-        }
+        let e = unwrap_edge(stmt);
+        let EdgeOp::Create { properties, .. } = e.operation else {
+            panic!("expected CREATE")
+        };
+        assert!(properties.is_empty());
     }
 
     #[test]
     fn test_select_alias_no_as_keyword() {
         let stmt = parse_stmt("SELECT a FROM users u");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         let from = s.from.as_ref().expect("expected FROM clause");
         assert!(from.table.alias.is_some());
     }
@@ -10313,9 +9511,7 @@ mod tests {
     fn test_select_alias_keyword_not_aliased() {
         // When identifier is followed by a keyword, it's not treated as alias
         let stmt = parse_stmt("SELECT a FROM users WHERE id = 1");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         let from = s.from.as_ref().expect("expected FROM clause");
         assert!(from.table.alias.is_none());
     }
@@ -10323,16 +9519,12 @@ mod tests {
     #[test]
     fn test_embed_batch_empty_vector() {
         let stmt = parse_stmt("EMBED BATCH [('key1', [])]");
-        if let StatementKind::Embed(e) = stmt.kind {
-            if let EmbedOp::Batch { items } = e.operation {
-                assert_eq!(items.len(), 1);
-                assert!(items[0].1.is_empty());
-            } else {
-                panic!("expected BATCH");
-            }
-        } else {
-            panic!("expected EMBED");
-        }
+        let e = unwrap_embed(stmt);
+        let EmbedOp::Batch { items } = e.operation else {
+            panic!("expected BATCH")
+        };
+        assert_eq!(items.len(), 1);
+        assert!(items[0].1.is_empty());
     }
 
     #[test]
@@ -10361,9 +9553,7 @@ mod tests {
     #[test]
     fn test_empty_tuple() {
         let stmt = parse_stmt("SELECT () FROM t");
-        let StatementKind::Select(s) = stmt.kind else {
-            panic!("expected SELECT")
-        };
+        let s = unwrap_select(stmt);
         assert!(!s.columns.is_empty());
     }
 
@@ -10413,17 +9603,13 @@ mod tests {
     fn test_expect_ident_or_any_keyword_with_keyword() {
         // FROM is a reserved keyword but should work as property name in batch
         let stmt = parse_stmt("ENTITY BATCH CREATE [{key: 'k1', from: 'source'}]");
-        if let StatementKind::Entity(e) = stmt.kind {
-            if let EntityOp::Batch { entities } = e.operation {
-                assert_eq!(entities.len(), 1);
-                // Should have property named "from"
-                assert!(!entities[0].properties.is_empty());
-            } else {
-                panic!("expected BATCH");
-            }
-        } else {
-            panic!("expected ENTITY");
-        }
+        let e = unwrap_entity(stmt);
+        let EntityOp::Batch { entities } = e.operation else {
+            panic!("expected BATCH")
+        };
+        assert_eq!(entities.len(), 1);
+        // Should have property named "from"
+        assert!(!entities[0].properties.is_empty());
     }
 
     #[test]
@@ -10599,5 +9785,378 @@ mod tests {
     fn test_find_edges_by_type() {
         let stmt = parse_stmt("FIND EDGE follows WHERE weight > 0.5");
         assert!(matches!(stmt.kind, StatementKind::Find(_)));
+    }
+
+    // ========== Coverage gap: parse_all empty/multi-statement ==========
+
+    #[test]
+    fn test_parse_all_empty() {
+        let stmts = parse_all("").unwrap();
+        assert!(stmts.is_empty());
+    }
+
+    #[test]
+    fn test_parse_all_whitespace() {
+        let stmts = parse_all("   ").unwrap();
+        assert!(stmts.is_empty());
+    }
+
+    #[test]
+    fn test_parse_all_multi_statement() {
+        let stmts = parse_all("SELECT 1; SELECT 2").unwrap();
+        assert_eq!(stmts.len(), 2);
+    }
+
+    // ========== Coverage gap: BLOB PUT no data ==========
+
+    #[test]
+    fn test_blob_put_filename_only() {
+        let stmt = parse_stmt("BLOB PUT 'file.txt'");
+        assert!(matches!(stmt.kind, StatementKind::Blob(_)));
+    }
+
+    // ========== Coverage gap: graph algorithm break arm ==========
+
+    #[test]
+    fn test_graph_louvain_all_options_combined() {
+        let stmt =
+            parse_stmt("GRAPH LOUVAIN COMMUNITIES RESOLUTION 1.5 BOTH EDGE TYPE friend PASSES 20");
+        assert!(matches!(stmt.kind, StatementKind::GraphAlgorithm(_)));
+    }
+
+    // ========== Coverage gap: lexer edge cases ==========
+
+    #[test]
+    fn test_lexer_unterminated_block_comment() {
+        // Lexer treats unterminated block comments as consuming the rest of input
+        // Just ensure it doesn't panic
+        let _ = parse("/* unterminated comment");
+    }
+
+    // ========== Coverage gap: batch operations ==========
+
+    #[test]
+    fn test_batch_create_nodes_empty() {
+        let stmt = parse_stmt("BATCH CREATE NODES []");
+        assert!(matches!(stmt.kind, StatementKind::GraphBatch(_)));
+    }
+
+    #[test]
+    fn test_batch_create_edges_empty() {
+        let stmt = parse_stmt("BATCH CREATE EDGES []");
+        assert!(matches!(stmt.kind, StatementKind::GraphBatch(_)));
+    }
+
+    #[test]
+    fn test_batch_update_nodes_multi() {
+        let stmt = parse_stmt("BATCH UPDATE NODES [{id: 1, name: 'Alice'}, {id: 2, name: 'Bob'}]");
+        assert!(matches!(stmt.kind, StatementKind::GraphBatch(_)));
+    }
+
+    #[test]
+    fn test_batch_node_def_with_labels_and_props() {
+        let stmt =
+            parse_stmt("BATCH CREATE NODES [{labels: [person, employee], name: 'Alice', age: 30}]");
+        assert!(matches!(stmt.kind, StatementKind::GraphBatch(_)));
+    }
+
+    #[test]
+    fn test_batch_edge_def_with_props() {
+        let stmt = parse_stmt(
+            "BATCH CREATE EDGES [{from: 1, to: 2, type: knows, weight: 0.5, since: 2020}]",
+        );
+        assert!(matches!(stmt.kind, StatementKind::GraphBatch(_)));
+    }
+
+    // ========== Coverage gap: aggregate with edge types ==========
+
+    #[test]
+    fn test_aggregate_edge_property_sum() {
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight SUM");
+        assert!(matches!(stmt.kind, StatementKind::GraphAggregate(_)));
+    }
+
+    #[test]
+    fn test_aggregate_edge_property_by_type() {
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight AVG BY TYPE knows");
+        assert!(matches!(stmt.kind, StatementKind::GraphAggregate(_)));
+    }
+
+    // ========== Coverage gap: INSERT ... SELECT ==========
+
+    #[test]
+    fn test_insert_select_statement() {
+        let stmt = parse_stmt("INSERT INTO dst SELECT * FROM src");
+        assert!(matches!(stmt.kind, StatementKind::Insert(_)));
+    }
+
+    // ========== Coverage gap: INSERT missing values/select ==========
+
+    #[test]
+    fn test_insert_missing_values_garbage_error() {
+        let result = parse("INSERT INTO tbl GARBAGE");
+        assert!(result.is_err());
+    }
+
+    // ========== Coverage gap: SQL type precision/scale ==========
+
+    #[test]
+    fn test_create_table_decimal_precision_scale() {
+        let stmt = parse_stmt("CREATE TABLE t (val DECIMAL(10, 2))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_varchar_length() {
+        let stmt = parse_stmt("CREATE TABLE t (name VARCHAR(100))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    // ========== Coverage gap: CASE expression ==========
+
+    #[test]
+    fn test_case_when_expression() {
+        let stmt = parse_stmt("SELECT CASE WHEN x > 0 THEN 'positive' ELSE 'negative' END FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // ========== Coverage gap: postfix IS NULL/IS NOT NULL ==========
+
+    #[test]
+    fn test_is_null_in_select() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x IS NULL");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_is_not_null_in_select() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x IS NOT NULL");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // ========== Coverage gap: NOT LIKE ==========
+
+    #[test]
+    fn test_not_like_in_select() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE name NOT LIKE 'test%'");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // ========== Coverage gap: IN expression ==========
+
+    #[test]
+    fn test_in_expression() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE id IN (1, 2, 3)");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_not_in_expression() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE id NOT IN (1, 2)");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // ========== Coverage gap: BETWEEN expression ==========
+
+    #[test]
+    fn test_between_expression() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE val BETWEEN 1 AND 10");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // ========== Coverage gap: table alias with AS ==========
+
+    #[test]
+    fn test_table_alias_explicit_as() {
+        let stmt = parse_stmt("SELECT u.name FROM users AS u WHERE u.id = 1");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // === Extraction helper coverage tests ===
+
+    #[test]
+    #[should_panic(expected = "expected Blob")]
+    fn test_unwrap_blob_wrong_variant() {
+        unwrap_blob(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Blobs")]
+    fn test_unwrap_blobs_wrong_variant() {
+        unwrap_blobs(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Cache")]
+    fn test_unwrap_cache_wrong_variant() {
+        unwrap_cache(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Chain")]
+    fn test_unwrap_chain_wrong_variant() {
+        unwrap_chain(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Checkpoint")]
+    fn test_unwrap_checkpoint_wrong_variant() {
+        unwrap_checkpoint(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Checkpoints")]
+    fn test_unwrap_checkpoints_wrong_variant() {
+        unwrap_checkpoints(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Cluster")]
+    fn test_unwrap_cluster_wrong_variant() {
+        unwrap_cluster(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected CreateIndex")]
+    fn test_unwrap_createindex_wrong_variant() {
+        unwrap_createindex(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected CreateTable")]
+    fn test_unwrap_createtable_wrong_variant() {
+        unwrap_createtable(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Delete")]
+    fn test_unwrap_delete_wrong_variant() {
+        unwrap_delete(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Describe")]
+    fn test_unwrap_describe_wrong_variant() {
+        unwrap_describe(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected DropIndex")]
+    fn test_unwrap_dropindex_wrong_variant() {
+        unwrap_dropindex(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected DropTable")]
+    fn test_unwrap_droptable_wrong_variant() {
+        unwrap_droptable(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Edge")]
+    fn test_unwrap_edge_wrong_variant() {
+        unwrap_edge(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Embed")]
+    fn test_unwrap_embed_wrong_variant() {
+        unwrap_embed(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Entity")]
+    fn test_unwrap_entity_wrong_variant() {
+        unwrap_entity(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Find")]
+    fn test_unwrap_find_wrong_variant() {
+        unwrap_find(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected GraphAggregate")]
+    fn test_unwrap_graphaggregate_wrong_variant() {
+        unwrap_graphaggregate(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected GraphAlgorithm")]
+    fn test_unwrap_graphalgorithm_wrong_variant() {
+        unwrap_graphalgorithm(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected GraphBatch")]
+    fn test_unwrap_graphbatch_wrong_variant() {
+        unwrap_graphbatch(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected GraphConstraint")]
+    fn test_unwrap_graphconstraint_wrong_variant() {
+        unwrap_graphconstraint(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected GraphIndex")]
+    fn test_unwrap_graphindex_wrong_variant() {
+        unwrap_graphindex(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Insert")]
+    fn test_unwrap_insert_wrong_variant() {
+        unwrap_insert(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Neighbors")]
+    fn test_unwrap_neighbors_wrong_variant() {
+        unwrap_neighbors(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Node")]
+    fn test_unwrap_node_wrong_variant() {
+        unwrap_node(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Path")]
+    fn test_unwrap_path_wrong_variant() {
+        unwrap_path(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Rollback")]
+    fn test_unwrap_rollback_wrong_variant() {
+        unwrap_rollback(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Select")]
+    fn test_unwrap_select_wrong_variant() {
+        unwrap_select(parse_stmt("INSERT INTO t VALUES (1)"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Similar")]
+    fn test_unwrap_similar_wrong_variant() {
+        unwrap_similar(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Update")]
+    fn test_unwrap_update_wrong_variant() {
+        unwrap_update(parse_stmt("SELECT 1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Vault")]
+    fn test_unwrap_vault_wrong_variant() {
+        unwrap_vault(parse_stmt("SELECT 1"));
     }
 }

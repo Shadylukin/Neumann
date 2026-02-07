@@ -40,7 +40,7 @@ pub struct AdminContext {
 impl AdminContext {
     /// Create a new admin context with all three engines.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         relational: Arc<RelationalEngine>,
         vector: Arc<VectorEngine>,
         graph: Arc<GraphEngine>,

@@ -40,6 +40,9 @@ struct LoadedTls {
 
 impl TlsLoader {
     /// Create a new TLS loader with the given configuration.
+    ///
+    /// # Errors
+    /// Returns an error if the initial certificate load or validation fails.
     pub fn new(config: TlsConfig) -> Result<Self> {
         let loader = Self {
             config,
@@ -164,6 +167,9 @@ impl TlsLoader {
     /// Load initial TLS configuration.
     ///
     /// This should be called once at startup to create the initial `ServerTlsConfig`.
+    ///
+    /// # Errors
+    /// Returns an error if certificate files cannot be read or parsed.
     pub fn load(&self) -> Result<ServerTlsConfig> {
         let loaded = self.load_sync()?;
 
@@ -193,6 +199,9 @@ impl TlsLoader {
     /// This validates the new certificates before updating the configuration.
     /// On success, new connections will use the reloaded certificates.
     /// Existing connections will continue using the old certificates.
+    ///
+    /// # Errors
+    /// Returns an error if the new certificates cannot be loaded or validated.
     pub async fn reload(&self) -> Result<()> {
         tracing::info!(
             cert_path = %self.config.cert_path.display(),
@@ -204,8 +213,7 @@ impl TlsLoader {
         let loaded = self.load_sync()?;
 
         // Update the stored configuration atomically
-        let mut current = self.current.write().await;
-        *current = Some(loaded);
+        *self.current.write().await = Some(loaded);
 
         tracing::info!("TLS certificates reloaded successfully");
         Ok(())
@@ -214,6 +222,10 @@ impl TlsLoader {
     /// Get the current TLS configuration.
     ///
     /// Returns the most recently loaded configuration.
+    ///
+    /// # Errors
+    /// Returns an error if no TLS configuration has been loaded yet.
+    #[allow(clippy::significant_drop_tightening)]
     pub async fn current(&self) -> Result<ServerTlsConfig> {
         let current = self.current.read().await;
 
@@ -238,7 +250,7 @@ impl TlsLoader {
 
     /// Get the TLS configuration.
     #[must_use]
-    pub fn config(&self) -> &TlsConfig {
+    pub const fn config(&self) -> &TlsConfig {
         &self.config
     }
 }

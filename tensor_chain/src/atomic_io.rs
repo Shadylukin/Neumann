@@ -197,21 +197,20 @@ impl AtomicWriter {
 
 impl Write for AtomicWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(file) = &mut self.temp_file {
-            file.write(buf)
-        } else {
-            Err(io::Error::other(
-                "AtomicWriter already committed or aborted",
-            ))
-        }
+        self.temp_file.as_mut().map_or_else(
+            || {
+                Err(io::Error::other(
+                    "AtomicWriter already committed or aborted",
+                ))
+            },
+            |file| file.write(buf),
+        )
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if let Some(file) = &mut self.temp_file {
-            file.flush()
-        } else {
-            Ok(())
-        }
+        self.temp_file
+            .as_mut()
+            .map_or(Ok(()), std::io::Write::flush)
     }
 }
 

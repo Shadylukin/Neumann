@@ -37,6 +37,7 @@ pub(crate) const DEFAULT_EMBEDDING_DIM: usize = 128;
 ///
 /// # Errors
 /// Returns an error if the transaction cannot be applied to the store.
+#[allow(clippy::too_many_lines)] // flat match dispatch, each arm is a simple store op
 pub fn apply_transaction_to_store(store: &TensorStore, tx: &ChainTransaction) -> Result<()> {
     use tensor_store::{ScalarValue, TensorData, TensorValue};
 
@@ -144,6 +145,31 @@ pub fn apply_transaction_to_store(store: &TensorStore, tx: &ChainTransaction) ->
             let storage_key = format!("table:{table}:row:{row_id}");
             store.delete(&storage_key).ok();
         },
+        ChainTransaction::CompareAndSwap {
+            key,
+            expected_data,
+            new_data,
+        } => {
+            let current = store.get(key).ok();
+            let current_bytes = current
+                .as_ref()
+                .and_then(|d| d.get("data"))
+                .and_then(|v| match v {
+                    TensorValue::Scalar(ScalarValue::Bytes(b)) => Some(b.as_slice()),
+                    _ => None,
+                })
+                .unwrap_or(&[]);
+            if current_bytes == expected_data.as_slice() {
+                let mut tensor = TensorData::new();
+                tensor.set(
+                    "data",
+                    TensorValue::Scalar(ScalarValue::Bytes(new_data.clone())),
+                );
+                store
+                    .put(key, tensor)
+                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
+            }
+        },
     }
 
     Ok(())
@@ -188,7 +214,7 @@ impl WorkspaceEmbedding {
         self.state.delta_or_zero()
     }
 
-    pub fn has_delta(&self) -> bool {
+    pub const fn has_delta(&self) -> bool {
         self.state.is_computed()
     }
 

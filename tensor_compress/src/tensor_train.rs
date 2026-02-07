@@ -4,19 +4,6 @@
 //! Implements the TT-SVD algorithm from Oseledets (2011) for decomposing vectors
 //! into products of smaller 3D cores, achieving 10-20x compression for 4096+ dimensions.
 
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::similar_names)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::suboptimal_flops)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::manual_is_multiple_of)]
-
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -168,25 +155,30 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
     }
 
     // Find factors close to cube root for 3D, fourth root for 4D, etc.
-    let target_factors = ((n as f64).ln() / 2.0_f64.ln()).ceil() as usize;
-    let target_factors = target_factors.clamp(2, 6);
+    #[allow(clippy::cast_precision_loss)]
+    let log_n = (n as f64).log2().ceil();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let target_factors = (log_n as usize).clamp(2, 6);
 
     let mut factors = vec![];
     let mut remaining = n;
 
-    let target_size = (remaining as f64).powf(1.0 / target_factors as f64) as usize;
+    #[allow(clippy::cast_precision_loss)]
+    let target_root = (remaining as f64).powf(1.0 / target_factors as f64);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let target_size = target_root as usize;
 
     for _ in 0..target_factors - 1 {
         let mut best_factor = 1;
         for f in (2..=target_size.max(2)).rev() {
-            if remaining % f == 0 {
+            if remaining.is_multiple_of(f) {
                 best_factor = f;
                 break;
             }
         }
         if best_factor == 1 {
             for f in 2..=remaining {
-                if remaining % f == 0 {
+                if remaining.is_multiple_of(f) {
                     best_factor = f;
                     break;
                 }
@@ -206,16 +198,17 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
     factors
 }
 
-/// A single TT-core (3D tensor stored as flat array in row-major order).
+/// A single `TTCore` (3D tensor stored as flat array in row-major order).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TTCore {
-    /// Flattened data: r_{k-1} x n_k x r_k elements.
+    /// Flattened data: `r_{k-1}` x `n_k` x `r_k` elements.
     pub data: Vec<f32>,
-    /// Shape: (left_rank, mode_size, right_rank).
+    /// Shape: (`left_rank`, `mode_size`, `right_rank`).
     pub shape: (usize, usize, usize),
 }
 
 impl TTCore {
+    #[must_use]
     pub fn new(data: Vec<f32>, left_rank: usize, mode_size: usize, right_rank: usize) -> Self {
         debug_assert_eq!(data.len(), left_rank * mode_size * right_rank);
         Self {
@@ -225,27 +218,35 @@ impl TTCore {
     }
 
     #[inline]
-    pub fn left_rank(&self) -> usize {
+    #[must_use]
+    pub const fn left_rank(&self) -> usize {
         self.shape.0
     }
 
     #[inline]
-    pub fn mode_size(&self) -> usize {
+    #[must_use]
+    pub const fn mode_size(&self) -> usize {
         self.shape.1
     }
 
     #[inline]
-    pub fn right_rank(&self) -> usize {
+    #[must_use]
+    pub const fn right_rank(&self) -> usize {
         self.shape.2
     }
 
     #[inline]
+    #[must_use]
     pub fn get(&self, i: usize, j: usize, k: usize) -> f32 {
         let idx = i * self.shape.1 * self.shape.2 + j * self.shape.2 + k;
         self.data[idx]
     }
 
-    /// Get the j-th slice as a left_rank x right_rank matrix.
+    /// Get the j-th slice as a `left_rank` x `right_rank` matrix.
+    ///
+    /// # Panics
+    /// Panics if the matrix construction fails (should not happen with valid cores).
+    #[must_use]
     pub fn slice(&self, j: usize) -> Matrix {
         let (r1, _, r2) = self.shape;
         let mut data = vec![0.0; r1 * r2];
@@ -257,7 +258,8 @@ impl TTCore {
         Matrix::new(data, r1, r2).expect("valid shape")
     }
 
-    pub fn size(&self) -> usize {
+    #[must_use]
+    pub const fn size(&self) -> usize {
         self.data.len()
     }
 }
@@ -265,13 +267,13 @@ impl TTCore {
 /// Complete TT-decomposition of a vector.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TTVector {
-    /// The TT-cores G_1, G_2, ..., G_n.
+    /// The TT-cores `G_1`, `G_2`, ..., `G_n`.
     pub cores: Vec<TTCore>,
     /// Original vector dimension.
     pub original_dim: usize,
     /// Tensor shape used for decomposition.
     pub shape: Vec<usize>,
-    /// TT-ranks: [1, r_1, r_2, ..., r_{n-1}, 1].
+    /// TT-ranks: `[1, r_1, r_2, ..., r_{n-1}, 1]`.
     pub ranks: Vec<usize>,
 }
 
@@ -285,12 +287,14 @@ impl TTVector {
     /// Compression ratio compared to original dense vector.
     #[must_use]
     pub fn compression_ratio(&self) -> f32 {
-        self.original_dim as f32 / self.storage_size() as f32
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = self.original_dim as f32 / self.storage_size() as f32;
+        ratio
     }
 
     /// Number of TT-cores.
     #[must_use]
-    pub fn num_cores(&self) -> usize {
+    pub const fn num_cores(&self) -> usize {
         self.cores.len()
     }
 
@@ -305,6 +309,9 @@ impl TTVector {
 ///
 /// The vector is first reshaped according to the config shape, then decomposed
 /// into a train of 3D cores using successive SVD truncations.
+///
+/// # Errors
+/// Returns error if the vector is empty, shape doesn't match, or SVD fails.
 pub fn tt_decompose(vector: &[f32], config: &TTConfig) -> Result<TTVector, TTError> {
     if vector.is_empty() {
         return Err(TTError::EmptyVector);
@@ -400,7 +407,7 @@ pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
     let total_size: usize = tt.shape.iter().product();
     let mut result = vec![0.0; total_size];
 
-    for flat_idx in 0..total_size {
+    for (flat_idx, result_val) in result.iter_mut().enumerate() {
         let mut remaining = flat_idx;
         let mut multi_idx = vec![0usize; n];
         for k in (0..n).rev() {
@@ -414,15 +421,15 @@ pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
             let j = multi_idx[k];
             let slice = core.slice(j);
             let mut new_vec = vec![0.0; core.right_rank()];
-            for r in 0..core.right_rank() {
-                for l in 0..core.left_rank().min(left_vec.len()) {
-                    new_vec[r] += left_vec[l] * slice.get(l, r);
+            for (r, new_val) in new_vec.iter_mut().enumerate() {
+                for (l, &left_val) in left_vec.iter().enumerate().take(core.left_rank()) {
+                    *new_val += left_val * slice.get(l, r);
                 }
             }
             left_vec = new_vec;
         }
 
-        result[flat_idx] = left_vec.first().copied().unwrap_or(0.0);
+        *result_val = left_vec.first().copied().unwrap_or(0.0);
     }
 
     result
@@ -467,6 +474,9 @@ pub fn tt_norm(tt: &TTVector) -> f32 {
 }
 
 /// Compute dot product of two TT-vectors without reconstruction.
+///
+/// # Errors
+/// Returns error if the TT-vectors have incompatible shapes.
 pub fn tt_dot_product(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
     if a.shape != b.shape {
         return Err(TTError::IncompatibleShapes);
@@ -506,6 +516,9 @@ pub fn tt_dot_product(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
 }
 
 /// Compute cosine similarity between two TT-vectors without reconstruction.
+///
+/// # Errors
+/// Returns error if the TT-vectors have incompatible shapes.
 pub fn tt_cosine_similarity(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
     let dot = tt_dot_product(a, b)?;
     let norm_a = tt_norm(a);
@@ -519,12 +532,16 @@ pub fn tt_cosine_similarity(a: &TTVector, b: &TTVector) -> Result<f32, TTError> 
 }
 
 /// Compute approximate Euclidean distance between two TT-vectors.
+///
+/// # Errors
+/// Returns error if the TT-vectors have incompatible shapes.
+#[allow(clippy::similar_names)]
 pub fn tt_euclidean_distance(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
     let dot_aa = tt_dot_product(a, a)?;
     let dot_bb = tt_dot_product(b, b)?;
     let dot_ab = tt_dot_product(a, b)?;
 
-    let dist_sq = dot_aa + dot_bb - 2.0 * dot_ab;
+    let dist_sq = (-2.0f32).mul_add(dot_ab, dot_aa + dot_bb);
     Ok(dist_sq.max(0.0).sqrt())
 }
 
@@ -551,6 +568,9 @@ pub fn tt_scale(tt: &TTVector, scalar: f32) -> TTVector {
 /// Batch decompose multiple vectors with the same config.
 ///
 /// Automatically uses parallel processing when there are 4+ vectors.
+///
+/// # Errors
+/// Returns error if any vector decomposition fails.
 pub fn tt_decompose_batch(vectors: &[&[f32]], config: &TTConfig) -> Result<Vec<TTVector>, TTError> {
     if vectors.len() >= PARALLEL_THRESHOLD {
         vectors
@@ -565,6 +585,9 @@ pub fn tt_decompose_batch(vectors: &[&[f32]], config: &TTConfig) -> Result<Vec<T
 /// Batch cosine similarity - compute similarity of query against multiple TT vectors.
 ///
 /// Automatically uses parallel processing when there are 4+ targets.
+///
+/// # Errors
+/// Returns error if any similarity computation fails.
 pub fn tt_cosine_similarity_batch(
     query: &TTVector,
     targets: &[TTVector],
@@ -585,6 +608,9 @@ pub fn tt_cosine_similarity_batch(
 /// Batch dot product - compute dot product of query against multiple TT vectors.
 ///
 /// Automatically uses parallel processing when there are 4+ targets.
+///
+/// # Errors
+/// Returns error if any dot product computation fails.
 pub fn tt_dot_product_batch(query: &TTVector, targets: &[TTVector]) -> Result<Vec<f32>, TTError> {
     if targets.len() >= PARALLEL_THRESHOLD {
         targets
@@ -599,6 +625,9 @@ pub fn tt_dot_product_batch(query: &TTVector, targets: &[TTVector]) -> Result<Ve
 /// Batch Euclidean distance - compute distance of query against multiple TT vectors.
 ///
 /// Automatically uses parallel processing when there are 4+ targets.
+///
+/// # Errors
+/// Returns error if any distance computation fails.
 pub fn tt_euclidean_distance_batch(
     query: &TTVector,
     targets: &[TTVector],

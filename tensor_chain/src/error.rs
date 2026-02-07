@@ -220,13 +220,13 @@ pub enum ChainError {
 
 impl From<bitcode::Error> for ChainError {
     fn from(err: bitcode::Error) -> Self {
-        ChainError::SerializationError(err.to_string())
+        Self::SerializationError(err.to_string())
     }
 }
 
 impl From<std::io::Error> for ChainError {
     fn from(err: std::io::Error) -> Self {
-        ChainError::StorageError(err.to_string())
+        Self::StorageError(err.to_string())
     }
 }
 

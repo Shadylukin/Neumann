@@ -48,7 +48,7 @@ impl TfIdfEmbedder {
 
     /// Get the embedding dimension.
     #[must_use]
-    pub fn dimension(&self) -> usize {
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 

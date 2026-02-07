@@ -64,10 +64,9 @@ impl OpType {
         match self {
             Self::Get => 3,
             Self::Put => 5,
-            Self::Delete => 8,
+            Self::Delete | Self::VectorSearch => 8,
             Self::Scan => 10,
             Self::GraphTraversal => 12,
-            Self::VectorSearch => 8,
             Self::Error => 20,
             Self::Batch => 15,
         }

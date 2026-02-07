@@ -41,6 +41,7 @@ const fn default_page_size() -> usize {
 }
 
 /// Graph overview page.
+#[allow(clippy::too_many_lines)]
 pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
     let node_count = ctx.graph.node_count();
     let edge_count = ctx.graph.edge_count();
@@ -271,21 +272,24 @@ pub async fn nodes_list(
     let page_size = params.page_size.min(100);
     let offset = page * page_size;
 
-    let (nodes, total): (Vec<Node>, usize) = if let Some(ref label) = params.label {
-        match ctx.graph.find_nodes_by_label(label) {
-            Ok(nodes) => {
-                let total = nodes.len();
-                let paginated = nodes.into_iter().skip(offset).take(page_size).collect();
-                (paginated, total)
-            },
-            Err(_) => (Vec::new(), 0),
-        }
-    } else {
-        let nodes = ctx.graph.all_nodes();
-        let total = nodes.len();
-        let paginated = nodes.into_iter().skip(offset).take(page_size).collect();
-        (paginated, total)
-    };
+    let (nodes, total): (Vec<Node>, usize) = params.label.as_ref().map_or_else(
+        || {
+            let nodes = ctx.graph.all_nodes();
+            let total = nodes.len();
+            let paginated = nodes.into_iter().skip(offset).take(page_size).collect();
+            (paginated, total)
+        },
+        |label| {
+            ctx.graph.find_nodes_by_label(label).map_or_else(
+                |_| (Vec::new(), 0),
+                |nodes| {
+                    let total = nodes.len();
+                    let paginated = nodes.into_iter().skip(offset).take(page_size).collect();
+                    (paginated, total)
+                },
+            )
+        },
+    );
 
     let content = html! {
         (breadcrumb(&[("/graph", "GRAPH"), ("", if params.label.is_some() { "FILTERED NODES" } else { "NODES" })]))
@@ -336,21 +340,24 @@ pub async fn edges_list(
     let page_size = params.page_size.min(100);
     let offset = page * page_size;
 
-    let (edges, total): (Vec<Edge>, usize) = if let Some(ref edge_type) = params.edge_type {
-        match ctx.graph.find_edges_by_type(edge_type) {
-            Ok(edges) => {
-                let total = edges.len();
-                let paginated = edges.into_iter().skip(offset).take(page_size).collect();
-                (paginated, total)
-            },
-            Err(_) => (Vec::new(), 0),
-        }
-    } else {
-        let edges = ctx.graph.all_edges();
-        let total = edges.len();
-        let paginated = edges.into_iter().skip(offset).take(page_size).collect();
-        (paginated, total)
-    };
+    let (edges, total): (Vec<Edge>, usize) = params.edge_type.as_ref().map_or_else(
+        || {
+            let edges = ctx.graph.all_edges();
+            let total = edges.len();
+            let paginated = edges.into_iter().skip(offset).take(page_size).collect();
+            (paginated, total)
+        },
+        |edge_type| {
+            ctx.graph.find_edges_by_type(edge_type).map_or_else(
+                |_| (Vec::new(), 0),
+                |edges| {
+                    let total = edges.len();
+                    let paginated = edges.into_iter().skip(offset).take(page_size).collect();
+                    (paginated, total)
+                },
+            )
+        },
+    );
 
     let content = html! {
         (breadcrumb(&[("/graph", "GRAPH"), ("", if params.edge_type.is_some() { "FILTERED EDGES" } else { "EDGES" })]))

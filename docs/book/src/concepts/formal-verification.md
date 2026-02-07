@@ -17,8 +17,9 @@ interleaving within the model bounds.
 
 Models leader election, log replication, and commit advancement for
 the Tensor-Raft protocol implemented in `tensor_chain/src/raft.rs`.
+Three configurations exercise different aspects of the protocol.
 
-**Properties verified:**
+**Properties verified (14):**
 
 | Property | Type | What It Means |
 |----------|------|---------------|
@@ -27,28 +28,41 @@ the Tensor-Raft protocol implemented in `tensor_chain/src/raft.rs`.
 | `StateMachineSafety` | Invariant | No divergent committed entries |
 | `LeaderCompleteness` | Invariant | Committed entries survive leader changes |
 | `VoteIntegrity` | Invariant | Each node votes at most once per term |
+| `PreVoteSafety` | Invariant | Pre-vote does not disrupt existing leaders |
+| `ReplicationInv` | Invariant | Every committed entry exists on a quorum |
 | `TermMonotonicity` | Temporal | Terms never decrease |
+| `CommittedLogAppendOnlyProp` | Temporal | Committed entries never retracted |
+| `MonotonicCommitIndexProp` | Temporal | commitIndex never decreases |
+| `MonotonicMatchIndexProp` | Temporal | matchIndex monotonic per leader term |
+| `NeverCommitEntryPrevTermsProp` | Temporal | Only current-term entries committed |
+| `StateTransitionsProp` | Temporal | Valid state machine transitions |
+| `PermittedLogChangesProp` | Temporal | Log changes only via valid paths |
 
-**Result**: 134,469,861 states generated, 18,268,659 distinct
-states found, depth 54. Zero errors.
+**Result** (Raft.cfg, 3 nodes): 6,641,341 states generated,
+1,338,669 distinct states, depth 42, 2 min 24s. Zero errors.
 
 ### Two-Phase Commit (TwoPhaseCommit.tla)
 
 Models the 2PC protocol for cross-shard distributed transactions
-implemented in `tensor_chain/src/distributed_tx.rs`.
+implemented in `tensor_chain/src/distributed_tx.rs`. Includes a
+fault model with message loss and participant crash/recovery.
 
-**Properties verified:**
+**Properties verified (6):**
 
 | Property | Type | What It Means |
 |----------|------|---------------|
 | `Atomicity` | Invariant | All participants commit or all abort |
 | `NoOrphanedLocks` | Invariant | Completed transactions release locks |
 | `ConsistentDecision` | Invariant | Coordinator decision matches outcomes |
-| `VoteIrrevocability` | Invariant | Prepared votes cannot be retracted |
+| `VoteIrrevocability` | Temporal | Prepared votes cannot be retracted without coordinator |
 | `DecisionStability` | Temporal | Coordinator decision never changes |
 
-**Result**: 7,582,773 states generated, 2,264,939 distinct states
-found, depth 21. Zero errors.
+**Fault model:** `DropMessage` (network loss) and
+`ParticipantRestart` (crash with WAL-backed lock recovery).
+
+**Result**: 1,869,429,350 states generated, 190,170,601 distinct
+states, depth 29, 2 hr 55 min. Zero errors. Every reachable state
+under message loss and crash/recovery satisfies all properties.
 
 ### SWIM Gossip Membership (Membership.tla)
 
@@ -56,7 +70,7 @@ Models the SWIM-based gossip protocol for cluster membership and
 failure detection implemented in `tensor_chain/src/gossip.rs` and
 `tensor_chain/src/membership.rs`.
 
-**Properties verified:**
+**Properties verified (3):**
 
 | Property | Type | What It Means |
 |----------|------|---------------|
@@ -64,53 +78,67 @@ failure detection implemented in `tensor_chain/src/gossip.rs` and
 | `MonotonicEpochs` | Temporal | Lamport timestamps never decrease |
 | `MonotonicIncarnations` | Temporal | Incarnation numbers never decrease |
 
-**Result**: 136,097 states generated, 54,148 distinct states found,
-depth 17. Zero errors.
+**Result** (2-node): 136,097 states generated, 54,148 distinct
+states, depth 17. Zero errors.
+**Result** (3-node): 16,513 states generated, 5,992 distinct
+states, depth 13. Zero errors.
 
 ## Bugs Found by Model Checking
 
 TLC discovered real protocol bugs that would be extremely difficult
 to find through testing alone:
 
-1. **Self-message processing** (Raft): A leader could receive and
-   process its own `AppendEntries` heartbeat, truncating its own
-   log. This race condition is nearly impossible to trigger in
-   integration tests because the Rust implementation uses separate
-   channels, but the protocol-level vulnerability was real.
+1. **matchIndex response reporting** (Raft): Follower reported
+   `matchIndex = Len(log)` instead of `prevLogIndex + Len(entries)`.
+   A heartbeat response would falsely claim the full log matched
+   the leader's, enabling incorrect commits. Caught by
+   `ReplicationInv`.
 
-2. **Out-of-order AppendEntries** (Raft): When messages arrive out
-   of order, a stale `AppendEntries` with fewer entries could
-   overwrite entries from a newer message. Fixed by implementing
-   Raft paper Section 5.3 conflict-resolution: only truncate on
-   actual term conflicts, not unconditionally.
+2. **Out-of-order matchIndex regression** (Raft): Leader
+   unconditionally set `matchIndex` from responses. A stale
+   heartbeat response arriving after a replication response would
+   regress the value. Fixed by taking the max. Caught by
+   `MonotonicMatchIndexProp`.
 
-3. **Heartbeat log wipe** (Raft): Empty heartbeat messages with
-   `prevLogIndex = 0` computed an empty new log, destroying all
-   committed entries. Fixed by gating log updates on non-empty
-   entry lists.
+3. **inPreVote not reset on step-down** (Raft): When stepping down
+   to a higher term, the `inPreVote` flag was not cleared. A node
+   could remain in pre-vote state as a Follower. Caught by
+   `PreVoteSafety`.
 
-4. **Gossip fairness formula** (Membership): The temporal fairness
-   property quantified over `messages` (a state variable) inside
-   `WF_vars`, which is semantically invalid in TLA+. This meant
-   the liveness properties were vacuously satisfied.
+4. **Self-message processing** (Raft): A leader could process its
+   own `AppendEntries` heartbeat, truncating its own log.
+
+5. **Heartbeat log wipe** (Raft): Empty heartbeat messages with
+   `prevLogIndex = 0` computed an empty new log, destroying
+   committed entries.
+
+6. **Out-of-order AppendEntries** (Raft): Stale messages could
+   overwrite entries from newer messages. Fixed with proper Raft
+   Section 5.3 conflict-resolution.
+
+7. **Gossip fairness formula** (Membership): Quantification over
+   `messages` (a state variable) inside `WF_vars` is semantically
+   invalid in TLA+.
 
 ## How to Run
 
 ```bash
 cd specs/tla
 
-# Requires Java 11+ (tested with OpenJDK 21)
-# Download tla2tools.jar from:
-#   https://github.com/tlaplus/tlaplus/releases
+# Fast CI check (~3 minutes total)
+make ci
 
+# All configs including extensions
+make all
+
+# Individual specs
 java -XX:+UseParallelGC -Xmx4g -jar tla2tools.jar \
   -deadlock -workers auto -config Raft.cfg Raft.tla
 ```
 
 The `-deadlock` flag suppresses false deadlock reports on terminal
 states in bounded models. The `-workers auto` flag enables
-multi-threaded checking. Full results are saved in
-`specs/tla/tlc-results/`.
+multi-threaded checking.
 
 ## Relationship to Testing
 
@@ -129,9 +157,8 @@ correctly.
 
 ## Further Reading
 
-- [specs/tla/README.md](https://github.com/Shadylukin/Neumann/blob/main/specs/tla/README.md) for full
-  specification documentation, model parameters, and source code
-  mapping
+- [specs/tla/README.md](https://github.com/Shadylukin/Neumann/blob/main/specs/tla/README.md)
+  for full specification documentation and source code mapping
 - [Consensus Protocols](consensus-protocols.md) for Raft and SWIM
   protocol details
 - [Distributed Transactions](distributed-transactions.md) for 2PC

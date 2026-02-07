@@ -112,13 +112,13 @@ impl HealthServiceImpl {
 
     /// Create a new health service with shared state.
     #[must_use]
-    pub fn with_state(state: Arc<HealthState>) -> Self {
+    pub const fn with_state(state: Arc<HealthState>) -> Self {
         Self { state }
     }
 
     /// Get a reference to the health state.
     #[must_use]
-    pub fn state(&self) -> &Arc<HealthState> {
+    pub const fn state(&self) -> &Arc<HealthState> {
         &self.state
     }
 }
@@ -153,8 +153,7 @@ impl Health for HealthServiceImpl {
                     ServingStatus::NotServing
                 }
             },
-            Some("neumann.vector.v1.PointsService")
-            | Some("neumann.vector.v1.CollectionsService") => {
+            Some("neumann.vector.v1.PointsService" | "neumann.vector.v1.CollectionsService") => {
                 if self.state.is_vector_service_healthy() {
                     ServingStatus::Serving
                 } else {

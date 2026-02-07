@@ -180,7 +180,7 @@ pub fn generate_tx_id() -> u64 {
 /// Returns the estimated milliseconds since UNIX epoch when the ID was generated.
 /// This is only an approximation due to the 16-bit truncation of the millisecond field.
 #[must_use]
-pub fn extract_timestamp_hint(tx_id: u64) -> u64 {
+pub const fn extract_timestamp_hint(tx_id: u64) -> u64 {
     let ms_component = (tx_id >> 48) & 0xFFFF;
     CUSTOM_EPOCH_MS + ms_component
 }

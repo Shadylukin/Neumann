@@ -1,0 +1,121 @@
+# Mutation testing configuration for tensor_chain.
+#
+# Excludes low-value targets (builders, pure accessors, config defaults)
+# to focus mutation budget on safety-critical code.
+
+# --- Exclude builder/accessor patterns ---
+
+[[exclude]]
+function = "DeadlockDetectorConfig::with_.*"
+
+[[exclude]]
+function = "DeadlockDetectorConfig::disabled"
+
+[[exclude]]
+function = "WaitForGraph::with_max_edges_per_tx"
+
+[[exclude]]
+function = "WaitForGraph::with_defaults"
+
+[[exclude]]
+function = "DistributedTxStats::new"
+
+[[exclude]]
+function = "DistributedTxStats::snapshot"
+
+[[exclude]]
+function = "DeadlockStats::new"
+
+[[exclude]]
+function = "DeadlockStatsSnapshot::new"
+
+[[exclude]]
+function = "RaftNode::state$"
+
+[[exclude]]
+function = "RaftNode::current_term$"
+
+[[exclude]]
+function = "RaftNode::commit_index$"
+
+[[exclude]]
+function = "RaftNode::log_length$"
+
+[[exclude]]
+function = "RaftNode::fast_path_stats$"
+
+[[exclude]]
+function = "RaftNode::finalized_height$"
+
+[[exclude]]
+function = "DistributedTxConfig::default"
+
+[[exclude]]
+function = "DistributedTransaction::new$"
+
+[[exclude]]
+function = "LockManager::new$"
+
+[[exclude]]
+function = "DistributedTxCoordinator::new$"
+
+[[exclude]]
+function = "DistributedTxCoordinator::with_consensus$"
+
+[[exclude]]
+function = "DistributedTxCoordinator::with_wal$"
+
+[[exclude]]
+function = "TxParticipant::new$"
+
+[[exclude]]
+function = "CoordinatorState::from"
+
+[[exclude]]
+function = "RecoveryStats::default"
+
+# --- Monitoring/logging functions (not safety-critical) ---
+
+[[exclude]]
+function = "next_lock_handle$"
+
+[[exclude]]
+function = "lock_handle_current$"
+
+[[exclude]]
+function = "lock_handle_high_water_warnings$"
+
+[[exclude]]
+function = "lock_handle_high_water_threshold$"
+
+# --- Display/Debug impls ---
+
+[[exclude]]
+function = "<impl std::fmt::Display for VoteRecordError>::fmt"
+
+[[exclude]]
+function = "<impl std::fmt::Debug for DeadlockDetector>::fmt"
+
+# --- Accessors ---
+
+[[exclude]]
+function = "TxParticipant::store$"
+
+# --- Error-handling match guards (defensive, non-safety-critical) ---
+
+[[exclude]]
+function = "DistributedTxCoordinator::clear_persisted_state$"
+
+[[exclude]]
+function = "TxParticipant::clear_persisted_state$"
+
+# --- Examine only these critical files ---
+
+[[examine]]
+file = "tensor_chain/src/raft.rs"
+
+[[examine]]
+file = "tensor_chain/src/distributed_tx.rs"
+
+[[examine]]
+file = "tensor_chain/src/deadlock.rs"

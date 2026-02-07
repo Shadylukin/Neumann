@@ -58,7 +58,7 @@ pub struct MemoryTracker {
 impl MemoryTracker {
     /// Create a new memory tracker with the given configuration.
     #[must_use]
-    pub fn new(config: &MemoryBudgetConfig) -> Self {
+    pub const fn new(config: &MemoryBudgetConfig) -> Self {
         Self {
             current_bytes: AtomicUsize::new(0),
             max_bytes: config.max_bytes,
@@ -68,7 +68,7 @@ impl MemoryTracker {
 
     /// Create a memory tracker with default configuration.
     #[must_use]
-    pub fn with_max_bytes(max_bytes: usize) -> Self {
+    pub const fn with_max_bytes(max_bytes: usize) -> Self {
         Self {
             current_bytes: AtomicUsize::new(0),
             max_bytes,

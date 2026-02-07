@@ -230,7 +230,7 @@ pub struct EmbeddingValidator {
 
 impl EmbeddingValidator {
     #[must_use]
-    pub fn new(max_dimension: usize, max_magnitude: f32) -> Self {
+    pub const fn new(max_dimension: usize, max_magnitude: f32) -> Self {
         Self {
             max_dimension,
             max_magnitude,
@@ -317,7 +317,7 @@ pub struct CompositeValidator {
 
 impl CompositeValidator {
     #[must_use]
-    pub fn new(config: MessageValidationConfig) -> Self {
+    pub const fn new(config: MessageValidationConfig) -> Self {
         let embedding_validator = EmbeddingValidator::new(
             config.max_embedding_dimension,
             config.max_embedding_magnitude,

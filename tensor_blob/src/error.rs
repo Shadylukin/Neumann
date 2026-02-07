@@ -139,4 +139,69 @@ mod tests {
         let blob_err: BlobError = io_err.into();
         assert!(matches!(blob_err, BlobError::IoError(_)));
     }
+
+    #[test]
+    fn test_error_display_all_variants() {
+        let cases: Vec<(BlobError, &str)> = vec![
+            (
+                BlobError::StorageError("disk full".to_string()),
+                "storage error: disk full",
+            ),
+            (
+                BlobError::GraphError("cycle detected".to_string()),
+                "graph error: cycle detected",
+            ),
+            (
+                BlobError::VectorError("dim mismatch".to_string()),
+                "vector error: dim mismatch",
+            ),
+            (
+                BlobError::InvalidArtifactId("!!!".to_string()),
+                "invalid artifact id: !!!",
+            ),
+            (
+                BlobError::InvalidConfig("bad chunk size".to_string()),
+                "invalid config: bad chunk size",
+            ),
+            (
+                BlobError::IoError("permission denied".to_string()),
+                "io error: permission denied",
+            ),
+            (
+                BlobError::GcError("gc failed".to_string()),
+                "gc error: gc failed",
+            ),
+            (
+                BlobError::AlreadyExists("doc.pdf".to_string()),
+                "artifact already exists: doc.pdf",
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_error_is_std_error() {
+        let err: Box<dyn std::error::Error> = Box::new(BlobError::NotFound("test".to_string()));
+        assert!(err.to_string().contains("artifact not found"));
+    }
+
+    #[test]
+    fn test_error_clone() {
+        let err = BlobError::ChecksumMismatch {
+            expected: "a".to_string(),
+            actual: "b".to_string(),
+        };
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let err = BlobError::EmptyData;
+        let debug = format!("{err:?}");
+        assert!(debug.contains("EmptyData"));
+    }
 }

@@ -83,7 +83,7 @@ impl RequestSpan {
 
     /// Get a reference to the span.
     #[must_use]
-    pub fn span(&self) -> &Span {
+    pub const fn span(&self) -> &Span {
         &self.span
     }
 

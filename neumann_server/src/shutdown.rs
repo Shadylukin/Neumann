@@ -39,14 +39,14 @@ impl ShutdownConfig {
 
     /// Set the drain timeout.
     #[must_use]
-    pub fn with_drain_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_drain_timeout(mut self, timeout: Duration) -> Self {
         self.drain_timeout = timeout;
         self
     }
 
     /// Set the grace period.
     #[must_use]
-    pub fn with_grace_period(mut self, period: Duration) -> Self {
+    pub const fn with_grace_period(mut self, period: Duration) -> Self {
         self.grace_period = period;
         self
     }
@@ -115,7 +115,7 @@ impl ShutdownManager {
 
     /// Get the shutdown configuration.
     #[must_use]
-    pub fn config(&self) -> &ShutdownConfig {
+    pub const fn config(&self) -> &ShutdownConfig {
         &self.config
     }
 

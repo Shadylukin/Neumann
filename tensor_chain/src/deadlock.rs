@@ -115,7 +115,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use parking_lot::RwLock;
+use crate::sync_compat::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::distributed_tx::EpochMillis;
@@ -183,49 +183,49 @@ impl DeadlockDetectorConfig {
 
     /// Set the detection interval.
     #[must_use]
-    pub fn with_interval(mut self, ms: u64) -> Self {
+    pub const fn with_interval(mut self, ms: u64) -> Self {
         self.detection_interval_ms = ms;
         self
     }
 
     /// Set the victim selection policy.
     #[must_use]
-    pub fn with_policy(mut self, policy: VictimSelectionPolicy) -> Self {
+    pub const fn with_policy(mut self, policy: VictimSelectionPolicy) -> Self {
         self.victim_policy = policy;
         self
     }
 
     /// Set the maximum cycle length.
     #[must_use]
-    pub fn with_max_cycle_length(mut self, len: usize) -> Self {
+    pub const fn with_max_cycle_length(mut self, len: usize) -> Self {
         self.max_cycle_length = len;
         self
     }
 
     /// Disable auto-abort of victim.
     #[must_use]
-    pub fn without_auto_abort(mut self) -> Self {
+    pub const fn without_auto_abort(mut self) -> Self {
         self.auto_abort_victim = false;
         self
     }
 
     /// Set the maximum number of wait-for edges per transaction.
     #[must_use]
-    pub fn with_max_edges_per_tx(mut self, max: usize) -> Self {
+    pub const fn with_max_edges_per_tx(mut self, max: usize) -> Self {
         self.max_edges_per_tx = max;
         self
     }
 
     /// Set the edge TTL in milliseconds for stale edge cleanup.
     #[must_use]
-    pub fn with_edge_ttl_ms(mut self, ttl_ms: u64) -> Self {
+    pub const fn with_edge_ttl_ms(mut self, ttl_ms: u64) -> Self {
         self.edge_ttl_ms = ttl_ms;
         self
     }
 
     /// Set the maximum victim cascade depth for resolving overlapping deadlocks.
     #[must_use]
-    pub fn with_victim_cascade_depth(mut self, depth: u32) -> Self {
+    pub const fn with_victim_cascade_depth(mut self, depth: u32) -> Self {
         self.victim_cascade_depth = depth;
         self
     }
@@ -387,6 +387,7 @@ impl WaitForGraph {
     /// The waiter transaction is blocked waiting for holder to release locks.
     /// If `max_edges_per_tx` is set and the waiter already has that many edges,
     /// the new edge is silently dropped to bound memory usage.
+    #[allow(clippy::significant_drop_tightening)] // Lock scopes are already minimal blocks
     pub fn add_wait(&self, waiter_tx_id: u64, holder_tx_id: u64, priority: Option<u32>) {
         if waiter_tx_id == holder_tx_id {
             return; // Self-wait is invalid
@@ -466,6 +467,7 @@ impl WaitForGraph {
     }
 
     /// Remove a specific wait edge.
+    #[allow(clippy::significant_drop_tightening)] // Lock scopes are already minimal blocks
     pub fn remove_wait(&self, waiter_tx_id: u64, holder_tx_id: u64) {
         {
             let mut edges = self.edges.write();
@@ -493,6 +495,7 @@ impl WaitForGraph {
     /// Detect cycles in the wait-for graph using DFS.
     ///
     /// Returns all cycles found. Each cycle is a vec of `tx_ids` forming the cycle.
+    #[allow(clippy::significant_drop_tightening)] // Read guard needed throughout DFS
     pub fn detect_cycles(&self) -> Vec<Vec<u64>> {
         let edges = self.edges.read();
         let mut cycles = Vec::new();
@@ -570,6 +573,8 @@ impl WaitForGraph {
 
         let mut all_txs: HashSet<u64> = edges.keys().copied().collect();
         all_txs.extend(reverse.keys());
+        drop(edges);
+        drop(reverse);
         all_txs.len()
     }
 
@@ -709,22 +714,22 @@ impl DeadlockDetector {
     }
 
     /// Get the wait-for graph.
-    pub fn graph(&self) -> &WaitForGraph {
+    pub const fn graph(&self) -> &WaitForGraph {
         &self.graph
     }
 
     /// Get the configuration.
-    pub fn config(&self) -> &DeadlockDetectorConfig {
+    pub const fn config(&self) -> &DeadlockDetectorConfig {
         &self.config
     }
 
     /// Get statistics.
-    pub fn stats(&self) -> &DeadlockStats {
+    pub const fn stats(&self) -> &DeadlockStats {
         &self.stats
     }
 
     /// Check if detection is enabled.
-    pub fn is_enabled(&self) -> bool {
+    pub const fn is_enabled(&self) -> bool {
         self.config.enabled
     }
 
@@ -836,20 +841,23 @@ impl DeadlockDetector {
                     .unwrap_or(cycle[0])
             },
             VictimSelectionPolicy::MostLocks => {
-                if let Some(ref lock_fn) = self.lock_count_fn {
-                    cycle
-                        .iter()
-                        .max_by_key(|&&tx_id| lock_fn(tx_id))
-                        .copied()
-                        .unwrap_or(cycle[0])
-                } else {
-                    // Fall back to youngest if no lock count function
-                    cycle
-                        .iter()
-                        .max_by_key(|&&tx_id| self.graph.get_wait_start(tx_id).unwrap_or(0))
-                        .copied()
-                        .unwrap_or(cycle[0])
-                }
+                self.lock_count_fn.as_ref().map_or_else(
+                    || {
+                        // Fall back to youngest if no lock count function
+                        cycle
+                            .iter()
+                            .max_by_key(|&&tx_id| self.graph.get_wait_start(tx_id).unwrap_or(0))
+                            .copied()
+                            .unwrap_or(cycle[0])
+                    },
+                    |lock_fn| {
+                        cycle
+                            .iter()
+                            .max_by_key(|&&tx_id| lock_fn(tx_id))
+                            .copied()
+                            .unwrap_or(cycle[0])
+                    },
+                )
             },
         }
     }
@@ -1772,6 +1780,193 @@ mod tests {
         assert!(
             !members.contains(&10),
             "Node 10 is not part of the cycle, must not be included"
+        );
+    }
+
+    #[test]
+    fn test_update_max_cycle_exact_boundary() {
+        // Kills mutation: replace > with >= in DeadlockStats::update_max_cycle
+        // When len == current, update should be a no-op (no unnecessary CAS).
+        let stats = DeadlockStats::new();
+        stats.update_max_cycle(5);
+        assert_eq!(
+            stats.max_cycle_length.load(Ordering::Relaxed),
+            5,
+            "max_cycle_length must be 5 after update(5)"
+        );
+        // Calling with same value should not panic or change anything
+        stats.update_max_cycle(5);
+        assert_eq!(
+            stats.max_cycle_length.load(Ordering::Relaxed),
+            5,
+            "max_cycle_length must still be 5 after update(5) again"
+        );
+        // Calling with smaller value should not change
+        stats.update_max_cycle(3);
+        assert_eq!(
+            stats.max_cycle_length.load(Ordering::Relaxed),
+            5,
+            "max_cycle_length must still be 5 after update(3)"
+        );
+        // Calling with larger value should update
+        stats.update_max_cycle(7);
+        assert_eq!(
+            stats.max_cycle_length.load(Ordering::Relaxed),
+            7,
+            "max_cycle_length must be 7 after update(7)"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_stale_edges_exact_boundary() {
+        // Kills mutation: replace > with >= in WaitForGraph::cleanup_stale_edges
+        let graph = WaitForGraph::new();
+
+        // Add a wait edge with a known timestamp
+        graph.add_wait(1, 2, None);
+
+        // Cleanup with very large TTL — edge should NOT be removed
+        let removed = graph.cleanup_stale_edges(u64::MAX);
+        assert_eq!(removed, 0, "Edge must not be stale with max TTL");
+        assert_eq!(
+            graph.edge_count(),
+            1,
+            "Edge must still exist after cleanup with max TTL"
+        );
+
+        // Sleep to ensure elapsed > 0
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        // Cleanup with 0 TTL — edge is at least 5ms old, so elapsed > 0 is true
+        let removed = graph.cleanup_stale_edges(0);
+        assert!(removed > 0, "Edge must be cleaned up with 0 TTL");
+        assert_eq!(
+            graph.edge_count(),
+            0,
+            "Edge must be removed after cleanup with 0 TTL"
+        );
+    }
+
+    #[test]
+    fn test_detect_cascade_depth_tracking() {
+        // Kills mutations in DeadlockDetector::detect cascade logic:
+        // - replace < with ==/>/<= in cascade_count check (line 771)
+        // - replace += with *= in cascade_count increment (line 772)
+        //
+        // Strategy: use Oldest policy so node with lowest wait_start is victim.
+        // Add the shared node (node 1) first to guarantee it becomes victim.
+        let config = DeadlockDetectorConfig::default()
+            .with_policy(VictimSelectionPolicy::Oldest)
+            .with_victim_cascade_depth(2);
+        let detector = DeadlockDetector::new(config);
+        let graph = detector.graph();
+
+        // Node 1 added first -> oldest timestamp -> victim under Oldest policy
+        graph.add_wait(1, 2, None);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        // Cycle 1: 1 -> 2 -> 1
+        graph.add_wait(2, 1, None);
+        // Cycle 2: 1 -> 3 -> 1 (overlaps on node 1)
+        graph.add_wait(1, 3, None);
+        graph.add_wait(3, 1, None);
+        // Cycle 3: 1 -> 4 -> 1 (also overlaps on node 1)
+        graph.add_wait(1, 4, None);
+        graph.add_wait(4, 1, None);
+
+        let deadlocks = detector.detect();
+        let snap = detector.stats().snapshot();
+
+        // With depth=2: first cycle selects node 1 as victim,
+        // cascading resolves cycles 2 and 3.
+        let total = deadlocks.len() as u64 + snap.cascade_resolutions;
+        assert!(
+            total >= 3,
+            "Total resolved cycles ({total}) must account for all 3 cycles"
+        );
+        assert!(
+            !deadlocks.is_empty(),
+            "Must report at least 1 explicit deadlock"
+        );
+        // Cascade counter must be incremented, not multiplied
+        assert!(
+            snap.cascade_resolutions >= 1,
+            "Must have at least 1 cascade resolution, got {}",
+            snap.cascade_resolutions
+        );
+        assert!(
+            snap.cascade_resolutions <= 2,
+            "Cascade resolutions must be <= depth(2), got {}",
+            snap.cascade_resolutions
+        );
+    }
+
+    #[test]
+    fn test_cascade_depth_zero_disables_cascading() {
+        // With cascade_depth=0, no cascading should happen at all.
+        // This catches: replace < with <= (0 < 0 is false, 0 <= 0 is true)
+        let config = DeadlockDetectorConfig::default()
+            .with_policy(VictimSelectionPolicy::Oldest)
+            .with_victim_cascade_depth(0);
+        let detector = DeadlockDetector::new(config);
+        let graph = detector.graph();
+
+        // Node 1 added first -> oldest -> victim
+        graph.add_wait(1, 2, None);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        graph.add_wait(2, 1, None);
+        graph.add_wait(1, 3, None);
+        graph.add_wait(3, 1, None);
+
+        let deadlocks = detector.detect();
+        let snap = detector.stats().snapshot();
+
+        // With depth=0: cascade_count(0) < 0 is always false -> no cascading
+        assert_eq!(
+            snap.cascade_resolutions, 0,
+            "No cascading with depth=0, got {}",
+            snap.cascade_resolutions
+        );
+        // Both cycles must be reported as explicit deadlocks
+        assert!(
+            deadlocks.len() >= 2,
+            "All cycles must be explicit deadlocks with depth=0, got {}",
+            deadlocks.len()
+        );
+    }
+
+    #[test]
+    fn test_cascade_depth_exactly_one() {
+        // With cascade_depth=1 and 3 overlapping cycles, exactly 1 cascade.
+        // This catches: replace < with == (count(0)==1 is false on first check)
+        let config = DeadlockDetectorConfig::default()
+            .with_policy(VictimSelectionPolicy::Oldest)
+            .with_victim_cascade_depth(1);
+        let detector = DeadlockDetector::new(config);
+        let graph = detector.graph();
+
+        // Node 1 added first -> oldest -> victim
+        graph.add_wait(1, 2, None);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        graph.add_wait(2, 1, None);
+        graph.add_wait(1, 3, None);
+        graph.add_wait(3, 1, None);
+        graph.add_wait(1, 4, None);
+        graph.add_wait(4, 1, None);
+
+        let deadlocks = detector.detect();
+        let snap = detector.stats().snapshot();
+
+        // depth=1: first cycle explicit (victim=node1), second cascaded
+        // (count 0<1), third cannot cascade (count 1<1 is false) so explicit.
+        assert_eq!(
+            snap.cascade_resolutions, 1,
+            "Exactly 1 cascade with depth=1, got {}",
+            snap.cascade_resolutions
+        );
+        assert!(
+            deadlocks.len() >= 2,
+            "At least 2 explicit deadlocks with depth=1, got {}",
+            deadlocks.len()
         );
     }
 }

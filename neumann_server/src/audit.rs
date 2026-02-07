@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// Configuration for audit logging.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AuditConfig {
     /// Enable audit logging.
     pub enabled: bool,
@@ -221,7 +222,7 @@ impl AuditLogger {
             .unwrap_or(0)
     }
 
-    fn should_log(&self, event: &AuditEvent) -> bool {
+    const fn should_log(&self, event: &AuditEvent) -> bool {
         if !self.config.enabled {
             return false;
         }
@@ -293,8 +294,8 @@ impl AuditLogger {
     fn entry_has_identity(event: &AuditEvent, identity: &str) -> bool {
         match event {
             AuditEvent::AuthSuccess { identity: id }
-            | AuditEvent::RateLimited { identity: id, .. } => id == identity,
-            AuditEvent::QueryExecuted {
+            | AuditEvent::RateLimited { identity: id, .. }
+            | AuditEvent::QueryExecuted {
                 identity: Some(id), ..
             }
             | AuditEvent::BlobUpload {

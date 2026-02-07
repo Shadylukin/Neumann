@@ -328,6 +328,195 @@ fn dst_raft_outbound_block() {
 }
 
 // ---------------------------------------------------------------------------
+// Network non-determinism scenarios
+// ---------------------------------------------------------------------------
+
+/// Message reordering from tick 0: election + heartbeats + proposals under
+/// non-FIFO delivery. Safety properties must hold despite reordering.
+fn scenario_message_reordering(harness: &mut DSTHarness) {
+    harness.schedule_fault(0, FaultAction::MessageReorder { enabled: true });
+
+    harness.schedule_election(5, 0);
+    for tick in (15..200).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+    for tick in (20..180).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+}
+
+#[test]
+fn dst_raft_message_reordering() {
+    run_scenario(scenario_message_reordering, 5, 200, 1_000);
+}
+
+/// Latency spike on one node: node 2 gets +10 tick delivery latency at tick 50,
+/// healed at tick 150. The slow node may miss elections but safety must hold.
+fn scenario_latency_spike(harness: &mut DSTHarness) {
+    harness.schedule_election(5, 0);
+    for tick in (15..300).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+
+    // Node 2 gets +10 tick latency at tick 50
+    harness.schedule_fault(
+        50,
+        FaultAction::LatencySpike {
+            node: 2,
+            extra_ticks: 10,
+        },
+    );
+    // Heal at tick 150
+    harness.schedule_fault(150, FaultAction::HealNode(2));
+
+    for tick in (60..280).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+}
+
+#[test]
+fn dst_raft_latency_spike() {
+    run_scenario(scenario_latency_spike, 5, 300, 1_000);
+}
+
+/// 10% message drops from tick 30. Multiple election attempts may be needed.
+/// Some proposals may fail under drops, which is correct Raft behavior.
+fn scenario_message_drops(harness: &mut DSTHarness) {
+    harness.schedule_election(5, 0);
+    for tick in (15..300).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+
+    // Enable 10% drops at tick 30
+    harness.schedule_fault(30, FaultAction::MessageDrop { rate: 0.1 });
+
+    // Schedule backup elections in case leader loses quorum
+    harness.schedule_election(100, 1);
+    harness.schedule_election(200, 2);
+    for tick in (110..300).step_by(10) {
+        harness.schedule_heartbeat(tick, 1);
+        harness.schedule_heartbeat(tick, 2);
+    }
+
+    // Proposals on all potential leaders
+    for tick in (40..280).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+}
+
+#[test]
+fn dst_raft_message_drops() {
+    run_scenario(scenario_message_drops, 5, 300, 1_000);
+}
+
+/// Combined network faults: reorder + 5% drop + latency spike + partition/heal.
+fn scenario_combined_network_faults(harness: &mut DSTHarness) {
+    // Enable reordering from the start
+    harness.schedule_fault(0, FaultAction::MessageReorder { enabled: true });
+
+    harness.schedule_election(5, 0);
+    for tick in (15..400).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+
+    // Enable 5% drops at tick 20
+    harness.schedule_fault(20, FaultAction::MessageDrop { rate: 0.05 });
+
+    // Latency spike on node 3 at tick 60
+    harness.schedule_fault(
+        60,
+        FaultAction::LatencySpike {
+            node: 3,
+            extra_ticks: 8,
+        },
+    );
+
+    // Partition node 4 at tick 100, heal at 200
+    harness.schedule_fault(100, FaultAction::PartitionNode(4));
+    harness.schedule_fault(200, FaultAction::HealNode(4));
+
+    // Heal latency at tick 180
+    harness.schedule_fault(
+        180,
+        FaultAction::LatencySpike {
+            node: 3,
+            extra_ticks: 0,
+        },
+    );
+
+    // Disable drops at tick 250
+    harness.schedule_fault(250, FaultAction::MessageDrop { rate: 0.0 });
+
+    // Backup elections
+    harness.schedule_election(150, 1);
+    harness.schedule_election(250, 2);
+    for tick in (160..400).step_by(10) {
+        harness.schedule_heartbeat(tick, 1);
+        harness.schedule_heartbeat(tick, 2);
+    }
+
+    // Proposals throughout
+    for tick in (30..380).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+}
+
+#[test]
+fn dst_raft_combined_network_faults() {
+    run_scenario(scenario_combined_network_faults, 5, 400, 1_000);
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat log consistency
+// ---------------------------------------------------------------------------
+
+/// After proposals build a log, partition+heal a follower. Heartbeats after
+/// heal must carry correct prev_log_index/prev_log_term so the follower with
+/// a non-empty log accepts them. Would fail with old hardcoded 0,0 values.
+fn scenario_heartbeat_log_consistency(harness: &mut DSTHarness) {
+    // node0 wins election
+    harness.schedule_election(5, 0);
+    for tick in (15..50).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+
+    // Propose several entries to build up the log
+    for tick in (20..50).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+
+    // Partition node 2 at tick 50
+    harness.schedule_fault(50, FaultAction::PartitionNode(2));
+
+    // Continue heartbeats and proposals while node 2 is partitioned
+    for tick in (55..100).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+    for tick in (55..100).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+
+    // Heal node 2 at tick 100
+    harness.schedule_fault(100, FaultAction::HealNode(2));
+
+    // Heartbeats after heal must have correct prev_log_index/prev_log_term
+    // for node 2 (which has a non-empty log from before partition) to accept
+    for tick in (105..200).step_by(10) {
+        harness.schedule_heartbeat(tick, 0);
+    }
+
+    // More proposals to verify the healed follower participates in quorum
+    for tick in (110..190).step_by(5) {
+        harness.schedule_proposal(tick, 0);
+    }
+}
+
+#[test]
+fn dst_raft_heartbeat_log_consistency() {
+    run_scenario(scenario_heartbeat_log_consistency, 5, 200, 1_000);
+}
+
+// ---------------------------------------------------------------------------
 // Stress tests (10,000 seeds, run with --ignored)
 // ---------------------------------------------------------------------------
 
@@ -359,4 +548,16 @@ fn dst_stress_rolling_restart_10k_seeds() {
 #[ignore]
 fn dst_stress_rapid_churn_10k_seeds() {
     run_scenario(scenario_rapid_leader_churn, 5, 200, 10_000);
+}
+
+#[test]
+#[ignore]
+fn dst_stress_message_reordering_10k_seeds() {
+    run_scenario(scenario_message_reordering, 5, 200, 10_000);
+}
+
+#[test]
+#[ignore]
+fn dst_stress_combined_faults_10k_seeds() {
+    run_scenario(scenario_combined_network_faults, 5, 400, 10_000);
 }

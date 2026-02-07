@@ -48,7 +48,7 @@ pub struct CompressionConfig {
     pub compression_version: u8,
 }
 
-fn default_compression_version() -> u8 {
+const fn default_compression_version() -> u8 {
     COMPRESSION_VERSION
 }
 
@@ -65,7 +65,7 @@ impl Default for CompressionConfig {
 
 impl CompressionConfig {
     #[must_use]
-    pub fn disabled() -> Self {
+    pub const fn disabled() -> Self {
         Self {
             enabled: false,
             method: CompressionMethod::None,
@@ -75,19 +75,19 @@ impl CompressionConfig {
     }
 
     #[must_use]
-    pub fn with_method(mut self, method: CompressionMethod) -> Self {
+    pub const fn with_method(mut self, method: CompressionMethod) -> Self {
         self.method = method;
         self
     }
 
     #[must_use]
-    pub fn with_min_size(mut self, min_size: usize) -> Self {
+    pub const fn with_min_size(mut self, min_size: usize) -> Self {
         self.min_size = min_size;
         self
     }
 
     #[must_use]
-    pub fn with_compression_version(mut self, version: u8) -> Self {
+    pub const fn with_compression_version(mut self, version: u8) -> Self {
         self.compression_version = version;
         self
     }
@@ -111,7 +111,7 @@ pub mod flags {
 pub const MAX_DECOMPRESSED_SIZE: usize = 16 * 1024 * 1024;
 
 #[must_use]
-pub fn frame_flags(method: CompressionMethod) -> u8 {
+pub const fn frame_flags(method: CompressionMethod) -> u8 {
     match method {
         CompressionMethod::None => flags::NONE,
         CompressionMethod::Lz4 => flags::LZ4,
@@ -175,7 +175,7 @@ pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> 
 }
 
 #[must_use]
-pub fn is_beneficial(original_len: usize, compressed_len: usize) -> bool {
+pub const fn is_beneficial(original_len: usize, compressed_len: usize) -> bool {
     compressed_len < original_len
 }
 

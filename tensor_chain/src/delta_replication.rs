@@ -235,10 +235,8 @@ impl DeltaUpdate {
     /// Verify integrity checksum. Returns true if checksum is None (legacy).
     #[must_use]
     pub fn verify_checksum(&self) -> bool {
-        match self.checksum {
-            Some(stored) => stored == self.compute_checksum(),
-            None => true, // Legacy updates without checksum are accepted
-        }
+        self.checksum
+            .map_or(true, |stored| stored == self.compute_checksum())
     }
 
     /// Add checksum to this update.
@@ -249,7 +247,7 @@ impl DeltaUpdate {
     }
 
     #[must_use]
-    pub fn is_full_update(&self) -> bool {
+    pub const fn is_full_update(&self) -> bool {
         self.archetype_id == u32::MAX
     }
 
@@ -324,7 +322,7 @@ pub struct DeltaBatch {
 
 impl DeltaBatch {
     #[must_use]
-    pub fn new(source: NodeId, sequence: u64) -> Self {
+    pub const fn new(source: NodeId, sequence: u64) -> Self {
         Self {
             updates: Vec::new(),
             source,
@@ -339,7 +337,7 @@ impl DeltaBatch {
     }
 
     #[must_use]
-    pub fn finalize(mut self) -> Self {
+    pub const fn finalize(mut self) -> Self {
         self.is_final = true;
         self
     }
@@ -920,6 +918,7 @@ impl DeltaReplicationManager {
     }
 
     /// Create a batch from pending updates.
+    #[allow(clippy::significant_drop_tightening)] // Lock held for recv loop + is_empty check
     pub fn create_batch(&self, is_final: bool) -> Option<DeltaBatch> {
         let mut rx = self.pending_rx.lock();
 
@@ -948,6 +947,7 @@ impl DeltaReplicationManager {
 
         // Check if queue is now empty
         let is_empty = rx.is_empty();
+        drop(rx);
         if is_final || is_empty {
             batch = batch.finalize();
         }

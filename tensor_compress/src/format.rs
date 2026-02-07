@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Compressed snapshot format for tensor data.
 
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_const_for_fn)]
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -46,7 +42,7 @@ pub struct Header {
 
 impl Header {
     #[must_use]
-    pub fn new(config: CompressionConfig, entry_count: u64) -> Self {
+    pub const fn new(config: CompressionConfig, entry_count: u64) -> Self {
         Self {
             magic: MAGIC,
             version: VERSION,
@@ -150,6 +146,9 @@ impl CompressedSnapshot {
 }
 
 /// Compress a vector field based on configuration and key hints.
+///
+/// # Errors
+/// Returns error if TT decomposition fails.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn compress_vector(
     vector: &[f32],
@@ -303,7 +302,7 @@ pub fn compress_dense_as_sparse(vector: &[f32]) -> Option<CompressedValue> {
 
 /// Estimate the storage size of a sparse compressed vector.
 #[must_use]
-pub fn sparse_storage_size(_dimension: usize, nnz: usize) -> usize {
+pub const fn sparse_storage_size(_dimension: usize, nnz: usize) -> usize {
     // dimension (8) + positions_len (8) + positions_data (variable) + values (4*nnz)
     // positions use delta+varint, roughly 1-2 bytes per position for clustered data
     8 + 8 + nnz * 2 + nnz * 4
@@ -311,7 +310,7 @@ pub fn sparse_storage_size(_dimension: usize, nnz: usize) -> usize {
 
 /// Check if sparse format would be more efficient than dense.
 #[must_use]
-pub fn should_use_sparse(dimension: usize, nnz: usize) -> bool {
+pub const fn should_use_sparse(dimension: usize, nnz: usize) -> bool {
     let dense_size = dimension * 4;
     let sparse_size = sparse_storage_size(dimension, nnz);
     sparse_size < dense_size

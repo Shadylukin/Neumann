@@ -275,7 +275,7 @@ impl GeometricMembershipManager {
     }
 
     /// Get the underlying membership manager.
-    pub fn inner(&self) -> &Arc<MembershipManager> {
+    pub const fn inner(&self) -> &Arc<MembershipManager> {
         &self.inner
     }
 
@@ -329,8 +329,10 @@ impl GeometricMembershipManager {
                     .get(&status.node_id)
                     .map_or(0.0, |emb| query.cosine_similarity(emb));
 
-                let score = (1.0 - self.config.geometric_weight) * health_score
-                    + self.config.geometric_weight * similarity;
+                let score = self.config.geometric_weight.mul_add(
+                    similarity,
+                    (1.0 - self.config.geometric_weight) * health_score,
+                );
 
                 RankedPeer {
                     node_id: status.node_id.clone(),

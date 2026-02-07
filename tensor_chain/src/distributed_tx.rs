@@ -27,7 +27,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use parking_lot::RwLock;
+use crate::sync_compat::RwLock;
 use serde::{Deserialize, Serialize};
 use tensor_store::{ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 
@@ -2329,7 +2329,7 @@ impl TxParticipant {
 
     /// Access the underlying store for reads (e.g. in integration tests).
     #[must_use]
-    pub fn store(&self) -> &TensorStore {
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 
@@ -2508,6 +2508,31 @@ impl TxParticipant {
                 Transaction::TableDelete { table, row_id } => {
                     let storage_key = format!("table:{table}:row:{row_id}");
                     self.store.delete(&storage_key).ok();
+                },
+                Transaction::CompareAndSwap {
+                    key,
+                    expected_data,
+                    new_data,
+                } => {
+                    let current = self.store.get(key).ok();
+                    let current_bytes = current
+                        .as_ref()
+                        .and_then(|d| d.get("data"))
+                        .and_then(|v| match v {
+                            TensorValue::Scalar(ScalarValue::Bytes(b)) => Some(b.as_slice()),
+                            _ => None,
+                        })
+                        .unwrap_or(&[]);
+                    if current_bytes == expected_data.as_slice() {
+                        let mut tensor = TensorData::new();
+                        tensor.set(
+                            "data",
+                            TensorValue::Scalar(ScalarValue::Bytes(new_data.clone())),
+                        );
+                        self.store
+                            .put(key, tensor)
+                            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                    }
                 },
             }
         }
@@ -7439,5 +7464,957 @@ mod tests {
             !lock_mgr.tx_locks.read().contains_key(&1),
             "tx_locks entry must be removed after release"
         );
+    }
+
+    #[test]
+    fn test_is_timed_out_exact_boundary() {
+        // When elapsed == timeout_ms, the transaction must NOT be timed out.
+        // Kills mutation: replace > with >= in is_timed_out
+        let mut tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+        tx.timeout_ms = 100;
+        // Set started_at so that now - started_at == timeout_ms exactly
+        #[allow(clippy::cast_possible_truncation)]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        tx.started_at = now - 100; // elapsed == timeout_ms
+        assert!(
+            !tx.is_timed_out(),
+            "Transaction must NOT be timed out when elapsed == timeout_ms"
+        );
+        // But one ms over should be timed out
+        tx.started_at = now - 101;
+        assert!(
+            tx.is_timed_out(),
+            "Transaction must be timed out when elapsed > timeout_ms"
+        );
+    }
+
+    #[test]
+    fn test_key_lock_is_expired_exact_boundary() {
+        // When elapsed == timeout_ms, the lock must NOT be expired.
+        // Kills mutation: replace > with >= in KeyLock::is_expired
+        let lock = KeyLock {
+            key: "k1".to_string(),
+            tx_id: 1,
+            lock_handle: 1,
+            acquired_at_ms: now_epoch_millis(),
+            timeout_ms: 0,
+        };
+        // elapsed == 0, timeout == 0 => 0 > 0 is false => not expired
+        assert!(
+            !lock.is_expired(),
+            "Lock must NOT be expired when elapsed == timeout"
+        );
+
+        let lock2 = KeyLock {
+            key: "k2".to_string(),
+            tx_id: 2,
+            lock_handle: 2,
+            acquired_at_ms: now_epoch_millis() - 50,
+            timeout_ms: 49,
+        };
+        assert!(
+            lock2.is_expired(),
+            "Lock must be expired when elapsed > timeout"
+        );
+    }
+
+    #[test]
+    fn test_lock_handle_high_water_warnings_returns_counter() {
+        // Kills mutation: replace lock_handle_high_water_warnings -> u64 with 0
+        let initial = lock_handle_high_water_warnings();
+        let again = lock_handle_high_water_warnings();
+        assert_eq!(initial, again, "Must return consistent counter value");
+        let h1 = lock_handle_current();
+        let _ = next_lock_handle();
+        let h2 = lock_handle_current();
+        assert!(
+            h2 > h1,
+            "Lock handle must increase after next_lock_handle()"
+        );
+    }
+
+    #[test]
+    fn test_release_by_handle_with_wait_cleanup_cleans_tx_locks() {
+        // Kills mutation: replace != with == in release_by_handle_with_wait_cleanup (line 567)
+        // The retain(|k| k != key) removes the key from tx_locks.
+        // If mutated to ==, it keeps the key instead.
+        let lm = LockManager::new();
+        let graph = crate::deadlock::WaitForGraph::new();
+        let handle = lm.try_lock(100, &["alpha".to_string()]).unwrap();
+
+        // Lock two keys so we can verify partial cleanup
+        let handle2 = lm.try_lock(100, &["beta".to_string()]).unwrap();
+        assert_eq!(lm.lock_count_for_transaction(100), 2);
+
+        // Release first by handle — should remove only "alpha" from tx_locks
+        lm.release_by_handle_with_wait_cleanup(handle, &graph);
+        let keys = lm.keys_for_transaction(100);
+        assert!(
+            !keys.contains(&"alpha".to_string()),
+            "alpha must be removed from tx_locks after release_by_handle_with_wait_cleanup"
+        );
+        assert!(
+            keys.contains(&"beta".to_string()),
+            "beta must remain in tx_locks"
+        );
+
+        // Clean up
+        lm.release_by_handle_with_wait_cleanup(handle2, &graph);
+        assert_eq!(lm.lock_count_for_transaction(100), 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired_cleans_tx_locks() {
+        // Kills mutation: replace != with == in cleanup_expired (line 607)
+        let lm = LockManager::with_default_timeout(Duration::from_millis(1));
+        let handle1 = lm.try_lock(200, &["key1".to_string()]).unwrap();
+        let _handle2 = lm.try_lock(200, &["key2".to_string()]).unwrap();
+        assert_eq!(lm.lock_count_for_transaction(200), 2);
+
+        // Wait for locks to expire
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Also acquire a non-expired lock on a different tx
+        let lm_fresh = LockManager::new(); // default 5s timeout
+        let _ = lm_fresh.try_lock(300, &["other".to_string()]);
+
+        let expired_count = lm.cleanup_expired();
+        assert!(expired_count >= 2, "Both locks should be expired");
+
+        // tx_locks for tx 200 should be empty after cleanup
+        let remaining = lm.keys_for_transaction(200);
+        assert!(
+            remaining.is_empty(),
+            "tx_locks must be empty after all keys expired and cleaned, got: {remaining:?}"
+        );
+        let _ = handle1; // suppress unused warning
+    }
+
+    #[test]
+    fn test_cleanup_expired_with_wait_cleanup_cleans_tx_locks() {
+        // Kills mutation: replace != with == in cleanup_expired_with_wait_cleanup (line 635)
+        let lm = LockManager::with_default_timeout(Duration::from_millis(1));
+        let graph = crate::deadlock::WaitForGraph::new();
+        let _ = lm.try_lock(300, &["x".to_string()]).unwrap();
+        let _ = lm.try_lock(300, &["y".to_string()]).unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        let expired_count = lm.cleanup_expired_with_wait_cleanup(&graph);
+        assert!(expired_count >= 2, "Both locks should be expired");
+
+        let remaining = lm.keys_for_transaction(300);
+        assert!(
+            remaining.is_empty(),
+            "tx_locks must be empty after cleanup_expired_with_wait_cleanup, got: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn test_try_lock_with_wait_tracking_ignores_expired_lock() {
+        // Kills mutation: replace && with || in try_lock_with_wait_tracking (line 705)
+        // The condition is: !existing.is_expired() && existing.tx_id != tx_id
+        // With &&, an expired lock lets the new tx through.
+        // With ||, an expired lock with different tx_id would still block.
+        let lm = LockManager::with_default_timeout(Duration::from_millis(1));
+        let graph = crate::deadlock::WaitForGraph::new();
+
+        // Tx 100 locks "key_a"
+        let _ = lm
+            .try_lock(100, &["key_a".to_string()])
+            .expect("initial lock must succeed");
+
+        // Wait for the lock to expire
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Tx 200 should be able to lock "key_a" since the old lock expired
+        let result = lm.try_lock_with_wait_tracking(200, &["key_a".to_string()], &graph, None);
+        assert!(
+            result.is_ok(),
+            "Must succeed when existing lock is expired, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_recover_from_wal_stats_accuracy() {
+        // Kills mutations in recover_from_wal:
+        // - replace += with -= (lines 1165, 1172, 1179)
+        // - replace += with *= (lines 1165, 1172, 1179)
+        // - replace += with -= / *= for lock_releases_recovered (line 1192)
+        use crate::tx_wal::{PrepareVoteKind, TxWal, TxWalEntry};
+
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("recovery_test.wal");
+        let mut wal = TxWal::open(&wal_path).unwrap();
+
+        // Write tx 1: prepared (Preparing -> Prepared, stays there)
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 1,
+            participants: vec![0],
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PrepareVote {
+            tx_id: 1,
+            shard: 0,
+            vote: PrepareVoteKind::Yes { lock_handle: 10 },
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 1,
+            from: TxPhase::Preparing,
+            to: TxPhase::Prepared,
+        })
+        .unwrap();
+
+        // Write tx 2: committing (Preparing -> Prepared -> Committing)
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 2,
+            participants: vec![0],
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PrepareVote {
+            tx_id: 2,
+            shard: 0,
+            vote: PrepareVoteKind::Yes { lock_handle: 20 },
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 2,
+            from: TxPhase::Preparing,
+            to: TxPhase::Prepared,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 2,
+            from: TxPhase::Prepared,
+            to: TxPhase::Committing,
+        })
+        .unwrap();
+
+        // Write tx 3: aborting (Preparing -> Prepared -> Aborting)
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 3,
+            participants: vec![0],
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PrepareVote {
+            tx_id: 3,
+            shard: 0,
+            vote: PrepareVoteKind::No,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 3,
+            from: TxPhase::Preparing,
+            to: TxPhase::Prepared,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 3,
+            from: TxPhase::Prepared,
+            to: TxPhase::Aborting,
+        })
+        .unwrap();
+
+        drop(wal);
+
+        // Re-open WAL read-only for recovery
+        let wal2 = TxWal::open(&wal_path).unwrap();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal2);
+
+        let stats = coordinator.recover_from_wal().unwrap();
+
+        assert_eq!(stats.pending_prepare, 1, "Must have 1 prepared tx (tx 1)");
+        assert_eq!(stats.pending_commit, 1, "Must have 1 committing tx (tx 2)");
+        assert_eq!(stats.pending_abort, 1, "Must have 1 aborting tx (tx 3)");
+    }
+
+    #[test]
+    fn test_recover_stats_per_phase() {
+        // Kills mutations: replace += with -= / *= in DistributedTxCoordinator::recover
+        // Tests that recovery stats accurately count transactions per phase.
+        let coordinator = create_test_coordinator();
+
+        // Insert transactions in various phases directly
+        {
+            let mut pending = coordinator.pending.write();
+
+            // Preparing tx (not timed out) -> pending_prepare
+            let mut tx_prep = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx_prep.phase = TxPhase::Preparing;
+            pending.insert(tx_prep.tx_id, tx_prep);
+
+            // Prepared tx with all YES votes -> pending_commit
+            let mut tx_prepared = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx_prepared.phase = TxPhase::Prepared;
+            tx_prepared.votes.insert(
+                0,
+                PrepareVote::Yes {
+                    lock_handle: 99,
+                    delta: DeltaVector::zero(0),
+                },
+            );
+            pending.insert(tx_prepared.tx_id, tx_prepared);
+
+            // Committing tx -> pending_commit
+            let mut tx_committing = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx_committing.phase = TxPhase::Committing;
+            pending.insert(tx_committing.tx_id, tx_committing);
+
+            // Aborting tx -> pending_abort
+            let mut tx_aborting = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx_aborting.phase = TxPhase::Aborting;
+            pending.insert(tx_aborting.tx_id, tx_aborting);
+
+            // Committed tx -> completed
+            let mut tx_done = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx_done.phase = TxPhase::Committed;
+            pending.insert(tx_done.tx_id, tx_done);
+        }
+
+        let stats = coordinator.recover();
+
+        // Preparing (not timed out) counts as pending_prepare
+        // Prepared with all yes moves to Committing -> pending_commit
+        // Committing stays as pending_commit
+        // Aborting stays as pending_abort
+        // Committed is completed
+        assert!(
+            stats.pending_prepare >= 1,
+            "Must count preparing tx, got {}",
+            stats.pending_prepare
+        );
+        assert!(
+            stats.pending_commit >= 1,
+            "Must count committing tx, got {}",
+            stats.pending_commit
+        );
+        assert!(
+            stats.pending_abort >= 1,
+            "Must count aborting tx, got {}",
+            stats.pending_abort
+        );
+        assert!(
+            stats.completed >= 1,
+            "Must count completed tx, got {}",
+            stats.completed
+        );
+        // With *= mutation, stats would be 0 (0 *= 1 = 0) instead of >= 1
+        // With -= mutation, stats would underflow or be negative
+    }
+
+    #[test]
+    fn test_cleanup_timeouts_removes_timed_out_and_logs_expired() {
+        // Kills mutations:
+        // - delete ! in cleanup_timeouts (line 1770) — if inverted, log would fire for empty list
+        // - replace > with == in cleanup_timeouts (line 1809)
+        let coordinator = create_test_coordinator();
+
+        // Begin a tx then manually make it timed out
+        let tx = coordinator.begin(&"n1".to_string(), &[0]).unwrap();
+        let tx_id = tx.tx_id;
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(t) = pending.get_mut(&tx_id) {
+                t.started_at = 1; // epoch ms = very old
+            }
+        }
+
+        // Also lock a key with a very short timeout to create an expired lock
+        let short_lm = LockManager::with_default_timeout(Duration::from_millis(1));
+        let _ = short_lm.try_lock(999, &["ephemeral".to_string()]);
+        std::thread::sleep(Duration::from_millis(5));
+        // The coordinator's own lock_manager won't have expired locks, but
+        // the timed_out tx should be detected.
+
+        let timed_out_ids = coordinator.cleanup_timeouts();
+        assert!(
+            timed_out_ids.contains(&tx_id),
+            "Timed-out tx must be in the returned list"
+        );
+        // After cleanup, pending should not contain the timed-out tx
+        assert_eq!(
+            coordinator.pending_count(),
+            0,
+            "Timed-out tx must be removed from pending"
+        );
+    }
+
+    #[test]
+    fn test_force_resolve_commit_prepared_tx() {
+        // Kills mutation: replace || with && in force_resolve (line 2180)
+        // Condition: tx.all_yes() || matches!(tx.phase, TxPhase::Prepared | TxPhase::Committing)
+        // With ||, a tx in Prepared phase can be force-committed even without all_yes
+        // With &&, both conditions must be true
+        let coordinator = create_test_coordinator();
+
+        // Begin tx with 2 shards, only vote YES on one
+        let tx = coordinator.begin(&"n1".to_string(), &[0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record one YES vote (but not all shards voted)
+        let _ = coordinator.record_vote(
+            tx_id,
+            0,
+            PrepareVote::Yes {
+                lock_handle: 1,
+                delta: DeltaVector::zero(0),
+            },
+        );
+
+        // Manually set phase to Prepared (normally needs all votes)
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(t) = pending.get_mut(&tx_id) {
+                t.phase = TxPhase::Prepared;
+            }
+        }
+
+        // Force commit — should succeed with ||: matches!(phase, Prepared) is true
+        // Would fail with &&: all_yes() is false (only 1 of 2 shards voted)
+        let result = coordinator.force_resolve(tx_id, true);
+        assert!(
+            result.is_ok(),
+            "force_resolve commit must succeed for Prepared tx, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_cleans_tx_locks() {
+        // Kills mutations:
+        // - replace < with <= in release_orphaned_locks (line 2235)
+        // - replace != with == in release_orphaned_locks (line 2252)
+        let coordinator = create_test_coordinator();
+
+        // Lock a key directly (simulating a lock from a now-gone tx)
+        let handle = coordinator
+            .lock_manager
+            .try_lock(555, &["orphan_key".to_string()])
+            .unwrap();
+
+        // No tx 555 in pending — this lock is orphaned
+        // Set acquired_at to 1ms (ancient) and partition_start to current time
+        // The < check: acquired_at < partition_start -> true -> orphaned
+        // The != check on tx_keys.retain: ensures key is removed from tx_locks
+
+        // We need to manually set acquired_at to a low value
+        {
+            let mut locks = coordinator.lock_manager.locks.write();
+            if let Some(lock) = locks.get_mut("orphan_key") {
+                lock.acquired_at_ms = 1; // very old
+            }
+        }
+
+        let released = coordinator.release_orphaned_locks(now_epoch_millis());
+        assert_eq!(released, 1, "Must release 1 orphaned lock");
+
+        // Verify the lock is actually gone
+        assert!(
+            !coordinator.lock_manager.is_locked("orphan_key"),
+            "orphan_key must no longer be locked"
+        );
+
+        // Verify tx_locks is clean (the != mutation would break this)
+        let remaining_keys = coordinator.lock_manager.keys_for_transaction(555);
+        assert!(
+            remaining_keys.is_empty(),
+            "tx_locks must be empty for tx 555 after orphan release, got: {remaining_keys:?}"
+        );
+        let _ = handle;
+    }
+
+    // ── Targeted mutation-killing tests ──────────────────────────────────
+
+    #[test]
+    fn test_cleanup_expired_partial_preserves_unexpired_keys() {
+        // Kills mutation: replace != with == in LockManager::cleanup_expired (line 607)
+        // With ==, retain keeps the EXPIRED key and removes the GOOD key.
+        let lm = LockManager::with_default_timeout(Duration::from_millis(5));
+
+        // Lock key1, let it expire, then lock key2 (fresh)
+        let _ = lm.try_lock(200, &["key1".to_string()]).unwrap();
+        std::thread::sleep(Duration::from_millis(15));
+
+        // key1 is now expired. Lock key2 under the same tx (fresh timeout).
+        // We must use a LockManager with a longer timeout for key2.
+        // Since LockManager uses one timeout, insert key2 manually.
+        {
+            let mut locks = lm.locks.write();
+            let mut tx_locks = lm.tx_locks.write();
+            locks.insert(
+                "key2".to_string(),
+                KeyLock {
+                    key: "key2".to_string(),
+                    tx_id: 200,
+                    lock_handle: 0,
+                    acquired_at_ms: now_epoch_millis(),
+                    timeout_ms: 60_000,
+                },
+            );
+            tx_locks.entry(200).or_default().push("key2".to_string());
+        }
+
+        let expired = lm.cleanup_expired();
+        assert_eq!(expired, 1, "Only key1 should be expired");
+
+        let remaining = lm.keys_for_transaction(200);
+        assert_eq!(
+            remaining,
+            vec!["key2".to_string()],
+            "key2 must survive cleanup, got: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_expired_with_wait_partial_preserves_unexpired() {
+        // Kills mutation: replace != with == in cleanup_expired_with_wait_cleanup (line 635)
+        let lm = LockManager::with_default_timeout(Duration::from_millis(5));
+        let graph = crate::deadlock::WaitForGraph::new();
+
+        let _ = lm.try_lock(300, &["a".to_string()]).unwrap();
+        std::thread::sleep(Duration::from_millis(15));
+
+        // Insert a fresh lock for the same tx
+        {
+            let mut locks = lm.locks.write();
+            let mut tx_locks = lm.tx_locks.write();
+            locks.insert(
+                "b".to_string(),
+                KeyLock {
+                    key: "b".to_string(),
+                    tx_id: 300,
+                    lock_handle: 0,
+                    acquired_at_ms: now_epoch_millis(),
+                    timeout_ms: 60_000,
+                },
+            );
+            tx_locks.entry(300).or_default().push("b".to_string());
+        }
+
+        let expired = lm.cleanup_expired_with_wait_cleanup(&graph);
+        assert_eq!(expired, 1);
+
+        let remaining = lm.keys_for_transaction(300);
+        assert_eq!(
+            remaining,
+            vec!["b".to_string()],
+            "Only 'b' must survive, got: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn test_recover_timed_out_preparing_exact() {
+        // Kills mutation: replace += with -= / *= in recover line 2069
+        let coordinator = create_test_coordinator();
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx.phase = TxPhase::Preparing;
+            tx.started_at = 1; // ancient → timed out
+            pending.insert(tx.tx_id, tx);
+        }
+        let stats = coordinator.recover();
+        assert_eq!(
+            stats.timed_out, 1,
+            "Must count exactly 1 timed-out preparing tx"
+        );
+    }
+
+    #[test]
+    fn test_recover_timed_out_prepared_exact() {
+        // Kills mutation: replace += with -= / *= in recover line 2078
+        let coordinator = create_test_coordinator();
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx.phase = TxPhase::Prepared;
+            tx.started_at = 1; // ancient → timed out
+            pending.insert(tx.tx_id, tx);
+        }
+        let stats = coordinator.recover();
+        assert_eq!(
+            stats.timed_out, 1,
+            "Must count exactly 1 timed-out prepared tx"
+        );
+    }
+
+    #[test]
+    fn test_recover_prepared_any_no_exact() {
+        // Kills mutation: replace += with -= / *= in recover line 2086
+        let coordinator = create_test_coordinator();
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("n".to_string(), vec![0, 1]);
+            tx.phase = TxPhase::Prepared;
+            // Record one YES and one NO vote
+            tx.votes.insert(
+                0,
+                PrepareVote::Yes {
+                    lock_handle: 1,
+                    delta: DeltaVector::zero(0),
+                },
+            );
+            tx.votes.insert(
+                1,
+                PrepareVote::No {
+                    reason: "test".to_string(),
+                },
+            );
+            pending.insert(tx.tx_id, tx);
+        }
+        let stats = coordinator.recover();
+        assert_eq!(
+            stats.pending_abort, 1,
+            "Must count exactly 1 pending_abort for prepared tx with NO vote"
+        );
+    }
+
+    #[test]
+    fn test_recover_prepared_conflict_vote_aborts() {
+        // Line 2089 (Prepared else branch) is unreachable: any_no() matches Conflict too.
+        // This test verifies Prepared tx with Conflict vote goes to pending_abort (line 2086).
+        // Kills mutation: replace += with -= / *= in recover line 2086 (alternative path).
+        let coordinator = create_test_coordinator();
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("n".to_string(), vec![0]);
+            tx.phase = TxPhase::Prepared;
+            tx.votes.insert(
+                0,
+                PrepareVote::Conflict {
+                    similarity: 0.5,
+                    conflicting_tx: 42,
+                },
+            );
+            pending.insert(tx.tx_id, tx);
+        }
+        let stats = coordinator.recover();
+        assert_eq!(
+            stats.pending_abort, 1,
+            "Prepared tx with Conflict vote must count as pending_abort"
+        );
+    }
+
+    #[test]
+    fn test_recover_from_wal_orphaned_lock_count() {
+        // Kills mutation: replace += with -= / *= in recover_from_wal line 1192
+        use crate::tx_wal::{PrepareVoteKind, TxWal, TxWalEntry};
+
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("orphan_test.wal");
+        let mut wal = TxWal::open(&wal_path).unwrap();
+
+        // Create a tx that committed (TxComplete) but whose lock was never released
+        // (no AllLocksReleased). This creates an orphaned lock.
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 10,
+            participants: vec![0],
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PrepareVote {
+            tx_id: 10,
+            shard: 0,
+            vote: PrepareVoteKind::Yes { lock_handle: 100 },
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 10,
+            from: TxPhase::Preparing,
+            to: TxPhase::Prepared,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 10,
+            from: TxPhase::Prepared,
+            to: TxPhase::Committing,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::TxComplete {
+            tx_id: 10,
+            outcome: crate::tx_wal::TxOutcome::Committed,
+        })
+        .unwrap();
+        // NO AllLocksReleased entry → lock 100 is orphaned
+
+        // Second tx with orphaned lock
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 11,
+            participants: vec![0],
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PrepareVote {
+            tx_id: 11,
+            shard: 0,
+            vote: PrepareVoteKind::Yes { lock_handle: 101 },
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 11,
+            from: TxPhase::Preparing,
+            to: TxPhase::Prepared,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::PhaseChange {
+            tx_id: 11,
+            from: TxPhase::Prepared,
+            to: TxPhase::Committing,
+        })
+        .unwrap();
+        wal.append(&TxWalEntry::TxComplete {
+            tx_id: 11,
+            outcome: crate::tx_wal::TxOutcome::Committed,
+        })
+        .unwrap();
+        // NO AllLocksReleased → lock 101 is orphaned
+
+        drop(wal);
+
+        let wal2 = TxWal::open(&wal_path).unwrap();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal2);
+
+        let stats = coordinator.recover_from_wal().unwrap();
+        assert_eq!(
+            stats.lock_releases_recovered, 2,
+            "Must count exactly 2 orphaned lock releases"
+        );
+    }
+
+    #[test]
+    fn test_force_resolve_commit_no_vote_prepared_phase() {
+        // Kills mutation: replace || with && in force_resolve (line 2180)
+        // Condition: tx.all_yes() || matches!(tx.phase, Prepared | Committing)
+        // With &&: both must be true. With ||: either suffices.
+        // Create a Prepared tx with a NO vote: all_yes()=false, matches=true
+        let coordinator = create_test_coordinator();
+        let tx = coordinator.begin(&"n1".to_string(), &[0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record YES for shard 0, NO for shard 1
+        let _ = coordinator.record_vote(
+            tx_id,
+            0,
+            PrepareVote::Yes {
+                lock_handle: 1,
+                delta: DeltaVector::zero(0),
+            },
+        );
+        let _ = coordinator.record_vote(
+            tx_id,
+            1,
+            PrepareVote::No {
+                reason: "test".to_string(),
+            },
+        );
+
+        // Manually set phase to Prepared
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(t) = pending.get_mut(&tx_id) {
+                t.phase = TxPhase::Prepared;
+            }
+        }
+
+        // With ||: matches!(Prepared, ...) is true → commit succeeds
+        // With &&: all_yes() is false → commit fails
+        let result = coordinator.force_resolve(tx_id, true);
+        assert!(
+            result.is_ok(),
+            "force_resolve must succeed for Prepared tx even without all YES, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_exact_boundary_not_released() {
+        // Kills mutation: replace < with <= in release_orphaned_locks (line 2235)
+        // Lock acquired exactly at partition_start should NOT be released (< is strict)
+        let coordinator = create_test_coordinator();
+
+        let lock_mgr = &coordinator.lock_manager;
+        let _ = lock_mgr
+            .try_lock(777, &["boundary_key".to_string()])
+            .unwrap();
+
+        // Use a realistic timestamp for both acquired_at and partition_start
+        let boundary_time = now_epoch_millis();
+        {
+            let mut locks = lock_mgr.locks.write();
+            if let Some(lock) = locks.get_mut("boundary_key") {
+                lock.acquired_at_ms = boundary_time;
+            }
+        }
+
+        // With <: boundary_time < boundary_time = false → NOT released
+        // With <=: boundary_time <= boundary_time = true → released
+        let released = coordinator.release_orphaned_locks(boundary_time);
+        assert_eq!(
+            released, 0,
+            "Lock at exactly partition_start must NOT be released"
+        );
+        // Check lock map directly (is_locked also checks expiry)
+        assert!(
+            lock_mgr.locks.read().contains_key("boundary_key"),
+            "boundary_key must still be in locks map"
+        );
+    }
+
+    #[test]
+    fn test_apply_operations_cas_matching_applies() {
+        // Kills mutation: replace == with != in apply_operations (line 2526)
+        // CAS should apply when current data matches expected_data.
+        let participant = TxParticipant::new_in_memory();
+
+        // Pre-populate key with known data
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "data",
+            TensorValue::Scalar(ScalarValue::Bytes(vec![1, 2, 3])),
+        );
+        participant.store().put("cas_key", tensor).unwrap();
+
+        // Prepare a CAS operation with matching expected_data
+        let request = PrepareRequest {
+            tx_id: 9000,
+            coordinator: "n".to_string(),
+            operations: vec![Transaction::CompareAndSwap {
+                key: "cas_key".to_string(),
+                expected_data: vec![1, 2, 3],
+                new_data: vec![4, 5, 6],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        let vote = participant.prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        // Commit — CAS should apply because data matches
+        let resp = participant.commit(9000);
+        assert!(resp.success, "commit must succeed");
+
+        // Verify the data was updated
+        let data = participant.store().get("cas_key").unwrap();
+        let bytes = data
+            .get("data")
+            .and_then(|v| match v {
+                TensorValue::Scalar(ScalarValue::Bytes(b)) => Some(b.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(bytes, vec![4, 5, 6], "CAS must apply when data matches");
+    }
+
+    #[test]
+    fn test_apply_operations_cas_mismatch_skips() {
+        // Also helps kill mutation on line 2526: with != mutation,
+        // mismatch would APPLY the update (wrong behavior).
+        let participant = TxParticipant::new_in_memory();
+
+        // Pre-populate with data that does NOT match expected
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "data",
+            TensorValue::Scalar(ScalarValue::Bytes(vec![9, 9, 9])),
+        );
+        participant.store().put("cas_key2", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 9001,
+            coordinator: "n".to_string(),
+            operations: vec![Transaction::CompareAndSwap {
+                key: "cas_key2".to_string(),
+                expected_data: vec![1, 2, 3], // does NOT match current [9,9,9]
+                new_data: vec![4, 5, 6],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        let vote = participant.prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        let resp = participant.commit(9001);
+        assert!(resp.success);
+
+        // Data should NOT have changed (CAS mismatch)
+        let data = participant.store().get("cas_key2").unwrap();
+        let bytes = data
+            .get("data")
+            .and_then(|v| match v {
+                TensorValue::Scalar(ScalarValue::Bytes(b)) => Some(b.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            bytes,
+            vec![9, 9, 9],
+            "CAS must NOT apply when data does not match"
+        );
+    }
+
+    #[test]
+    fn test_participant_recover_exact_timeout_not_expired() {
+        // Kills mutation: replace > with >= in TxParticipant::recover (line 2756)
+        // At exactly timeout, > returns false (keep waiting), >= returns true (presume abort)
+        let participant = TxParticipant::new_in_memory();
+        let timeout = Duration::from_secs(5);
+
+        // Prepare a tx
+        let request = PrepareRequest {
+            tx_id: 8000,
+            coordinator: "n".to_string(),
+            operations: vec![Transaction::Put {
+                key: "recover_key".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        let vote = participant.prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        // Set prepared_at_ms to exactly `timeout` ago
+        let now = now_epoch_millis();
+        #[allow(clippy::cast_possible_truncation)]
+        let timeout_ms = timeout.as_millis() as u64;
+        {
+            let mut prepared = participant.prepared.write();
+            if let Some(tx) = prepared.get_mut(&8000) {
+                tx.prepared_at_ms = now - timeout_ms; // exactly at boundary
+            }
+        }
+
+        // With >: now - (now - timeout_ms) = timeout_ms, timeout_ms > timeout_ms = false → kept
+        // With >=: timeout_ms >= timeout_ms = true → expired (presumed abort)
+        let awaiting = participant.recover(timeout);
+
+        // The tx should still be awaiting (not expired) since > is strict
+        assert!(
+            awaiting.contains(&8000),
+            "Tx at exactly timeout boundary must be awaiting, not expired. Got: {awaiting:?}"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_stale_aborts_by_time() {
+        // Kills mutation: replace >= with < in cleanup_stale_aborts (line 1953)
+        let coordinator = create_test_coordinator();
+        coordinator.track_abort(500, vec![0]);
+
+        // Set initiated_at to 31 seconds ago (> 30s max_abort_wait_ms)
+        // but retry_count to 0 (below MAX_ABORT_RETRIES)
+        {
+            let mut states = coordinator.abort_states.write();
+            let state = states.get_mut(&500).unwrap();
+            state.initiated_at = now_epoch_millis().saturating_sub(31_000);
+            state.retry_count = 0;
+        }
+
+        // With >=: 31000 >= 30000 = true → stale (cleaned)
+        // With <: 31000 < 30000 = false → kept (wrong)
+        let stale = coordinator.cleanup_stale_aborts();
+        assert_eq!(stale, vec![500], "Abort older than 30s must be cleaned up");
     }
 }

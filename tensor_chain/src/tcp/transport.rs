@@ -537,7 +537,7 @@ impl TcpTransport {
     }
 
     /// Get reference to TLS configuration if enabled.
-    pub fn tls_config(&self) -> Option<&super::config::TlsConfig> {
+    pub const fn tls_config(&self) -> Option<&super::config::TlsConfig> {
         self.config.tls.as_ref()
     }
 
@@ -664,15 +664,13 @@ impl Transport for TcpTransport {
             }
         }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
+        if !errors.is_empty() {
             // Log errors but don't fail - broadcast is best-effort
             for (peer, err) in &errors {
                 tracing::warn!("Broadcast to {} failed: {}", peer, err);
             }
-            Ok(())
         }
+        Ok(())
     }
 
     async fn recv(&self) -> Result<(NodeId, Message)> {

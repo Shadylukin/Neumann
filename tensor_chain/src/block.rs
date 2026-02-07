@@ -133,7 +133,7 @@ impl BlockHeader {
     }
 
     #[must_use]
-    pub fn with_state_root(mut self, state_root: BlockHash) -> Self {
+    pub const fn with_state_root(mut self, state_root: BlockHash) -> Self {
         self.state_root = state_root;
         self
     }
@@ -253,6 +253,13 @@ pub enum Transaction {
 
     /// Table delete.
     TableDelete { table: String, row_id: u64 },
+
+    /// Atomic compare-and-swap: write `new_data` only if current value equals `expected_data`.
+    CompareAndSwap {
+        key: String,
+        expected_data: Vec<u8>,
+        new_data: Vec<u8>,
+    },
 }
 
 impl Transaction {
@@ -264,7 +271,8 @@ impl Transaction {
             | Self::Delete { key }
             | Self::Embed { key, .. }
             | Self::NodeCreate { key, .. }
-            | Self::NodeDelete { key } => key,
+            | Self::NodeDelete { key }
+            | Self::CompareAndSwap { key, .. } => key,
             Self::EdgeCreate { from, .. } => from,
             Self::TableInsert { table, .. }
             | Self::TableUpdate { table, .. }
@@ -279,7 +287,9 @@ impl Transaction {
     #[must_use]
     pub fn storage_key(&self) -> String {
         match self {
-            Self::Put { key, .. } | Self::Delete { key } => key.clone(),
+            Self::Put { key, .. } | Self::Delete { key } | Self::CompareAndSwap { key, .. } => {
+                key.clone()
+            },
             Self::Embed { key, .. } => format!("emb:{key}"),
             Self::NodeCreate { key, .. } | Self::NodeDelete { key } => {
                 format!("node:{key}")
@@ -340,7 +350,7 @@ pub struct Block {
 
 impl Block {
     #[must_use]
-    pub fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
+    pub const fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
         Self {
             header,
             transactions,

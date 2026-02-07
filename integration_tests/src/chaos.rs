@@ -45,7 +45,7 @@ impl Default for ChaosConfig {
 
 impl ChaosConfig {
     /// Create a mild chaos configuration for basic testing.
-    pub fn mild() -> Self {
+    pub const fn mild() -> Self {
         Self {
             partition_probability: 0.01,
             message_reorder_rate: 0.05,
@@ -58,7 +58,7 @@ impl ChaosConfig {
     }
 
     /// Create a moderate chaos configuration.
-    pub fn moderate() -> Self {
+    pub const fn moderate() -> Self {
         Self {
             partition_probability: 0.05,
             message_reorder_rate: 0.10,
@@ -71,7 +71,7 @@ impl ChaosConfig {
     }
 
     /// Create an aggressive chaos configuration for stress testing.
-    pub fn aggressive() -> Self {
+    pub const fn aggressive() -> Self {
         Self {
             partition_probability: 0.10,
             message_reorder_rate: 0.20,
@@ -112,7 +112,7 @@ impl ChaosNode {
     }
 
     /// Check if the node is crashed.
-    pub fn is_crashed(&self) -> bool {
+    pub const fn is_crashed(&self) -> bool {
         self.crashed
     }
 
@@ -141,7 +141,7 @@ impl ChaosCluster {
     /// Create a new chaos cluster with the given number of nodes.
     pub fn new(node_count: usize, config: ChaosConfig) -> Self {
         let nodes: Vec<ChaosNode> = (0..node_count)
-            .map(|i| ChaosNode::new(format!("node-{}", i)))
+            .map(|i| ChaosNode::new(format!("node-{i}")))
             .collect();
 
         // Connect all nodes to each other
@@ -187,7 +187,7 @@ impl ChaosCluster {
     }
 
     /// Get the number of nodes in the cluster.
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
@@ -283,8 +283,7 @@ impl ChaosCluster {
     pub fn is_node_crashed(&self, node_index: usize) -> bool {
         self.nodes
             .get(node_index)
-            .map(|n| n.is_crashed())
-            .unwrap_or(false)
+            .is_some_and(ChaosNode::is_crashed)
     }
 
     /// Set link quality between two nodes.

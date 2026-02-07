@@ -95,7 +95,7 @@ impl Default for HandlerTimeoutConfig {
 
 impl HandlerTimeoutConfig {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         query_timeout_ms: u64,
         prepare_timeout_ms: u64,
         commit_abort_timeout_ms: u64,
@@ -160,7 +160,7 @@ impl OrchestratorConfig {
     }
 
     #[must_use]
-    pub fn with_geometric(mut self, geometric: GeometricMembershipConfig) -> Self {
+    pub const fn with_geometric(mut self, geometric: GeometricMembershipConfig) -> Self {
         self.geometric = geometric;
         self
     }
@@ -172,37 +172,43 @@ impl OrchestratorConfig {
     }
 
     #[must_use]
-    pub fn with_gossip(mut self, gossip: GossipConfig) -> Self {
+    pub const fn with_gossip(mut self, gossip: GossipConfig) -> Self {
         self.gossip = gossip;
         self
     }
 
     #[must_use]
-    pub fn with_dtx(mut self, dtx: DistributedTxConfig) -> Self {
+    pub const fn with_dtx(mut self, dtx: DistributedTxConfig) -> Self {
         self.dtx = dtx;
         self
     }
 
     #[must_use]
-    pub fn with_delta_replication(mut self, delta_replication: DeltaReplicationConfig) -> Self {
+    pub const fn with_delta_replication(
+        mut self,
+        delta_replication: DeltaReplicationConfig,
+    ) -> Self {
         self.delta_replication = delta_replication;
         self
     }
 
     #[must_use]
-    pub fn with_handler_timeouts(mut self, handler_timeouts: HandlerTimeoutConfig) -> Self {
+    pub const fn with_handler_timeouts(mut self, handler_timeouts: HandlerTimeoutConfig) -> Self {
         self.handler_timeouts = handler_timeouts;
         self
     }
 
     #[must_use]
-    pub fn with_message_validation(mut self, message_validation: MessageValidationConfig) -> Self {
+    pub const fn with_message_validation(
+        mut self,
+        message_validation: MessageValidationConfig,
+    ) -> Self {
         self.message_validation = message_validation;
         self
     }
 
     #[must_use]
-    pub fn with_security_mode(mut self, security_mode: SecurityMode) -> Self {
+    pub const fn with_security_mode(mut self, security_mode: SecurityMode) -> Self {
         self.security_mode = Some(security_mode);
         self
     }
@@ -785,7 +791,7 @@ impl ClusterOrchestrator {
     }
 
     /// Get the node ID.
-    pub fn node_id(&self) -> &NodeId {
+    pub const fn node_id(&self) -> &NodeId {
         &self.config.local.node_id
     }
 
@@ -850,7 +856,7 @@ impl ClusterOrchestrator {
     }
 
     /// Access the store.
-    pub fn store(&self) -> &TensorStore {
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 

@@ -69,6 +69,7 @@ pub mod snapshot_buffer;
 pub mod snapshot_streaming;
 pub mod state_machine;
 pub mod state_root;
+pub(crate) mod sync_compat;
 pub mod tcp;
 pub mod transaction;
 pub mod tx_id;
@@ -191,7 +192,7 @@ pub use validation::{
 /// - 6 nodes: quorum = 4
 #[inline]
 #[must_use]
-pub fn quorum_size(total_nodes: usize) -> usize {
+pub const fn quorum_size(total_nodes: usize) -> usize {
     (total_nodes / 2) + 1
 }
 
@@ -226,7 +227,7 @@ impl ChainMetrics {
     }
 
     #[must_use]
-    pub fn from_components(
+    pub const fn from_components(
         raft: Arc<RaftStats>,
         dtx: Arc<DistributedTxStats>,
         membership: Arc<MembershipStats>,
@@ -318,7 +319,7 @@ pub struct ChainMetricsSnapshot {
 
 impl ChainMetricsSnapshot {
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.raft.fast_path_accepted == 0
             && self.raft.heartbeat_successes == 0
             && self.dtx.started == 0
@@ -327,7 +328,7 @@ impl ChainMetricsSnapshot {
     }
 
     #[must_use]
-    pub fn total_heartbeats(&self) -> u64 {
+    pub const fn total_heartbeats(&self) -> u64 {
         self.raft.heartbeat_successes + self.raft.heartbeat_failures
     }
 
@@ -481,19 +482,19 @@ impl AutoMergeConfig {
     }
 
     #[must_use]
-    pub fn with_threshold(mut self, threshold: f32) -> Self {
+    pub const fn with_threshold(mut self, threshold: f32) -> Self {
         self.orthogonal_threshold = threshold;
         self
     }
 
     #[must_use]
-    pub fn with_max_batch(mut self, max: usize) -> Self {
+    pub const fn with_max_batch(mut self, max: usize) -> Self {
         self.max_merge_batch = max;
         self
     }
 
     #[must_use]
-    pub fn with_window(mut self, ms: u64) -> Self {
+    pub const fn with_window(mut self, ms: u64) -> Self {
         self.merge_window_ms = ms;
         self
     }
@@ -537,7 +538,7 @@ impl GeometricRoutingConfig {
     }
 
     #[must_use]
-    pub fn without_fallback(mut self) -> Self {
+    pub const fn without_fallback(mut self) -> Self {
         self.fallback_to_hash = false;
         self
     }
@@ -578,37 +579,37 @@ impl ChainConfig {
     }
 
     #[must_use]
-    pub fn with_max_txs(mut self, max: usize) -> Self {
+    pub const fn with_max_txs(mut self, max: usize) -> Self {
         self.max_txs_per_block = max;
         self
     }
 
     #[must_use]
-    pub fn with_conflict_threshold(mut self, threshold: f32) -> Self {
+    pub const fn with_conflict_threshold(mut self, threshold: f32) -> Self {
         self.conflict_threshold = threshold;
         self
     }
 
     #[must_use]
-    pub fn with_auto_merge(mut self, enabled: bool) -> Self {
+    pub const fn with_auto_merge(mut self, enabled: bool) -> Self {
         self.auto_merge.enabled = enabled;
         self
     }
 
     #[must_use]
-    pub fn with_auto_merge_config(mut self, config: AutoMergeConfig) -> Self {
+    pub const fn with_auto_merge_config(mut self, config: AutoMergeConfig) -> Self {
         self.auto_merge = config;
         self
     }
 
     #[must_use]
-    pub fn with_geometric_routing(mut self, config: GeometricRoutingConfig) -> Self {
+    pub const fn with_geometric_routing(mut self, config: GeometricRoutingConfig) -> Self {
         self.geometric_routing = config;
         self
     }
 
     #[must_use]
-    pub fn without_geometric_routing(mut self) -> Self {
+    pub const fn without_geometric_routing(mut self) -> Self {
         self.geometric_routing.enabled = false;
         self
     }
@@ -846,22 +847,22 @@ impl TensorChain {
     }
 
     #[must_use]
-    pub fn node_id(&self) -> &NodeId {
+    pub const fn node_id(&self) -> &NodeId {
         &self.config.node_id
     }
 
     #[must_use]
-    pub fn codebook_manager(&self) -> &CodebookManager {
+    pub const fn codebook_manager(&self) -> &CodebookManager {
         &self.codebook_manager
     }
 
     #[must_use]
-    pub fn transition_validator(&self) -> &TransitionValidator {
+    pub const fn transition_validator(&self) -> &TransitionValidator {
         &self.transition_validator
     }
 
     #[must_use]
-    pub fn identity(&self) -> &signing::Identity {
+    pub const fn identity(&self) -> &signing::Identity {
         &self.identity
     }
 
@@ -889,11 +890,11 @@ impl TensorChain {
         self.geometric_membership = None;
     }
 
-    pub fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
+    pub const fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
         &self.config.geometric_routing
     }
 
-    pub fn is_geometric_routing_enabled(&self) -> bool {
+    pub const fn is_geometric_routing_enabled(&self) -> bool {
         self.config.geometric_routing.enabled
     }
 

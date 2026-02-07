@@ -204,7 +204,7 @@ pub fn assert_find_count(result: &QueryResult, expected: usize) {
 }
 
 /// Assert that a query result is not empty.
-pub fn assert_result_not_empty(result: &QueryResult) -> bool {
+pub const fn assert_result_not_empty(result: &QueryResult) -> bool {
     match result {
         QueryResult::Empty => false,
         QueryResult::Unified(u) => !u.items.is_empty(),

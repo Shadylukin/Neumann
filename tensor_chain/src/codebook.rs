@@ -90,7 +90,7 @@ impl CodebookEntry {
     }
 
     #[must_use]
-    pub fn id(&self) -> u32 {
+    pub const fn id(&self) -> u32 {
         self.id
     }
 
@@ -100,17 +100,17 @@ impl CodebookEntry {
     }
 
     #[must_use]
-    pub fn magnitude(&self) -> f32 {
+    pub const fn magnitude(&self) -> f32 {
         self.magnitude
     }
 
     #[must_use]
-    pub fn access_count(&self) -> u64 {
+    pub const fn access_count(&self) -> u64 {
         self.access_count
     }
 
     #[must_use]
-    pub fn last_access(&self) -> u64 {
+    pub const fn last_access(&self) -> u64 {
         self.last_access
     }
 
@@ -147,7 +147,7 @@ impl CodebookEntry {
 
     pub fn ema_update(&mut self, observation: &[f32], alpha: f32) {
         for (c, o) in self.centroid.iter_mut().zip(observation.iter()) {
-            *c = alpha * o + (1.0 - alpha) * *c;
+            *c = alpha.mul_add(*o, (1.0 - alpha) * *c);
         }
         self.magnitude = self.centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
         self.record_access();
@@ -165,7 +165,7 @@ pub struct GlobalCodebook {
 
 impl GlobalCodebook {
     #[must_use]
-    pub fn new(dimension: usize) -> Self {
+    pub const fn new(dimension: usize) -> Self {
         Self {
             entries: Vec::new(),
             dimension,
@@ -223,7 +223,7 @@ impl GlobalCodebook {
     }
 
     #[must_use]
-    pub fn dimension(&self) -> usize {
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
@@ -323,7 +323,7 @@ impl GlobalCodebook {
 /// This struct captures the complete state of a `GlobalCodebook` at a specific
 /// version, allowing it to be replicated through Raft consensus to ensure all
 /// nodes have consistent quantization vocabulary.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GlobalCodebookSnapshot {
     /// Vector dimension for all entries.
     pub dimension: usize,
@@ -335,7 +335,7 @@ pub struct GlobalCodebookSnapshot {
 
 impl GlobalCodebookSnapshot {
     #[must_use]
-    pub fn new(dimension: usize, entries: Vec<CodebookEntry>, version: u64) -> Self {
+    pub const fn new(dimension: usize, entries: Vec<CodebookEntry>, version: u64) -> Self {
         Self {
             dimension,
             entries,
@@ -344,7 +344,7 @@ impl GlobalCodebookSnapshot {
     }
 
     #[must_use]
-    pub fn empty(dimension: usize) -> Self {
+    pub const fn empty(dimension: usize) -> Self {
         Self {
             dimension,
             entries: Vec::new(),
@@ -434,7 +434,7 @@ impl LocalCodebook {
         &self.domain
     }
 
-    pub fn dimension(&self) -> usize {
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
@@ -472,6 +472,7 @@ impl LocalCodebook {
                 best_id = entry.id();
             }
         }
+        drop(entries);
 
         Some((best_id, best_sim))
     }
@@ -516,6 +517,7 @@ impl LocalCodebook {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u32;
         let entry = CodebookEntry::new(id, vector.to_vec());
         entries.push(entry);
+        drop(entries);
 
         self.total_insertions.fetch_add(1, Ordering::Relaxed);
         id
@@ -539,7 +541,7 @@ impl LocalCodebook {
                     } => {
                         let age_secs = (now.saturating_sub(e.last_access)) / 1000;
                         let recency_score = 1.0 / (1.0 + age_secs as f64 / 60.0);
-                        let frequency_score = (1.0 + e.access_count as f64).ln();
+                        let frequency_score = (e.access_count as f64).ln_1p();
                         recency_score * f64::from(recency_weight)
                             + frequency_score * f64::from(frequency_weight)
                     },
@@ -642,17 +644,19 @@ impl CodebookManager {
     }
 
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)] // calls non-const Default::default()
     pub fn with_global(global: GlobalCodebook) -> Self {
         Self::new(global, CodebookConfig::default())
     }
 
-    pub fn global(&self) -> &GlobalCodebook {
+    pub const fn global(&self) -> &GlobalCodebook {
         &self.global
     }
 
     /// Execute a closure with a mutable reference to the local codebook for a domain.
     ///
     /// The local codebook is created if it doesn't exist and persisted across calls.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn with_local<F, R>(&self, domain: &str, f: F) -> R
     where
         F: FnOnce(&mut LocalCodebook) -> R,
@@ -674,6 +678,7 @@ impl CodebookManager {
     /// Note: Returns a clone for backwards compatibility. Prefer `with_local()` for
     /// operations that need to persist learning across calls.
     #[deprecated(note = "Use with_local() for operations that need persistence")]
+    #[allow(clippy::significant_drop_tightening)]
     pub fn get_or_create_local(&self, domain: &str) -> LocalCodebook {
         let mut locals = self.locals.write();
         let local = locals.entry(domain.to_string()).or_insert_with(|| {
@@ -758,11 +763,9 @@ impl CodebookManager {
 
         // Then check local if it exists
         let locals = self.locals.read();
-        if let Some(local) = locals.get(domain) {
-            return local.is_valid_state(state, self.config.validity_threshold);
-        }
-
-        false
+        locals
+            .get(domain)
+            .is_some_and(|local| local.is_valid_state(state, self.config.validity_threshold))
     }
 
     pub fn is_valid_transition(

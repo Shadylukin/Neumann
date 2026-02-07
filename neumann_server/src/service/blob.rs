@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! BlobService implementation for artifact storage with streaming support.
+//! `BlobService` implementation for artifact storage with streaming support.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use crate::proto::{
 };
 use crate::rate_limit::{Operation, RateLimiter};
 
-/// Implementation of the BlobService gRPC service.
+/// Implementation of the `BlobService` gRPC service.
 pub struct BlobServiceImpl {
     blob_store: Arc<Mutex<BlobStore>>,
     chunk_size: usize,
@@ -46,7 +46,7 @@ const DEFAULT_STREAM_CHANNEL_CAPACITY: usize = 32;
 impl BlobServiceImpl {
     /// Create a new blob service.
     #[must_use]
-    pub fn new(blob_store: Arc<Mutex<BlobStore>>) -> Self {
+    pub const fn new(blob_store: Arc<Mutex<BlobStore>>) -> Self {
         Self {
             blob_store,
             chunk_size: 64 * 1024, // 64KB default
@@ -76,7 +76,7 @@ impl BlobServiceImpl {
 
     /// Create a new blob service with authentication.
     #[must_use]
-    pub fn with_auth(blob_store: Arc<Mutex<BlobStore>>, auth_config: AuthConfig) -> Self {
+    pub const fn with_auth(blob_store: Arc<Mutex<BlobStore>>, auth_config: AuthConfig) -> Self {
         Self {
             blob_store,
             chunk_size: 64 * 1024,
@@ -112,7 +112,7 @@ impl BlobServiceImpl {
 
     /// Set the maximum upload size.
     #[must_use]
-    pub fn with_max_upload_size(mut self, size: usize) -> Self {
+    pub const fn with_max_upload_size(mut self, size: usize) -> Self {
         self.max_upload_size = size;
         self
     }
@@ -120,6 +120,7 @@ impl BlobServiceImpl {
 
 #[tonic::async_trait]
 impl BlobService for BlobServiceImpl {
+    #[allow(clippy::too_many_lines)]
     async fn upload(
         &self,
         request: Request<Streaming<BlobUploadRequest>>,
@@ -224,17 +225,21 @@ impl BlobService for BlobServiceImpl {
         }
 
         // Store the blob
-        let store = self.blob_store.lock().await;
-        let artifact_id = store.put(&filename, &data, options).await.map_err(|e| {
-            tracing::error!("Blob store error: {e}");
-            Status::internal("internal storage error")
-        })?;
+        let (artifact_id, meta) = {
+            let store = self.blob_store.lock().await;
+            let artifact_id = store.put(&filename, &data, options).await.map_err(|e| {
+                tracing::error!("Blob store error: {e}");
+                Status::internal("internal storage error")
+            })?;
 
-        // Get metadata to return checksum
-        let meta = store.metadata(&artifact_id).await.map_err(|e| {
-            tracing::error!("Blob metadata error: {e}");
-            Status::internal("internal storage error")
-        })?;
+            // Get metadata to return checksum
+            let meta = store.metadata(&artifact_id).await.map_err(|e| {
+                tracing::error!("Blob metadata error: {e}");
+                Status::internal("internal storage error")
+            })?;
+            drop(store);
+            (artifact_id, meta)
+        };
 
         // Audit the upload
         if let Some(ref logger) = self.audit_logger {
@@ -430,19 +435,21 @@ impl BlobService for BlobServiceImpl {
 
         let artifact_id = request.into_inner().artifact_id;
 
-        let store = self.blob_store.lock().await;
-        if let Err(e) = store.delete(&artifact_id).await {
-            if let Some(ref m) = self.metrics {
-                let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
-                m.record_request("blob", "delete", false, latency_ms);
+        {
+            let store = self.blob_store.lock().await;
+            if let Err(e) = store.delete(&artifact_id).await {
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "delete", false, latency_ms);
+                }
+                if matches!(e, tensor_blob::BlobError::NotFound(_)) {
+                    return Err(Status::not_found(format!(
+                        "artifact not found: {artifact_id}"
+                    )));
+                }
+                tracing::error!("Blob delete error: {e}");
+                return Err(Status::internal("internal storage error"));
             }
-            if matches!(e, tensor_blob::BlobError::NotFound(_)) {
-                return Err(Status::not_found(format!(
-                    "artifact not found: {artifact_id}"
-                )));
-            }
-            tracing::error!("Blob delete error: {e}");
-            return Err(Status::internal("internal storage error"));
         }
 
         // Audit the deletion
@@ -488,22 +495,24 @@ impl BlobService for BlobServiceImpl {
 
         let artifact_id = request.into_inner().artifact_id;
 
-        let store = self.blob_store.lock().await;
-        let metadata = match store.metadata(&artifact_id).await {
-            Ok(m) => m,
-            Err(e) => {
-                if let Some(ref m) = self.metrics {
-                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
-                    m.record_request("blob", "get_metadata", false, latency_ms);
-                }
-                if matches!(e, tensor_blob::BlobError::NotFound(_)) {
-                    return Err(Status::not_found(format!(
-                        "artifact not found: {artifact_id}"
-                    )));
-                }
-                tracing::error!("Blob metadata error: {e}");
-                return Err(Status::internal("internal storage error"));
-            },
+        let metadata = {
+            let store = self.blob_store.lock().await;
+            match store.metadata(&artifact_id).await {
+                Ok(m) => m,
+                Err(e) => {
+                    if let Some(ref m) = self.metrics {
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("blob", "get_metadata", false, latency_ms);
+                    }
+                    if matches!(e, tensor_blob::BlobError::NotFound(_)) {
+                        return Err(Status::not_found(format!(
+                            "artifact not found: {artifact_id}"
+                        )));
+                    }
+                    tracing::error!("Blob metadata error: {e}");
+                    return Err(Status::internal("internal storage error"));
+                },
+            }
         };
 
         // Record success metrics

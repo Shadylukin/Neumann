@@ -147,6 +147,7 @@ impl HybridLogicalClock {
 
     /// Create an HLC with a fixed wall start time (for loom testing).
     #[cfg(feature = "loom")]
+    #[must_use]
     pub fn new_with_fixed_time(node_id: u64, wall_start_ms: u64) -> Self {
         #[allow(clippy::cast_possible_truncation)]
         let node_id_hash = (node_id & 0xFFFF_FFFF) as u32;

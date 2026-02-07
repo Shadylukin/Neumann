@@ -260,7 +260,7 @@ fn achievement_card(achievement: &Achievement, unlocked: bool) -> Markup {
 }
 
 /// Returns the color class for a tier.
-fn tier_color(tier: AchievementTier) -> &'static str {
+const fn tier_color(tier: AchievementTier) -> &'static str {
     match tier {
         AchievementTier::Bronze => "text-amber-dim",
         AchievementTier::Silver => "text-phosphor-dim",

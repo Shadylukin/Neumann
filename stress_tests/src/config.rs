@@ -26,7 +26,8 @@ pub struct StressConfig {
 }
 
 impl StressConfig {
-    /// Get thread count, respecting STRESS_THREADS env var override.
+    /// Get thread count, respecting `STRESS_THREADS` env var override.
+    #[must_use]
     pub fn effective_thread_count(&self) -> usize {
         env::var("STRESS_THREADS")
             .ok()
@@ -34,7 +35,8 @@ impl StressConfig {
             .unwrap_or(self.thread_count)
     }
 
-    /// Get entity count, respecting STRESS_ENTITIES env var override.
+    /// Get entity count, respecting `STRESS_ENTITIES` env var override.
+    #[must_use]
     pub fn effective_entity_count(&self) -> usize {
         env::var("STRESS_ENTITIES")
             .ok()
@@ -44,7 +46,8 @@ impl StressConfig {
 }
 
 /// Quick stress config: 100K entities, 8 threads, ~2 min.
-pub fn quick_config() -> StressConfig {
+#[must_use]
+pub const fn quick_config() -> StressConfig {
     StressConfig {
         scale: ScaleLevel::Quick,
         entity_count: 100_000,
@@ -56,7 +59,8 @@ pub fn quick_config() -> StressConfig {
 }
 
 /// Full stress config: 1M entities, 16 threads, ~10 min.
-pub fn full_config() -> StressConfig {
+#[must_use]
+pub const fn full_config() -> StressConfig {
     StressConfig {
         scale: ScaleLevel::Full,
         entity_count: 1_000_000,
@@ -68,7 +72,8 @@ pub fn full_config() -> StressConfig {
 }
 
 /// Endurance stress config: 500K entities, 8 threads, 1 hour.
-pub fn endurance_config() -> StressConfig {
+#[must_use]
+pub const fn endurance_config() -> StressConfig {
     StressConfig {
         scale: ScaleLevel::Endurance,
         entity_count: 500_000,

@@ -45,7 +45,7 @@ pub struct VectorApiContext {
 impl VectorApiContext {
     /// Create a new context with a vector engine.
     #[must_use]
-    pub fn new(engine: Arc<VectorEngine>) -> Self {
+    pub const fn new(engine: Arc<VectorEngine>) -> Self {
         Self {
             engine,
             auth_config: None,
@@ -121,7 +121,7 @@ impl RestConfig {
 
     /// Enable CORS.
     #[must_use]
-    pub fn with_cors(mut self, enabled: bool) -> Self {
+    pub const fn with_cors(mut self, enabled: bool) -> Self {
         self.cors_enabled = enabled;
         self
     }

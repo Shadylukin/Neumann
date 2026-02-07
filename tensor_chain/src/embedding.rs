@@ -63,7 +63,7 @@ impl std::error::Error for EmbeddingError {}
 
 impl EmbeddingState {
     #[must_use]
-    pub fn new(before: SparseVector) -> Self {
+    pub const fn new(before: SparseVector) -> Self {
         Self::Initial { before }
     }
 
@@ -82,19 +82,19 @@ impl EmbeddingState {
     }
 
     #[must_use]
-    pub fn before(&self) -> &SparseVector {
+    pub const fn before(&self) -> &SparseVector {
         match self {
             Self::Initial { before } | Self::Computed { before, .. } => before,
         }
     }
 
     #[must_use]
-    pub fn is_computed(&self) -> bool {
+    pub const fn is_computed(&self) -> bool {
         matches!(self, Self::Computed { .. })
     }
 
     #[must_use]
-    pub fn delta(&self) -> Option<&SparseVector> {
+    pub const fn delta(&self) -> Option<&SparseVector> {
         match self {
             Self::Initial { .. } => None,
             Self::Computed { delta, .. } => Some(delta),
@@ -102,7 +102,7 @@ impl EmbeddingState {
     }
 
     #[must_use]
-    pub fn after(&self) -> Option<&SparseVector> {
+    pub const fn after(&self) -> Option<&SparseVector> {
         match self {
             Self::Initial { .. } => None,
             Self::Computed { after, .. } => Some(after),
@@ -178,6 +178,7 @@ impl EmbeddingState {
     }
 
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)] // calls non-const dimension()
     pub fn dimension(&self) -> usize {
         self.before().dimension()
     }

@@ -73,7 +73,6 @@ impl IntoResponse for ApiError {
             404 => StatusCode::NOT_FOUND,
             409 => StatusCode::CONFLICT,
             429 => StatusCode::TOO_MANY_REQUESTS,
-            500 => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

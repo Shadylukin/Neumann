@@ -4,14 +4,6 @@
 //! Enables processing large snapshots without loading the entire dataset into memory.
 //! Uses a trailer-based header format where entry count is written at the end.
 
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::io_other_error)]
-#![allow(clippy::iter_with_drain)]
-
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 use serde::{Deserialize, Serialize};
@@ -60,6 +52,9 @@ pub struct StreamingWriter<W: Write> {
 
 impl<W: Write> StreamingWriter<W> {
     /// Create a new streaming writer.
+    ///
+    /// # Errors
+    /// Returns error if writing magic bytes fails.
     pub fn new(writer: W, config: CompressionConfig) -> io::Result<Self> {
         let mut buf_writer = BufWriter::new(writer);
 
@@ -77,8 +72,12 @@ impl<W: Write> StreamingWriter<W> {
     }
 
     /// Write a single compressed entry.
+    ///
+    /// # Errors
+    /// Returns error if serialization or I/O fails.
     pub fn write_entry(&mut self, entry: &CompressedEntry) -> Result<(), FormatError> {
         let bytes = bitcode::serialize(entry)?;
+        #[allow(clippy::cast_possible_truncation)]
         let len = bytes.len() as u32;
 
         // Write length prefix then entry data
@@ -91,12 +90,12 @@ impl<W: Write> StreamingWriter<W> {
     }
 
     #[must_use]
-    pub fn entry_count(&self) -> u64 {
+    pub const fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
     #[must_use]
-    pub fn bytes_written(&self) -> u64 {
+    pub const fn bytes_written(&self) -> u64 {
         self.bytes_written
     }
 }
@@ -104,6 +103,9 @@ impl<W: Write> StreamingWriter<W> {
 impl<W: Write + Seek> StreamingWriter<W> {
     /// Finish writing, write trailer with final entry count.
     /// Returns the inner writer.
+    ///
+    /// # Errors
+    /// Returns error if serialization or I/O fails.
     pub fn finish(mut self) -> Result<W, FormatError> {
         let header = StreamingHeader {
             magic: STREAMING_MAGIC,
@@ -123,7 +125,7 @@ impl<W: Write + Seek> StreamingWriter<W> {
         self.writer.flush()?;
         self.writer
             .into_inner()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()).into())
+            .map_err(|e| std::io::Error::other(e.to_string()).into())
     }
 }
 
@@ -142,6 +144,9 @@ const MAX_ENTRY_SIZE: usize = 100 * 1024 * 1024;
 
 impl<R: Read + Seek> StreamingReader<R> {
     /// Open a streaming snapshot, reading header from trailer.
+    ///
+    /// # Errors
+    /// Returns error if reading, seeking, or header validation fails.
     pub fn open(mut reader: R) -> Result<Self, FormatError> {
         // Read trailer size from end
         reader.seek(SeekFrom::End(-8))?;
@@ -155,7 +160,10 @@ impl<R: Read + Seek> StreamingReader<R> {
         }
 
         // Read trailer
-        reader.seek(SeekFrom::End(-(8 + trailer_len as i64)))?;
+        #[allow(clippy::cast_possible_wrap)]
+        let trailer_offset = -(8 + trailer_len as i64);
+        reader.seek(SeekFrom::End(trailer_offset))?;
+        #[allow(clippy::cast_possible_truncation)]
         let mut trailer_bytes = vec![0u8; trailer_len as usize];
         reader.read_exact(&mut trailer_bytes)?;
 
@@ -173,22 +181,22 @@ impl<R: Read + Seek> StreamingReader<R> {
     }
 
     #[must_use]
-    pub fn header(&self) -> &StreamingHeader {
+    pub const fn header(&self) -> &StreamingHeader {
         &self.header
     }
 
     #[must_use]
-    pub fn entry_count(&self) -> u64 {
+    pub const fn entry_count(&self) -> u64 {
         self.header.entry_count
     }
 
     #[must_use]
-    pub fn entries_read(&self) -> u64 {
+    pub const fn entries_read(&self) -> u64 {
         self.entries_read
     }
 
     #[must_use]
-    pub fn has_next(&self) -> bool {
+    pub const fn has_next(&self) -> bool {
         self.entries_read < self.header.entry_count
     }
 }
@@ -233,6 +241,9 @@ impl<R: Read> Iterator for StreamingReader<R> {
 }
 
 /// Convert a non-streaming snapshot to streaming format.
+///
+/// # Errors
+/// Returns error if writing entries or finishing the stream fails.
 pub fn convert_to_streaming<W: Write + Seek>(
     snapshot: &CompressedSnapshot,
     writer: W,
@@ -249,6 +260,9 @@ pub fn convert_to_streaming<W: Write + Seek>(
 }
 
 /// Read streaming format into a full snapshot (for compatibility).
+///
+/// # Errors
+/// Returns error if reading or deserializing entries fails.
 pub fn read_streaming_to_snapshot<R: Read + Seek>(
     reader: R,
 ) -> Result<CompressedSnapshot, FormatError> {
@@ -264,14 +278,17 @@ pub fn read_streaming_to_snapshot<R: Read + Seek>(
 }
 
 /// Merge multiple streaming snapshots into one.
+///
+/// # Errors
+/// Returns error if reading, writing, or finishing the merged stream fails.
 pub fn merge_streaming<W: Write + Seek, R: Read + Seek>(
-    mut readers: Vec<R>,
+    readers: Vec<R>,
     writer: W,
     config: CompressionConfig,
 ) -> Result<u64, FormatError> {
     let mut stream_writer = StreamingWriter::new(writer, config)?;
 
-    for reader in readers.drain(..) {
+    for reader in readers {
         let stream_reader = StreamingReader::open(reader)?;
         for entry_result in stream_reader {
             let entry = entry_result?;

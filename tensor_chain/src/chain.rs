@@ -57,7 +57,7 @@ pub struct Chain {
 }
 
 impl Chain {
-    pub fn new(graph: Arc<GraphEngine>, node_id: NodeId) -> Self {
+    pub const fn new(graph: Arc<GraphEngine>, node_id: NodeId) -> Self {
         Self {
             graph,
             height: AtomicU64::new(0),
@@ -69,7 +69,7 @@ impl Chain {
     }
 
     /// Create a new chain that verifies block signatures with the provided registry.
-    pub fn with_registry(
+    pub const fn with_registry(
         graph: Arc<GraphEngine>,
         node_id: NodeId,
         registry: Arc<ValidatorRegistry>,
@@ -515,7 +515,7 @@ impl BlockBuilder {
     }
 
     #[must_use]
-    pub fn with_state_root(mut self, state_root: BlockHash) -> Self {
+    pub const fn with_state_root(mut self, state_root: BlockHash) -> Self {
         self.state_root = state_root;
         self
     }

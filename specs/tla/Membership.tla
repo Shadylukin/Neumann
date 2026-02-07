@@ -443,18 +443,8 @@ NoFalsePositivesSafety ==
             => membershipView[m][n].incarnation <= membershipView[n][n].incarnation
 
 \* --- SuspicionRequiresDegradedFirst ---
-\* A node can only be marked Failed if it was previously Degraded.
-\* This matches the SWIM protocol's two-phase failure detection.
-
-SuspicionProtocol ==
-    \A n \in Nodes :
-        \A target \in Nodes :
-            \* You cannot jump directly from Healthy to Failed;
-            \* must go through Degraded (Suspected) first.
-            \* This is checked as: if currently Failed, the transition
-            \* came from Degraded. We check the invariant form:
-            \* FailureDetection only fires when health = "Degraded".
-            TRUE  \* Enforced structurally by the FailureDetection action guard
+\* Removed: was a tautology (TRUE). The property is enforced structurally
+\* by the FailureDetection action guard requiring health = "Degraded".
 
 \* ========================================================================
 \* Liveness Properties (require FairSpec)

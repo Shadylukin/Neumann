@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! CollectionsService implementation for vector collection management.
+//! `CollectionsService` implementation for vector collection management.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +19,7 @@ use crate::proto::vector::{
 };
 use crate::rate_limit::{Operation, RateLimiter};
 
-/// Implementation of the CollectionsService gRPC service.
+/// Implementation of the `CollectionsService` gRPC service.
 pub struct CollectionsServiceImpl {
     engine: Arc<VectorEngine>,
     auth_config: Option<AuthConfig>,
@@ -31,7 +31,7 @@ pub struct CollectionsServiceImpl {
 impl CollectionsServiceImpl {
     /// Create a new collections service.
     #[must_use]
-    pub fn new(engine: Arc<VectorEngine>) -> Self {
+    pub const fn new(engine: Arc<VectorEngine>) -> Self {
         Self {
             engine,
             auth_config: None,
@@ -43,7 +43,7 @@ impl CollectionsServiceImpl {
 
     /// Create a new collections service with authentication.
     #[must_use]
-    pub fn with_auth(engine: Arc<VectorEngine>, auth_config: AuthConfig) -> Self {
+    pub const fn with_auth(engine: Arc<VectorEngine>, auth_config: AuthConfig) -> Self {
         Self {
             engine,
             auth_config: Some(auth_config),
@@ -55,7 +55,7 @@ impl CollectionsServiceImpl {
 
     /// Create a new collections service with rate limiting.
     #[must_use]
-    pub fn with_config(
+    pub const fn with_config(
         engine: Arc<VectorEngine>,
         auth_config: Option<AuthConfig>,
         rate_limiter: Option<Arc<RateLimiter>>,
@@ -71,7 +71,7 @@ impl CollectionsServiceImpl {
 
     /// Create a new collections service with all options.
     #[must_use]
-    pub fn with_full_config(
+    pub const fn with_full_config(
         engine: Arc<VectorEngine>,
         auth_config: Option<AuthConfig>,
         rate_limiter: Option<Arc<RateLimiter>>,
@@ -99,7 +99,7 @@ fn parse_distance_metric(distance: &str) -> Result<DistanceMetric, Status> {
     }
 }
 
-fn metric_to_string(metric: DistanceMetric) -> &'static str {
+const fn metric_to_string(metric: DistanceMetric) -> &'static str {
     match metric {
         DistanceMetric::Cosine => "cosine",
         DistanceMetric::Euclidean => "euclidean",

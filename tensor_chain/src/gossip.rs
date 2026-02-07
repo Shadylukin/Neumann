@@ -1379,6 +1379,7 @@ impl GossipMembershipManager {
     /// # Errors
     ///
     /// Returns an error if gossip messages fail to send to all targets.
+    #[allow(clippy::significant_drop_tightening)] // Lock scope is already a minimal block
     pub async fn suspect_node(&self, node_id: &NodeId) -> Result<()> {
         let incarnation = self.state.read().get(node_id).map_or(0, |s| s.incarnation);
 
@@ -1606,6 +1607,7 @@ impl GossipMembershipManager {
     /// The probe verifies that the target can receive our messages AND send
     /// messages back to us, detecting asymmetric partitions where A can reach
     /// B but B cannot reach A.
+    #[allow(clippy::significant_drop_tightening)] // Lock scope is already a minimal block
     pub fn send_bidirectional_probe(&self, target: &NodeId) {
         let probe_id = self.probe_id_counter.fetch_add(1, Ordering::Relaxed);
         let timestamp = self.state.read().lamport_time();
@@ -1617,11 +1619,13 @@ impl GossipMembershipManager {
         // Mark outbound as ok (we're sending)
         {
             let mut matrix = self.connectivity_matrix.write();
-            let entry = matrix.entry(target.clone()).or_insert(ConnectivityEntry {
-                outbound_ok: false,
-                inbound_ok: false,
-                last_check: Instant::now(),
-            });
+            let entry = matrix
+                .entry(target.clone())
+                .or_insert_with(|| ConnectivityEntry {
+                    outbound_ok: false,
+                    inbound_ok: false,
+                    last_check: Instant::now(),
+                });
             entry.outbound_ok = true;
             entry.last_check = Instant::now();
         }
@@ -1675,6 +1679,7 @@ impl GossipMembershipManager {
         });
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Lock scope matches usage
     fn handle_bidirectional_ack(&self, _origin: &NodeId, probe_id: u64, responder: &NodeId) {
         // Remove from pending
         let pending = self.pending_probes.write().remove(&probe_id);
@@ -1688,7 +1693,7 @@ impl GossipMembershipManager {
                 let mut matrix = self.connectivity_matrix.write();
                 let entry = matrix
                     .entry(responder.clone())
-                    .or_insert(ConnectivityEntry {
+                    .or_insert_with(|| ConnectivityEntry {
                         outbound_ok: true,
                         inbound_ok: false,
                         last_check: Instant::now(),
@@ -1703,6 +1708,7 @@ impl GossipMembershipManager {
     ///
     /// Probes that don't receive an ack within the timeout indicate that the
     /// reverse path (target -> us) is broken, i.e., asymmetric partition.
+    #[allow(clippy::significant_drop_tightening)] // Multiple guards needed in cleanup loop
     pub fn expire_bidirectional_probes(&self) {
         let timeout = Duration::from_millis(self.config.bidirectional_probe_timeout_ms);
         let now = Instant::now();
@@ -1722,11 +1728,13 @@ impl GossipMembershipManager {
             let mut matrix = self.connectivity_matrix.write();
             for (probe_id, target) in &expired {
                 pending.remove(probe_id);
-                let entry = matrix.entry(target.clone()).or_insert(ConnectivityEntry {
-                    outbound_ok: true,
-                    inbound_ok: false,
-                    last_check: Instant::now(),
-                });
+                let entry = matrix
+                    .entry(target.clone())
+                    .or_insert_with(|| ConnectivityEntry {
+                        outbound_ok: true,
+                        inbound_ok: false,
+                        last_check: Instant::now(),
+                    });
                 // Outbound worked (we sent it) but inbound failed (no ack)
                 entry.inbound_ok = false;
                 entry.last_check = now;
@@ -1779,6 +1787,7 @@ impl GossipMembershipManager {
 
     /// Record a health transition for flap detection.
     /// Returns the backoff duration if the node is flapping, or `None` if normal.
+    #[allow(clippy::significant_drop_tightening)] // Entry borrows from write guard
     fn record_flap(&self, node_id: &NodeId) -> Option<Duration> {
         let mut tracker = self.flap_tracker.write();
         let record = tracker

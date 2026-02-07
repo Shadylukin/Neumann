@@ -46,7 +46,7 @@ pub struct TensorStateMachine {
 
 impl TensorStateMachine {
     #[must_use]
-    pub fn new(chain: Arc<Chain>, raft: Arc<RaftNode>, store: TensorStore) -> Self {
+    pub const fn new(chain: Arc<Chain>, raft: Arc<RaftNode>, store: TensorStore) -> Self {
         Self {
             chain,
             raft,
@@ -75,7 +75,7 @@ impl TensorStateMachine {
     }
 
     #[must_use]
-    pub fn fast_path_threshold(&self) -> f32 {
+    pub const fn fast_path_threshold(&self) -> f32 {
         self.fast_path_threshold
     }
 
@@ -273,6 +273,7 @@ impl TensorStateMachine {
             .iter()
             .map(|recent_emb| block_embedding.cosine_similarity(recent_emb))
             .fold(f32::NEG_INFINITY, f32::max);
+        drop(recent);
 
         max_similarity >= self.fast_path_threshold
     }
@@ -318,6 +319,7 @@ impl TensorStateMachine {
         while recent.len() > self.max_recent {
             recent.remove(0);
         }
+        drop(recent);
     }
 
     pub fn clear_recent(&self) {
@@ -350,7 +352,7 @@ impl TensorStateMachine {
     }
 
     #[must_use]
-    pub fn store(&self) -> &TensorStore {
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 }

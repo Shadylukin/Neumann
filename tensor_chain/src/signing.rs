@@ -389,19 +389,19 @@ impl Default for SequenceTrackerConfig {
 
 impl SequenceTrackerConfig {
     #[must_use]
-    pub fn with_max_age_ms(mut self, max_age_ms: u64) -> Self {
+    pub const fn with_max_age_ms(mut self, max_age_ms: u64) -> Self {
         self.max_age_ms = max_age_ms;
         self
     }
 
     #[must_use]
-    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+    pub const fn with_max_entries(mut self, max_entries: usize) -> Self {
         self.max_entries = max_entries;
         self
     }
 
     #[must_use]
-    pub fn with_cleanup_interval(mut self, cleanup_interval: usize) -> Self {
+    pub const fn with_cleanup_interval(mut self, cleanup_interval: usize) -> Self {
         self.cleanup_interval = cleanup_interval;
         self
     }
@@ -508,6 +508,7 @@ impl SequenceTracker {
         }
 
         *entry = (sequence, now);
+        drop(entry);
         Ok(())
     }
 
@@ -773,19 +774,19 @@ impl SignedGossipMessage {
 
     /// Get the sender's `NodeId`.
     #[must_use]
-    pub fn sender(&self) -> &NodeId {
+    pub const fn sender(&self) -> &NodeId {
         &self.envelope.sender
     }
 
     /// Get the sequence number.
     #[must_use]
-    pub fn sequence(&self) -> u64 {
+    pub const fn sequence(&self) -> u64 {
         self.envelope.sequence
     }
 
     /// Get the timestamp in milliseconds.
     #[must_use]
-    pub fn timestamp_ms(&self) -> u64 {
+    pub const fn timestamp_ms(&self) -> u64 {
         self.envelope.timestamp_ms
     }
 }

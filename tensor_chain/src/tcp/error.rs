@@ -210,7 +210,7 @@ impl From<bitcode::Error> for TcpError {
 
 impl From<TcpError> for ChainError {
     fn from(err: TcpError) -> Self {
-        ChainError::NetworkError(err.to_string())
+        Self::NetworkError(err.to_string())
     }
 }
 

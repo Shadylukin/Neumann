@@ -101,7 +101,7 @@ impl UserProgress {
     }
 
     /// Checks if the date is the first of a consecutive month.
-    fn is_consecutive_month(&self, today: u32) -> bool {
+    const fn is_consecutive_month(&self, today: u32) -> bool {
         let last_year = self.last_activity_date / 10000;
         let last_month = (self.last_activity_date / 100) % 100;
         let last_day = self.last_activity_date % 100;

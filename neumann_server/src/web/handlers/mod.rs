@@ -97,6 +97,7 @@ impl DashboardStats {
 }
 
 /// Dashboard handler - shows overview of all engines with terminal aesthetic.
+#[allow(clippy::too_many_lines)]
 pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
     let stats = DashboardStats::gather(&ctx);
 
@@ -332,6 +333,7 @@ pub struct QueryResponse {
 }
 
 /// Execute a query against the engines.
+#[allow(clippy::too_many_lines)]
 pub async fn api_query(
     State(ctx): State<Arc<AdminContext>>,
     axum::Json(req): axum::Json<QueryRequest>,
@@ -380,7 +382,7 @@ pub async fn api_query(
             }
 
             // Parse LIMIT if present
-            let limit = if let Some(limit_idx) = query_upper.find("LIMIT") {
+            let limit = query_upper.find("LIMIT").map_or(100, |limit_idx| {
                 let after_limit = &query[limit_idx + 5..].trim_start();
                 after_limit
                     .chars()
@@ -388,9 +390,7 @@ pub async fn api_query(
                     .collect::<String>()
                     .parse::<usize>()
                     .unwrap_or(100)
-            } else {
-                100
-            };
+            });
 
             // Fetch rows using select with Condition::True
             match ctx

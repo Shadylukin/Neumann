@@ -5,7 +5,6 @@
 
 // The async methods in this module are designed for API consistency with async callers,
 // even when the underlying operations are currently synchronous.
-#![allow(clippy::missing_errors_doc)]
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -684,6 +683,9 @@ impl UnifiedEngine {
     }
 
     /// Connects two entities with an edge.
+    ///
+    /// # Errors
+    /// Returns an error if creating the graph edge fails.
     #[allow(clippy::unused_async)]
     pub async fn connect_entities(
         &self,
@@ -699,6 +701,9 @@ impl UnifiedEngine {
     }
 
     /// Gets an entity with all its data.
+    ///
+    /// # Errors
+    /// Returns an error if the entity is not found in any storage path.
     #[allow(clippy::unused_async)]
     pub async fn get_entity(&self, key: &str) -> Result<UnifiedItem> {
         let mut item = UnifiedItem::new("unified", key);
@@ -723,6 +728,9 @@ impl UnifiedEngine {
     }
 
     /// Updates an existing entity's fields and/or embedding.
+    ///
+    /// # Errors
+    /// Returns an error if the entity is not found or if storing updated data fails.
     #[allow(clippy::unused_async)]
     pub async fn update_entity(
         &self,
@@ -789,6 +797,9 @@ impl UnifiedEngine {
     }
 
     /// Deletes an entity and all associated data.
+    ///
+    /// # Errors
+    /// Returns an error if the entity is not found or if graph deletion fails.
     #[allow(clippy::unused_async, clippy::useless_let_if_seq)]
     pub async fn delete_entity(&self, key: &str) -> Result<()> {
         let mut deleted = false;
@@ -821,6 +832,9 @@ impl UnifiedEngine {
     /// Disconnects entities by removing edges between them.
     ///
     /// Returns the number of edges deleted.
+    ///
+    /// # Errors
+    /// Returns an error if either entity is not found or if edge deletion fails.
     #[allow(clippy::unused_async)]
     pub async fn disconnect_entities(
         &self,
@@ -864,6 +878,9 @@ impl UnifiedEngine {
     /// Finds entities similar to a query that are also connected via graph edges.
     ///
     /// Delegates to `find_similar_connected_with_hnsw` without pre-computed results.
+    ///
+    /// # Errors
+    /// Returns an error if the query embedding is not found or if the search fails.
     pub async fn find_similar_connected(
         &self,
         query_key: &str,
@@ -878,6 +895,9 @@ impl UnifiedEngine {
     ///
     /// Optionally accepts pre-computed HNSW results to avoid redundant computation
     /// when an HNSW index is available in the caller.
+    ///
+    /// # Errors
+    /// Returns an error if embedding retrieval or similarity search fails.
     #[allow(clippy::unused_async)]
     pub async fn find_similar_connected_with_hnsw(
         &self,
@@ -939,6 +959,9 @@ impl UnifiedEngine {
     /// let filter = FilterCondition::Eq("status".to_string(), FilterValue::String("active".to_string()));
     /// let results = engine.find_similar_connected_filtered("doc1", "hub", Some(&filter), 10).await?;
     /// ```
+    ///
+    /// # Errors
+    /// Returns an error if embedding retrieval or filtered search fails.
     #[allow(clippy::unused_async)]
     pub async fn find_similar_connected_filtered(
         &self,
@@ -991,6 +1014,9 @@ impl UnifiedEngine {
     }
 
     /// Finds graph neighbors sorted by similarity to a query vector.
+    ///
+    /// # Errors
+    /// Returns an error if graph traversal fails.
     #[allow(clippy::unused_async)]
     pub async fn find_neighbors_by_similarity(
         &self,
@@ -1026,6 +1052,9 @@ impl UnifiedEngine {
     // ========== FIND Operations ==========
 
     /// Finds nodes matching a pattern.
+    ///
+    /// # Errors
+    /// Returns an error if graph scanning fails.
     #[allow(clippy::unused_async)]
     pub async fn find_nodes(
         &self,
@@ -1057,6 +1086,9 @@ impl UnifiedEngine {
     }
 
     /// Finds edges matching a pattern.
+    ///
+    /// # Errors
+    /// Returns an error if graph scanning fails.
     #[allow(clippy::unused_async)]
     pub async fn find_edges(
         &self,
@@ -1090,6 +1122,9 @@ impl UnifiedEngine {
     }
 
     /// Finds rows in a relational table matching a condition.
+    ///
+    /// # Errors
+    /// Returns an error if the table does not exist or the query fails.
     #[allow(clippy::unused_async)]
     pub async fn find_rows(
         &self,
@@ -1113,6 +1148,9 @@ impl UnifiedEngine {
     /// - `from` only: Find outgoing connections from entity
     /// - `to` only: Find incoming connections to entity
     /// - `edge` filter: Optionally filter by edge type
+    ///
+    /// # Errors
+    /// Returns an error if node resolution or graph traversal fails.
     pub async fn find_paths(
         &self,
         from: Option<&str>,
@@ -1281,6 +1319,9 @@ impl UnifiedEngine {
     }
 
     /// Executes a unified FIND query.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying find operation fails.
     #[allow(clippy::option_if_let_else)]
     pub async fn find(&self, pattern: &FindPattern, limit: Option<usize>) -> Result<UnifiedResult> {
         let (description, items) = match pattern {
@@ -1356,6 +1397,9 @@ impl UnifiedEngine {
     ///
     /// Uses all-or-nothing semantics: validates all inputs first, then
     /// processes sequentially. Fails on first error with index tracking.
+    ///
+    /// # Errors
+    /// Returns an error if any embedding is empty or if storing fails.
     #[allow(clippy::unused_async)]
     pub async fn embed_batch(&self, items: Vec<(String, Vec<f32>)>) -> Result<BatchResult> {
         // Phase 1: Validate all inputs
@@ -1389,6 +1433,9 @@ impl UnifiedEngine {
     ///
     /// Uses all-or-nothing semantics: validates all inputs first, then
     /// creates sequentially. Fails on first error with index tracking.
+    ///
+    /// # Errors
+    /// Returns an error if any key is empty, any embedding is empty, or if entity creation fails.
     pub async fn create_entities_batch(&self, entities: Vec<EntityInput>) -> Result<BatchResult> {
         // Phase 1: Validate all inputs
         for (idx, (key, _fields, embedding)) in entities.iter().enumerate() {
@@ -4101,5 +4148,523 @@ mod tests {
         assert_eq!(result.failed.len(), 1);
         assert_eq!(result.failed[0].index, 1);
         assert!(result.failed[0].cause.contains("empty embedding"));
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_success() {
+        let engine = create_engine();
+        let items = vec![
+            ("emb1".to_string(), vec![1.0, 2.0, 3.0]),
+            ("emb2".to_string(), vec![4.0, 5.0, 6.0]),
+        ];
+        let result = engine.embed_batch(items).await;
+        assert!(result.is_ok());
+        let batch = result.unwrap();
+        assert_eq!(batch.succeeded.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_empty_vector() {
+        let engine = create_engine();
+        let items = vec![
+            ("emb1".to_string(), vec![1.0, 2.0]),
+            ("emb2".to_string(), vec![]),
+        ];
+        let result = engine.embed_batch(items).await;
+        assert!(result.is_err());
+        match result {
+            Err(UnifiedError::BatchOperationFailed { index, key, cause }) => {
+                assert_eq!(index, 1);
+                assert_eq!(key, "emb2");
+                assert!(cause.contains("empty vector"));
+            },
+            other => panic!("Expected BatchOperationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_from_to() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("NodeA", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("NodeB", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let pattern = FindPattern::Path {
+            from: Some(n1.to_string()),
+            edge: Some("LINKS".to_string()),
+            to: Some(n2.to_string()),
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_from_only() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("NodeC", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("NodeD", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let pattern = FindPattern::Path {
+            from: Some(n1.to_string()),
+            edge: None,
+            to: None,
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_to_only() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("NodeE", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("NodeF", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let pattern = FindPattern::Path {
+            from: None,
+            edge: None,
+            to: Some(n2.to_string()),
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_edge_only() {
+        let engine = create_engine();
+
+        let pattern = FindPattern::Path {
+            from: None,
+            edge: Some("KNOWS".to_string()),
+            to: None,
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_from_edge() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("NodeG", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("NodeH", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let pattern = FindPattern::Path {
+            from: Some(n1.to_string()),
+            edge: Some("KNOWS".to_string()),
+            to: None,
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_edge_to() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("NodeI", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("NodeJ", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let pattern = FindPattern::Path {
+            from: None,
+            edge: Some("LINKS".to_string()),
+            to: Some(n2.to_string()),
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_pattern_none() {
+        let engine = create_engine();
+
+        let pattern = FindPattern::Path {
+            from: None,
+            edge: None,
+            to: None,
+        };
+        let result = engine.find(&pattern, None).await;
+        // (None, None, None) with no edge returns InvalidOperation
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_find_path_from_to_no_edge() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("NodeK", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("NodeL", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let pattern = FindPattern::Path {
+            from: Some(n1.to_string()),
+            edge: None,
+            to: Some(n2.to_string()),
+        };
+        let result = engine.find(&pattern, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_with_limit() {
+        let engine = create_engine();
+        engine
+            .create_entity("fl1", HashMap::new(), Some(vec![1.0, 2.0, 3.0]))
+            .await
+            .unwrap();
+        engine
+            .create_entity("fl2", HashMap::new(), Some(vec![4.0, 5.0, 6.0]))
+            .await
+            .unwrap();
+
+        let pattern = FindPattern::Nodes { label: None };
+        let result = engine.find(&pattern, Some(1)).await.unwrap();
+        assert!(result.items.len() <= 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_entity_with_graph_node() {
+        let engine = create_engine();
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "original".to_string());
+        engine
+            .create_entity("upg1", fields, Some(vec![1.0, 2.0, 3.0]))
+            .await
+            .unwrap();
+        engine
+            .create_entity("upg2", HashMap::new(), Some(vec![4.0, 5.0, 6.0]))
+            .await
+            .unwrap();
+        engine
+            .connect_entities("upg1", "upg2", "KNOWS")
+            .await
+            .unwrap();
+
+        let mut new_fields = HashMap::new();
+        new_fields.insert("name".to_string(), "updated".to_string());
+        let result = engine.update_entity("upg1", new_fields, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_with_conditions() {
+        let engine = create_engine();
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        props.insert("score".to_string(), PropertyValue::Float(85.5));
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        engine.graph().create_node("Person", props).unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("age".to_string(), PropertyValue::Int(25));
+        props2.insert("score".to_string(), PropertyValue::Float(90.0));
+        engine.graph().create_node("Person", props2).unwrap();
+
+        // Eq condition on property
+        let cond = Condition::Eq("name".to_string(), Value::String("Alice".to_string()));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Ne condition
+        let cond = Condition::Ne("name".to_string(), Value::String("Bob".to_string()));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2);
+
+        // Gt condition (Int)
+        let cond = Condition::Gt("age".to_string(), Value::Int(27));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Ge condition (Int)
+        let cond = Condition::Ge("age".to_string(), Value::Int(25));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2);
+
+        // Lt condition (Float)
+        let cond = Condition::Lt("score".to_string(), Value::Float(88.0));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Le condition (Float)
+        let cond = Condition::Le("score".to_string(), Value::Float(90.0));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2);
+
+        // And condition
+        let cond = Condition::And(
+            Box::new(Condition::Ge("age".to_string(), Value::Int(25))),
+            Box::new(Condition::Lt("score".to_string(), Value::Float(88.0))),
+        );
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Or condition
+        let cond = Condition::Or(
+            Box::new(Condition::Eq("age".to_string(), Value::Int(30))),
+            Box::new(Condition::Eq("age".to_string(), Value::Int(25))),
+        );
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2);
+
+        // True condition
+        let cond = Condition::True;
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2);
+
+        // Cross-type comparison: Int prop vs Float val
+        let cond = Condition::Gt("age".to_string(), Value::Float(27.0));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Cross-type comparison: Float prop vs Int val
+        let cond = Condition::Lt("score".to_string(), Value::Int(88));
+        let items = engine
+            .find_nodes(Some("Person"), Some(&cond))
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_find_edges_with_conditions() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.graph().create_node("C", HashMap::new()).unwrap();
+
+        let mut eprops = HashMap::new();
+        eprops.insert("weight".to_string(), PropertyValue::Int(10));
+        engine
+            .graph()
+            .create_edge(n1, n2, "KNOWS", eprops, true)
+            .unwrap();
+
+        let mut eprops2 = HashMap::new();
+        eprops2.insert("weight".to_string(), PropertyValue::Int(20));
+        engine
+            .graph()
+            .create_edge(n2, n3, "LIKES", eprops2, true)
+            .unwrap();
+
+        // Eq on edge_type
+        let cond = Condition::Eq("edge_type".to_string(), Value::String("KNOWS".to_string()));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Eq on "type" alias
+        let cond = Condition::Eq("type".to_string(), Value::String("LIKES".to_string()));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Eq on "id" (Int)
+        let cond = Condition::Eq("id".to_string(), Value::Int(1));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert!(items.len() <= 1);
+
+        // Eq on "from" (Int)
+        let cond = Condition::Eq("from".to_string(), Value::Int(n1 as i64));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Eq on "to" (Int)
+        let cond = Condition::Eq("to".to_string(), Value::Int(n2 as i64));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Ne condition on edge property
+        let cond = Condition::Ne("weight".to_string(), Value::Int(10));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Gt condition
+        let cond = Condition::Gt("weight".to_string(), Value::Int(15));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Ge condition
+        let cond = Condition::Ge("weight".to_string(), Value::Int(10));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 2);
+
+        // Lt condition
+        let cond = Condition::Lt("weight".to_string(), Value::Int(15));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Le condition
+        let cond = Condition::Le("weight".to_string(), Value::Int(20));
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 2);
+
+        // And condition
+        let cond = Condition::And(
+            Box::new(Condition::Ge("weight".to_string(), Value::Int(10))),
+            Box::new(Condition::Le("weight".to_string(), Value::Int(15))),
+        );
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        // Or condition
+        let cond = Condition::Or(
+            Box::new(Condition::Eq("weight".to_string(), Value::Int(10))),
+            Box::new(Condition::Eq("weight".to_string(), Value::Int(20))),
+        );
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 2);
+
+        // True condition
+        let cond = Condition::True;
+        let items = engine.find_edges(None, Some(&cond)).await.unwrap();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_edge_as_unified_with_properties() {
+        let engine = create_engine();
+        let n1 = engine.graph().create_node("X", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("Y", HashMap::new()).unwrap();
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Int(42));
+        let eid = engine
+            .graph()
+            .create_edge(n1, n2, "RELATES", props, true)
+            .unwrap();
+        let edge = engine.graph().get_edge(eid).unwrap();
+        let item = edge.as_unified();
+        assert!(item.data.contains_key("weight"));
+    }
+
+    #[tokio::test]
+    async fn test_property_to_string_variants() {
+        let engine = create_engine();
+        let mut props = HashMap::new();
+        props.insert("bool_val".to_string(), PropertyValue::Bool(true));
+        props.insert("null_val".to_string(), PropertyValue::Null);
+        props.insert(
+            "list_val".to_string(),
+            PropertyValue::List(vec![PropertyValue::Int(1), PropertyValue::Int(2)]),
+        );
+        props.insert(
+            "map_val".to_string(),
+            PropertyValue::Map(HashMap::from([(
+                "k".to_string(),
+                PropertyValue::String("v".to_string()),
+            )])),
+        );
+        props.insert(
+            "bytes_val".to_string(),
+            PropertyValue::Bytes(vec![0xDE, 0xAD]),
+        );
+        props.insert(
+            "point_val".to_string(),
+            PropertyValue::Point { lat: 1.0, lon: 2.0 },
+        );
+        engine.graph().create_node("TypeTest", props).unwrap();
+
+        let items = engine.find_nodes(Some("TypeTest"), None).await.unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.data.get("bool_val").unwrap(), "true");
+        assert_eq!(item.data.get("null_val").unwrap(), "null");
+        assert_eq!(item.data.get("list_val").unwrap(), "[1, 2]");
+        assert_eq!(item.data.get("map_val").unwrap(), "{k: v}");
+        assert_eq!(item.data.get("bytes_val").unwrap(), "<bytes:2>");
+        assert_eq!(item.data.get("point_val").unwrap(), "(1, 2)");
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_collect_success_and_failure() {
+        let engine = create_engine();
+        let items = vec![
+            ("ebc1".to_string(), vec![1.0, 2.0, 3.0]),
+            ("ebc2".to_string(), vec![]),
+            ("ebc3".to_string(), vec![4.0, 5.0, 6.0]),
+        ];
+        let result = engine.embed_batch_collect(items);
+        assert_eq!(result.succeeded.len(), 2);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].index, 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_entities_batch_collect_errors() {
+        let engine = create_engine();
+        let entities: Vec<EntityInput> = vec![
+            ("".to_string(), HashMap::new(), Some(vec![1.0, 2.0])),
+            ("valid".to_string(), HashMap::new(), Some(vec![1.0, 2.0])),
+            ("bad_emb".to_string(), HashMap::new(), Some(vec![])),
+        ];
+        let result = engine.create_entities_batch_collect(entities).await;
+        assert_eq!(result.succeeded.len(), 1);
+        assert_eq!(result.failed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_entity_with_vector_metadata() {
+        let engine = create_engine();
+        // Create entity via unified path which stores metadata in vector engine
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "original".to_string());
+        engine
+            .create_entity_unified("uvmeta", fields, Some(vec![1.0, 2.0, 3.0]))
+            .await
+            .unwrap();
+
+        // Update fields - should update both store and vector metadata
+        let mut new_fields = HashMap::new();
+        new_fields.insert("name".to_string(), "updated".to_string());
+        let result = engine.update_entity("uvmeta", new_fields, None).await;
+        assert!(result.is_ok());
     }
 }
