@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Fuzz test for quantized delta update serialization and operations.
-//!
-//! Tests that:
-//! - Quantization/dequantization roundtrip preserves values within error bounds
-//! - Serialization/deserialization is stable
-//! - No panics on arbitrary input
+//! Fuzz test for DeltaUpdate serialization, checksums, and invariants.
 
 #![no_main]
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tensor_chain::{DeltaUpdate, QuantizedDeltaUpdate};
+use tensor_chain::DeltaUpdate;
 
 #[derive(Debug, Arbitrary)]
 #[allow(dead_code)]
@@ -32,7 +27,14 @@ fuzz_target!(|input: FuzzInput| {
 
     // Limit key length and values count
     let key = if input.key.len() > 256 {
-        input.key[..256].to_string()
+        let end = input
+            .key
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= 256)
+            .last()
+            .unwrap_or(0);
+        input.key[..end].to_string()
     } else if input.key.is_empty() {
         "key".to_string()
     } else {
@@ -42,8 +44,8 @@ fuzz_target!(|input: FuzzInput| {
     let values: Vec<f32> = input
         .values
         .iter()
-        .take(1024) // Limit to reasonable size
-        .map(|&v| v as f32 / 255.0) // Normalize to [0, 1]
+        .take(1024)
+        .map(|&v| f32::from(v) / 255.0)
         .collect();
 
     if values.is_empty() {
@@ -52,12 +54,11 @@ fuzz_target!(|input: FuzzInput| {
 
     // Create DeltaUpdate
     let update = if input.is_full {
-        DeltaUpdate::full(key, &values, input.version)
+        DeltaUpdate::full(key.clone(), &values, input.version)
     } else {
-        // Create a delta-style update with indices
         let indices: Vec<u32> = (0..values.len() as u32).collect();
         DeltaUpdate {
-            key,
+            key: key.clone(),
             archetype_id: input.archetype_id,
             delta_indices: indices,
             delta_values: values.clone(),
@@ -67,69 +68,55 @@ fuzz_target!(|input: FuzzInput| {
         }
     };
 
-    // Test 1: Quantization should succeed
-    let quantized = match update.quantize() {
-        Some(q) => q,
-        None => return, // Quantization can fail for edge cases
-    };
+    // Test 1: Checksum computation is deterministic
+    let checksum1 = update.compute_checksum();
+    let checksum2 = update.compute_checksum();
+    assert_eq!(checksum1, checksum2, "Checksum should be deterministic");
 
-    // Test 2: Serialization roundtrip
-    let serialized = match bitcode::serialize(&quantized) {
+    // Test 2: with_checksum then verify_checksum succeeds
+    let update_with_checksum = update.clone().with_checksum();
+    assert!(
+        update_with_checksum.verify_checksum(),
+        "Checksum verification should pass after with_checksum"
+    );
+
+    // Test 3: Serialization roundtrip with bitcode
+    let serialized = match bitcode::serialize(&update) {
         Ok(bytes) => bytes,
         Err(_) => return,
     };
 
-    let deserialized: QuantizedDeltaUpdate = match bitcode::deserialize(&serialized) {
-        Ok(q) => q,
+    let deserialized: DeltaUpdate = match bitcode::deserialize(&serialized) {
+        Ok(u) => u,
         Err(_) => panic!("Failed to deserialize what we just serialized"),
     };
 
-    // Verify key data preserved
-    assert_eq!(quantized.key, deserialized.key);
-    assert_eq!(quantized.version, deserialized.version);
-    assert_eq!(quantized.dimension, deserialized.dimension);
-    assert_eq!(quantized.archetype_id, deserialized.archetype_id);
+    assert_eq!(update.key, deserialized.key);
+    assert_eq!(update.version, deserialized.version);
+    assert_eq!(update.dimension, deserialized.dimension);
+    assert_eq!(update.archetype_id, deserialized.archetype_id);
+    assert_eq!(update.delta_values.len(), deserialized.delta_values.len());
     assert_eq!(
-        quantized.quantized_values.data.len(),
-        deserialized.quantized_values.data.len()
+        update.delta_indices.len(),
+        deserialized.delta_indices.len()
     );
 
-    // Test 3: Dequantization should succeed
-    let dequantized = quantized.dequantize();
+    // Test 4: nnz is consistent
+    assert!(update.nnz() <= update.delta_values.len());
 
-    // Test 4: Values should be within error bounds (~1% for int8 quantization)
-    assert_eq!(dequantized.delta_values.len(), update.delta_values.len());
-    for (orig, deq) in update
-        .delta_values
-        .iter()
-        .zip(dequantized.delta_values.iter())
-    {
-        let error = (orig - deq).abs();
-        // Allow up to 2% error for int8 quantization
-        assert!(
-            error < 0.02 || (orig.abs() < 0.001 && deq.abs() < 0.02),
-            "Quantization error too large: orig={}, deq={}, error={}",
-            orig,
-            deq,
-            error
-        );
-    }
+    // Test 5: Memory bytes is reasonable
+    assert!(update.memory_bytes() > 0);
 
-    // Test 5: Compression should be achieved for reasonable sizes
-    if values.len() >= 64 {
-        let orig_bytes = update.memory_bytes();
-        let quant_bytes = quantized.memory_bytes();
-        // Quantized should be smaller for larger vectors
-        assert!(
-            quant_bytes <= orig_bytes,
-            "Quantized ({}) should not be larger than original ({}) for {} values",
-            quant_bytes,
-            orig_bytes,
-            values.len()
-        );
-    }
+    // Test 6: Compression ratio is positive
+    let ratio = update.compression_ratio();
+    assert!(ratio > 0.0, "Compression ratio should be positive");
 
-    // Test 6: Memory bytes should be reasonable
-    assert!(quantized.memory_bytes() > 0);
-    assert!(quantized.compression_ratio() > 0.0);
+    // Test 7: Serialization roundtrip preserves checksum
+    let with_cs = update.clone().with_checksum();
+    let serialized_cs = bitcode::serialize(&with_cs).unwrap();
+    let deserialized_cs: DeltaUpdate = bitcode::deserialize(&serialized_cs).unwrap();
+    assert!(
+        deserialized_cs.verify_checksum(),
+        "Checksum should survive serialization roundtrip"
+    );
 });

@@ -36,8 +36,35 @@ fuzz_target!(|input: SparseVectorInput| {
     assert_eq!(recovered.len(), dimension, "Dimension mismatch");
 
     for (i, (a, b)) in dense.iter().zip(recovered.iter()).enumerate() {
-        // Skip NaN comparisons (NaN != NaN)
-        if a.is_nan() || b.is_nan() {
+        // Skip NaN/Inf comparisons (NaN != NaN, Inf - Inf = NaN)
+        if !a.is_finite() || !b.is_finite() {
+            // Both should have the same non-finite class
+            assert_eq!(
+                a.is_nan(),
+                b.is_nan(),
+                "NaN mismatch at index {}: {} vs {}",
+                i,
+                a,
+                b
+            );
+            assert_eq!(
+                a.is_infinite(),
+                b.is_infinite(),
+                "Inf mismatch at index {}: {} vs {}",
+                i,
+                a,
+                b
+            );
+            if a.is_infinite() {
+                assert_eq!(
+                    a.is_sign_positive(),
+                    b.is_sign_positive(),
+                    "Inf sign mismatch at index {}: {} vs {}",
+                    i,
+                    a,
+                    b
+                );
+            }
             continue;
         }
         assert!(

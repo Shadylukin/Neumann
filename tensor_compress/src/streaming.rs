@@ -303,7 +303,7 @@ pub fn merge_streaming<W: Write + Seek, R: Read + Seek>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, io::Cursor};
+    use std::{collections::BTreeMap, io::Cursor};
 
     use super::*;
     use crate::format::{CompressedScalar, CompressedValue};
@@ -311,7 +311,7 @@ mod tests {
     fn make_test_entry(key: &str, value: i64) -> CompressedEntry {
         CompressedEntry {
             key: key.to_string(),
-            fields: HashMap::from([(
+            fields: BTreeMap::from([(
                 "value".to_string(),
                 CompressedValue::Scalar(CompressedScalar::Int(value)),
             )]),

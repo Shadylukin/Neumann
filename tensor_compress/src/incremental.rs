@@ -406,6 +406,8 @@ impl DeltaChain {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::{
         format::{CompressedScalar, CompressedValue},
@@ -415,7 +417,7 @@ mod tests {
     fn make_entry(key: &str, value: i64) -> CompressedEntry {
         CompressedEntry {
             key: key.to_string(),
-            fields: HashMap::from([(
+            fields: BTreeMap::from([(
                 "value".to_string(),
                 CompressedValue::Scalar(CompressedScalar::Int(value)),
             )]),

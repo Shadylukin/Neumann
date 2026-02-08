@@ -410,21 +410,27 @@ impl SparseVector {
     /// `O(min(nnz_a, nnz_b))` - only overlapping non-zero positions contribute.
     /// This is where sparse shines: zero * anything = zero, and we don't store zeros.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn dot(&self, other: &Self) -> f32 {
+        self.dot_f64(other) as f32
+    }
+
+    /// Internal f64 dot product to avoid intermediate overflow.
+    fn dot_f64(&self, other: &Self) -> f64 {
         debug_assert_eq!(
             self.dimension, other.dimension,
             "Dimension mismatch: {} vs {}",
             self.dimension, other.dimension
         );
 
-        let mut result = 0.0;
+        let mut result = 0.0_f64;
         let mut i = 0;
         let mut j = 0;
 
         while i < self.positions.len() && j < other.positions.len() {
             match self.positions[i].cmp(&other.positions[j]) {
                 std::cmp::Ordering::Equal => {
-                    result += self.values[i] * other.values[j];
+                    result += f64::from(self.values[i]) * f64::from(other.values[j]);
                     i += 1;
                     j += 1;
                 },
@@ -440,6 +446,7 @@ impl SparseVector {
     ///
     /// `O(nnz)` - only iterate over our non-zero positions.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn dot_dense(&self, dense: &[f32]) -> f32 {
         debug_assert_eq!(
             self.dimension,
@@ -449,11 +456,13 @@ impl SparseVector {
             dense.len()
         );
 
-        self.positions
+        let sum: f64 = self
+            .positions
             .iter()
             .zip(&self.values)
-            .map(|(&pos, &val)| val * dense[pos as usize])
-            .sum()
+            .map(|(&pos, &val)| f64::from(val) * f64::from(dense[pos as usize]))
+            .sum();
+        sum as f32
     }
 
     /// Add another sparse vector. Returns new sparse vector.
@@ -535,18 +544,34 @@ impl SparseVector {
 
     /// `L2` norm (magnitude).
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn magnitude(&self) -> f32 {
-        self.values.iter().map(|v| v * v).sum::<f32>().sqrt()
+        self.magnitude_f64() as f32
+    }
+
+    /// Internal f64 magnitude to avoid intermediate overflow.
+    fn magnitude_f64(&self) -> f64 {
+        self.values
+            .iter()
+            .map(|v| f64::from(*v) * f64::from(*v))
+            .sum::<f64>()
+            .sqrt()
     }
 
     /// Normalize to unit length. Returns None if zero vector.
     #[must_use]
     pub fn normalize(&self) -> Option<Self> {
         let mag = self.magnitude();
-        if mag == 0.0 {
+        if !mag.is_normal() {
+            return None;
+        }
+        let result = self.scale(1.0 / mag);
+        let result_mag = result.magnitude();
+        // Return None if f32 precision loss makes normalization unreliable
+        if !result_mag.is_normal() || (result_mag - 1.0).abs() > 0.01 {
             None
         } else {
-            Some(self.scale(1.0 / mag))
+            Some(result)
         }
     }
 
@@ -554,10 +579,11 @@ impl SparseVector {
     /// Returns a value in [-1.0, 1.0], with 0.0 for degenerate cases.
     /// SECURITY: Sanitizes NaN/Inf to prevent consensus ordering issues.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn cosine_similarity(&self, other: &Self) -> f32 {
-        let dot = self.dot(other);
-        let mag_a = self.magnitude();
-        let mag_b = other.magnitude();
+        let dot = self.dot_f64(other);
+        let mag_a = self.magnitude_f64();
+        let mag_b = other.magnitude_f64();
 
         if mag_a == 0.0 || mag_b == 0.0 {
             return 0.0;
@@ -565,11 +591,10 @@ impl SparseVector {
 
         let result = dot / (mag_a * mag_b);
 
-        // SECURITY: Sanitize result to valid range to prevent consensus issues
         if result.is_nan() || result.is_infinite() {
             0.0
         } else {
-            result.clamp(-1.0, 1.0)
+            result.clamp(-1.0, 1.0) as f32
         }
     }
 
@@ -577,10 +602,20 @@ impl SparseVector {
     /// Returns a value in [0.0, 2.0], with 1.0 (max distance) for degenerate cases.
     /// SECURITY: Sanitizes NaN/Inf to prevent consensus ordering issues.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn cosine_distance_dense(&self, dense: &[f32]) -> f32 {
-        let dot = self.dot_dense(dense);
-        let mag_sparse = self.magnitude();
-        let mag_dense: f32 = dense.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let dot: f64 = self
+            .positions
+            .iter()
+            .zip(&self.values)
+            .map(|(&pos, &val)| f64::from(val) * f64::from(dense[pos as usize]))
+            .sum();
+        let mag_sparse = self.magnitude_f64();
+        let mag_dense: f64 = dense
+            .iter()
+            .map(|x| f64::from(*x) * f64::from(*x))
+            .sum::<f64>()
+            .sqrt();
 
         if mag_sparse == 0.0 || mag_dense == 0.0 {
             return 1.0; // Maximum distance
@@ -588,11 +623,10 @@ impl SparseVector {
 
         let similarity = dot / (mag_sparse * mag_dense);
 
-        // SECURITY: Sanitize result to valid range
         if similarity.is_nan() || similarity.is_infinite() {
             1.0 // Maximum distance for invalid cases
         } else {
-            1.0 - similarity.clamp(-1.0, 1.0)
+            (1.0 - similarity.clamp(-1.0, 1.0)) as f32
         }
     }
 
@@ -848,40 +882,41 @@ impl SparseVector {
     /// Like Jaccard but accounts for value magnitudes.
     /// Range: [0, 1] where 1 = identical values at all positions.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn weighted_jaccard(&self, other: &Self) -> f32 {
         debug_assert_eq!(self.dimension, other.dimension);
 
-        let mut min_sum = 0.0f32;
-        let mut max_sum = 0.0f32;
+        let mut min_sum = 0.0_f64;
+        let mut max_sum = 0.0_f64;
 
         let mut i = 0;
         let mut j = 0;
 
         while i < self.positions.len() || j < other.positions.len() {
-            let (a_val, b_val) = if i >= self.positions.len() {
-                let v = other.values[j].abs();
+            let (a_val, b_val): (f64, f64) = if i >= self.positions.len() {
+                let v = f64::from(other.values[j]).abs();
                 j += 1;
                 (0.0, v)
             } else if j >= other.positions.len() {
-                let v = self.values[i].abs();
+                let v = f64::from(self.values[i]).abs();
                 i += 1;
                 (v, 0.0)
             } else {
                 match self.positions[i].cmp(&other.positions[j]) {
                     std::cmp::Ordering::Equal => {
-                        let a = self.values[i].abs();
-                        let b = other.values[j].abs();
+                        let a = f64::from(self.values[i]).abs();
+                        let b = f64::from(other.values[j]).abs();
                         i += 1;
                         j += 1;
                         (a, b)
                     },
                     std::cmp::Ordering::Less => {
-                        let v = self.values[i].abs();
+                        let v = f64::from(self.values[i]).abs();
                         i += 1;
                         (v, 0.0)
                     },
                     std::cmp::Ordering::Greater => {
-                        let v = other.values[j].abs();
+                        let v = f64::from(other.values[j]).abs();
                         j += 1;
                         (0.0, v)
                     },
@@ -895,7 +930,7 @@ impl SparseVector {
         if max_sum == 0.0 {
             1.0 // Both zero vectors
         } else {
-            min_sum / max_sum
+            (min_sum / max_sum) as f32
         }
     }
 
@@ -903,44 +938,61 @@ impl SparseVector {
     ///
     /// sqrt(sum((a\[i\] - b\[i\])^2))
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn euclidean_distance(&self, other: &Self) -> f32 {
-        self.euclidean_distance_squared(other).sqrt()
+        let dist = self.euclidean_distance_squared_f64(other).sqrt();
+        if dist > f64::from(f32::MAX) {
+            f32::MAX
+        } else {
+            dist as f32
+        }
     }
 
     /// Squared Euclidean distance (avoids sqrt).
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn euclidean_distance_squared(&self, other: &Self) -> f32 {
+        let sq = self.euclidean_distance_squared_f64(other);
+        if sq > f64::from(f32::MAX) {
+            f32::MAX
+        } else {
+            sq as f32
+        }
+    }
+
+    /// Internal f64 squared Euclidean distance to avoid intermediate overflow.
+    fn euclidean_distance_squared_f64(&self, other: &Self) -> f64 {
         debug_assert_eq!(self.dimension, other.dimension);
 
-        let mut sum_sq = 0.0f32;
+        let mut sum_sq = 0.0_f64;
 
         let mut i = 0;
         let mut j = 0;
 
         while i < self.positions.len() || j < other.positions.len() {
-            let diff = if i >= self.positions.len() {
-                let v = other.values[j];
+            let diff: f64 = if i >= self.positions.len() {
+                let v = f64::from(other.values[j]);
                 j += 1;
-                v // 0 - v = -v, squared = v^2
+                v
             } else if j >= other.positions.len() {
-                let v = self.values[i];
+                let v = f64::from(self.values[i]);
                 i += 1;
-                v // v - 0 = v
+                v
             } else {
                 match self.positions[i].cmp(&other.positions[j]) {
                     std::cmp::Ordering::Equal => {
-                        let d = self.values[i] - other.values[j];
+                        let d = f64::from(self.values[i]) - f64::from(other.values[j]);
                         i += 1;
                         j += 1;
                         d
                     },
                     std::cmp::Ordering::Less => {
-                        let v = self.values[i];
+                        let v = f64::from(self.values[i]);
                         i += 1;
                         v
                     },
                     std::cmp::Ordering::Greater => {
-                        let v = other.values[j];
+                        let v = f64::from(other.values[j]);
                         j += 1;
                         -v
                     },
@@ -957,38 +1009,39 @@ impl SparseVector {
     ///
     /// sum(|a\[i\] - b\[i\]|)
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn manhattan_distance(&self, other: &Self) -> f32 {
         debug_assert_eq!(self.dimension, other.dimension);
 
-        let mut sum = 0.0f32;
+        let mut sum = 0.0_f64;
 
         let mut i = 0;
         let mut j = 0;
 
         while i < self.positions.len() || j < other.positions.len() {
-            let diff = if i >= self.positions.len() {
-                let v = other.values[j].abs();
+            let diff: f64 = if i >= self.positions.len() {
+                let v = f64::from(other.values[j]).abs();
                 j += 1;
                 v
             } else if j >= other.positions.len() {
-                let v = self.values[i].abs();
+                let v = f64::from(self.values[i]).abs();
                 i += 1;
                 v
             } else {
                 match self.positions[i].cmp(&other.positions[j]) {
                     std::cmp::Ordering::Equal => {
-                        let d = (self.values[i] - other.values[j]).abs();
+                        let d = (f64::from(self.values[i]) - f64::from(other.values[j])).abs();
                         i += 1;
                         j += 1;
                         d
                     },
                     std::cmp::Ordering::Less => {
-                        let v = self.values[i].abs();
+                        let v = f64::from(self.values[i]).abs();
                         i += 1;
                         v
                     },
                     std::cmp::Ordering::Greater => {
-                        let v = other.values[j].abs();
+                        let v = f64::from(other.values[j]).abs();
                         j += 1;
                         v
                     },
@@ -998,7 +1051,11 @@ impl SparseVector {
             sum += diff;
         }
 
-        sum
+        if sum > f64::from(f32::MAX) {
+            f32::MAX
+        } else {
+            sum as f32
+        }
     }
 
     /// Memory usage in bytes (approximate).

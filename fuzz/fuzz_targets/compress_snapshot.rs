@@ -11,7 +11,10 @@ fuzz_target!(|data: &[u8]| {
         if let Ok(reserialized) = snapshot.serialize() {
             // And deserialize again should produce equivalent result
             if let Ok(snapshot2) = CompressedSnapshot::deserialize(&reserialized) {
-                assert_eq!(snapshot, snapshot2, "Snapshot roundtrip mismatch");
+                // Skip assertion when NaN is present (NaN != NaN breaks PartialEq)
+                let serialized1 = snapshot.serialize().unwrap();
+                let serialized2 = snapshot2.serialize().unwrap();
+                assert_eq!(serialized1, serialized2, "Snapshot roundtrip mismatch");
             }
         }
     }

@@ -93,7 +93,7 @@ fn create_delta(vec: Vec<f32>, keys: Vec<String>, tx_id: u64) -> DeltaVector {
         keys
     };
 
-    DeltaVector::new(final_vec, final_keys, tx_id)
+    DeltaVector::new(&final_vec, final_keys, tx_id)
 }
 
 fuzz_target!(|input: FuzzInput| {
@@ -114,7 +114,7 @@ fuzz_target!(|input: FuzzInput| {
             } => {
                 let num = (*num_shards as usize).clamp(1, 10);
                 let shards: Vec<usize> = (0..num).collect();
-                let _ = coordinator.begin(format!("node{}", coord_id), shards);
+                let _ = coordinator.begin(&format!("node{}", coord_id), &shards);
             },
             CoordinatorOp::RecordVoteYes {
                 tx_id,
@@ -136,7 +136,13 @@ fuzz_target!(|input: FuzzInput| {
                 reason,
             } => {
                 let reason = if reason.len() > 100 {
-                    reason[..100].to_string()
+                    let end = reason
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 100)
+                        .last()
+                        .unwrap_or(0);
+                    reason[..end].to_string()
                 } else {
                     reason.clone()
                 };
@@ -165,7 +171,13 @@ fuzz_target!(|input: FuzzInput| {
             },
             CoordinatorOp::Abort { tx_id, reason } => {
                 let reason = if reason.len() > 100 {
-                    &reason[..100]
+                    let end = reason
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 100)
+                        .last()
+                        .unwrap_or(0);
+                    &reason[..end]
                 } else {
                     reason
                 };

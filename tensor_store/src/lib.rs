@@ -1211,7 +1211,7 @@ impl TensorStore {
                 continue;
             };
 
-            let mut fields = HashMap::new();
+            let mut fields = std::collections::BTreeMap::new();
             for (field_name, value) in tensor.iter() {
                 let compressed = match value {
                     TensorValue::Scalar(s) => CompressedValue::Scalar(match s {

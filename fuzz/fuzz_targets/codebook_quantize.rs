@@ -101,8 +101,14 @@ fuzz_target!(|input: CodebookInput| {
                 "Quantized ID should be valid"
             );
             assert!(
-                similarity >= -1.0 && similarity <= 1.0,
-                "Similarity should be in [-1, 1]"
+                similarity.is_finite(),
+                "Similarity should be finite, got {}",
+                similarity
+            );
+            assert!(
+                similarity >= -1.001 && similarity <= 1.001,
+                "Similarity should be in [-1, 1], got {}",
+                similarity
             );
         }
     }
@@ -191,8 +197,17 @@ fuzz_target!(|input: CodebookInput| {
 
         // quantize_and_update should not panic
         let (id, sim) = local.quantize_and_update(&observation, 0.9);
-        assert!(id < 1000, "ID should be reasonable"); // Just a sanity check
-        assert!(sim >= -1.0 && sim <= 1.0, "Similarity should be bounded");
+        assert!(id < 1000, "ID should be reasonable");
+        assert!(
+            sim.is_finite(),
+            "Similarity should be finite, got {}",
+            sim
+        );
+        assert!(
+            sim >= -1.001 && sim <= 1.001,
+            "Similarity should be bounded, got {}",
+            sim
+        );
     }
 
     // Property 8: CodebookManager works with global

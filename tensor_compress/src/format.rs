@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Compressed snapshot format for tensor data.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -119,7 +119,7 @@ pub enum CompressedValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CompressedEntry {
     pub key: String,
-    pub fields: HashMap<String, CompressedValue>,
+    pub fields: BTreeMap<String, CompressedValue>,
 }
 
 /// Complete compressed snapshot.
@@ -491,7 +491,7 @@ mod tests {
         let header = Header::new(CompressionConfig::default(), 1);
         let entry = CompressedEntry {
             key: "test".to_string(),
-            fields: HashMap::from([(
+            fields: BTreeMap::from([(
                 "value".to_string(),
                 CompressedValue::Scalar(CompressedScalar::Int(42)),
             )]),
@@ -523,7 +523,7 @@ mod tests {
 
         let entry = CompressedEntry {
             key: "embedding".to_string(),
-            fields: HashMap::from([("vector".to_string(), compressed_vec)]),
+            fields: BTreeMap::from([("vector".to_string(), compressed_vec)]),
         };
         let snapshot = CompressedSnapshot {
             header,
@@ -671,7 +671,7 @@ mod tests {
 
         let entry = CompressedEntry {
             key: "sparse_embedding".to_string(),
-            fields: HashMap::from([("vector".to_string(), compressed_vec)]),
+            fields: BTreeMap::from([("vector".to_string(), compressed_vec)]),
         };
         let snapshot = CompressedSnapshot {
             header,

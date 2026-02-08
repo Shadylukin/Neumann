@@ -142,7 +142,12 @@ impl CodebookEntry {
             .map(|(c, q)| c * q)
             .sum();
 
-        dot / (self.magnitude * query_mag)
+        let result = dot / (self.magnitude * query_mag);
+        if result.is_nan() || result.is_infinite() {
+            0.0
+        } else {
+            result.clamp(-1.0, 1.0)
+        }
     }
 
     pub fn ema_update(&mut self, observation: &[f32], alpha: f32) {
