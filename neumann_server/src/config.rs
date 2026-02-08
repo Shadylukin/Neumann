@@ -60,6 +60,14 @@ pub const ENV_REQUEST_TIMEOUT_SECS: &str = "NEUMANN_REQUEST_TIMEOUT_SECS";
 pub const ENV_MEMORY_BUDGET_MAX_BYTES: &str = "NEUMANN_MEMORY_BUDGET_MAX_BYTES";
 /// Memory budget enable load shedding environment variable.
 pub const ENV_MEMORY_BUDGET_LOAD_SHEDDING: &str = "NEUMANN_MEMORY_BUDGET_LOAD_SHEDDING";
+/// Cluster node ID environment variable.
+pub const ENV_CLUSTER_NODE_ID: &str = "NEUMANN_CLUSTER_NODE_ID";
+/// Cluster Raft bind address environment variable.
+pub const ENV_CLUSTER_BIND_ADDR: &str = "NEUMANN_CLUSTER_BIND_ADDR";
+/// Cluster peers environment variable (comma-separated `id=addr` pairs).
+pub const ENV_CLUSTER_PEERS: &str = "NEUMANN_CLUSTER_PEERS";
+/// Data directory for WAL and crash recovery.
+pub const ENV_DATA_DIR: &str = "NEUMANN_DATA_DIR";
 
 /// Environment variable parsing helpers.
 mod env_parse {
@@ -123,6 +131,65 @@ mod env_parse {
     }
 }
 
+/// Cluster configuration for distributed mode.
+#[derive(Debug, Clone)]
+pub struct ClusterConfig {
+    /// Unique node identifier.
+    pub node_id: String,
+    /// Address to bind for Raft TCP connections.
+    pub raft_bind_addr: SocketAddr,
+    /// Peer nodes as (`node_id`, address) pairs.
+    pub peers: Vec<(String, SocketAddr)>,
+    /// Data directory for WAL persistence and crash recovery.
+    pub data_dir: PathBuf,
+}
+
+impl ClusterConfig {
+    fn from_env() -> Result<Option<Self>> {
+        let Ok(node_id) = std::env::var(ENV_CLUSTER_NODE_ID) else {
+            return Ok(None);
+        };
+
+        let raft_bind_addr =
+            env_parse::parse_socket_addr(ENV_CLUSTER_BIND_ADDR).ok_or_else(|| {
+                ServerError::Config(format!(
+                    "{ENV_CLUSTER_BIND_ADDR} required when {ENV_CLUSTER_NODE_ID} is set"
+                ))
+            })??;
+
+        let peers_str = std::env::var(ENV_CLUSTER_PEERS).unwrap_or_default();
+        let mut peers = Vec::new();
+        for entry in peers_str.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let (id, addr_str) = entry.split_once('=').ok_or_else(|| {
+                ServerError::Config(format!(
+                    "invalid peer format '{entry}', expected 'node_id=addr'"
+                ))
+            })?;
+            let addr: SocketAddr = addr_str.parse().map_err(|e| {
+                ServerError::Config(format!("invalid peer address '{addr_str}': {e}"))
+            })?;
+            peers.push((id.to_string(), addr));
+        }
+
+        let data_dir = env_parse::parse_path(ENV_DATA_DIR).ok_or_else(|| {
+            ServerError::Config(format!(
+                "{ENV_DATA_DIR} required when {ENV_CLUSTER_NODE_ID} is set"
+            ))
+        })?;
+
+        Ok(Some(Self {
+            node_id,
+            raft_bind_addr,
+            peers,
+            data_dir,
+        }))
+    }
+}
+
 /// Server configuration.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -170,6 +237,8 @@ pub struct ServerConfig {
     pub web_addr: Option<SocketAddr>,
     /// Enhanced streaming configuration (optional).
     pub streaming: Option<StreamingConfig>,
+    /// Cluster configuration for distributed mode (optional).
+    pub cluster: Option<ClusterConfig>,
 }
 
 impl Default for ServerConfig {
@@ -200,6 +269,7 @@ impl Default for ServerConfig {
             rest_addr: None,
             web_addr: None,
             streaming: None,
+            cluster: None,
         }
     }
 }
@@ -348,6 +418,9 @@ impl ServerConfig {
             }
             config.memory_budget = Some(memory);
         }
+
+        // Cluster configuration (optional)
+        config.cluster = ClusterConfig::from_env()?;
 
         Ok(config)
     }

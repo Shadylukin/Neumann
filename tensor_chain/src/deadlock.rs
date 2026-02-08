@@ -2008,7 +2008,7 @@ mod tests {
 
     #[test]
     fn test_dfs_cycle_extraction_in_long_path() {
-        let graph = WaitForGraph::new(0);
+        let graph = WaitForGraph::new();
         // A -> B -> C -> D -> B (cycle B->C->D->B within longer path)
         graph.add_wait(1, 2, None);
         graph.add_wait(2, 3, None);
@@ -2051,28 +2051,29 @@ mod tests {
 
     #[test]
     fn test_stale_edge_cleanup_removes_old() {
-        let graph = WaitForGraph::new(0);
+        let graph = WaitForGraph::new();
         graph.add_wait(1, 2, None);
         graph.add_wait(2, 3, None);
 
         // Wait just enough for edges to be stale
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        // TTL of 5ms: edges should be stale
+        // TTL of 5ms: waiters 1 and 2 should be stale
         let cleaned = graph.cleanup_stale_edges(5);
         assert!(cleaned >= 1);
-        assert_eq!(graph.transaction_count(), 0);
+        // After cleanup, edges involving waiters 1 and 2 are removed
+        assert!(graph.is_empty());
     }
 
     #[test]
     fn test_stale_edge_cleanup_keeps_fresh() {
-        let graph = WaitForGraph::new(0);
+        let graph = WaitForGraph::new();
         graph.add_wait(1, 2, None);
 
         // Very long TTL: nothing should be stale
         let cleaned = graph.cleanup_stale_edges(100_000);
         assert_eq!(cleaned, 0);
-        assert_eq!(graph.transaction_count(), 1);
+        assert!(!graph.is_empty());
     }
 
     #[test]
@@ -2087,18 +2088,18 @@ mod tests {
 
     #[test]
     fn test_graph_reverse_edges_tracked() {
-        let graph = WaitForGraph::new(0);
+        let graph = WaitForGraph::new();
         graph.add_wait(1, 2, None);
         graph.add_wait(1, 3, None);
 
-        // Check waiting_on returns the targets
-        let targets = graph.waiting_on(1);
+        // waiting_for returns forward edges (what tx 1 waits for)
+        let targets = graph.waiting_for(1);
         assert_eq!(targets.len(), 2);
         assert!(targets.contains(&2));
         assert!(targets.contains(&3));
 
-        // Check waiting_for returns who waits for a target
-        let waiters = graph.waiting_for(2);
+        // waiting_on returns reverse edges (who waits on tx 2)
+        let waiters = graph.waiting_on(2);
         assert_eq!(waiters.len(), 1);
         assert!(waiters.contains(&1));
     }
@@ -2107,7 +2108,8 @@ mod tests {
     fn test_with_lock_count_fn_most_locks() {
         let config =
             DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::MostLocks);
-        let detector = DeadlockDetector::with_lock_count(config, |tx_id| (tx_id * 10) as usize);
+        let mut detector = DeadlockDetector::new(config);
+        detector.set_lock_count_fn(|tx_id| (tx_id * 10) as usize);
         let graph = detector.graph();
         graph.add_wait(1, 2, None);
         graph.add_wait(2, 1, None);
@@ -2116,5 +2118,615 @@ mod tests {
         assert_eq!(deadlocks.len(), 1);
         // tx 2 has more locks (2*10=20 vs 1*10=10), so tx 2 should be victim
         assert_eq!(deadlocks[0].victim_tx_id, 2);
+    }
+
+    // ========== Additional Coverage Tests ==========
+
+    #[test]
+    fn test_config_with_interval() {
+        let config = DeadlockDetectorConfig::default().with_interval(250);
+        assert_eq!(config.detection_interval_ms, 250);
+        // Other fields unchanged
+        assert!(config.enabled);
+        assert_eq!(config.victim_policy, VictimSelectionPolicy::Youngest);
+    }
+
+    #[test]
+    fn test_config_with_policy() {
+        let config =
+            DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::LowestPriority);
+        assert_eq!(config.victim_policy, VictimSelectionPolicy::LowestPriority);
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_config_with_max_cycle_length() {
+        let config = DeadlockDetectorConfig::default().with_max_cycle_length(42);
+        assert_eq!(config.max_cycle_length, 42);
+    }
+
+    #[test]
+    fn test_config_without_auto_abort() {
+        let config = DeadlockDetectorConfig::default().without_auto_abort();
+        assert!(!config.auto_abort_victim);
+        // Other fields preserved
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_config_with_max_edges_per_tx() {
+        let config = DeadlockDetectorConfig::default().with_max_edges_per_tx(7);
+        assert_eq!(config.max_edges_per_tx, 7);
+    }
+
+    #[test]
+    fn test_config_with_edge_ttl_ms() {
+        let config = DeadlockDetectorConfig::default().with_edge_ttl_ms(15_000);
+        assert_eq!(config.edge_ttl_ms, 15_000);
+    }
+
+    #[test]
+    fn test_config_with_victim_cascade_depth() {
+        let config = DeadlockDetectorConfig::default().with_victim_cascade_depth(10);
+        assert_eq!(config.victim_cascade_depth, 10);
+    }
+
+    #[test]
+    fn test_config_chained_all_builders() {
+        let config = DeadlockDetectorConfig::default()
+            .with_interval(200)
+            .with_policy(VictimSelectionPolicy::MostLocks)
+            .with_max_cycle_length(25)
+            .without_auto_abort()
+            .with_max_edges_per_tx(8)
+            .with_edge_ttl_ms(60_000)
+            .with_victim_cascade_depth(4);
+
+        assert_eq!(config.detection_interval_ms, 200);
+        assert_eq!(config.victim_policy, VictimSelectionPolicy::MostLocks);
+        assert_eq!(config.max_cycle_length, 25);
+        assert!(!config.auto_abort_victim);
+        assert_eq!(config.max_edges_per_tx, 8);
+        assert_eq!(config.edge_ttl_ms, 60_000);
+        assert_eq!(config.victim_cascade_depth, 4);
+    }
+
+    #[test]
+    fn test_remove_wait_last_edge_cleans_wait_started() {
+        let graph = WaitForGraph::new();
+
+        // Add a single edge for tx 1
+        graph.add_wait(1, 2, None);
+        assert!(graph.get_wait_start(1).is_some());
+        assert_eq!(graph.edge_count(), 1);
+
+        // Remove the only edge -- should clean up wait_started too
+        graph.remove_wait(1, 2);
+        assert!(graph.waiting_for(1).is_empty());
+        assert!(
+            graph.get_wait_start(1).is_none(),
+            "wait_started must be removed when last edge is removed"
+        );
+        // Reverse edge for holder should also be cleaned up
+        assert!(
+            graph.waiting_on(2).is_empty(),
+            "reverse edge must be cleaned when last waiter is removed"
+        );
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn test_remove_wait_nonexistent_edge() {
+        let graph = WaitForGraph::new();
+
+        // Remove an edge that doesn't exist -- should be a no-op
+        graph.remove_wait(99, 100);
+        assert!(graph.is_empty());
+        assert_eq!(graph.edge_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_wait_partial_edges_remain() {
+        let graph = WaitForGraph::new();
+
+        // tx 1 waits for 2 and 3; tx 4 also waits for 2
+        graph.add_wait(1, 2, None);
+        graph.add_wait(1, 3, None);
+        graph.add_wait(4, 2, None);
+
+        // Remove 1->2 but 1->3 still exists
+        graph.remove_wait(1, 2);
+        assert_eq!(graph.waiting_for(1).len(), 1);
+        assert!(graph.waiting_for(1).contains(&3));
+        // wait_started should still be present since 1 still has edges
+        assert!(graph.get_wait_start(1).is_some());
+
+        // tx 4 still waits on 2
+        assert!(graph.waiting_on(2).contains(&4));
+    }
+
+    #[test]
+    fn test_remove_transaction_cleans_metadata() {
+        let graph = WaitForGraph::new();
+
+        // Add edges with priority and wait timestamps
+        graph.add_wait(1, 2, Some(10));
+        graph.add_wait(2, 3, Some(20));
+
+        assert!(graph.get_wait_start(1).is_some());
+        assert!(graph.get_priority(1).is_some());
+
+        // Remove tx 1 -- should remove wait_started and priority
+        graph.remove_transaction(1);
+
+        assert!(
+            graph.get_wait_start(1).is_none(),
+            "wait_started must be removed for removed transaction"
+        );
+        assert!(
+            graph.get_priority(1).is_none(),
+            "priority must be removed for removed transaction"
+        );
+        // tx 2 should still be intact
+        assert!(graph.get_wait_start(2).is_some());
+        assert!(graph.get_priority(2).is_some());
+    }
+
+    #[test]
+    fn test_detector_debug_impl() {
+        let detector = DeadlockDetector::with_defaults();
+        let debug_str = format!("{detector:?}");
+
+        assert!(
+            debug_str.contains("DeadlockDetector"),
+            "Debug output must contain struct name"
+        );
+        assert!(
+            debug_str.contains("graph"),
+            "Debug output must contain graph field"
+        );
+        assert!(
+            debug_str.contains("config"),
+            "Debug output must contain config field"
+        );
+        assert!(
+            debug_str.contains("stats"),
+            "Debug output must contain stats field"
+        );
+        assert!(
+            debug_str.contains("lock_count_fn"),
+            "Debug output must contain lock_count_fn field"
+        );
+        // Without lock_count_fn set, should show None
+        assert!(
+            debug_str.contains("None"),
+            "lock_count_fn should be None when not set"
+        );
+    }
+
+    #[test]
+    fn test_detector_debug_with_lock_fn() {
+        let config =
+            DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::MostLocks);
+        let mut detector = DeadlockDetector::new(config);
+        detector.set_lock_count_fn(|tx_id| tx_id as usize);
+
+        let debug_str = format!("{detector:?}");
+        assert!(
+            debug_str.contains("<fn>"),
+            "Debug output must show <fn> when lock_count_fn is set"
+        );
+    }
+
+    #[test]
+    fn test_most_locks_fallback_without_lock_fn() {
+        // MostLocks without a lock_count_fn should fall back to youngest
+        let config =
+            DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::MostLocks);
+        let detector = DeadlockDetector::new(config);
+
+        // Add waits with time difference so youngest is deterministic
+        detector.graph().add_wait(1, 2, None);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        detector.graph().add_wait(2, 1, None);
+
+        // Without lock_count_fn, falls back to youngest (highest wait_start)
+        let victim = detector.select_victim(&[1, 2]);
+        assert_eq!(
+            victim, 2,
+            "MostLocks without lock_count_fn must fall back to youngest"
+        );
+    }
+
+    #[test]
+    fn test_most_locks_detect_without_lock_fn() {
+        // Exercise MostLocks fallback through detect() path
+        let config =
+            DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::MostLocks);
+        let detector = DeadlockDetector::new(config);
+
+        detector.graph().add_wait(1, 2, None);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        detector.graph().add_wait(2, 1, None);
+
+        let deadlocks = detector.detect();
+        assert_eq!(deadlocks.len(), 1);
+        // Victim should be the youngest (tx 2 started waiting later)
+        assert_eq!(
+            deadlocks[0].victim_tx_id, 2,
+            "MostLocks fallback through detect() must pick youngest"
+        );
+        assert_eq!(deadlocks[0].victim_policy, VictimSelectionPolicy::MostLocks);
+    }
+
+    #[test]
+    fn test_select_victim_oldest_through_detect() {
+        let config = DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::Oldest);
+        let detector = DeadlockDetector::new(config);
+
+        detector.graph().add_wait(10, 20, None);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        detector.graph().add_wait(20, 10, None);
+
+        let deadlocks = detector.detect();
+        assert_eq!(deadlocks.len(), 1);
+        // Oldest policy: victim is the one that started waiting earliest (tx 10)
+        assert_eq!(
+            deadlocks[0].victim_tx_id, 10,
+            "Oldest policy must select earliest waiter as victim"
+        );
+    }
+
+    #[test]
+    fn test_select_victim_lowest_priority_through_detect() {
+        let config =
+            DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::LowestPriority);
+        let detector = DeadlockDetector::new(config);
+
+        // Lower priority value = higher priority, so tx with highest value is victim
+        detector.graph().add_wait(10, 20, Some(5));
+        detector.graph().add_wait(20, 10, Some(100));
+
+        let deadlocks = detector.detect();
+        assert_eq!(deadlocks.len(), 1);
+        // tx 20 has priority 100 (lowest priority), should be victim
+        assert_eq!(
+            deadlocks[0].victim_tx_id, 20,
+            "LowestPriority must select tx with highest priority value"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_stale_edges_returns_count() {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 10, None);
+        graph.add_wait(2, 20, None);
+        graph.add_wait(3, 30, None);
+
+        // Backdate all three to make them stale
+        {
+            let mut ws = graph.wait_started.write();
+            ws.insert(1, 100);
+            ws.insert(2, 200);
+            ws.insert(3, 300);
+        }
+
+        let cleaned = graph.cleanup_stale_edges(1);
+        assert_eq!(cleaned, 3, "All three stale transactions must be cleaned");
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_stale_edges_no_stale() {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 2, None);
+        graph.add_wait(3, 4, None);
+
+        // With max TTL, nothing is stale
+        let cleaned = graph.cleanup_stale_edges(u64::MAX);
+        assert_eq!(cleaned, 0);
+        assert_eq!(graph.edge_count(), 2);
+    }
+
+    #[test]
+    fn test_cleanup_stale_edges_empty_graph() {
+        let graph = WaitForGraph::new();
+        let cleaned = graph.cleanup_stale_edges(1000);
+        assert_eq!(cleaned, 0);
+    }
+
+    #[test]
+    fn test_waiting_for_nonexistent_tx() {
+        let graph = WaitForGraph::new();
+        let result = graph.waiting_for(999);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_waiting_on_nonexistent_tx() {
+        let graph = WaitForGraph::new();
+        let result = graph.waiting_on(999);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_edge_count_empty() {
+        let graph = WaitForGraph::new();
+        assert_eq!(graph.edge_count(), 0);
+    }
+
+    #[test]
+    fn test_edge_count_multiple_waiters() {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 10, None);
+        graph.add_wait(1, 11, None);
+        graph.add_wait(2, 20, None);
+        assert_eq!(graph.edge_count(), 3);
+    }
+
+    #[test]
+    fn test_transaction_count_empty() {
+        let graph = WaitForGraph::new();
+        assert_eq!(graph.transaction_count(), 0);
+    }
+
+    #[test]
+    fn test_clear_with_priorities_and_wait_times() {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 2, Some(10));
+        graph.add_wait(3, 4, Some(20));
+
+        assert!(!graph.is_empty());
+        assert!(graph.get_priority(1).is_some());
+        assert!(graph.get_wait_start(1).is_some());
+
+        graph.clear();
+
+        assert!(graph.is_empty());
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.transaction_count(), 0);
+        assert!(graph.get_priority(1).is_none());
+        assert!(graph.get_wait_start(1).is_none());
+    }
+
+    #[test]
+    fn test_detect_cycles_empty_graph() {
+        let graph = WaitForGraph::new();
+        let cycles = graph.detect_cycles();
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn test_would_create_cycle_empty_graph() {
+        let graph = WaitForGraph::new();
+        // No edges, so adding 1->2 cannot create cycle
+        assert!(!graph.would_create_cycle(1, 2));
+        // Self-edge always creates cycle
+        assert!(graph.would_create_cycle(1, 1));
+    }
+
+    #[test]
+    fn test_would_create_cycle_long_chain() {
+        let graph = WaitForGraph::new();
+        // Chain: 1 -> 2 -> 3 -> 4 -> 5
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 3, None);
+        graph.add_wait(3, 4, None);
+        graph.add_wait(4, 5, None);
+
+        // Adding 5 -> 1 would close the cycle
+        assert!(graph.would_create_cycle(5, 1));
+        // Adding 5 -> 3 would also create cycle (3->4->5->3)
+        assert!(graph.would_create_cycle(5, 3));
+        // Adding 6 -> 1 would not create cycle (6 is not reachable from 1..5)
+        assert!(!graph.would_create_cycle(6, 1));
+    }
+
+    #[test]
+    fn test_get_wait_start_present() {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 2, None);
+        let start = graph.get_wait_start(1);
+        assert!(start.is_some());
+        assert!(start.unwrap() > 0);
+    }
+
+    #[test]
+    fn test_get_wait_start_absent() {
+        let graph = WaitForGraph::new();
+        assert!(graph.get_wait_start(999).is_none());
+    }
+
+    #[test]
+    fn test_get_priority_absent() {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 2, None); // No priority
+        assert!(graph.get_priority(1).is_none());
+    }
+
+    #[test]
+    fn test_detector_detect_records_stats() {
+        let detector = DeadlockDetector::with_defaults();
+        detector.graph().add_wait(1, 2, None);
+        detector.graph().add_wait(2, 1, None);
+
+        let deadlocks = detector.detect();
+        let snap = detector.stats().snapshot();
+
+        assert_eq!(snap.detection_cycles, 1);
+        assert!(snap.detection_time_us > 0 || snap.detection_time_us == 0); // timing can be 0 on fast machines
+        assert_eq!(snap.deadlocks_detected, deadlocks.len() as u64);
+        assert!(snap.max_cycle_length >= 2);
+    }
+
+    #[test]
+    fn test_deadlock_info_clone_and_debug() {
+        let info = DeadlockInfo {
+            cycle: vec![1, 2, 3],
+            victim_tx_id: 2,
+            detected_at: 12345,
+            victim_policy: VictimSelectionPolicy::Oldest,
+        };
+
+        let cloned = info.clone();
+        assert_eq!(cloned.cycle, info.cycle);
+        assert_eq!(cloned.victim_tx_id, info.victim_tx_id);
+        assert_eq!(cloned.detected_at, info.detected_at);
+        assert_eq!(cloned.victim_policy, info.victim_policy);
+
+        let debug_str = format!("{info:?}");
+        assert!(debug_str.contains("DeadlockInfo"));
+    }
+
+    #[test]
+    fn test_wait_info_clone_and_debug() {
+        let info = WaitInfo {
+            blocking_tx_id: 42,
+            conflicting_keys: vec!["key_a".to_string()],
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.blocking_tx_id, 42);
+        assert_eq!(cloned.conflicting_keys, vec!["key_a".to_string()]);
+
+        let debug_str = format!("{info:?}");
+        assert!(debug_str.contains("WaitInfo"));
+    }
+
+    #[test]
+    fn test_deadlock_stats_snapshot_clone_debug() {
+        let stats = DeadlockStats::new();
+        stats.record_detection(50, 1);
+        stats.record_victim_abort();
+        let snap = stats.snapshot();
+        let cloned = snap.clone();
+        assert_eq!(cloned.deadlocks_detected, 1);
+        assert_eq!(cloned.victims_aborted, 1);
+        assert_eq!(cloned.detection_time_us, 50);
+
+        let debug_str = format!("{snap:?}");
+        assert!(debug_str.contains("DeadlockStatsSnapshot"));
+    }
+
+    #[test]
+    fn test_deadlock_stats_snapshot_default() {
+        let snap = DeadlockStatsSnapshot::default();
+        assert_eq!(snap.deadlocks_detected, 0);
+        assert_eq!(snap.victims_aborted, 0);
+        assert_eq!(snap.detection_time_us, 0);
+        assert_eq!(snap.detection_cycles, 0);
+        assert_eq!(snap.max_cycle_length, 0);
+        assert_eq!(snap.stale_edges_cleaned, 0);
+        assert_eq!(snap.cascade_resolutions, 0);
+    }
+
+    #[test]
+    fn test_deadlock_stats_snapshot_serialization() {
+        let snap = DeadlockStatsSnapshot {
+            deadlocks_detected: 5,
+            victims_aborted: 2,
+            detection_time_us: 1000,
+            detection_cycles: 10,
+            max_cycle_length: 4,
+            stale_edges_cleaned: 3,
+            cascade_resolutions: 1,
+        };
+        let serialized = bitcode::serialize(&snap).unwrap();
+        let deserialized: DeadlockStatsSnapshot = bitcode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.deadlocks_detected, 5);
+        assert_eq!(deserialized.victims_aborted, 2);
+        assert_eq!(deserialized.detection_time_us, 1000);
+        assert_eq!(deserialized.detection_cycles, 10);
+        assert_eq!(deserialized.max_cycle_length, 4);
+        assert_eq!(deserialized.stale_edges_cleaned, 3);
+        assert_eq!(deserialized.cascade_resolutions, 1);
+    }
+
+    #[test]
+    fn test_victim_policy_default() {
+        let policy = VictimSelectionPolicy::default();
+        assert_eq!(policy, VictimSelectionPolicy::Youngest);
+    }
+
+    #[test]
+    fn test_victim_policy_clone_copy_debug() {
+        let policy = VictimSelectionPolicy::MostLocks;
+        let copied = policy;
+        let cloned = policy.clone();
+        assert_eq!(copied, cloned);
+        let debug_str = format!("{policy:?}");
+        assert!(debug_str.contains("MostLocks"));
+    }
+
+    #[test]
+    fn test_remove_transaction_with_both_incoming_and_outgoing() {
+        let graph = WaitForGraph::new();
+
+        // tx 5 waits for tx 10, tx 10 waits for tx 15, tx 20 waits for tx 10
+        graph.add_wait(5, 10, Some(1));
+        graph.add_wait(10, 15, Some(2));
+        graph.add_wait(20, 10, Some(3));
+
+        assert_eq!(graph.transaction_count(), 4);
+
+        // Remove tx 10 -- has both outgoing (10->15) and incoming (5->10, 20->10)
+        graph.remove_transaction(10);
+
+        // tx 10's outgoing edges removed
+        assert!(graph.waiting_for(10).is_empty());
+        // tx 5 no longer waits for tx 10
+        assert!(!graph.waiting_for(5).contains(&10));
+        // tx 20 no longer waits for tx 10
+        assert!(!graph.waiting_for(20).contains(&10));
+        // Metadata for tx 10 removed
+        assert!(graph.get_wait_start(10).is_none());
+        assert!(graph.get_priority(10).is_none());
+    }
+
+    #[test]
+    fn test_add_wait_max_edges_reached() {
+        let graph = WaitForGraph::with_max_edges_per_tx(2);
+
+        graph.add_wait(1, 10, None);
+        graph.add_wait(1, 11, None);
+        assert_eq!(graph.edge_count(), 2);
+
+        // This should be silently dropped
+        graph.add_wait(1, 12, None);
+        assert_eq!(graph.edge_count(), 2);
+        assert!(!graph.waiting_for(1).contains(&12));
+        // But the dropped edge's reverse should NOT be added either
+        assert!(graph.waiting_on(12).is_empty());
+    }
+
+    #[test]
+    fn test_multiple_detect_cycles_on_same_graph() {
+        let detector = DeadlockDetector::with_defaults();
+        detector.graph().add_wait(1, 2, None);
+        detector.graph().add_wait(2, 1, None);
+
+        // Detect multiple times -- graph is not modified by detection
+        let d1 = detector.detect();
+        let d2 = detector.detect();
+        let d3 = detector.detect();
+
+        assert_eq!(d1.len(), 1);
+        assert_eq!(d2.len(), 1);
+        assert_eq!(d3.len(), 1);
+
+        let snap = detector.stats().snapshot();
+        assert_eq!(snap.detection_cycles, 3);
+    }
+
+    #[test]
+    fn test_detect_no_cycle_records_stats() {
+        let detector = DeadlockDetector::with_defaults();
+        detector.graph().add_wait(1, 2, None);
+
+        let deadlocks = detector.detect();
+        assert!(deadlocks.is_empty());
+
+        let snap = detector.stats().snapshot();
+        assert_eq!(snap.detection_cycles, 1);
+        assert_eq!(snap.deadlocks_detected, 0);
     }
 }

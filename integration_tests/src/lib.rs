@@ -12,7 +12,10 @@
 pub mod chaos;
 pub mod dst;
 pub mod jepsen;
+pub mod jepsen_client;
 pub mod linearizability;
+pub mod network_proxy;
+pub mod process_jepsen;
 
 use std::sync::Arc;
 

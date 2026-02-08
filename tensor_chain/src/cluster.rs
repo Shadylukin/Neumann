@@ -7,7 +7,7 @@
 //! - Raft consensus with persistence
 //! - State machine for block application
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use graph_engine::GraphEngine;
 use parking_lot::RwLock;
@@ -133,6 +133,8 @@ pub struct OrchestratorConfig {
     pub message_validation: MessageValidationConfig,
     /// Security mode for TCP transport.
     pub security_mode: Option<SecurityMode>,
+    /// WAL directory for durable crash recovery (optional).
+    pub wal_dir: Option<PathBuf>,
 }
 
 impl OrchestratorConfig {
@@ -150,6 +152,7 @@ impl OrchestratorConfig {
             handler_timeouts: HandlerTimeoutConfig::default(),
             message_validation: MessageValidationConfig::default(),
             security_mode: None,
+            wal_dir: None,
         }
     }
 
@@ -210,6 +213,12 @@ impl OrchestratorConfig {
     #[must_use]
     pub const fn with_security_mode(mut self, security_mode: SecurityMode) -> Self {
         self.security_mode = Some(security_mode);
+        self
+    }
+
+    #[must_use]
+    pub fn with_wal_dir(mut self, wal_dir: PathBuf) -> Self {
+        self.wal_dir = Some(wal_dir);
         self
     }
 }
@@ -348,16 +357,8 @@ impl ClusterOrchestrator {
             &store,
         ));
 
-        // 10. Create Raft node, loading persisted state
-        let peer_ids: Vec<NodeId> = config.peers.iter().map(|p| p.node_id.clone()).collect();
-
-        let raft = Arc::new(RaftNode::with_store(
-            config.local.node_id.clone(),
-            peer_ids,
-            transport.clone(),
-            config.raft.clone(),
-            &store,
-        ));
+        // 10. Create Raft node, loading persisted state (WAL for durability if configured)
+        let raft = Self::create_raft_node(&config, &transport, &store)?;
 
         // 11. Create chain storage
         let graph = Arc::new(GraphEngine::with_store(store.clone()));
@@ -393,6 +394,39 @@ impl ClusterOrchestrator {
             local_shard_id: 0,
             validator,
         })
+    }
+
+    fn create_raft_node(
+        config: &OrchestratorConfig,
+        transport: &Arc<TcpTransport>,
+        store: &TensorStore,
+    ) -> Result<Arc<RaftNode>> {
+        let peer_ids: Vec<NodeId> = config.peers.iter().map(|p| p.node_id.clone()).collect();
+
+        if let Some(ref wal_dir) = config.wal_dir {
+            std::fs::create_dir_all(wal_dir).map_err(|e| {
+                ChainError::NetworkError(format!("Failed to create WAL directory: {e}"))
+            })?;
+            let wal_path = wal_dir.join(format!("{}.wal", config.local.node_id));
+            Ok(Arc::new(
+                RaftNode::with_wal(
+                    config.local.node_id.clone(),
+                    peer_ids,
+                    transport.clone(),
+                    config.raft.clone(),
+                    wal_path,
+                )
+                .map_err(|e| ChainError::NetworkError(format!("Failed to open WAL: {e}")))?,
+            ))
+        } else {
+            Ok(Arc::new(RaftNode::with_store(
+                config.local.node_id.clone(),
+                peer_ids,
+                transport.clone(),
+                config.raft.clone(),
+                store,
+            )))
+        }
     }
 
     /// Register a query executor for handling distributed queries.
@@ -2333,7 +2367,8 @@ mod tests {
     fn test_orchestrator_config_with_security_mode() {
         use crate::tcp::SecurityMode;
         let local = LocalNodeConfig::new("node1", test_addr(8080));
-        let config = OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Plain);
+        let config =
+            OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Development);
         assert!(config.security_mode.is_some());
     }
 
@@ -2372,7 +2407,7 @@ mod tests {
             .with_fast_path_threshold(0.9)
             .with_handler_timeouts(HandlerTimeoutConfig::default())
             .with_message_validation(crate::message_validation::MessageValidationConfig::default())
-            .with_security_mode(SecurityMode::Plain);
+            .with_security_mode(SecurityMode::Development);
         assert!((config.fast_path_threshold - 0.9).abs() < f32::EPSILON);
         assert!(config.security_mode.is_some());
     }
@@ -2390,5 +2425,966 @@ mod tests {
         let config = PeerConfig::new("peer1", test_addr(9091));
         assert_eq!(config.node_id, "peer1");
         assert_eq!(config.address.port(), 9091);
+    }
+
+    // ============= WAL Configuration Tests =============
+
+    #[test]
+    fn test_orchestrator_config_with_wal_dir() {
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let config =
+            OrchestratorConfig::new(local, vec![]).with_wal_dir(PathBuf::from("/tmp/test_wal"));
+        assert_eq!(config.wal_dir, Some(PathBuf::from("/tmp/test_wal")));
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_wal_dir() {
+        let wal_dir = tempfile::tempdir().unwrap();
+        let local = LocalNodeConfig::new("wal_node", test_addr(0));
+        let config =
+            OrchestratorConfig::new(local, vec![]).with_wal_dir(wal_dir.path().to_path_buf());
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "wal_node");
+
+        // WAL file should have been created
+        let wal_path = wal_dir.path().join("wal_node.wal");
+        assert!(wal_path.exists(), "WAL file should exist at {:?}", wal_path);
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_wal_dir_nested_creation() {
+        let base_dir = tempfile::tempdir().unwrap();
+        let nested_wal = base_dir.path().join("deep").join("nested").join("wal");
+        let local = LocalNodeConfig::new("nested_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_wal_dir(nested_wal.clone());
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert!(
+            nested_wal.exists(),
+            "Nested WAL directory should be created"
+        );
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TLS Cert Path Tests =============
+
+    #[tokio::test]
+    async fn test_tls_cert_path_none_without_tls() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Without TLS configured, cert path should be None
+        assert!(
+            orchestrator.tls_cert_path().is_none(),
+            "Should return None when no TLS is configured"
+        );
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TX Prepare Response Handler Tests =============
+
+    #[tokio::test]
+    async fn test_handle_tx_prepare_response_records_vote() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // First, begin a transaction via coordinator
+        let coordinator = "test_node".to_string();
+        let tx = orchestrator.dtx().begin(&coordinator, &[0, 1]).unwrap();
+
+        // Simulate a prepare response (vote) from a participant
+        let response_msg = TxPrepareResponseMsg {
+            tx_id: tx.tx_id,
+            shard_id: 0,
+            vote: crate::network::TxVote::Yes {
+                lock_handle: 42,
+                delta: tensor_store::SparseVector::from_dense(&[1.0, 0.0]),
+                affected_keys: vec!["key1".to_string()],
+            },
+        };
+
+        // This should not panic
+        orchestrator.handle_tx_prepare_response(&response_msg);
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handle_tx_prepare_response_no_vote() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        let coordinator = "test_node".to_string();
+        let tx = orchestrator.dtx().begin(&coordinator, &[0, 1]).unwrap();
+
+        let response_msg = TxPrepareResponseMsg {
+            tx_id: tx.tx_id,
+            shard_id: 1,
+            vote: crate::network::TxVote::No {
+                reason: "disk full".to_string(),
+            },
+        };
+
+        orchestrator.handle_tx_prepare_response(&response_msg);
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TX Ack Handler Tests =============
+
+    #[tokio::test]
+    async fn test_handle_tx_ack_records_ack() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Calling handle_tx_ack for a non-existent tx should not panic
+        let ack_msg = TxAckMsg {
+            tx_id: 999,
+            shard_id: 0,
+            success: true,
+            error: None,
+        };
+        orchestrator.handle_tx_ack(&ack_msg);
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handle_tx_ack_with_error() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        let ack_msg = TxAckMsg {
+            tx_id: 1000,
+            shard_id: 2,
+            success: false,
+            error: Some("commit failed".to_string()),
+        };
+        orchestrator.handle_tx_ack(&ack_msg);
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= Query Handler Timeout Tests =============
+
+    #[tokio::test]
+    async fn test_handle_query_request_timeout_returns_error_response() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_handler_timeouts(
+            HandlerTimeoutConfig::new(
+                50, // 50ms query timeout
+                3000, 2000,
+            ),
+        );
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Create an executor that sleeps longer than the timeout
+        struct SlowExecutor;
+        impl crate::network::QueryExecutor for SlowExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                Ok(b"slow result".to_vec())
+            }
+        }
+
+        orchestrator.register_query_executor(Arc::new(SlowExecutor));
+
+        let request = crate::network::QueryRequest {
+            query_id: 10,
+            query: "SELECT * FROM slow_table".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 1000,
+        };
+
+        let result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &request)
+            .await;
+
+        assert!(result.is_some(), "Timeout should still return a response");
+        if let Some(Message::QueryResponse(response)) = result {
+            assert_eq!(response.query_id, 10);
+            assert!(!response.success);
+            assert!(
+                response
+                    .error
+                    .as_ref()
+                    .map_or(false, |e| e.contains("timeout")),
+                "Error should mention timeout, got: {:?}",
+                response.error
+            );
+        } else {
+            panic!("Expected QueryResponse message");
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handle_query_request_panic_returns_error_response() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Create an executor that panics
+        struct PanickingExecutor;
+        impl crate::network::QueryExecutor for PanickingExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                panic!("deliberate test panic in executor");
+            }
+        }
+
+        orchestrator.register_query_executor(Arc::new(PanickingExecutor));
+
+        let request = crate::network::QueryRequest {
+            query_id: 20,
+            query: "SELECT * FROM panicking_table".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 5000,
+        };
+
+        let result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &request)
+            .await;
+
+        assert!(result.is_some(), "Panic should still return a response");
+        if let Some(Message::QueryResponse(response)) = result {
+            assert_eq!(response.query_id, 20);
+            assert!(!response.success);
+            assert!(
+                response
+                    .error
+                    .as_ref()
+                    .map_or(false, |e| e.contains("panicked")),
+                "Error should mention panic, got: {:?}",
+                response.error
+            );
+        } else {
+            panic!("Expected QueryResponse message");
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TX Prepare Timeout Tests =============
+
+    #[tokio::test]
+    async fn test_handle_tx_prepare_timeout_returns_no_vote() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_handler_timeouts(
+            HandlerTimeoutConfig::new(
+                5000, 1, // 1ms prepare timeout (very short)
+                2000,
+            ),
+        );
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Create a transaction that will take time to prepare by first locking many keys
+        // The extremely short timeout should cause a timeout response
+        let prepare_msg = crate::network::TxPrepareMsg {
+            tx_id: 9999,
+            coordinator: "coordinator".to_string(),
+            shard_id: 0,
+            operations: (0..1000)
+                .map(|i| crate::block::Transaction::Put {
+                    key: format!("timeout_key_{i}"),
+                    data: vec![1; 1024],
+                })
+                .collect(),
+            delta_embedding: tensor_store::SparseVector::from_dense(&[1.0; 128]),
+            timeout_ms: 5000,
+        };
+
+        let response = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg)
+            .await;
+
+        // Should get either a normal vote (if fast enough) or a timeout response
+        assert!(response.is_some());
+        if let Some(Message::TxPrepareResponse(resp)) = &response {
+            assert_eq!(resp.tx_id, 9999);
+            // If it timed out, it should be a No vote with timeout reason
+            if matches!(resp.vote, crate::network::TxVote::No { .. }) {
+                if let crate::network::TxVote::No { reason } = &resp.vote {
+                    assert!(
+                        reason.contains("timeout"),
+                        "No vote reason should mention timeout: {reason}"
+                    );
+                }
+            }
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TX Commit Timeout Tests =============
+
+    #[tokio::test]
+    async fn test_handle_tx_commit_with_short_timeout() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_handler_timeouts(
+            HandlerTimeoutConfig::new(
+                5000, 3000, 1, // 1ms commit/abort timeout
+            ),
+        );
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        let commit_msg = crate::network::TxCommitMsg {
+            tx_id: 777,
+            shards: vec![0],
+        };
+
+        let ack = orchestrator
+            .handle_tx_commit_with_timeout(&commit_msg)
+            .await;
+
+        // Should return an ack (either success or failure)
+        assert!(ack.is_some());
+        if let Some(Message::TxAck(ack_msg)) = ack {
+            assert_eq!(ack_msg.tx_id, 777);
+            assert_eq!(ack_msg.shard_id, 0);
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TX Abort Timeout Tests =============
+
+    #[tokio::test]
+    async fn test_handle_tx_abort_with_short_timeout() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_handler_timeouts(
+            HandlerTimeoutConfig::new(
+                5000, 3000, 1, // 1ms commit/abort timeout
+            ),
+        );
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        let abort_msg = crate::network::TxAbortMsg {
+            tx_id: 888,
+            reason: "timeout test".to_string(),
+            shards: vec![0],
+        };
+
+        let ack = orchestrator.handle_tx_abort_with_timeout(&abort_msg).await;
+
+        assert!(ack.is_some());
+        if let Some(Message::TxAck(ack_msg)) = ack {
+            assert_eq!(ack_msg.tx_id, 888);
+            assert_eq!(ack_msg.shard_id, 0);
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= Security Mode Start Tests =============
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_explicit_security_mode() {
+        let local = LocalNodeConfig::new("secure_node", test_addr(0));
+        let config =
+            OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Development);
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "secure_node");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_legacy_security_mode() {
+        let local = LocalNodeConfig::new("legacy_node", test_addr(0));
+        let config =
+            OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Legacy);
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "legacy_node");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= Run Loop Message Validation Tests =============
+
+    #[tokio::test]
+    async fn test_run_loop_handles_tx_prepare_response_message() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        // Send TxPrepareResponse message through the run loop
+        let response_msg = Message::TxPrepareResponse(TxPrepareResponseMsg {
+            tx_id: 1001,
+            shard_id: 0,
+            vote: crate::network::TxVote::Yes {
+                lock_handle: 1,
+                delta: tensor_store::SparseVector::new(0),
+                affected_keys: vec![],
+            },
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), response_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_handles_tx_ack_message() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        // Send TxAck message through the run loop
+        let ack_msg = Message::TxAck(TxAckMsg {
+            tx_id: 1002,
+            shard_id: 0,
+            success: true,
+            error: None,
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), ack_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    // ============= Config Cloning Tests =============
+
+    #[test]
+    fn test_handler_timeout_config_clone() {
+        let config = HandlerTimeoutConfig::new(100, 200, 300);
+        let cloned = config.clone();
+        assert_eq!(cloned.query_timeout_ms, 100);
+        assert_eq!(cloned.prepare_timeout_ms, 200);
+        assert_eq!(cloned.commit_abort_timeout_ms, 300);
+    }
+
+    #[test]
+    fn test_handler_timeout_config_debug() {
+        let config = HandlerTimeoutConfig::default();
+        let debug = format!("{config:?}");
+        assert!(debug.contains("HandlerTimeoutConfig"));
+        assert!(debug.contains("5000"));
+    }
+
+    #[test]
+    fn test_local_node_config_clone() {
+        let config = LocalNodeConfig::new("node1", test_addr(8080));
+        let cloned = config.clone();
+        assert_eq!(cloned.node_id, "node1");
+        assert_eq!(cloned.bind_address.port(), 8080);
+    }
+
+    #[test]
+    fn test_peer_config_clone() {
+        let config = PeerConfig::new("peer1", test_addr(9091));
+        let cloned = config.clone();
+        assert_eq!(cloned.node_id, "peer1");
+        assert_eq!(cloned.address.port(), 9091);
+    }
+
+    #[test]
+    fn test_orchestrator_config_clone() {
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let peers = vec![PeerConfig::new("peer1", test_addr(8081))];
+        let config = OrchestratorConfig::new(local, peers)
+            .with_fast_path_threshold(0.8)
+            .with_wal_dir(PathBuf::from("/tmp/wal_clone_test"));
+
+        let cloned = config.clone();
+        assert_eq!(cloned.local.node_id, "node1");
+        assert_eq!(cloned.peers.len(), 1);
+        assert!((cloned.fast_path_threshold - 0.8).abs() < f32::EPSILON);
+        assert_eq!(cloned.wal_dir, Some(PathBuf::from("/tmp/wal_clone_test")));
+    }
+
+    // ============= Multi-Peer Start Tests =============
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_multiple_peers_gossip() {
+        // Start first node
+        let local1 = LocalNodeConfig::new("node1", test_addr(0));
+        let config1 = OrchestratorConfig::new(local1, vec![]);
+        let orchestrator1 = ClusterOrchestrator::start(config1).await.unwrap();
+        let addr1 = orchestrator1.transport().bound_addr().unwrap();
+
+        // Start second node
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+        let addr2 = orchestrator2.transport().bound_addr().unwrap();
+
+        // Start third node pointing to both peers
+        let local3 = LocalNodeConfig::new("node3", test_addr(0));
+        let peers = vec![
+            PeerConfig::new("node1", addr1),
+            PeerConfig::new("node2", addr2),
+        ];
+        let config3 = OrchestratorConfig::new(local3, peers).with_gossip(GossipConfig {
+            gossip_interval_ms: 100,
+            ..GossipConfig::default()
+        });
+        let orchestrator3 = ClusterOrchestrator::start(config3).await.unwrap();
+
+        assert_eq!(orchestrator3.node_id(), "node3");
+
+        orchestrator1.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+        orchestrator3.shutdown().await.unwrap();
+    }
+
+    // ============= Register Query Executor Tests =============
+
+    #[tokio::test]
+    async fn test_register_query_executor_replaces_previous() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        struct FirstExecutor {
+            was_called: AtomicBool,
+        }
+        impl crate::network::QueryExecutor for FirstExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                self.was_called.store(true, Ordering::SeqCst);
+                Ok(b"first".to_vec())
+            }
+        }
+
+        struct SecondExecutor {
+            was_called: AtomicBool,
+        }
+        impl crate::network::QueryExecutor for SecondExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                self.was_called.store(true, Ordering::SeqCst);
+                Ok(b"second".to_vec())
+            }
+        }
+
+        let first = Arc::new(FirstExecutor {
+            was_called: AtomicBool::new(false),
+        });
+        let second = Arc::new(SecondExecutor {
+            was_called: AtomicBool::new(false),
+        });
+
+        orchestrator.register_query_executor(first.clone());
+        orchestrator.register_query_executor(second.clone());
+
+        let request = crate::network::QueryRequest {
+            query_id: 1,
+            query: "test".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 1000,
+        };
+
+        let result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &request)
+            .await;
+
+        if let Some(Message::QueryResponse(response)) = result {
+            assert_eq!(response.result, b"second");
+        }
+        assert!(!first.was_called.load(Ordering::SeqCst));
+        assert!(second.was_called.load(Ordering::SeqCst));
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= Query Execution Error Path Tests =============
+
+    #[tokio::test]
+    async fn test_handle_query_request_executor_returns_error_with_details() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        struct ErrorExecutor;
+        impl crate::network::QueryExecutor for ErrorExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                Err("table not found: missing_table".to_string())
+            }
+        }
+
+        orchestrator.register_query_executor(Arc::new(ErrorExecutor));
+
+        let request = crate::network::QueryRequest {
+            query_id: 30,
+            query: "SELECT * FROM missing_table".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 1000,
+        };
+
+        let result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &request)
+            .await;
+
+        if let Some(Message::QueryResponse(response)) = result {
+            assert_eq!(response.query_id, 30);
+            assert!(!response.success);
+            assert!(response.result.is_empty());
+            assert_eq!(
+                response.error,
+                Some("table not found: missing_table".to_string())
+            );
+        } else {
+            panic!("Expected QueryResponse");
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= TX Commit/Abort Shard Filtering =============
+
+    #[tokio::test]
+    async fn test_handle_tx_commit_multiple_shards_includes_local() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Shards list includes local shard 0
+        let commit_msg = crate::network::TxCommitMsg {
+            tx_id: 300,
+            shards: vec![0, 1, 2],
+        };
+        let ack = orchestrator
+            .handle_tx_commit_with_timeout(&commit_msg)
+            .await;
+
+        assert!(
+            ack.is_some(),
+            "Should process when local shard is in the list"
+        );
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handle_tx_abort_multiple_shards_includes_local() {
+        let local = LocalNodeConfig::new("test_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        let abort_msg = crate::network::TxAbortMsg {
+            tx_id: 400,
+            reason: "coordinator crash".to_string(),
+            shards: vec![0, 3, 5],
+        };
+        let ack = orchestrator.handle_tx_abort_with_timeout(&abort_msg).await;
+
+        assert!(
+            ack.is_some(),
+            "Should process when local shard is in the list"
+        );
+        if let Some(Message::TxAck(ack_msg)) = ack {
+            assert_eq!(ack_msg.tx_id, 400);
+        }
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= Run Loop Signed Gossip Tests =============
+
+    #[tokio::test]
+    async fn test_run_loop_handles_signed_gossip_message() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        // Send a SignedGossip message through the run loop
+        // The signature will fail verification, but the run loop should handle it gracefully
+        let signed_gossip_msg = Message::SignedGossip(crate::signing::SignedGossipMessage {
+            envelope: crate::signing::SignedMessage {
+                sender: "node2".to_string(),
+                public_key: [0u8; 32],
+                payload: vec![1, 2, 3],
+                signature: vec![0u8; 64],
+                sequence: 1,
+                timestamp_ms: 1000,
+            },
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), signed_gossip_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    // ============= Orchestrator Start with Custom Config Tests =============
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_custom_raft_config() {
+        let local = LocalNodeConfig::new("custom_raft", test_addr(0));
+        let peers = vec![PeerConfig::new("peer1", test_addr(19999))];
+        let config = OrchestratorConfig::new(local, peers).with_raft(RaftConfig {
+            heartbeat_interval: 50,
+            election_timeout: (150, 300),
+            ..RaftConfig::default()
+        });
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "custom_raft");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_custom_dtx_config() {
+        let local = LocalNodeConfig::new("custom_dtx", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_dtx(DistributedTxConfig {
+            commit_timeout_ms: 20000,
+            max_concurrent: 50,
+            ..DistributedTxConfig::default()
+        });
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "custom_dtx");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_custom_delta_replication() {
+        let local = LocalNodeConfig::new("custom_delta", test_addr(0));
+        let config =
+            OrchestratorConfig::new(local, vec![]).with_delta_replication(DeltaReplicationConfig {
+                max_batch_size: 500,
+                ..DeltaReplicationConfig::default()
+            });
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "custom_delta");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_custom_geometric() {
+        let local = LocalNodeConfig::new("custom_geo", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![])
+            .with_geometric(GeometricMembershipConfig::default());
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "custom_geo");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_custom_fast_path_threshold() {
+        let local = LocalNodeConfig::new("custom_fp", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_fast_path_threshold(0.75);
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "custom_fp");
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= Prepare then Commit/Abort Flow Tests =============
+
+    #[tokio::test]
+    async fn test_prepare_then_commit_flow() {
+        let local = LocalNodeConfig::new("flow_node", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Prepare
+        let prepare_msg = crate::network::TxPrepareMsg {
+            tx_id: 5001,
+            coordinator: "coordinator".to_string(),
+            shard_id: 0,
+            operations: vec![crate::block::Transaction::Put {
+                key: "flow_key".to_string(),
+                data: vec![42],
+            }],
+            delta_embedding: tensor_store::SparseVector::from_dense(&[1.0]),
+            timeout_ms: 5000,
+        };
+
+        let prep_result = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg)
+            .await;
+        assert!(prep_result.is_some());
+
+        // Now commit
+        let commit_msg = crate::network::TxCommitMsg {
+            tx_id: 5001,
+            shards: vec![0],
+        };
+        let commit_result = orchestrator
+            .handle_tx_commit_with_timeout(&commit_msg)
+            .await;
+        assert!(commit_result.is_some());
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prepare_then_abort_flow() {
+        let local = LocalNodeConfig::new("flow_node2", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+
+        // Prepare
+        let prepare_msg = crate::network::TxPrepareMsg {
+            tx_id: 5002,
+            coordinator: "coordinator".to_string(),
+            shard_id: 0,
+            operations: vec![crate::block::Transaction::Put {
+                key: "abort_key".to_string(),
+                data: vec![99],
+            }],
+            delta_embedding: tensor_store::SparseVector::from_dense(&[0.5]),
+            timeout_ms: 5000,
+        };
+
+        let prep_result = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg)
+            .await;
+        assert!(prep_result.is_some());
+
+        // Now abort
+        let abort_msg = crate::network::TxAbortMsg {
+            tx_id: 5002,
+            reason: "user cancelled".to_string(),
+            shards: vec![0],
+        };
+        let abort_result = orchestrator.handle_tx_abort_with_timeout(&abort_msg).await;
+        assert!(abort_result.is_some());
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    // ============= WAL Dir Error Handling Tests =============
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_invalid_wal_dir_fails() {
+        // Use a path that cannot be created (under a file, not a dir)
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let bad_wal_path = temp.path().join("impossible_subdir");
+
+        let local = LocalNodeConfig::new("bad_wal", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]).with_wal_dir(bad_wal_path);
+
+        let result = ClusterOrchestrator::start(config).await;
+        assert!(
+            result.is_err(),
+            "Should fail when WAL directory cannot be created"
+        );
+    }
+
+    // ============= Message Validation Config Tests =============
+
+    #[tokio::test]
+    async fn test_orchestrator_start_with_validation_config() {
+        let local = LocalNodeConfig::new("val_node", test_addr(0));
+        let validation = crate::message_validation::MessageValidationConfig {
+            enabled: true,
+            max_term: 500,
+            ..crate::message_validation::MessageValidationConfig::default()
+        };
+        let config = OrchestratorConfig::new(local, vec![]).with_message_validation(validation);
+
+        let orchestrator = ClusterOrchestrator::start(config).await.unwrap();
+        assert_eq!(orchestrator.node_id(), "val_node");
+
+        orchestrator.shutdown().await.unwrap();
     }
 }

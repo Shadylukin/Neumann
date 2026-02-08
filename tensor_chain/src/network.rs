@@ -4135,7 +4135,7 @@ mod tests {
     }
 
     #[test]
-    fn test_joint_config_has_joint_quorum() {
+    fn test_joint_config_has_joint_quorum_overlap() {
         let config = JointConfig::new(
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
             vec!["b".to_string(), "c".to_string(), "d".to_string()],
@@ -4207,20 +4207,25 @@ mod tests {
     }
 
     #[test]
-    fn test_log_entry_codebook() {
-        let change = CodebookChange::Replace(GlobalCodebookSnapshot::default());
+    fn test_log_entry_codebook_replace() {
+        use crate::codebook::GlobalCodebookSnapshot;
+        let change = CodebookChange::Replace {
+            snapshot: GlobalCodebookSnapshot::default(),
+        };
         let entry = LogEntry::codebook(1, 1, change);
         assert!(entry.is_codebook_change());
         assert!(!entry.is_config_change());
     }
 
     #[test]
-    fn test_log_entry_with_codebook_change() {
+    fn test_log_entry_with_codebook_change_replace() {
+        use crate::codebook::GlobalCodebookSnapshot;
         let entry = LogEntry::new(1, 1, Block::default());
         assert!(!entry.is_codebook_change());
 
-        let entry =
-            entry.with_codebook_change(CodebookChange::Replace(GlobalCodebookSnapshot::default()));
+        let entry = entry.with_codebook_change(CodebookChange::Replace {
+            snapshot: GlobalCodebookSnapshot::default(),
+        });
         assert!(entry.is_codebook_change());
     }
 
@@ -4310,5 +4315,395 @@ mod tests {
         votes.insert("c".to_string());
 
         assert!(config.has_quorum(&votes));
+    }
+
+    // =========================================================================
+    // Chaos Injection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_set_latency_global() {
+        let t = MemoryTransport::new("node1".to_string());
+
+        // Initially no latency
+        assert!(t.latency_ms.read().is_none());
+
+        // Set latency range
+        t.set_latency(Some((10, 50)));
+        let latency = *t.latency_ms.read();
+        assert_eq!(latency, Some((10, 50)));
+
+        // Clear latency
+        t.set_latency(None);
+        assert!(t.latency_ms.read().is_none());
+    }
+
+    #[test]
+    fn test_set_peer_latency_and_clear() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Initially empty
+        assert!(t.peer_latency_ms.read().is_empty());
+
+        // Set peer-specific latency
+        t.set_peer_latency(&peer, (5, 20));
+        assert_eq!(t.peer_latency_ms.read().get(&peer), Some(&(5, 20)));
+
+        // Clear peer-specific latency
+        t.clear_peer_latency(&peer);
+        assert!(t.peer_latency_ms.read().get(&peer).is_none());
+    }
+
+    #[test]
+    fn test_enable_disable_reordering() {
+        let t = MemoryTransport::new("node1".to_string());
+
+        // Initially disabled
+        assert!((*t.reorder_probability.read() - 0.0).abs() < f32::EPSILON);
+        assert_eq!(*t.max_reorder_delay_ms.read(), 0);
+        assert_eq!(t.reordered_message_count(), 0);
+
+        // Enable reordering
+        t.enable_reordering(0.5, 100);
+        assert!((*t.reorder_probability.read() - 0.5).abs() < f32::EPSILON);
+        assert_eq!(*t.max_reorder_delay_ms.read(), 100);
+
+        // Counter still zero since no messages sent
+        assert_eq!(t.reordered_message_count(), 0);
+
+        // Disable reordering
+        t.disable_reordering();
+        assert!((*t.reorder_probability.read() - 0.0).abs() < f32::EPSILON);
+        assert_eq!(*t.max_reorder_delay_ms.read(), 0);
+    }
+
+    #[test]
+    fn test_set_corruption_rate() {
+        let t = MemoryTransport::new("node1".to_string());
+
+        // Initially zero
+        assert!((*t.corruption_rate.read() - 0.0).abs() < f32::EPSILON);
+
+        // Set corruption rate
+        t.set_corruption_rate(0.3);
+        assert!((*t.corruption_rate.read() - 0.3).abs() < f32::EPSILON);
+
+        // Set to 1.0 (always corrupt)
+        t.set_corruption_rate(1.0);
+        assert!((*t.corruption_rate.read() - 1.0).abs() < f32::EPSILON);
+
+        // Set back to 0
+        t.set_corruption_rate(0.0);
+        assert!((*t.corruption_rate.read() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_corrupted_message_count_starts_zero() {
+        let t = MemoryTransport::new("node1".to_string());
+        assert_eq!(t.corrupted_message_count(), 0);
+    }
+
+    #[test]
+    fn test_set_link_quality_and_clear() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Initially 0.0 drop rate
+        assert!((t.link_drop_rate(&peer) - 0.0).abs() < f32::EPSILON);
+
+        // Set link quality (50% drop rate)
+        t.set_link_quality(&peer, 0.5);
+        assert!((t.link_drop_rate(&peer) - 0.5).abs() < f32::EPSILON);
+
+        // Clear link quality
+        t.clear_link_quality(&peer);
+        assert!((t.link_drop_rate(&peer) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_chaos_stats_initial() {
+        let t = MemoryTransport::new("node1".to_string());
+        let stats = t.chaos_stats();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.reordered_messages, 0);
+        assert_eq!(stats.corrupted_messages, 0);
+    }
+
+    #[tokio::test]
+    async fn test_reset_chaos_counters() {
+        let t = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t.connect_to("node2".to_string(), t2.sender());
+
+        // Generate some dropped messages via partition
+        t.partition(&"node2".to_string());
+        let _ = t
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        let _ = t
+            .send(&"node2".to_string(), Message::Ping { term: 2 })
+            .await;
+
+        // Verify counters are non-zero
+        let stats = t.chaos_stats();
+        assert_eq!(stats.dropped_messages, 2);
+
+        // Reset counters
+        t.reset_chaos_counters();
+
+        // Verify all counters are zero
+        let stats = t.chaos_stats();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.reordered_messages, 0);
+        assert_eq!(stats.corrupted_messages, 0);
+    }
+
+    #[test]
+    fn test_link_quality_multiple_peers() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer_a = "nodeA".to_string();
+        let peer_b = "nodeB".to_string();
+
+        t.set_link_quality(&peer_a, 0.2);
+        t.set_link_quality(&peer_b, 0.8);
+
+        assert!((t.link_drop_rate(&peer_a) - 0.2).abs() < f32::EPSILON);
+        assert!((t.link_drop_rate(&peer_b) - 0.8).abs() < f32::EPSILON);
+
+        // Clear one, other remains
+        t.clear_link_quality(&peer_a);
+        assert!((t.link_drop_rate(&peer_a) - 0.0).abs() < f32::EPSILON);
+        assert!((t.link_drop_rate(&peer_b) - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_peer_latency_overrides_global() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Set global latency
+        t.set_latency(Some((10, 50)));
+
+        // Set peer-specific latency (should override)
+        t.set_peer_latency(&peer, (1, 5));
+
+        // Peer-specific should be returned
+        let peer_latency = t.get_latency_for_peer(&peer);
+        assert_eq!(peer_latency, Some((1, 5)));
+
+        // Other peer falls back to global
+        let other_latency = t.get_latency_for_peer(&"node3".to_string());
+        assert_eq!(other_latency, Some((10, 50)));
+
+        // Clear peer-specific, should fall back to global
+        t.clear_peer_latency(&peer);
+        let fallback_latency = t.get_latency_for_peer(&peer);
+        assert_eq!(fallback_latency, Some((10, 50)));
+    }
+
+    #[test]
+    fn test_should_drop_for_link_quality_zero_rate() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Zero drop rate should never drop
+        t.set_link_quality(&peer, 0.0);
+        assert!(!t.should_drop_for_link_quality(&peer));
+    }
+
+    #[test]
+    fn test_should_drop_for_link_quality_full_rate() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // 100% drop rate should always drop
+        t.set_link_quality(&peer, 1.0);
+        assert!(t.should_drop_for_link_quality(&peer));
+    }
+
+    #[test]
+    fn test_should_drop_for_link_quality_no_setting() {
+        let t = MemoryTransport::new("node1".to_string());
+        // No link quality set, should never drop
+        assert!(!t.should_drop_for_link_quality(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_get_reorder_delay_disabled() {
+        let t = MemoryTransport::new("node1".to_string());
+        // Reordering disabled (probability 0), should return None
+        assert!(t.get_reorder_delay().is_none());
+    }
+
+    #[test]
+    fn test_get_reorder_delay_enabled_full_probability() {
+        let t = MemoryTransport::new("node1".to_string());
+        // Full probability, max delay 100
+        t.enable_reordering(1.0, 100);
+        let delay = t.get_reorder_delay();
+        assert!(delay.is_some());
+        // Delay should be in range [1, 100]
+        let d = delay.unwrap();
+        assert!(d >= 1 && d <= 100);
+    }
+
+    #[test]
+    fn test_get_reorder_delay_zero_max_delay() {
+        let t = MemoryTransport::new("node1".to_string());
+        // Full probability but zero max delay
+        t.enable_reordering(1.0, 0);
+        let delay = t.get_reorder_delay();
+        assert_eq!(delay, Some(0));
+    }
+
+    #[test]
+    fn test_should_corrupt_false_when_zero() {
+        let t = MemoryTransport::new("node1".to_string());
+        assert!(!t.should_corrupt());
+    }
+
+    #[test]
+    fn test_should_corrupt_true_when_full() {
+        let t = MemoryTransport::new("node1".to_string());
+        t.set_corruption_rate(1.0);
+        assert!(t.should_corrupt());
+    }
+
+    #[test]
+    fn test_corrupt_message_ping() {
+        let msg = Message::Ping { term: 5 };
+        let corrupted = corrupt_message(msg);
+        if let Message::Ping { term } = corrupted {
+            assert_eq!(term, 6); // term wrapping_add(1)
+        } else {
+            panic!("expected Ping");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_message_pong() {
+        let msg = Message::Pong { term: 10 };
+        let corrupted = corrupt_message(msg);
+        if let Message::Pong { term } = corrupted {
+            assert_eq!(term, 11); // term wrapping_add(1)
+        } else {
+            panic!("expected Pong");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_message_other_unchanged() {
+        let msg = Message::TxCommit(TxCommitMsg {
+            tx_id: 1,
+            shards: vec![0],
+        });
+        let corrupted = corrupt_message(msg);
+        if let Message::TxCommit(tc) = corrupted {
+            assert_eq!(tc.tx_id, 1); // Unchanged
+        } else {
+            panic!("expected TxCommit unchanged");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_message_ping_wrapping() {
+        let msg = Message::Ping { term: u64::MAX };
+        let corrupted = corrupt_message(msg);
+        if let Message::Ping { term } = corrupted {
+            assert_eq!(term, 0); // Wraps around
+        } else {
+            panic!("expected Ping");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_link_quality_drops_messages() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Set 100% drop rate via link quality
+        t1.set_link_quality(&"node2".to_string(), 1.0);
+
+        let result = t1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert!(result.is_err());
+
+        let stats = t1.chaos_stats();
+        assert_eq!(stats.dropped_messages, 1);
+    }
+
+    #[tokio::test]
+    async fn test_corruption_increments_counter() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Set 100% corruption rate
+        t1.set_corruption_rate(1.0);
+
+        // Send a Ping message (corruptible type)
+        t1.send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await
+            .unwrap();
+
+        assert_eq!(t1.corrupted_message_count(), 1);
+
+        // Received message should have corrupted term
+        let (from, msg) = t2.recv().await.unwrap();
+        assert_eq!(from, "node1");
+        if let Message::Ping { term } = msg {
+            assert_eq!(term, 2); // 1 + 1
+        } else {
+            panic!("expected Ping");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_network_manager_process_messages_with_handler() {
+        struct EchoHandler;
+        impl MessageHandler for EchoHandler {
+            fn handle(&self, _from: &NodeId, msg: &Message) -> Option<Message> {
+                if let Message::Ping { term } = msg {
+                    Some(Message::Pong { term: *term })
+                } else {
+                    None
+                }
+            }
+        }
+
+        let t1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("node2".to_string()));
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t2.connect_to("node1".to_string(), t1.sender());
+
+        let manager = NetworkManager::new(t2.clone());
+        manager.add_handler(Box::new(EchoHandler));
+
+        // Send a ping from node1 to node2
+        t1.send(&"node2".to_string(), Message::Ping { term: 42 })
+            .await
+            .unwrap();
+
+        // Run process_messages for a bounded time
+        let handle = tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                manager.process_messages(),
+            )
+            .await;
+        });
+
+        // Wait for the response on node1
+        let result = tokio::time::timeout(std::time::Duration::from_millis(200), t1.recv()).await;
+        assert!(result.is_ok());
+        let (from, msg) = result.unwrap().unwrap();
+        assert_eq!(from, "node2");
+        assert!(matches!(msg, Message::Pong { term: 42 }));
+
+        handle.await.unwrap();
     }
 }

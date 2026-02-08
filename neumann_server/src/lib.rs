@@ -78,7 +78,7 @@ use tensor_blob::{BlobConfig, BlobStore};
 use tensor_store::TensorStore;
 
 pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
-pub use config::{AuthConfig, ServerConfig, TlsConfig};
+pub use config::{AuthConfig, ClusterConfig, ServerConfig, TlsConfig};
 pub use correlation::{extract_or_generate, request_span, RequestSpan, TRACE_ID_HEADER};
 pub use error::{sanitize_error, sanitize_internal_error, Result, ServerError};
 pub use memory::{MemoryBudgetConfig, MemoryTracker};

@@ -1548,6 +1548,7 @@ dependencies = [
  "crc32fast",
  "futures",
  "graph_engine",
+ "libc",
  "neumann_client",
  "neumann_parser",
  "neumann_server",

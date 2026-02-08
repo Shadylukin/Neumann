@@ -287,8 +287,8 @@ fn test_e2e_high_contention_8_threads() {
     let history = Arc::new(ConcurrentHistoryRecorder::new());
     // WGL checker complexity is exponential in concurrent overlap width.
     // 8 threads on 1 key creates up to 8 overlapping ops at any point,
-    // so keep total ops modest to avoid search timeout.
-    let ops_per_thread = 15;
+    // so keep total ops low to avoid search timeout.
+    let ops_per_thread = 8;
 
     std::thread::scope(|s| {
         for tid in 0..8u64 {
@@ -364,7 +364,7 @@ fn test_e2e_many_keys_low_contention() {
         .unwrap_or_else(|_| panic!("all refs should be dropped"))
         .into_inner();
     let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(30));
-    let result = checker.check(recorder.operations());
+    let result = checker.check_per_key(recorder.operations());
     assert!(
         matches!(result, LinearizabilityResult::Ok),
         "many-keys low-contention should be linearizable: {result:?}"
@@ -503,7 +503,7 @@ fn test_e2e_deterministic_seed_reproducible() {
             .unwrap_or_else(|_| panic!("all refs should be dropped"))
             .into_inner();
         let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(30));
-        let result = checker.check(recorder.operations());
+        let result = checker.check_per_key(recorder.operations());
         assert!(
             matches!(result, LinearizabilityResult::Ok),
             "deterministic run should be linearizable: {result:?}"

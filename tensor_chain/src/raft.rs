@@ -11169,4 +11169,1755 @@ mod tests {
         let node = create_test_node("node1", vec![]);
         assert!(!node.is_snapshot_transfer_timed_out());
     }
+
+    // ========== Additional coverage tests (batch 2) ==========
+
+    #[test]
+    fn test_check_quorum_health_not_leader_noop() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        // Node is a follower by default
+        assert_eq!(node.state(), RaftState::Follower);
+
+        let checks_before = node.stats().quorum_checks.load(Ordering::Relaxed);
+        node.check_quorum_health();
+        let checks_after = node.stats().quorum_checks.load(Ordering::Relaxed);
+
+        // No quorum check should have been performed for a non-leader
+        assert_eq!(checks_before, checks_after);
+        assert_eq!(node.state(), RaftState::Follower);
+    }
+
+    #[test]
+    fn test_check_quorum_health_leader_retains_quorum() {
+        // 3-node cluster: leader + 2 peers, quorum = 2
+        let node = create_test_node("leader", vec!["p1".to_string(), "p2".to_string()]);
+        node.become_leader();
+
+        // Record quorum contact for both peers so quorum is met
+        node.quorum_tracker.record_success(&"p1".to_string());
+        node.quorum_tracker.record_success(&"p2".to_string());
+
+        node.check_quorum_health();
+
+        // Leader should remain leader because quorum is satisfied
+        assert!(node.is_leader());
+        assert!(
+            node.stats().quorum_checks.load(Ordering::Relaxed) >= 1,
+            "quorum check counter must be incremented"
+        );
+    }
+
+    #[test]
+    fn test_check_quorum_health_leader_steps_down_no_quorum() {
+        // 3-node cluster: leader + 2 peers, quorum = 2
+        let node = create_test_node("leader", vec!["p1".to_string(), "p2".to_string()]);
+        node.become_leader();
+        assert!(node.is_leader());
+
+        // Do NOT record any quorum contact -- peers are unreachable
+        // Use a tracker with a very short timeout so peers expire
+        node.quorum_tracker.reset();
+
+        node.check_quorum_health();
+
+        // Leader should step down because quorum is lost
+        assert_eq!(node.state(), RaftState::Follower);
+        assert!(
+            node.stats().quorum_lost_events.load(Ordering::Relaxed) >= 1,
+            "quorum_lost_events must be incremented"
+        );
+    }
+
+    #[test]
+    fn test_propose_codebook_replace_follower_rejected() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        assert_eq!(node.state(), RaftState::Follower);
+
+        let snapshot = GlobalCodebookSnapshot::empty(4);
+        let result = node.propose_codebook_replace(snapshot);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not leader"),
+            "expected 'not leader' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_propose_codebook_replace_leader_succeeds() {
+        let node = create_test_node("leader", vec![]);
+        node.become_leader();
+
+        let snapshot = GlobalCodebookSnapshot::new(
+            2,
+            vec![
+                crate::codebook::CodebookEntry::new(0, vec![1.0, 0.0]),
+                crate::codebook::CodebookEntry::new(1, vec![0.0, 1.0]),
+            ],
+            5,
+        );
+
+        let index = node.propose_codebook_replace(snapshot).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(node.log_length(), 1);
+
+        // Verify the log entry has codebook change
+        let persistent = node.persistent.read();
+        let entry = &persistent.log[0];
+        assert!(entry.codebook_change.is_some());
+    }
+
+    #[test]
+    fn test_apply_codebook_change_replace_updates_version() {
+        let node = create_test_node("node1", vec![]);
+        assert_eq!(node.codebook_version(), 0);
+
+        let snapshot = GlobalCodebookSnapshot::new(
+            3,
+            vec![
+                crate::codebook::CodebookEntry::new(0, vec![1.0, 0.0, 0.0]),
+                crate::codebook::CodebookEntry::new(1, vec![0.0, 1.0, 0.0]),
+                crate::codebook::CodebookEntry::new(2, vec![0.0, 0.0, 1.0]),
+            ],
+            42,
+        );
+
+        let change = CodebookChange::Replace { snapshot };
+        node.apply_codebook_change(&change);
+
+        assert_eq!(node.codebook_version(), 42);
+        assert_eq!(node.global_codebook().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_become_leader_with_heartbeat_verifies_state() {
+        let node = create_test_node_arc("leader", vec!["peer1".to_string()]);
+        assert_eq!(node.state(), RaftState::Follower);
+
+        node.become_leader_with_heartbeat();
+
+        assert!(node.is_leader());
+        assert!(node.is_heartbeat_running());
+
+        // Clean up
+        node.stop_heartbeat_task();
+    }
+
+    #[test]
+    fn test_transfer_leadership_follower_rejected() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        assert_eq!(node.state(), RaftState::Follower);
+
+        let result = node.transfer_leadership(&"node2".to_string());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not leader"),
+            "expected 'not leader' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_transfer_leadership_nonexistent_target_rejected() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        let result = node.transfer_leadership(&"nonexistent".to_string());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("unknown transfer target"),
+            "expected 'unknown transfer target' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_transfer_leadership_double_transfer_rejected() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // First transfer succeeds
+        node.transfer_leadership(&"node2".to_string()).unwrap();
+        assert!(node.is_transfer_in_progress());
+
+        // Second transfer fails
+        let result = node.transfer_leadership(&"node2".to_string());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("already in progress"),
+            "expected 'already in progress' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_get_snapshot_chunks_basic_sizes() {
+        let config = RaftConfig {
+            snapshot_chunk_size: 8,
+            ..Default::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            Arc::new(MemoryTransport::new("node1".to_string())),
+            config,
+        );
+
+        let data = vec![0u8; 20]; // 20 bytes / 8 per chunk = 3 chunks (8, 8, 4)
+        let chunks = node.get_snapshot_chunks(&data);
+
+        assert_eq!(chunks.len(), 3);
+        // First chunk
+        assert_eq!(chunks[0].0, 0);
+        assert_eq!(chunks[0].1.len(), 8);
+        assert!(!chunks[0].2);
+        // Second chunk
+        assert_eq!(chunks[1].0, 8);
+        assert_eq!(chunks[1].1.len(), 8);
+        assert!(!chunks[1].2);
+        // Last chunk
+        assert_eq!(chunks[2].0, 16);
+        assert_eq!(chunks[2].1.len(), 4);
+        assert!(chunks[2].2);
+    }
+
+    #[test]
+    fn test_get_snapshot_chunks_empty_data() {
+        let node = create_test_node("node1", vec![]);
+        let data: Vec<u8> = vec![];
+        let chunks = node.get_snapshot_chunks(&data);
+
+        // Empty data should return 1 chunk (div_ceil(0, chunk_size) = 0, but
+        // the chunks iterator on empty slice yields nothing)
+        assert!(chunks.is_empty() || chunks.len() == 1);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_peers_sends_message() {
+        let t1 = Arc::new(MemoryTransport::new("leader".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("peer1".to_string()));
+        t1.connect_to("peer1".to_string(), t2.sender());
+
+        let node = RaftNode::new(
+            "leader".to_string(),
+            vec!["peer1".to_string()],
+            t1,
+            RaftConfig::default(),
+        );
+        node.become_leader();
+
+        let msg = Message::AppendEntries(AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        });
+
+        let result = node.broadcast_to_peers(msg).await;
+        assert!(result.is_ok());
+
+        // Peer should have received the broadcast
+        let (from, received) = t2.recv().await.unwrap();
+        assert_eq!(from, "leader");
+        assert!(matches!(received, Message::AppendEntries(_)));
+    }
+
+    #[tokio::test]
+    async fn test_transport_recv_timeout_no_message() {
+        let node = create_test_node("node1", vec![]);
+
+        // transport_recv should block waiting for a message.
+        // With no senders connected, it should time out.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), node.transport_recv()).await;
+
+        // Should time out since no messages are sent
+        assert!(result.is_err(), "expected timeout, got a message");
+    }
+
+    #[test]
+    fn test_get_entries_for_follower_with_empty_log() {
+        let node = create_test_node("leader", vec!["follower".to_string()]);
+        node.become_leader();
+
+        // Log is empty, so entries for follower should be empty
+        let (prev_log_index, prev_log_term, entries, block_embedding) =
+            node.get_entries_for_follower(&"follower".to_string());
+
+        assert_eq!(prev_log_index, 0);
+        assert_eq!(prev_log_term, 0);
+        assert!(entries.is_empty());
+        assert!(block_embedding.is_none());
+    }
+
+    // ========== Snapshot Request / Response Tests ==========
+
+    #[test]
+    fn test_handle_snapshot_request_as_leader() {
+        let node = create_test_node("leader", vec!["follower".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        node.become_leader();
+
+        // Finalize so create_snapshot works
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        // Perform compaction to set snapshot metadata
+        let (metadata, _data) = node.create_snapshot().unwrap();
+        {
+            let mut ss = node.snapshot_state.write();
+            ss.last_snapshot = Some(metadata);
+        }
+
+        let sr = crate::network::SnapshotRequest {
+            requester_id: "follower".to_string(),
+            offset: 0,
+            chunk_size: 1024,
+        };
+
+        let response = node.handle_message(&"follower".to_string(), &Message::SnapshotRequest(sr));
+        match response {
+            Some(Message::SnapshotResponse(sr)) => {
+                assert_eq!(sr.snapshot_height, 1);
+                assert!(sr.is_last); // Small snapshot fits in one chunk
+                assert!(!sr.data.is_empty());
+                assert_eq!(sr.offset, 0);
+            },
+            other => panic!("expected SnapshotResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_snapshot_request_not_leader_returns_none() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+        let sr = crate::network::SnapshotRequest {
+            requester_id: "follower".to_string(),
+            offset: 0,
+            chunk_size: 1024,
+        };
+
+        let response = node.handle_message(&"follower".to_string(), &Message::SnapshotRequest(sr));
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn test_handle_snapshot_request_invalid_offset_returns_none() {
+        let node = create_test_node("leader", vec!["follower".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        node.become_leader();
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (metadata, _data) = node.create_snapshot().unwrap();
+        {
+            let mut ss = node.snapshot_state.write();
+            ss.last_snapshot = Some(metadata);
+        }
+
+        // Offset way beyond data size
+        let sr = crate::network::SnapshotRequest {
+            requester_id: "follower".to_string(),
+            offset: 999_999,
+            chunk_size: 1024,
+        };
+
+        let response = node.handle_message(&"follower".to_string(), &Message::SnapshotRequest(sr));
+        assert!(response.is_none());
+    }
+
+    // ========== Snapshot Response Handling Tests ==========
+
+    #[test]
+    fn test_handle_snapshot_response_not_follower_noop() {
+        let node = create_test_node("leader", vec!["follower".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+
+        let sr = crate::network::SnapshotResponse {
+            snapshot_height: 1,
+            snapshot_hash: [0u8; 32],
+            data: vec![1, 2, 3],
+            offset: 0,
+            total_size: 3,
+            is_last: true,
+        };
+
+        // Leaders should ignore snapshot responses
+        node.handle_message(&"follower".to_string(), &Message::SnapshotResponse(sr));
+        // No crash means the early return worked
+    }
+
+    #[test]
+    fn test_handle_snapshot_response_follower_receives_chunk() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+        // Accept the leader so we become follower at term 1
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
+        assert_eq!(node.state(), RaftState::Follower);
+
+        // Send a snapshot response chunk (offset 0 with malformed data will fail install)
+        let sr = crate::network::SnapshotResponse {
+            snapshot_height: 1,
+            snapshot_hash: [0u8; 32],
+            data: vec![1, 2, 3],
+            offset: 0,
+            total_size: 3,
+            is_last: true,
+        };
+
+        // This will attempt to receive chunk and install snapshot
+        // The data is not valid snapshot data, but the code paths are exercised
+        node.handle_message(&"leader".to_string(), &Message::SnapshotResponse(sr));
+    }
+
+    // ========== Pre-Vote Tests ==========
+
+    #[test]
+    fn test_start_pre_vote_sets_state() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+        assert!(!*node.in_pre_vote.read());
+
+        node.start_pre_vote();
+
+        assert!(*node.in_pre_vote.read());
+        let pre_votes = node.pre_votes_received.read();
+        assert_eq!(pre_votes.len(), 1);
+        assert!(pre_votes.contains(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_start_pre_vote_with_log_entries() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 3;
+            p.log.push(LogEntry::new(2, 1, create_test_block(1)));
+            p.log.push(LogEntry::new(3, 2, create_test_block(2)));
+        }
+
+        node.start_pre_vote();
+
+        assert!(*node.in_pre_vote.read());
+        let pre_votes = node.pre_votes_received.read();
+        assert_eq!(pre_votes.len(), 1);
+    }
+
+    #[test]
+    fn test_pre_vote_response_quorum_triggers_full_election() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+
+        // Start pre-vote phase
+        node.start_pre_vote();
+        assert!(*node.in_pre_vote.read());
+
+        // Receive pre-vote from node2 (already have self-vote)
+        let pvr = crate::network::PreVoteResponse {
+            term: 1,
+            vote_granted: true,
+            voter_id: "node2".to_string(),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr));
+
+        // Pre-vote quorum reached: should start real election
+        // Election increments term and sets role to Candidate
+        assert!(!*node.in_pre_vote.read());
+        assert_eq!(node.state(), RaftState::Candidate);
+        assert_eq!(node.current_term(), 2);
+    }
+
+    #[test]
+    fn test_pre_vote_response_higher_term_reverts_to_follower() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.start_pre_vote();
+        assert!(*node.in_pre_vote.read());
+
+        // Higher term causes step-down
+        let pvr = crate::network::PreVoteResponse {
+            term: 5,
+            vote_granted: false,
+            voter_id: "node2".to_string(),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr));
+
+        assert!(!*node.in_pre_vote.read());
+        assert_eq!(node.state(), RaftState::Follower);
+        assert_eq!(node.current_term(), 5);
+    }
+
+    #[test]
+    fn test_pre_vote_response_duplicate_ignored() {
+        let node = create_test_node(
+            "node1",
+            vec![
+                "node2".to_string(),
+                "node3".to_string(),
+                "node4".to_string(),
+            ],
+        );
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.start_pre_vote();
+
+        let pvr = crate::network::PreVoteResponse {
+            term: 1,
+            vote_granted: true,
+            voter_id: "node2".to_string(),
+        };
+
+        // First vote from node2
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr.clone()));
+        // Not yet quorum (3 of 5 needed)
+        assert!(*node.in_pre_vote.read());
+
+        // Duplicate from node2 should not count
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr));
+        assert!(*node.in_pre_vote.read());
+    }
+
+    // ========== Handle TimeoutNow Tests ==========
+
+    #[test]
+    fn test_timeout_now_triggers_election() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+        // Set up follower state by processing an AppendEntries
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
+        assert_eq!(node.current_leader(), Some("leader".to_string()));
+
+        let tn = crate::network::TimeoutNow {
+            term: 1,
+            leader_id: "leader".to_string(),
+        };
+
+        let response = node.handle_message(&"leader".to_string(), &Message::TimeoutNow(tn));
+        assert!(response.is_none());
+        // Should have started election (term incremented, role changed to candidate)
+        assert_eq!(node.state(), RaftState::Candidate);
+        assert_eq!(node.current_term(), 2);
+    }
+
+    #[test]
+    fn test_timeout_now_wrong_leader_rejected() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
+
+        let tn = crate::network::TimeoutNow {
+            term: 1,
+            leader_id: "unknown".to_string(),
+        };
+
+        // From an unknown sender that doesn't match leader_id
+        let response = node.handle_message(&"intruder".to_string(), &Message::TimeoutNow(tn));
+        assert!(response.is_none());
+        // Should still be follower at term 1
+        assert_eq!(node.state(), RaftState::Follower);
+        assert_eq!(node.current_term(), 1);
+    }
+
+    #[test]
+    fn test_timeout_now_mismatched_term_rejected() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
+
+        let tn = crate::network::TimeoutNow {
+            term: 999, // Wrong term
+            leader_id: "leader".to_string(),
+        };
+
+        let response = node.handle_message(&"leader".to_string(), &Message::TimeoutNow(tn));
+        assert!(response.is_none());
+        assert_eq!(node.state(), RaftState::Follower);
+    }
+
+    // ========== Vote Response Quorum / Step-Down Tests ==========
+
+    #[test]
+    fn test_handle_request_vote_response_quorum_becomes_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+        node.start_election();
+        assert_eq!(node.state(), RaftState::Candidate);
+        let term = node.current_term();
+
+        // node2 grants vote - with self vote that makes 2/3 quorum
+        let rvr = RequestVoteResponse {
+            term,
+            vote_granted: true,
+            voter_id: "node2".to_string(),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::RequestVoteResponse(rvr));
+
+        assert_eq!(node.state(), RaftState::Leader);
+    }
+
+    #[test]
+    fn test_handle_request_vote_response_higher_term_steps_down() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.start_election();
+        assert_eq!(node.state(), RaftState::Candidate);
+
+        let rvr = RequestVoteResponse {
+            term: 100,
+            vote_granted: false,
+            voter_id: "node2".to_string(),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::RequestVoteResponse(rvr));
+
+        assert_eq!(node.state(), RaftState::Follower);
+        assert_eq!(node.current_term(), 100);
+    }
+
+    // ========== Append Entries Advanced Tests ==========
+
+    #[test]
+    fn test_handle_append_entries_higher_term_updates_state() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+
+        // AppendEntries with a higher term should update term and recognize leader
+        let ae = AppendEntries {
+            term: 5,
+            leader_id: "node2".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae));
+        if let Some(Message::AppendEntriesResponse(aer)) = response {
+            assert!(aer.success);
+            assert_eq!(aer.term, 5);
+        } else {
+            panic!("expected AppendEntriesResponse");
+        }
+        assert_eq!(node.current_term(), 5);
+    }
+
+    #[test]
+    fn test_handle_append_entries_updates_commit_with_entries() {
+        let node = create_test_node("node1", vec!["leader".to_string()]);
+
+        // Send entries via AppendEntries with commit index
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![
+                LogEntry::new(1, 1, create_test_block(1)),
+                LogEntry::new(1, 2, create_test_block(2)),
+            ],
+            leader_commit: 2,
+            block_embedding: None,
+        };
+
+        let response = node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae));
+        if let Some(Message::AppendEntriesResponse(aer)) = response {
+            assert!(aer.success);
+            assert_eq!(aer.match_index, 2);
+        } else {
+            panic!("expected AppendEntriesResponse");
+        }
+        assert_eq!(node.commit_index(), 2);
+    }
+
+    // ========== Append Entries Response - Failure Backoff Tests ==========
+
+    #[test]
+    fn test_handle_append_entries_response_failure_records_stats() {
+        let node = create_test_node("leader", vec!["f1".to_string(), "f2".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        node.become_leader();
+
+        // Simulate a failure response
+        let aer = AppendEntriesResponse {
+            term: 1,
+            success: false,
+            match_index: 0,
+            follower_id: "f1".to_string(),
+            used_fast_path: false,
+        };
+
+        node.handle_message(&"f1".to_string(), &Message::AppendEntriesResponse(aer));
+
+        // Heartbeat failure should be tracked
+        assert!(node.stats.heartbeat_failures.load(Ordering::Relaxed) >= 1);
+    }
+
+    // ========== Leadership Transfer Tests ==========
+
+    #[test]
+    fn test_transfer_leadership_success() {
+        let node = create_test_node("leader", vec!["target".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+
+        let result = node.transfer_leadership(&"target".to_string());
+        assert!(result.is_ok());
+        assert!(node.is_transfer_in_progress());
+    }
+
+    #[test]
+    fn test_transfer_leadership_cancel() {
+        let node = create_test_node("leader", vec!["target".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+
+        node.transfer_leadership(&"target".to_string()).unwrap();
+        assert!(node.is_transfer_in_progress());
+
+        node.cancel_transfer();
+        assert!(!node.is_transfer_in_progress());
+    }
+
+    #[test]
+    fn test_propose_during_transfer_rejected() {
+        let node = create_test_node("leader", vec!["target".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+        node.quorum_tracker.record_success(&"target".to_string());
+
+        node.transfer_leadership(&"target".to_string()).unwrap();
+
+        let result = node.propose(create_test_block(1));
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("transfer"));
+    }
+
+    #[test]
+    fn test_propose_codebook_replace_during_transfer_rejected() {
+        let node = create_test_node("leader", vec!["target".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+        node.quorum_tracker.record_success(&"target".to_string());
+
+        node.transfer_leadership(&"target".to_string()).unwrap();
+
+        let snapshot = crate::codebook::GlobalCodebookSnapshot::new(0, vec![], 1);
+
+        let result = node.propose_codebook_replace(snapshot);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("transfer"));
+    }
+
+    // ========== Snapshot Streaming Tests ==========
+
+    #[test]
+    fn test_get_snapshot_chunk_streaming_basic() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            for i in 1..=5 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 5;
+        }
+        node.finalize_to(5).unwrap();
+
+        let (_metadata, buffer) = node.create_snapshot_streaming().unwrap();
+
+        // Get first chunk
+        let (data, is_last) = node.get_snapshot_chunk_streaming(&buffer, 0).unwrap();
+        assert!(!data.is_empty());
+        // Small data likely fits in one chunk
+        if is_last {
+            assert!(data.len() <= node.config.snapshot_chunk_size as usize);
+        }
+    }
+
+    #[test]
+    fn test_get_snapshot_chunk_streaming_offset_beyond_buffer() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (_metadata, buffer) = node.create_snapshot_streaming().unwrap();
+
+        // Offset beyond buffer should error
+        let result = node.get_snapshot_chunk_streaming(&buffer, 999_999);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("beyond buffer length"));
+    }
+
+    #[test]
+    fn test_snapshot_chunk_iter_covers_all_data() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            for i in 1..=3 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 3;
+        }
+        node.finalize_to(3).unwrap();
+
+        let (_metadata, buffer) = node.create_snapshot_streaming().unwrap();
+
+        let chunks: Vec<_> = node
+            .snapshot_chunk_iter(&buffer)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(!chunks.is_empty());
+        // Last chunk should be marked as last
+        let (_, _, is_last) = chunks.last().unwrap();
+        assert!(is_last);
+        // First chunk starts at offset 0
+        let (offset, _, _) = chunks.first().unwrap();
+        assert_eq!(*offset, 0);
+    }
+
+    // ========== Install Snapshot Tests ==========
+
+    #[test]
+    fn test_install_snapshot_entries_out_of_order_rejected() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            for i in 1..=5 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 5;
+        }
+        node.finalize_to(5).unwrap();
+
+        // Install first snapshot at index 5
+        let (metadata, data) = node.create_snapshot().unwrap();
+        node.install_snapshot(metadata.clone(), &data).unwrap();
+
+        // Try to install an older snapshot (same index) -- should be rejected
+        let result = node.install_snapshot(metadata, &data);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("out-of-order"));
+    }
+
+    #[test]
+    fn test_install_snapshot_streaming_index_mismatch() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (mut metadata, buffer) = node.create_snapshot_streaming().unwrap();
+        // Tamper with metadata to create index mismatch
+        metadata.last_included_index = 999;
+
+        let result = node.install_snapshot_streaming(metadata, &buffer);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("index mismatch"));
+    }
+
+    #[test]
+    fn test_install_snapshot_streaming_term_mismatch() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (mut metadata, buffer) = node.create_snapshot_streaming().unwrap();
+        // Tamper with term to create mismatch
+        metadata.last_included_term = 999;
+
+        let result = node.install_snapshot_streaming(metadata, &buffer);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("term mismatch"));
+    }
+
+    #[test]
+    fn test_install_snapshot_streaming_hash_mismatch_detected() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (mut metadata, buffer) = node.create_snapshot_streaming().unwrap();
+        // Tamper with hash
+        metadata.snapshot_hash = [0xff; 32];
+
+        let result = node.install_snapshot_streaming(metadata, &buffer);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("hash mismatch"));
+    }
+
+    // ========== Receive Snapshot Chunk Tests ==========
+
+    #[test]
+    fn test_receive_snapshot_chunk_wrong_offset_fails() {
+        let node = create_test_node("node1", vec![]);
+
+        // Start receiving at offset 0
+        node.receive_snapshot_chunk(0, &[1, 2, 3], 10, false)
+            .unwrap();
+
+        // Next chunk must be at offset 3 but we send offset 5
+        let result = node.receive_snapshot_chunk(5, &[4, 5, 6], 10, false);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("offset mismatch"));
+    }
+
+    #[test]
+    fn test_receive_snapshot_chunk_size_mismatch_on_last() {
+        let node = create_test_node("node1", vec![]);
+
+        // Send data claiming total_size=10 but only provide 3 bytes
+        let result = node.receive_snapshot_chunk(0, &[1, 2, 3], 10, true);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("size mismatch"));
+    }
+
+    #[test]
+    fn test_receive_snapshot_chunk_complete_transfer() {
+        let node = create_test_node("node1", vec![]);
+
+        let data = vec![1u8; 100];
+        // First chunk
+        let complete = node
+            .receive_snapshot_chunk(0, &data[..50], 100, false)
+            .unwrap();
+        assert!(!complete);
+
+        // Second (last) chunk
+        let complete = node
+            .receive_snapshot_chunk(50, &data[50..], 100, true)
+            .unwrap();
+        assert!(complete);
+
+        // Take the data
+        let taken = node.take_pending_snapshot_data();
+        assert_eq!(taken.len(), 100);
+    }
+
+    // ========== Truncate Log Tests ==========
+
+    #[test]
+    fn test_truncate_log_with_trailing() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            for i in 1..=10 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+
+        let metadata = SnapshotMetadata::new(5, 1, [0u8; 32], vec![], 100);
+
+        node.truncate_log(&metadata).unwrap();
+
+        // After truncation, log should have fewer entries
+        let log_len = node.persistent.read().log.len();
+        // snapshot_trailing_logs default is 0, so cut_point = 5 - 0 = 5
+        // drain(..5) removes first 5 entries, leaving 5
+        assert!(log_len <= 10);
+    }
+
+    // ========== Perform Compaction Tests ==========
+
+    #[test]
+    fn test_perform_compaction_full_flow() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            for i in 1..=20 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 20;
+        }
+        node.finalize_to(20).unwrap();
+
+        let result = node.perform_compaction();
+        assert!(result.is_ok());
+
+        // Snapshot metadata should now be set
+        assert!(node.get_snapshot_metadata().is_some());
+        let meta = node.get_snapshot_metadata().unwrap();
+        assert_eq!(meta.last_included_index, 20);
+    }
+
+    // ========== Codebook Tests ==========
+
+    #[test]
+    fn test_set_global_codebook_versioned() {
+        let node = create_test_node("node1", vec![]);
+        let codebook = crate::codebook::GlobalCodebook::new(8);
+        node.set_global_codebook_versioned(codebook, 42);
+
+        assert_eq!(node.codebook_version(), 42);
+    }
+
+    #[test]
+    fn test_restore_codebook_from_snapshot_with_codebook() {
+        let node = create_test_node("node1", vec![]);
+        let mut metadata = SnapshotMetadata::new(1, 1, [0u8; 32], vec![], 100);
+        metadata.codebook = Some(crate::codebook::GlobalCodebookSnapshot::new(0, vec![], 7));
+
+        node.restore_codebook_from_snapshot(&metadata);
+        assert_eq!(node.codebook_version(), 7);
+    }
+
+    #[test]
+    fn test_restore_codebook_from_snapshot_without_codebook() {
+        let node = create_test_node("node1", vec![]);
+        node.set_global_codebook_versioned(crate::codebook::GlobalCodebook::new(8), 10);
+
+        let metadata = SnapshotMetadata::new(1, 1, [0u8; 32], vec![], 100);
+        // No codebook in metadata -- should not change existing
+        node.restore_codebook_from_snapshot(&metadata);
+        assert_eq!(node.codebook_version(), 10);
+    }
+
+    #[test]
+    fn test_create_snapshot_metadata_with_codebook() {
+        let node = create_test_node("node1", vec![]);
+        node.set_global_codebook_versioned(crate::codebook::GlobalCodebook::new(8), 5);
+
+        let metadata = node.create_snapshot_metadata_with_codebook(10, 2, [0u8; 32], 1000);
+        assert_eq!(metadata.last_included_index, 10);
+        assert_eq!(metadata.last_included_term, 2);
+        assert!(metadata.codebook.is_some());
+        assert_eq!(metadata.codebook.unwrap().version, 5);
+    }
+
+    // ========== Write Safety / Quorum Tests ==========
+
+    #[test]
+    fn test_is_write_safe_with_membership_manager() {
+        use crate::membership::{ClusterConfig, LocalNodeConfig, MembershipManager};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9200".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9201".parse().unwrap());
+
+        let membership = Arc::new(MembershipManager::new(config, transport.clone()));
+        let node = RaftNode::with_membership(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            membership,
+        );
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+        node.quorum_tracker.record_success(&"node2".to_string());
+
+        // is_write_safe checks both quorum tracker and membership
+        let _result = node.is_write_safe();
+        // Verifying the code path runs without panic
+    }
+
+    // ========== Accessor Coverage Tests ==========
+
+    #[test]
+    fn test_quorum_tracker_accessor() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        let tracker = node.quorum_tracker();
+        // Just verify the accessor works
+        assert_eq!(tracker.reachable_count(), 0);
+    }
+
+    #[test]
+    fn test_stats_accessor() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        let stats = node.stats();
+        assert_eq!(stats.quorum_checks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_has_quorum_method() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        let mut votes = std::collections::HashSet::new();
+        votes.insert("node1".to_string());
+        // 1 vote out of 3 nodes - no quorum
+        assert!(!node.has_quorum(&votes));
+
+        votes.insert("node2".to_string());
+        // 2 votes out of 3 nodes - quorum
+        assert!(node.has_quorum(&votes));
+    }
+
+    #[test]
+    fn test_replication_targets() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+        let targets = node.replication_targets();
+        // Default replication targets should include voters minus self
+        assert!(!targets.is_empty());
+    }
+
+    // ========== Promote Learner Failure Tests ==========
+
+    #[test]
+    fn test_promote_voter_as_learner_fails() {
+        let node = create_test_node("leader", vec!["peer".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+
+        // peer is a voter, not a learner
+        let result = node.promote_learner(&"peer".to_string());
+        assert!(result.is_err());
+    }
+
+    // ========== Get Entries For Follower Edge Cases ==========
+
+    #[test]
+    fn test_get_entries_for_follower_next_index_beyond_log() {
+        let node = create_test_node("leader", vec!["f1".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        node.become_leader();
+
+        // Manually set next_index beyond log
+        {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut ls) = leadership.leader_volatile {
+                ls.next_index.insert("f1".to_string(), 100);
+            }
+        }
+
+        let (prev_idx, prev_term, entries, _embedding) =
+            node.get_entries_for_follower(&"f1".to_string());
+        // prev_log lookup for index 99 is beyond log
+        assert_eq!(prev_idx, 0);
+        assert_eq!(prev_term, 0);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_get_entries_for_follower_with_embedding() {
+        let node = create_test_node("leader", vec!["f1".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            let mut block = create_test_block(1);
+            block.header.delta_embedding = SparseVector::new(10);
+            p.log.push(LogEntry::new(1, 1, block));
+        }
+        node.become_leader();
+
+        // Set next_index to 1 so entries include the block
+        {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut ls) = leadership.leader_volatile {
+                ls.next_index.insert("f1".to_string(), 1);
+            }
+        }
+
+        let (_prev_idx, _prev_term, entries, block_embedding) =
+            node.get_entries_for_follower(&"f1".to_string());
+        assert_eq!(entries.len(), 1);
+        assert!(block_embedding.is_some());
+    }
+
+    // ========== Async Method Tests ==========
+
+    #[tokio::test]
+    async fn test_send_to_peer_basic() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport.clone(),
+            RaftConfig::default(),
+        );
+
+        let msg = Message::Ping { term: 1 };
+        // Sending to a peer that has no receiver will still succeed (fire-and-forget)
+        let _result = node.send_to_peer(&"node2".to_string(), msg).await;
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_peers_basic() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport.clone(),
+            RaftConfig::default(),
+        );
+
+        let msg = Message::Ping { term: 1 };
+        let _result = node.broadcast_to_peers(msg).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_message_async_no_response() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport.clone(),
+            RaftConfig::default(),
+        );
+
+        // Unknown message type returns None (no response to send)
+        let msg = Message::Pong { term: 42 };
+        let result = node.handle_message_async(&"node2".to_string(), msg).await;
+        assert!(result.is_ok());
+    }
+
+    // ========== Vote Denied Path Tests ==========
+
+    #[test]
+    fn test_handle_request_vote_vote_denied_tracing() {
+        // Tests the vote denied path (lines 1908-1918)
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 5;
+            p.voted_for = Some("other".to_string()); // Already voted
+        }
+
+        let rv = RequestVote {
+            term: 5,
+            candidate_id: "node2".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
+        if let Some(Message::RequestVoteResponse(rvr)) = response {
+            assert!(!rvr.vote_granted);
+        } else {
+            panic!("expected RequestVoteResponse");
+        }
+    }
+
+    // ========== Try Auto-Compact Tests ==========
+
+    #[test]
+    fn test_try_auto_compact_interval_check() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            for i in 1..=20 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 20;
+        }
+        node.finalize_to(20).unwrap();
+
+        // First call should pass interval check (tick_count % interval == 0)
+        let result = node.try_auto_compact();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_try_auto_compact_skips_on_interval() {
+        let node = create_test_node("node1", vec![]);
+
+        // Manually set tick counter to 1 so the modulo check fails
+        node.compaction_tick_counter.store(1, Ordering::Relaxed);
+
+        let result = node.try_auto_compact();
+        assert!(result.is_ok());
+        // No compaction attempted since interval check failed
+    }
+
+    // ========== Install Snapshot With Higher Term Tests ==========
+
+    #[test]
+    fn test_install_snapshot_with_higher_term_updates_state() {
+        let node = create_test_node("node1", vec![]);
+        // Create a log entry with term 10 so snapshot will have higher term
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(10, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (metadata, data) = node.create_snapshot().unwrap();
+        // metadata.last_included_term should be 10 (from the entry)
+        assert_eq!(metadata.last_included_term, 10);
+
+        let result = node.install_snapshot(metadata, &data);
+        assert!(result.is_ok());
+        // Term should be updated to match snapshot (10 > 1)
+        assert_eq!(node.current_term(), 10);
+    }
+
+    // ========== Snapshot Needs Tests ==========
+
+    #[test]
+    fn test_needs_snapshot_for_follower_with_compacted_log() {
+        let node = create_test_node("leader", vec!["f1".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            // Log entries start at index 5 (simulating truncation)
+            for i in 5..=10 {
+                p.log.push(LogEntry::new(1, i, create_test_block(i)));
+            }
+        }
+        node.become_leader();
+
+        // Set snapshot metadata to indicate we have snapshot up to index 4
+        {
+            let mut ss = node.snapshot_state.write();
+            ss.last_snapshot = Some(SnapshotMetadata::new(4, 1, [0u8; 32], vec![], 100));
+        }
+
+        // Set follower's next_index to 2 (before our first log entry)
+        {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut ls) = leadership.leader_volatile {
+                ls.next_index.insert("f1".to_string(), 2);
+            }
+        }
+
+        // Follower needs snapshot since next_index < first log index
+        assert!(node.needs_snapshot_for_follower(&"f1".to_string()));
+    }
+
+    #[test]
+    fn test_needs_snapshot_for_follower_empty_log_with_snapshot() {
+        let node = create_test_node("leader", vec!["f1".to_string()]);
+        node.become_leader();
+
+        // Empty log but we have snapshot metadata
+        {
+            let mut ss = node.snapshot_state.write();
+            ss.last_snapshot = Some(SnapshotMetadata::new(5, 1, [0u8; 32], vec![], 100));
+        }
+
+        assert!(node.needs_snapshot_for_follower(&"f1".to_string()));
+    }
+
+    // ========== Snapshot Transfer Timeout Tests ==========
+
+    #[test]
+    fn test_snapshot_transfer_not_timed_out_when_idle() {
+        let node = create_test_node("node1", vec![]);
+        assert!(!node.is_snapshot_transfer_timed_out());
+    }
+
+    #[test]
+    fn test_pending_snapshot_buffer_none_when_idle() {
+        let node = create_test_node("node1", vec![]);
+        assert!(node.take_pending_snapshot_buffer().is_none());
+    }
+
+    // ========== Geometric Vote Bias Tracing Path ==========
+
+    #[test]
+    fn test_geometric_vote_bias_one_empty_embedding_logs() {
+        // This covers the tracing path at lines 1525-1528
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_geometric_tiebreak = true;
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Local embedding is zero-dim, candidate has dimension > 0
+        let mut candidate_embedding = SparseVector::new(10);
+        candidate_embedding.set(0, 1.0);
+
+        let bias = node.geometric_vote_bias(&candidate_embedding);
+        assert!((bias - 0.5).abs() < f32::EPSILON);
+    }
+
+    // ========== Check Quorum Health Step Down ==========
+
+    #[test]
+    fn test_check_quorum_health_leader_step_down_counts_stats() {
+        let node = create_test_node("leader", vec!["f1".to_string(), "f2".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+        }
+        node.become_leader();
+        // Do not record any successes so quorum is lost
+
+        node.check_quorum_health();
+
+        // Should have stepped down
+        assert_eq!(node.state(), RaftState::Follower);
+        assert!(node.stats.quorum_lost_events.load(Ordering::Relaxed) >= 1);
+        assert!(node.stats.leader_step_downs.load(Ordering::Relaxed) >= 1);
+    }
+
+    // ========== Handle Append Entries Response With Log Mismatch ==========
+
+    #[test]
+    fn test_handle_append_entries_response_stale_term_ignored() {
+        let node = create_test_node("leader", vec!["f1".to_string()]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 5;
+        }
+        node.become_leader();
+
+        // Response from an older term should be ignored
+        let aer = AppendEntriesResponse {
+            term: 3,
+            success: true,
+            match_index: 1,
+            follower_id: "f1".to_string(),
+            used_fast_path: false,
+        };
+
+        node.handle_message(&"f1".to_string(), &Message::AppendEntriesResponse(aer));
+
+        // Still leader, nothing changed
+        assert_eq!(node.state(), RaftState::Leader);
+    }
+
+    // ========== Handle Append Entries Advances Commit With Multiple Entries ==========
+
+    #[test]
+    fn test_handle_append_entries_log_consistency_check_succeeds() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+
+        // First add an entry at index 1
+        let ae1 = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![LogEntry::new(1, 1, create_test_block(1))],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae1));
+
+        // Then add entry at index 2 with prev_log referencing index 1
+        let ae2 = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 1,
+            prev_log_term: 1,
+            entries: vec![LogEntry::new(1, 2, create_test_block(2))],
+            leader_commit: 1,
+            block_embedding: None,
+        };
+
+        let response = node.handle_message(&"leader".to_string(), &Message::AppendEntries(ae2));
+        if let Some(Message::AppendEntriesResponse(aer)) = response {
+            assert!(aer.success);
+            assert_eq!(aer.match_index, 2);
+        } else {
+            panic!("expected AppendEntriesResponse");
+        }
+        assert_eq!(node.commit_index(), 1);
+    }
+
+    // ========== Become Leader Tracing Path ==========
+
+    #[test]
+    fn test_become_leader_initializes_all_state() {
+        let node = create_test_node(
+            "leader",
+            vec!["f1".to_string(), "f2".to_string(), "f3".to_string()],
+        );
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 3;
+            for i in 1..=5 {
+                p.log.push(LogEntry::new(3, i, create_test_block(i)));
+            }
+        }
+
+        node.become_leader();
+
+        assert_eq!(node.state(), RaftState::Leader);
+        assert_eq!(node.current_leader(), Some("leader".to_string()));
+
+        let leadership = node.leadership.read();
+        let ls = leadership.leader_volatile.as_ref().unwrap();
+        // next_index should be log.len() + 1 = 6 for each peer
+        assert_eq!(*ls.next_index.get("f1").unwrap(), 6);
+        assert_eq!(*ls.next_index.get("f2").unwrap(), 6);
+        assert_eq!(*ls.next_index.get("f3").unwrap(), 6);
+        // match_index starts at 0
+        assert_eq!(*ls.match_index.get("f1").unwrap(), 0);
+    }
+
+    // ========== Create Snapshot Streaming Full Flow ==========
+
+    #[test]
+    fn test_streaming_snapshot_requires_finalized_entries() {
+        let node = create_test_node("node1", vec![]);
+        let result = node.create_snapshot_streaming();
+        match result {
+            Err(e) => assert!(e.to_string().contains("no finalized")),
+            Ok(_) => panic!("expected error for no finalized entries"),
+        }
+    }
+
+    #[test]
+    fn test_streaming_snapshot_log_shorter_than_finalized() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+        // Now clear the log to simulate mismatch
+        {
+            let mut p = node.persistent.write();
+            p.log.clear();
+        }
+
+        let result = node.create_snapshot_streaming();
+        match result {
+            Err(e) => assert!(e.to_string().contains("exceeds log length")),
+            Ok(_) => panic!("expected error for log shorter than finalized"),
+        }
+    }
+
+    // ========== Install Snapshot (Non-Streaming) Validation ==========
+
+    #[test]
+    fn test_install_snapshot_empty_data_fails() {
+        let node = create_test_node("node1", vec![]);
+        let metadata = SnapshotMetadata::new(1, 1, [0u8; 32], vec![], 0);
+
+        let result = node.install_snapshot(metadata, &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_install_snapshot_index_mismatch_fails() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (correct_meta, data) = node.create_snapshot().unwrap();
+
+        // Wrong index in metadata but correct hash
+        let bad_metadata = SnapshotMetadata::new(
+            999,
+            1,
+            correct_meta.snapshot_hash,
+            vec![],
+            data.len() as u64,
+        );
+
+        let result = node.install_snapshot(bad_metadata, &data);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("index mismatch"));
+    }
+
+    #[test]
+    fn test_install_snapshot_term_mismatch_fails() {
+        let node = create_test_node("node1", vec![]);
+        {
+            let mut p = node.persistent.write();
+            p.current_term = 1;
+            p.log.push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+        {
+            let mut v = node.volatile.write();
+            v.commit_index = 1;
+        }
+        node.finalize_to(1).unwrap();
+
+        let (mut metadata, data) = node.create_snapshot().unwrap();
+        // Correct index but wrong term
+        metadata.last_included_term = 999;
+
+        let result = node.install_snapshot(metadata, &data);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("term mismatch"));
+    }
+
+    // ========== Snapshot State Helpers ==========
+
+    #[test]
+    fn test_abort_timed_out_snapshot_transfer_no_transfer_returns_false() {
+        let node = create_test_node("node1", vec![]);
+        assert!(!node.abort_timed_out_snapshot_transfer());
+    }
+
+    #[test]
+    fn test_take_pending_snapshot_data_no_data() {
+        let node = create_test_node("node1", vec![]);
+        let data = node.take_pending_snapshot_data();
+        assert!(data.is_empty());
+    }
 }

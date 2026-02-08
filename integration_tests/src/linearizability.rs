@@ -287,6 +287,54 @@ impl<M: SequentialModel> LinearizabilityChecker<M> {
         Self { model, timeout }
     }
 
+    /// Check linearizability by partitioning the history by key.
+    ///
+    /// For independent keys (where each key's state is independent of others),
+    /// a history is linearizable iff each key's projection is independently
+    /// linearizable. This is dramatically faster than checking the full history
+    /// because the WGL search space is exponential in the number of concurrent
+    /// operations per key, not the total number of operations.
+    #[must_use]
+    pub fn check_per_key(&self, history: &[Operation]) -> LinearizabilityResult {
+        let completed: Vec<&Operation> = history
+            .iter()
+            .filter(|op| op.complete_time.is_some() && op.output.is_some())
+            .collect();
+
+        if completed.is_empty() {
+            return LinearizabilityResult::Ok;
+        }
+
+        // Group operations by key
+        let mut by_key: HashMap<&str, Vec<&Operation>> = HashMap::new();
+        for op in &completed {
+            by_key.entry(&op.key).or_default().push(op);
+        }
+
+        for (key, ops) in &by_key {
+            let start = Instant::now();
+            let init_state = self.model.init();
+            let remaining: Vec<usize> = (0..ops.len()).collect();
+
+            match self.search(ops, &init_state, &remaining, start) {
+                SearchResult::Found => {},
+                SearchResult::NotFound => {
+                    return LinearizabilityResult::Violation(format!(
+                        "no valid linearization ordering exists for key '{key}'"
+                    ));
+                },
+                SearchResult::Timeout => {
+                    return LinearizabilityResult::Unknown(format!(
+                        "search timed out for key '{key}' ({} ops)",
+                        ops.len()
+                    ));
+                },
+            }
+        }
+
+        LinearizabilityResult::Ok
+    }
+
     /// Check whether the given history is linearizable with respect to the
     /// sequential model.
     #[must_use]

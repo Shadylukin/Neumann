@@ -3156,4 +3156,290 @@ mod tests {
         // With zero window, dedup should expire immediately and create new sessions
         assert_ne!(id1, id2, "Zero window should effectively disable dedup");
     }
+
+    // ========== Message Handler Tests ==========
+
+    fn make_manager_no_cooldown() -> PartitionMergeManager {
+        PartitionMergeManager::new(
+            "local".to_string(),
+            PartitionMergeConfig {
+                merge_cooldown_ms: 0,
+                max_concurrent_merges: 10,
+                session_dedup_window_ms: 0,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn test_handle_merge_init_creates_session() {
+        let manager = make_manager_no_cooldown();
+
+        let init_summary =
+            PartitionStateSummary::new("initiator".to_string()).with_log_position(50, 3);
+
+        let msg = MergeInit {
+            session_id: 100,
+            initiator: "initiator".to_string(),
+            healed_nodes: vec!["initiator".to_string(), "local".to_string()],
+            local_summary: init_summary.clone(),
+        };
+
+        let ack = manager.handle_merge_init(msg).unwrap();
+
+        assert!(ack.accepted);
+        assert_eq!(ack.session_id, 100);
+        assert_eq!(ack.responder, "local");
+        assert!(ack.reject_reason.is_none());
+
+        // Verify session was created and advanced to ViewExchange
+        let session = manager.get_session(100).unwrap();
+        assert_eq!(session.phase, MergePhase::ViewExchange);
+        assert!(session.remote_summaries.contains_key("initiator"));
+        assert_eq!(
+            session
+                .remote_summaries
+                .get("initiator")
+                .unwrap()
+                .last_committed_index,
+            50
+        );
+    }
+
+    #[test]
+    fn test_handle_merge_ack_accepted() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+        assert_eq!(
+            manager.session_phase(session_id),
+            Some(MergePhase::HealDetection)
+        );
+
+        let ack = MergeAck {
+            session_id,
+            responder: "node1".to_string(),
+            accepted: true,
+            local_summary: Some(
+                PartitionStateSummary::new("node1".to_string()).with_log_position(80, 4),
+            ),
+            reject_reason: None,
+        };
+
+        let result = manager.handle_merge_ack(ack);
+        assert!(result);
+
+        // Phase should advance from HealDetection to ViewExchange on accepted ack
+        assert_eq!(
+            manager.session_phase(session_id),
+            Some(MergePhase::ViewExchange)
+        );
+
+        // Remote summary should be stored
+        let session = manager.get_session(session_id).unwrap();
+        assert!(session.remote_summaries.contains_key("node1"));
+        assert_eq!(
+            session
+                .remote_summaries
+                .get("node1")
+                .unwrap()
+                .last_committed_index,
+            80
+        );
+    }
+
+    #[test]
+    fn test_handle_merge_ack_rejected() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        let ack = MergeAck {
+            session_id,
+            responder: "node1".to_string(),
+            accepted: false,
+            local_summary: None,
+            reject_reason: Some("busy".to_string()),
+        };
+
+        let result = manager.handle_merge_ack(ack);
+        assert!(!result);
+
+        // Session should be failed
+        let session = manager.get_session(session_id).unwrap();
+        assert_eq!(session.phase, MergePhase::Failed);
+        assert_eq!(session.last_error.as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn test_handle_merge_ack_unknown_session() {
+        let manager = make_manager_no_cooldown();
+
+        let ack = MergeAck {
+            session_id: 999,
+            responder: "node1".to_string(),
+            accepted: true,
+            local_summary: None,
+            reject_reason: None,
+        };
+
+        let result = manager.handle_merge_ack(ack);
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_handle_data_merge_request() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["requester".to_string()]).unwrap();
+
+        // Set a local summary so the handler can reconcile against it
+        let local_summary =
+            PartitionStateSummary::new("local".to_string()).with_log_position(100, 5);
+        manager.set_local_summary(session_id, local_summary);
+
+        let msg = DataMergeRequest {
+            session_id,
+            requester: "requester".to_string(),
+            last_committed_index: 80,
+            last_committed_term: 5,
+            key_patterns: vec![],
+        };
+
+        let response = manager.handle_data_merge_request(&msg);
+        assert!(response.is_some());
+
+        let resp = response.unwrap();
+        assert_eq!(resp.session_id, session_id);
+        assert_eq!(resp.responder, "local");
+        assert!(!resp.has_more);
+    }
+
+    #[test]
+    fn test_handle_tx_reconcile_request_basic() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["requester".to_string()]).unwrap();
+
+        // Build a remote pending tx with all-yes votes
+        let mut remote_tx = PendingTxState::new(10, "coord".to_string(), TxPhase::Preparing);
+        remote_tx.votes.insert(0, true);
+        remote_tx.votes.insert(1, true);
+        remote_tx.started_at = test_now_millis();
+
+        let msg = TxReconcileRequest {
+            session_id,
+            requester: "requester".to_string(),
+            pending_txs: vec![remote_tx],
+        };
+
+        // Local has no pending transactions
+        let result = manager.handle_tx_reconcile_request(&msg, &[]);
+        assert!(result.is_ok());
+
+        let resp = result.unwrap();
+        assert_eq!(resp.session_id, session_id);
+        assert_eq!(resp.responder, "local");
+        // Remote tx has all-yes and only remote has it, so it commits
+        assert!(resp.to_commit.contains(&10));
+    }
+
+    #[test]
+    fn test_handle_merge_finalize_success() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+        assert_eq!(manager.active_session_count(), 1);
+
+        let msg = MergeFinalize {
+            session_id,
+            sender: "node1".to_string(),
+            success: true,
+            final_state_hash: [0u8; 32],
+            conflicts_resolved: 0,
+            duration_ms: 100,
+        };
+
+        let result = manager.handle_merge_finalize(&msg);
+        assert!(result);
+
+        // Session should be removed (completed)
+        assert!(manager.get_session(session_id).is_none());
+        assert_eq!(manager.active_session_count(), 0);
+
+        let stats = manager.stats_snapshot();
+        assert_eq!(stats.sessions_completed, 1);
+    }
+
+    #[test]
+    fn test_handle_merge_finalize_failure() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        let msg = MergeFinalize {
+            session_id,
+            sender: "node1".to_string(),
+            success: false,
+            final_state_hash: [0u8; 32],
+            conflicts_resolved: 0,
+            duration_ms: 50,
+        };
+
+        let result = manager.handle_merge_finalize(&msg);
+        assert!(!result);
+
+        // Session should be marked as failed (fail_session does not remove)
+        let session = manager.get_session(session_id).unwrap();
+        assert_eq!(session.phase, MergePhase::Failed);
+        assert_eq!(session.last_error.as_deref(), Some("merge failed"));
+
+        let stats = manager.stats_snapshot();
+        assert_eq!(stats.sessions_failed, 1);
+    }
+
+    #[test]
+    fn test_add_conflict() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        let conflict = MergeConflict {
+            conflict_type: ConflictType::DataConflict,
+            key: "key1".to_string(),
+            local_value: "val_a".to_string(),
+            remote_value: "val_b".to_string(),
+            resolution: ConflictResolution::KeepLocal,
+        };
+
+        manager.add_conflict(session_id, conflict);
+
+        let session = manager.get_session(session_id).unwrap();
+        assert_eq!(session.conflicts.len(), 1);
+        assert_eq!(session.conflicts[0].key, "key1");
+        assert_eq!(
+            session.conflicts[0].conflict_type,
+            ConflictType::DataConflict
+        );
+        assert_eq!(
+            session.conflicts[0].resolution,
+            ConflictResolution::KeepLocal
+        );
+    }
+
+    #[test]
+    fn test_add_remote_summary() {
+        let manager = make_manager_no_cooldown();
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        let summary = PartitionStateSummary::new("node1".to_string()).with_log_position(200, 10);
+        manager.add_remote_summary(session_id, "node1".to_string(), summary);
+
+        let session = manager.get_session(session_id).unwrap();
+        assert!(session.remote_summaries.contains_key("node1"));
+        let stored = session.remote_summaries.get("node1").unwrap();
+        assert_eq!(stored.last_committed_index, 200);
+        assert_eq!(stored.last_committed_term, 10);
+    }
 }

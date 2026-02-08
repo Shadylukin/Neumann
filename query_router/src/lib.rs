@@ -1054,6 +1054,64 @@ impl QueryRouter {
         self.init_cluster_with_executor(node_id, bind_addr, peers, None)
     }
 
+    /// Initialize cluster mode with WAL-based persistence for crash recovery.
+    ///
+    /// # Arguments
+    /// * `node_id` - Unique identifier for this node
+    /// * `bind_addr` - Address to bind for incoming connections
+    /// * `peers` - List of (`node_id`, address) tuples for peer nodes
+    /// * `wal_dir` - Directory for WAL files
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cluster initialization fails.
+    pub fn init_cluster_with_wal(
+        &mut self,
+        node_id: &str,
+        bind_addr: SocketAddr,
+        peers: &[(String, SocketAddr)],
+        wal_dir: &std::path::Path,
+    ) -> Result<()> {
+        if self.cluster.is_some() {
+            return Err(RouterError::InvalidArgument(
+                "Cluster already initialized".to_string(),
+            ));
+        }
+
+        let runtime = Runtime::new()
+            .map_err(|e| RouterError::ChainError(format!("Failed to create runtime: {e}")))?;
+
+        let local_config = ClusterNodeConfig::new(node_id, bind_addr);
+        let peer_configs: Vec<ClusterPeerConfig> = peers
+            .iter()
+            .map(|(id, addr)| ClusterPeerConfig::new(id.clone(), *addr))
+            .collect();
+
+        let config =
+            OrchestratorConfig::new(local_config, peer_configs).with_wal_dir(wal_dir.to_path_buf());
+
+        let orchestrator = runtime
+            .block_on(ClusterOrchestrator::start(config))
+            .map_err(|e| RouterError::ChainError(e.to_string()))?;
+
+        let all_nodes: Vec<String> = std::iter::once(node_id.to_string())
+            .chain(peers.iter().map(|(id, _)| id.clone()))
+            .collect();
+
+        let hash_config = ConsistentHashConfig::new(node_id);
+        let partitioner = ConsistentHashPartitioner::with_nodes(hash_config, all_nodes.clone());
+
+        let local_shard = all_nodes.iter().position(|n| n == node_id).unwrap_or(0);
+
+        let planner = QueryPlanner::new(Arc::new(partitioner), local_shard);
+
+        self.cluster = Some(Arc::new(orchestrator));
+        self.cluster_runtime = Some(Arc::new(runtime));
+        self.distributed_planner = Some(Arc::new(planner));
+        self.local_shard_id = local_shard;
+        Ok(())
+    }
+
     /// Initialize cluster mode with an optional query executor.
     ///
     /// # Arguments
