@@ -915,6 +915,130 @@ fn bench_pure_columnar_vs_row(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_aggregation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("aggregation");
+
+    // Setup: 10,000 rows
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..10_000 {
+        engine
+            .insert("users", create_user_values(i64::from(i)))
+            .unwrap();
+    }
+
+    group.bench_function("count_all", |b| {
+        b.iter(|| {
+            black_box(engine.count("users", Condition::True).unwrap());
+        });
+    });
+
+    group.bench_function("count_filtered", |b| {
+        b.iter(|| {
+            black_box(
+                engine
+                    .count("users", Condition::Ge("age".to_string(), Value::Int(50)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("sum", |b| {
+        b.iter(|| {
+            black_box(engine.sum("users", "score", Condition::True).unwrap());
+        });
+    });
+
+    group.bench_function("avg", |b| {
+        b.iter(|| {
+            black_box(engine.avg("users", "score", Condition::True).unwrap());
+        });
+    });
+
+    group.bench_function("min", |b| {
+        b.iter(|| {
+            black_box(engine.min("users", "age", Condition::True).unwrap());
+        });
+    });
+
+    group.bench_function("max", |b| {
+        b.iter(|| {
+            black_box(engine.max("users", "age", Condition::True).unwrap());
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_group_by(c: &mut Criterion) {
+    use relational_engine::AggregateExpr;
+
+    let mut group = c.benchmark_group("group_by");
+
+    // Setup: 10,000 rows with 50 age groups (ages 20-69)
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..10_000 {
+        engine
+            .insert("users", create_user_values(i64::from(i)))
+            .unwrap();
+    }
+
+    group.bench_function("count_by_age", |b| {
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_grouped(
+                        "users",
+                        Condition::True,
+                        &["age".to_string()],
+                        &[AggregateExpr::CountAll],
+                        None,
+                    )
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("sum_score_by_age", |b| {
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_grouped(
+                        "users",
+                        Condition::True,
+                        &["age".to_string()],
+                        &[
+                            AggregateExpr::CountAll,
+                            AggregateExpr::Sum("score".to_string()),
+                        ],
+                        None,
+                    )
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("with_having", |b| {
+        use relational_engine::{AggregateRef, HavingCondition};
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_grouped(
+                        "users",
+                        Condition::True,
+                        &["age".to_string()],
+                        &[AggregateExpr::CountAll],
+                        Some(HavingCondition::Gt(AggregateRef::CountAll, Value::Int(100))),
+                    )
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert,
@@ -937,6 +1061,8 @@ criterion_group!(
     bench_columnar_projection,
     bench_materialize_columns,
     bench_pure_columnar_vs_row,
+    bench_aggregation,
+    bench_group_by,
 );
 
 criterion_main!(benches);

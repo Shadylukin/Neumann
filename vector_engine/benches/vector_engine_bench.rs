@@ -213,6 +213,43 @@ fn bench_hnsw_configs(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_metric_comparison(c: &mut Criterion) {
+    use vector_engine::DistanceMetric;
+
+    let mut group = c.benchmark_group("metric_comparison");
+    let dim = 128;
+    let count = 5_000;
+
+    let engine = VectorEngine::new();
+    for i in 0..count {
+        engine
+            .store_embedding(&format!("v{i}"), random_vector(dim))
+            .unwrap();
+    }
+
+    let query = random_vector(dim);
+
+    for metric in [
+        DistanceMetric::Cosine,
+        DistanceMetric::Euclidean,
+        DistanceMetric::DotProduct,
+    ] {
+        group.bench_with_input(
+            BenchmarkId::new("top10", format!("{metric:?}")),
+            &query,
+            |b, query| {
+                b.iter(|| {
+                    engine
+                        .search_similar_with_metric(black_box(query), 10, metric)
+                        .unwrap()
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_store_embedding,
@@ -224,5 +261,6 @@ criterion_group!(
     bench_hnsw_search,
     bench_hnsw_vs_brute_force,
     bench_hnsw_configs,
+    bench_metric_comparison,
 );
 criterion_main!(benches);

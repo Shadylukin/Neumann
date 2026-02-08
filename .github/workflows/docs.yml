@@ -123,39 +123,10 @@ jobs:
           path: docs/book-output
           retention-days: 7
 
-  doc-coverage:
-    name: Documentation Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Install Rust
-        # nightly
-        uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
-        with:
-          toolchain: nightly
-
-      - name: Cache cargo
-        # v2.7.8
-        uses: >-
-          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
-
-      - name: Check doc coverage
-        run: |
-          cargo +nightly rustdoc -p tensor_chain \
-            -- -Z unstable-options --show-coverage 2>&1 \
-            | tee coverage.txt
-          grep -oP '\d+\.\d+%' coverage.txt | head -1 \
-            || echo "Coverage check complete"
-
   benchmarks:
     name: Generate Benchmark Docs
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout
@@ -205,6 +176,15 @@ jobs:
           name: criterion-reports
           path: target/criterion
           retention-days: 7
+
+      - name: Upload baseline for PR comparisons
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: criterion-baseline
+          path: target/criterion/**/new/estimates.json
+          retention-days: 30
 
   deploy:
     name: Deploy to GitHub Pages

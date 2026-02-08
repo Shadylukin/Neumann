@@ -1,0 +1,69 @@
+# Benchmark enforcement configuration.
+#
+# Each crate listed with `required = true` MUST have at least one
+# `[[bench]]` section in its Cargo.toml and a corresponding .rs file
+# in benches/.
+#
+# `max_regression_pct` sets the maximum allowed performance regression
+# percentage per crate.  The `[defaults]` section provides the fallback
+# for crates that do not specify their own threshold.
+#
+# Excluded crates (no benchmarks required):
+#   neumann_client  -- thin gRPC wrapper, no hot paths
+#   neumann_docs    -- mdbook builder, no runtime code
+#   examples        -- demo code
+#   integration_tests
+#   stress_tests
+#   seed_model
+#   experiments
+
+[defaults]
+max_regression_pct = 15
+
+[crates.tensor_store]
+required = true
+bench_count = 3
+
+[crates.tensor_compress]
+required = true
+
+[crates.neumann_parser]
+required = true
+
+[crates.relational_engine]
+required = true
+
+[crates.graph_engine]
+required = true
+
+[crates.vector_engine]
+required = true
+
+[crates.tensor_vault]
+required = true
+
+[crates.tensor_cache]
+required = true
+
+[crates.tensor_blob]
+required = true
+
+[crates.tensor_chain]
+required = true
+max_regression_pct = 10
+
+[crates.query_router]
+required = true
+max_regression_pct = 10
+
+[crates.neumann_shell]
+required = true
+
+[crates.neumann_server]
+required = true
+
+[crates.tensor_unified]
+required = true
+
+[crates.tensor_checkpoint]
+required = true

@@ -929,6 +929,98 @@ fn bench_concurrent_large_graph(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_weighted_shortest_path(c: &mut Criterion) {
+    let mut group = c.benchmark_group("weighted_shortest_path");
+
+    // Grid graphs: NxN with random weights
+    for grid_size in [5, 10, 20] {
+        let engine = GraphEngine::new();
+        let mut nodes = vec![];
+
+        for i in 0..(grid_size * grid_size) {
+            nodes.push(engine.create_node("Node", create_props(i as i64)).unwrap());
+        }
+
+        // Connect horizontally and vertically with weights
+        for row in 0..grid_size {
+            for col in 0..grid_size {
+                let idx = row * grid_size + col;
+                if col < grid_size - 1 {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "cost".to_string(),
+                        PropertyValue::Float(1.0 + (idx % 5) as f64),
+                    );
+                    engine
+                        .create_edge(nodes[idx], nodes[idx + 1], "ROAD", props, true)
+                        .unwrap();
+                }
+                if row < grid_size - 1 {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "cost".to_string(),
+                        PropertyValue::Float(1.0 + ((idx + 3) % 7) as f64),
+                    );
+                    engine
+                        .create_edge(nodes[idx], nodes[idx + grid_size], "ROAD", props, true)
+                        .unwrap();
+                }
+            }
+        }
+
+        let first = nodes[0];
+        let last = *nodes.last().unwrap();
+
+        group.bench_with_input(
+            BenchmarkId::new("grid", format!("{grid_size}x{grid_size}")),
+            &grid_size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(engine.find_weighted_path(first, last, "cost").unwrap());
+                });
+            },
+        );
+    }
+
+    // Chain graphs with weights
+    for chain_len in [50, 100, 200] {
+        let engine = GraphEngine::new();
+        let mut node_ids = vec![];
+
+        for i in 0..chain_len {
+            node_ids.push(engine.create_node("Node", create_props(i as i64)).unwrap());
+        }
+
+        for i in 0..(chain_len - 1) {
+            let mut props = HashMap::new();
+            props.insert(
+                "cost".to_string(),
+                PropertyValue::Float(1.0 + (i % 3) as f64),
+            );
+            engine
+                .create_edge(
+                    node_ids[i as usize],
+                    node_ids[(i + 1) as usize],
+                    "NEXT",
+                    props,
+                    true,
+                )
+                .unwrap();
+        }
+
+        let first = node_ids[0];
+        let last = *node_ids.last().unwrap();
+
+        group.bench_with_input(BenchmarkId::new("chain", chain_len), &chain_len, |b, _| {
+            b.iter(|| {
+                black_box(engine.find_weighted_path(first, last, "cost").unwrap());
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_create_nodes,
@@ -937,6 +1029,7 @@ criterion_group!(
     bench_traverse,
     bench_find_path,
     bench_find_path_branching,
+    bench_weighted_shortest_path,
 );
 
 criterion_group!(

@@ -41,10 +41,20 @@ declare -A GROUP_TO_FILE=(
     # distributed
     [tensor_chain]="tensor-chain"
     [distributed]="tensor-chain"
+    # checkpoint
+    [tensor_checkpoint]="tensor-checkpoint"
+    [checkpoint]="tensor-checkpoint"
     # query layer
     [neumann_parser]="neumann-parser"
     [query_router]="query-router"
     [neumann_shell]="neumann-shell"
+    [shell]="neumann-shell"
+    # server
+    [neumann_server]="neumann-server"
+    [web]="neumann-server"
+    # unified
+    [tensor_unified]="tensor-unified"
+    [unified]="tensor-unified"
 )
 
 # Check prerequisites

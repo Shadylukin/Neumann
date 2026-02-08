@@ -68,6 +68,20 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+  bench-inventory:
+    name: Benchmark Inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Validate benchmark inventory
+        run: |
+          chmod +x scripts/validate-bench-inventory.sh
+          ./scripts/validate-bench-inventory.sh
+
   clippy:
     name: Clippy
     needs: [fmt]
@@ -291,6 +305,41 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  doc-coverage:
+    name: Doc Coverage
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust
+        # nightly
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install protoc and bc
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler bc
+
+      - name: Check doc coverage
+        run: |
+          chmod +x scripts/check-doc-coverage.sh
+          ./scripts/check-doc-coverage.sh
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -334,7 +383,9 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      MIRIFLAGS: -Zmiri-tree-borrows
     steps:
       - name: Checkout
         # v4.2.2
@@ -614,6 +665,55 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
+  stress-pr:
+    name: Stress Tests (PR)
+    needs: [clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install protoc and mold linker
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler mold clang
+
+      - name: Install cargo-nextest
+        # v2.52.4
+        uses: >-
+          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+        with:
+          tool: cargo-nextest
+
+      - name: Run fast stress tests (Tier 1)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
+          STRESS_THREADS: "4"
+          STRESS_ENTITIES: "10000"
+          STRESS_DURATION: "10"
+        run: |
+          cargo nextest run \
+            --package stress_tests \
+            --profile stress-pr \
+            --run-ignored ignored-only \
+            -E 'binary(~crash_recovery) | (binary(~cache_stress) & not test(~eviction_performance) & not test(~semantic_throughput)) | binary(~clock_drift) | binary(~graph_algorithm_stress) | binary(~graph_index_stress) | binary(~graph_toctou) | binary(~partition_churn) | binary(~query_router_stress) | (binary(~slab_router) & not test(~throughput_stability))'
+
   pr-size:
     name: PR Size Check
     runs-on: ubuntu-latest
@@ -745,6 +845,7 @@ jobs:
       - test
       - coverage
       - doc
+      - doc-coverage
       - security-audit
       - cargo-deny
       - miri
@@ -753,6 +854,8 @@ jobs:
       - python-sdk
       - docker
       - pr-size
+      - bench-inventory
+      - stress-pr
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -769,12 +872,15 @@ jobs:
           DOC="${{ needs.doc.result }}"
           AUDIT="${{ needs.security-audit.result }}"
           DENY="${{ needs.cargo-deny.result }}"
+          DOCCOV="${{ needs.doc-coverage.result }}"
           MIRI="${{ needs.miri.result }}"
           CROSS="${{ needs.cross-platform.result }}"
           DOCKER="${{ needs.docker.result }}"
           TS="${{ needs.typescript-sdk.result }}"
           PY="${{ needs.python-sdk.result }}"
           PR="${{ needs.pr-size.result }}"
+          BENCH="${{ needs.bench-inventory.result }}"
+          STRESS="${{ needs.stress-pr.result }}"
 
           for job in fmt:$FMT clippy:$CLIPPY \
                      test:$TEST coverage:$COV doc:$DOC \
@@ -787,8 +893,10 @@ jobs:
             fi
           done
 
-          for job in miri:$MIRI cross-platform:$CROSS docker:$DOCKER \
-                     typescript-sdk:$TS python-sdk:$PY pr-size:$PR; do
+          for job in doc-coverage:$DOCCOV miri:$MIRI \
+                     cross-platform:$CROSS docker:$DOCKER \
+                     typescript-sdk:$TS python-sdk:$PY pr-size:$PR \
+                     bench-inventory:$BENCH stress-pr:$STRESS; do
             name="${job%%:*}"
             result="${job##*:}"
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then

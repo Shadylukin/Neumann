@@ -3334,6 +3334,7 @@ name = "tensor_checkpoint"
 version = "0.3.0"
 dependencies = [
  "bitcode",
+ "criterion",
  "serde",
  "tempfile",
  "tensor_blob",
