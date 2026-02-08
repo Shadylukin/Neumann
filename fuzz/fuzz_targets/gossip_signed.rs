@@ -12,7 +12,7 @@ use tensor_chain::{
 struct SignedGossipInput {
     message_type: MessageType,
     sequence: u64,
-    timestamp_offset_ms: i64,
+    _timestamp_offset_ms: i64,
     tamper_signature: bool,
     tamper_payload: bool,
     tamper_sender: bool,
@@ -22,7 +22,7 @@ struct SignedGossipInput {
 enum MessageType {
     Sync {
         sender: String,
-        state_count: u8,
+        _state_count: u8,
         sender_time: u64,
     },
     Suspect {
@@ -58,7 +58,7 @@ fuzz_target!(|input: SignedGossipInput| {
     let gossip_msg = match input.message_type {
         MessageType::Sync {
             sender,
-            state_count: _,
+            _state_count: _,
             sender_time,
         } => {
             let sender: String = sender.chars().take(64).collect();
@@ -173,7 +173,7 @@ fuzz_target!(|input: SignedGossipInput| {
         }
 
         // Test replay detection with tracker
-        let tracker_result = signed.verify_with_tracker(&registry, &tracker);
+        let _tracker_result = signed.verify_with_tracker(&registry, &tracker);
 
         // If verification without tracker failed, with tracker should also fail
         if verify_result.is_err() {

@@ -29,11 +29,11 @@ fn stress_config() -> StressConfig {
     // Default to medium scale for CI, can override with environment
     StressConfig {
         scale: stress_tests::ScaleLevel::Quick,
-        entity_count: std::env::var("STRESS_ENTITY_COUNT")
+        entity_count: std::env::var("STRESS_ENTITIES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10_000),
-        thread_count: std::env::var("STRESS_THREAD_COUNT")
+        thread_count: std::env::var("STRESS_THREADS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10),

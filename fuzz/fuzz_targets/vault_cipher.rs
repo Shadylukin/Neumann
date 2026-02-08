@@ -14,12 +14,13 @@ struct CipherInput {
 fuzz_target!(|input: CipherInput| {
     // Create cipher from arbitrary key bytes
     let key = MasterKey::from_bytes(input.key_bytes);
-    let cipher = Cipher::new(key);
+    let cipher = Cipher::new(&key);
 
     // Test encrypt/decrypt roundtrip
     if let Ok((ciphertext, nonce)) = cipher.encrypt(&input.plaintext) {
-        if let Ok(decrypted) = cipher.decrypt(&ciphertext, &nonce) {
-            assert_eq!(input.plaintext, decrypted, "Cipher roundtrip failed");
-        }
+        let decrypted = cipher
+            .decrypt(&ciphertext, &nonce)
+            .expect("Decryption must succeed for freshly encrypted data");
+        assert_eq!(input.plaintext, decrypted, "Cipher roundtrip failed");
     }
 });

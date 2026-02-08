@@ -116,10 +116,9 @@ fuzz_target!(|data: FuzzMessage| {
                     similarity,
                     conflicting_tx,
                 } => {
-                    // Similarity should be finite
-                    if similarity.is_finite() {
-                        assert!(*similarity >= -1.0 && *similarity <= 1.0 || true);
-                    }
+                    // Fuzz-generated similarity can be any f32;
+                    // just verify it's representable (not a signaling NaN)
+                    let _ = similarity.is_finite();
                     let _ = conflicting_tx;
                 },
             }

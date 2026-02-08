@@ -49,7 +49,7 @@ fuzz_target!(|ops: Vec<ConcurrencyOp>| {
             ConcurrencyOp::Begin { participant_count } => {
                 let participants: Vec<usize> =
                     (0..((participant_count % 4) + 1) as usize).collect();
-                if let Ok(tx) = coordinator.begin("fuzz_node".to_string(), participants) {
+                if let Ok(tx) = coordinator.begin(&"fuzz_node".to_string(), &participants) {
                     active_tx_ids.push(tx.tx_id);
                     if active_tx_ids.len() > 20 {
                         active_tx_ids.remove(0);

@@ -43,6 +43,15 @@ impl StressConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(self.entity_count)
     }
+
+    /// Get duration in seconds, respecting `STRESS_DURATION` env var override.
+    #[must_use]
+    pub fn effective_duration_secs(&self) -> u64 {
+        env::var("STRESS_DURATION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.duration_secs)
+    }
 }
 
 /// Quick stress config: 100K entities, 8 threads, ~2 min.
@@ -100,5 +109,12 @@ mod tests {
         let config = full_config();
         assert_eq!(config.entity_count, 1_000_000);
         assert_eq!(config.thread_count, 16);
+    }
+
+    #[test]
+    fn test_effective_duration_secs_default() {
+        let config = quick_config();
+        // Without STRESS_DURATION set, returns the configured default
+        assert_eq!(config.effective_duration_secs(), config.duration_secs);
     }
 }

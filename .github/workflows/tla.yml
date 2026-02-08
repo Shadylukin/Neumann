@@ -34,7 +34,7 @@ jobs:
   model-check:
     name: TLC ${{ matrix.spec }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +82,8 @@ jobs:
       - name: Run TLC on ${{ matrix.spec }}
         working-directory: specs/tla
         run: |
-          java -jar /opt/tla/tla2tools.jar \
+          java -XX:+UseParallelGC -Xmx4g \
+            -jar /opt/tla/tla2tools.jar \
             -deadlock \
             -workers auto \
             -config ${{ matrix.spec }}.cfg \

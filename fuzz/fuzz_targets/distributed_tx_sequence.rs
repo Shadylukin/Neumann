@@ -50,7 +50,7 @@ fuzz_target!(|data: &[u8]| {
             TxOp::Begin { shard_count } => {
                 let count = ((*shard_count) % 4 + 1) as usize; // 1..=4 shards
                 let participants: Vec<usize> = (0..count).collect();
-                if let Ok(tx) = coordinator.begin("coordinator".to_string(), participants) {
+                if let Ok(tx) = coordinator.begin(&"coordinator".to_string(), &participants) {
                     active_tx_ids.push(tx.tx_id);
                 }
             }
