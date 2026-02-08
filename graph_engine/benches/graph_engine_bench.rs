@@ -479,6 +479,7 @@ fn bench_striped_lock_contention(c: &mut Criterion) {
     use std::thread;
 
     let mut group = c.benchmark_group("striped_lock_contention");
+    group.sample_size(20);
 
     for thread_count in [2, 4, 8, 16, 32, 64] {
         let ops_per_thread = 500;
@@ -536,6 +537,7 @@ fn bench_concurrent_neighbor_lookup(c: &mut Criterion) {
     use std::thread;
 
     let mut group = c.benchmark_group("concurrent_neighbor_lookup");
+    group.sample_size(10);
 
     for thread_count in [2, 4, 8, 16, 32] {
         let lookups_per_thread = 500;
@@ -600,6 +602,7 @@ fn bench_concurrent_traversal(c: &mut Criterion) {
     use std::thread;
 
     let mut group = c.benchmark_group("concurrent_traversal");
+    group.sample_size(10);
 
     // Create binary tree helper
     fn create_binary_tree(engine: &GraphEngine, depth: usize) -> u64 {
@@ -675,6 +678,7 @@ fn bench_concurrent_mixed_read_write(c: &mut Criterion) {
     use std::thread;
 
     let mut group = c.benchmark_group("concurrent_mixed_read_write");
+    group.sample_size(10);
 
     for thread_count in [4, 8, 16, 32] {
         let ops_per_thread = 200;
@@ -749,6 +753,7 @@ fn bench_concurrent_property_index_query(c: &mut Criterion) {
     use std::thread;
 
     let mut group = c.benchmark_group("concurrent_property_index_query");
+    group.sample_size(10);
 
     for thread_count in [2, 4, 8, 16, 32] {
         let queries_per_thread = 200;
