@@ -1206,8 +1206,11 @@ async fn test_jepsen_real_raft_200_ops_linearizable() {
         );
         op_count += 1;
 
-        // Every 3rd write, do a read
+        // Every 3rd write, do a read from the leader
         if i % 3 == 2 {
+            // Yield to let the runtime process pending Raft messages so the
+            // leader's state machine is up-to-date before reading.
+            tokio::task::yield_now().await;
             let _ = harness.read(2, keys[i as usize % 3], leader);
             op_count += 1;
         }
