@@ -661,6 +661,13 @@ mod tests {
     use super::*;
     use crate::{ScalarValue, TensorValue};
 
+    fn temp_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn create_test_tensor(id: i64) -> TensorData {
         let mut tensor = TensorData::new();
         tensor.set("id", TensorValue::Scalar(ScalarValue::Int(id)));
@@ -674,12 +681,12 @@ mod tests {
 
     #[test]
     fn test_mmap_store_builder_and_read() {
-        let path = "/tmp/test_mmap_store.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_store.bin");
+        let _ = fs::remove_file(&path);
 
         // Build store
         {
-            let mut builder = MmapStoreBuilder::create(path).unwrap();
+            let mut builder = MmapStoreBuilder::create(&path).unwrap();
             for i in 0..100 {
                 let tensor = create_test_tensor(i);
                 builder.add(&format!("key_{}", i), &tensor).unwrap();
@@ -690,7 +697,7 @@ mod tests {
 
         // Read store
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 100);
 
             for i in 0..100 {
@@ -710,17 +717,17 @@ mod tests {
             assert!(store.get("nonexistent").is_err());
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut() {
-        let path = "/tmp/test_mmap_store_mut.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_store_mut.bin");
+        let _ = fs::remove_file(&path);
 
         // Create and write
         {
-            let mut store = MmapStoreMut::create(path, 4096).unwrap();
+            let mut store = MmapStoreMut::create(&path, 4096).unwrap();
             for i in 0..50 {
                 let tensor = create_test_tensor(i);
                 store.insert(&format!("key_{}", i), &tensor).unwrap();
@@ -731,7 +738,7 @@ mod tests {
 
         // Reopen and add more
         {
-            let mut store = MmapStoreMut::open(path).unwrap();
+            let mut store = MmapStoreMut::open(&path).unwrap();
             assert_eq!(store.len(), 50);
 
             for i in 50..100 {
@@ -744,7 +751,7 @@ mod tests {
 
         // Verify all data
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 100);
 
             for i in 0..100 {
@@ -758,19 +765,19 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_update_and_compact() {
-        let path = "/tmp/test_mmap_compact.bin";
-        let compact_path = "/tmp/test_mmap_compact_out.bin";
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_file(compact_path);
+        let path = temp_path("test_mmap_compact.bin");
+        let compact_path = temp_path("test_mmap_compact_out.bin");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&compact_path);
 
         // Create with updates (creates garbage)
         {
-            let mut store = MmapStoreMut::create(path, 4096).unwrap();
+            let mut store = MmapStoreMut::create(&path, 4096).unwrap();
 
             // Initial insert
             for i in 0..10 {
@@ -788,10 +795,10 @@ mod tests {
             let used_before = store.used_size();
 
             // Compact
-            store.compact(compact_path).unwrap();
+            store.compact(&compact_path).unwrap();
 
             // Verify compacted store is smaller
-            let compacted = MmapStore::open(compact_path).unwrap();
+            let compacted = MmapStore::open(&compact_path).unwrap();
             assert_eq!(compacted.len(), 10);
             assert!(compacted.mmap_size() < used_before);
 
@@ -807,54 +814,54 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_file(compact_path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&compact_path);
     }
 
     #[test]
     fn test_mmap_store_empty_file() {
-        let path = "/tmp/test_mmap_empty.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_empty.bin");
+        let _ = fs::remove_file(&path);
 
         // Create empty file
-        File::create(path).unwrap();
+        File::create(&path).unwrap();
 
         // Should fail to open
-        assert!(matches!(MmapStore::open(path), Err(MmapError::EmptyFile)));
+        assert!(matches!(MmapStore::open(&path), Err(MmapError::EmptyFile)));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_invalid_magic() {
-        let path = "/tmp/test_mmap_invalid.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_invalid.bin");
+        let _ = fs::remove_file(&path);
 
         // Create file with invalid magic
-        let mut file = File::create(path).unwrap();
+        let mut file = File::create(&path).unwrap();
         file.write_all(b"BAAD").unwrap();
         file.write_all(&[0u8; 12]).unwrap();
         drop(file);
 
         assert!(matches!(
-            MmapStore::open(path),
+            MmapStore::open(&path),
             Err(MmapError::InvalidMagic)
         ));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_large_entries() {
-        let path = "/tmp/test_mmap_large.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_large.bin");
+        let _ = fs::remove_file(&path);
 
         // Create tensor with large embedding
         let mut tensor = TensorData::new();
         tensor.set("embedding", TensorValue::Vector(vec![0.5; 1024]));
 
         {
-            let mut store = MmapStoreMut::create(path, 1024).unwrap();
+            let mut store = MmapStoreMut::create(&path, 1024).unwrap();
 
             // This should trigger file growth
             for i in 0..100 {
@@ -866,7 +873,7 @@ mod tests {
         }
 
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 100);
 
             let loaded = store.get("large_0").unwrap();
@@ -879,7 +886,7 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -911,11 +918,11 @@ mod tests {
 
     #[test]
     fn test_mmap_store_keys_iteration() {
-        let path = "/tmp/test_mmap_keys.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_keys.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut builder = MmapStoreBuilder::create(path).unwrap();
+            let mut builder = MmapStoreBuilder::create(&path).unwrap();
             for i in 0..5 {
                 builder
                     .add(&format!("key_{}", i), &create_test_tensor(i))
@@ -925,22 +932,22 @@ mod tests {
         }
 
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             let keys: Vec<_> = store.keys().collect();
             assert_eq!(keys.len(), 5);
             assert!(store.mmap_size() > HEADER_SIZE);
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut_keys_and_len() {
-        let path = "/tmp/test_mmap_mut_keys.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_keys.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut store = MmapStoreMut::create(path, 4096).unwrap();
+            let mut store = MmapStoreMut::create(&path, 4096).unwrap();
             assert!(store.is_empty());
 
             for i in 0..5 {
@@ -958,16 +965,16 @@ mod tests {
             assert!(store.used_size() > HEADER_SIZE);
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut_update() {
-        let path = "/tmp/test_mmap_mut_update.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_update.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut store = MmapStoreMut::create(path, 4096).unwrap();
+            let mut store = MmapStoreMut::create(&path, 4096).unwrap();
             store.insert("key_1", &create_test_tensor(1)).unwrap();
             store.insert("key_1", &create_test_tensor(100)).unwrap();
 
@@ -984,16 +991,16 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut_reopen() {
-        let path = "/tmp/test_mmap_mut_reopen.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_reopen.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut store = MmapStoreMut::create(path, 4096).unwrap();
+            let mut store = MmapStoreMut::create(&path, 4096).unwrap();
             for i in 0..5 {
                 store
                     .insert(&format!("key_{}", i), &create_test_tensor(i))
@@ -1003,7 +1010,7 @@ mod tests {
         }
 
         {
-            let mut store = MmapStoreMut::open(path).unwrap();
+            let mut store = MmapStoreMut::open(&path).unwrap();
             assert_eq!(store.len(), 5);
             assert!(store.contains("key_0"));
             assert!(!store.contains("nonexistent"));
@@ -1018,71 +1025,71 @@ mod tests {
         }
 
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 10);
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut_empty_open() {
-        let path = "/tmp/test_mmap_mut_empty.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_empty.bin");
+        let _ = fs::remove_file(&path);
 
-        File::create(path).unwrap();
+        File::create(&path).unwrap();
         assert!(matches!(
-            MmapStoreMut::open(path),
+            MmapStoreMut::open(&path),
             Err(MmapError::EmptyFile)
         ));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut_invalid_magic() {
-        let path = "/tmp/test_mmap_mut_invalid.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_invalid.bin");
+        let _ = fs::remove_file(&path);
 
-        let mut file = File::create(path).unwrap();
+        let mut file = File::create(&path).unwrap();
         file.write_all(b"BAAD").unwrap();
         file.write_all(&[0u8; 12]).unwrap();
         drop(file);
 
         assert!(matches!(
-            MmapStoreMut::open(path),
+            MmapStoreMut::open(&path),
             Err(MmapError::InvalidMagic)
         ));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_unsupported_version() {
-        let path = "/tmp/test_mmap_unsupported.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_unsupported.bin");
+        let _ = fs::remove_file(&path);
 
-        let mut file = File::create(path).unwrap();
+        let mut file = File::create(&path).unwrap();
         file.write_all(MAGIC).unwrap();
         file.write_all(&99u32.to_le_bytes()).unwrap(); // Invalid version
         file.write_all(&0u64.to_le_bytes()).unwrap();
         drop(file);
 
         assert!(matches!(
-            MmapStore::open(path),
+            MmapStore::open(&path),
             Err(MmapError::UnsupportedVersion(99))
         ));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_unicode_keys() {
-        let path = "/tmp/test_mmap_unicode.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_unicode.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut builder = MmapStoreBuilder::create(path).unwrap();
+            let mut builder = MmapStoreBuilder::create(&path).unwrap();
             builder.add("键_中文", &create_test_tensor(1)).unwrap();
             builder.add("キー_日本語", &create_test_tensor(2)).unwrap();
             builder.add("ключ_русский", &create_test_tensor(3)).unwrap();
@@ -1090,33 +1097,33 @@ mod tests {
         }
 
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 3);
             assert!(store.contains("键_中文"));
             assert!(store.contains("キー_日本語"));
             assert!(store.contains("ключ_русский"));
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_builder_empty() {
-        let path = "/tmp/test_mmap_builder_empty.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_builder_empty.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let builder = MmapStoreBuilder::create(path).unwrap();
+            let builder = MmapStoreBuilder::create(&path).unwrap();
             builder.finish().unwrap();
         }
 
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 0);
             assert!(store.is_empty());
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -1138,17 +1145,17 @@ mod tests {
 
     #[test]
     fn test_mmap_store_single_entry() {
-        let path = "/tmp/test_mmap_single.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_single.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut builder = MmapStoreBuilder::create(path).unwrap();
+            let mut builder = MmapStoreBuilder::create(&path).unwrap();
             builder.add("only_key", &create_test_tensor(42)).unwrap();
             builder.finish().unwrap();
         }
 
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 1);
             assert!(!store.is_empty());
             let keys: Vec<_> = store.keys().collect();
@@ -1156,16 +1163,16 @@ mod tests {
             assert_eq!(keys[0], "only_key");
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_mut_get_nonexistent() {
-        let path = "/tmp/test_mmap_mut_get_nonexistent.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_get_nonexistent.bin");
+        let _ = fs::remove_file(&path);
 
         {
-            let mut store = MmapStoreMut::create(path, 1024).unwrap();
+            let mut store = MmapStoreMut::create(&path, 1024).unwrap();
             store.insert("key1", &create_test_tensor(1)).unwrap();
 
             let result = store.get("nonexistent");
@@ -1173,17 +1180,17 @@ mod tests {
             assert!(matches!(result, Err(MmapError::NotFound(_))));
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_capacity_growth() {
-        let path = "/tmp/test_mmap_growth.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_growth.bin");
+        let _ = fs::remove_file(&path);
 
         {
             // Start with small capacity
-            let mut store = MmapStoreMut::create(path, 64).unwrap();
+            let mut store = MmapStoreMut::create(&path, 64).unwrap();
             let initial_capacity = store.capacity();
 
             // Add data that exceeds initial capacity
@@ -1198,7 +1205,7 @@ mod tests {
             assert_eq!(store.len(), 50);
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -1256,12 +1263,12 @@ mod tests {
 
     #[test]
     fn test_mmap_store_compressed_roundtrip() {
-        let path = "/tmp/test_mmap_compressed.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_compressed.bin");
+        let _ = fs::remove_file(&path);
 
         // Create compressed store
         {
-            let mut builder = MmapStoreBuilder::create_compressed(path).unwrap();
+            let mut builder = MmapStoreBuilder::create_compressed(&path).unwrap();
             assert!(builder.is_compressed());
 
             for i in 0..10 {
@@ -1273,7 +1280,7 @@ mod tests {
 
         // Read back and verify
         {
-            let store = MmapStore::open(path).unwrap();
+            let store = MmapStore::open(&path).unwrap();
             assert_eq!(store.len(), 10);
             assert_eq!(store.version, VERSION_COMPRESSED);
 
@@ -1288,15 +1295,15 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_mmap_store_uncompressed_vs_compressed_size() {
-        let uncompressed_path = "/tmp/test_mmap_uncompressed_size.bin";
-        let compressed_path = "/tmp/test_mmap_compressed_size.bin";
-        let _ = fs::remove_file(uncompressed_path);
-        let _ = fs::remove_file(compressed_path);
+        let uncompressed_path = temp_path("test_mmap_uncompressed_size.bin");
+        let compressed_path = temp_path("test_mmap_compressed_size.bin");
+        let _ = fs::remove_file(&uncompressed_path);
+        let _ = fs::remove_file(&compressed_path);
 
         // Create tensor with repetitive data (compresses well)
         let mut tensor = TensorData::new();
@@ -1304,7 +1311,7 @@ mod tests {
 
         // Create uncompressed store
         let uncompressed_size = {
-            let mut builder = MmapStoreBuilder::create(uncompressed_path).unwrap();
+            let mut builder = MmapStoreBuilder::create(&uncompressed_path).unwrap();
             for i in 0..50 {
                 builder.add(&format!("key_{}", i), &tensor).unwrap();
             }
@@ -1313,7 +1320,7 @@ mod tests {
 
         // Create compressed store
         let compressed_size = {
-            let mut builder = MmapStoreBuilder::create_compressed(compressed_path).unwrap();
+            let mut builder = MmapStoreBuilder::create_compressed(&compressed_path).unwrap();
             for i in 0..50 {
                 builder.add(&format!("key_{}", i), &tensor).unwrap();
             }
@@ -1329,8 +1336,8 @@ mod tests {
         );
 
         // Verify both read correctly
-        let uncompressed_store = MmapStore::open(uncompressed_path).unwrap();
-        let compressed_store = MmapStore::open(compressed_path).unwrap();
+        let uncompressed_store = MmapStore::open(&uncompressed_path).unwrap();
+        let compressed_store = MmapStore::open(&compressed_path).unwrap();
 
         assert_eq!(uncompressed_store.len(), 50);
         assert_eq!(compressed_store.len(), 50);
@@ -1350,25 +1357,25 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(uncompressed_path);
-        let _ = fs::remove_file(compressed_path);
+        let _ = fs::remove_file(&uncompressed_path);
+        let _ = fs::remove_file(&compressed_path);
     }
 
     #[test]
     fn test_mmap_store_mut_rejects_compressed() {
-        let path = "/tmp/test_mmap_mut_reject_compressed.bin";
-        let _ = fs::remove_file(path);
+        let path = temp_path("test_mmap_mut_reject_compressed.bin");
+        let _ = fs::remove_file(&path);
 
         // Create compressed store
         {
-            let mut builder = MmapStoreBuilder::create_compressed(path).unwrap();
+            let mut builder = MmapStoreBuilder::create_compressed(&path).unwrap();
             let tensor = create_test_tensor(1);
             builder.add("key_1", &tensor).unwrap();
             builder.finish().unwrap();
         }
 
         // MmapStoreMut should reject compressed stores
-        let result = MmapStoreMut::open(path);
+        let result = MmapStoreMut::open(&path);
         assert!(
             matches!(
                 result,
@@ -1377,6 +1384,6 @@ mod tests {
             "MmapStoreMut should reject compressed V2 files"
         );
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 }

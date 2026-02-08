@@ -107,7 +107,7 @@ pub struct TieredConfig {
 impl Default for TieredConfig {
     fn default() -> Self {
         Self {
-            cold_dir: PathBuf::from("/tmp/tensor_cold"),
+            cold_dir: std::env::temp_dir().join("tensor_cold"),
             cold_capacity: 64 * 1024 * 1024, // 64MB initial
             sample_rate: 100,
             migration_strategy: MigrationStrategy::default(),
@@ -474,7 +474,7 @@ mod tests {
     }
 
     fn setup_test_dir(name: &str) -> PathBuf {
-        let dir = PathBuf::from(format!("/tmp/tiered_test_{}", name));
+        let dir = std::env::temp_dir().join(format!("tiered_test_{}", name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn test_tiered_config_clone() {
         let config = TieredConfig {
-            cold_dir: PathBuf::from("/tmp/test"),
+            cold_dir: std::env::temp_dir().join("test"),
             cold_capacity: 1024,
             sample_rate: 50,
             migration_strategy: MigrationStrategy::default(),
@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn test_tiered_with_defaults_method() {
         // Clean up any existing default directory first
-        let default_cold_dir = PathBuf::from("/tmp/tensor_cold");
+        let default_cold_dir = std::env::temp_dir().join("tensor_cold");
         let _ = fs::remove_dir_all(&default_cold_dir);
 
         let result = TieredStore::with_defaults();

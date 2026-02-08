@@ -217,7 +217,7 @@ pub struct DurableBlobLogConfig {
 impl Default for DurableBlobLogConfig {
     fn default() -> Self {
         Self {
-            segment_dir: PathBuf::from("/tmp/durable_blob"),
+            segment_dir: std::env::temp_dir().join("durable_blob"),
             segment_size: DEFAULT_SEGMENT_SIZE,
             enable_fsync: true,
             cache_size: LOCATION_CACHE_SIZE,
