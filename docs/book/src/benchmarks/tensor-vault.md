@@ -4,6 +4,7 @@ The tensor_vault crate provides AES-256-GCM encrypted secret storage with
 graph-based access control, permission levels, TTL grants, rate limiting,
 namespace isolation, audit logging, and secret versioning.
 
+<!-- BENCH:START -->
 ## Key Derivation (Argon2id)
 
 | Operation | Time | Peak RAM |
@@ -43,6 +44,7 @@ pointers). `get` includes audit logging.
 
 > **Note**: List includes access control checks and key name decryption for
 pattern matching.
+<!-- BENCH:END -->
 
 ## Analysis
 

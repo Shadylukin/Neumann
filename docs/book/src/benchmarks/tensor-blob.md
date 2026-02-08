@@ -12,6 +12,7 @@ Performance characteristics depend heavily on:
 - Storage backend (memory vs disk)
 - Network conditions for streaming operations
 
+<!-- BENCH:START -->
 ## Expected Performance Characteristics
 
 | Operation | Complexity | Notes |
@@ -22,6 +23,7 @@ Performance characteristics depend heavily on:
 | GC | O(total_chunks) | Full chunk scan |
 | Verify | O(size) | Re-hash entire blob |
 | Repair | O(corrupted_chunks) | Only processes damaged chunks |
+<!-- BENCH:END -->
 
 ## Chunk Deduplication
 

@@ -3,6 +3,7 @@
 The parser is a hand-written recursive descent parser with Pratt expression
 parsing for operator precedence.
 
+<!-- BENCH:START -->
 ## Tokenization
 
 | Query Type | Time | Throughput |
@@ -63,6 +64,7 @@ parsing for operator precedence.
 | INSERT 100 rows | 45 us |
 | EMBED 768-dim vector | 38 us |
 | WHERE 20 conditions | 8.5 us |
+<!-- BENCH:END -->
 
 ## Analysis
 

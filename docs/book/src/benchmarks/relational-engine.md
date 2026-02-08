@@ -4,6 +4,7 @@ The relational engine provides SQL-like operations on top of tensor_store, with
 optional hash indexes for accelerated equality lookups and tensor-native
 condition evaluation.
 
+<!-- BENCH:START -->
 ## Row Insertion
 
 | Count | Time | Throughput |
@@ -102,6 +103,7 @@ condition evaluation.
 | 100 | 49us |
 | 1,000 | 462us |
 | 5,000 | 2.95ms |
+<!-- BENCH:END -->
 
 ## Analysis
 

@@ -3,6 +3,7 @@
 The tensor store uses DashMap (sharded concurrent HashMap) for thread-safe
 key-value storage.
 
+<!-- BENCH:START -->
 ## Core Operations
 
 | Operation | 100 items | 1,000 items | 10,000 items |
@@ -30,6 +31,7 @@ key-value storage.
 | Configuration | Time |
 | --- | --- |
 | 4 readers + 2 writers | 579us |
+<!-- BENCH:END -->
 
 ## Analysis
 

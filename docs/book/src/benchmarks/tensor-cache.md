@@ -3,6 +3,7 @@
 The tensor_cache crate provides LLM response caching with exact, semantic
 (HNSW), and embedding caches.
 
+<!-- BENCH:START -->
 ## Exact Cache (Hash-based O(1))
 
 | Operation | Time |
@@ -84,6 +85,7 @@ The tensor_cache crate provides LLM response caching with exact, semantic
 **Key Insight**: For embedded use (no network), Redis is 3.5x faster for exact
 lookups. Over TCP (typical deployment), both are network-bound at ~143us. Our
 differentiator is **semantic search** (21us) which Redis cannot provide.
+<!-- BENCH:END -->
 
 ## Analysis
 

@@ -4,6 +4,7 @@ The tensor_chain crate provides a tensor-native blockchain with semantic
 consensus, Raft replication, 2PC distributed transactions, and sparse delta
 encoding.
 
+<!-- BENCH:START -->
 ## Block Creation
 
 | Configuration | Time | Per Transaction |
@@ -139,6 +140,7 @@ embeddings):
 - Average NNZ: 7.1 / 128 dimensions
 - Average Sparsity: **94.5%**
 - Expected speedup: **3-10x** for typical workloads
+<!-- BENCH:END -->
 
 ## Analysis
 

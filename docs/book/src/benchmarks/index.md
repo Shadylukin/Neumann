@@ -27,6 +27,7 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 
 ## Performance Summary
 
+<!-- BENCH:START -->
 ### In-Memory Operations
 
 | Component | Key Metric | Performance |
@@ -48,6 +49,7 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 | --- | --- | --- |
 | WAL writes | Durable PUT (128d embeddings) | 1.4M ops/sec |
 | WAL recovery | Replay 10K records | ~400us (25M records/sec) |
+<!-- BENCH:END -->
 
 All engines (`RelationalEngine`, `GraphEngine`, `VectorEngine`) support
 optional durability via `open_durable()` with full crash consistency.

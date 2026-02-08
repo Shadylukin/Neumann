@@ -3,6 +3,7 @@
 The vector engine stores embeddings and performs k-nearest neighbor search using
 cosine similarity.
 
+<!-- BENCH:START -->
 ## Store Embedding
 
 | Dimension | Time | Throughput |
@@ -38,6 +39,7 @@ cosine similarity.
 | 128 | 26 ns |
 | 768 | 165 ns |
 | 1536 | 369 ns |
+<!-- BENCH:END -->
 
 ## Analysis
 
