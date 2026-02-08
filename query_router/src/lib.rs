@@ -12441,14 +12441,16 @@ mod tests {
             _ => panic!("Expected Value result"),
         };
 
-        // Write to a valid temp path
-        let temp_path = "/tmp/neumann_test_blob_output.txt";
+        // Write to a valid temp path (cross-platform)
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("neumann_test_blob_output.txt");
+        let temp_str = temp_path.to_string_lossy();
         let result =
-            router.execute_parsed(&format!("BLOB GET '{}' TO '{}'", artifact_id, temp_path));
+            router.execute_parsed(&format!("BLOB GET '{}' TO '{}'", artifact_id, temp_str));
         assert!(result.is_ok());
 
         // Clean up
-        let _ = std::fs::remove_file(temp_path);
+        let _ = std::fs::remove_file(&temp_path);
     }
 
     #[test]
