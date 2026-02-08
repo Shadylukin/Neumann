@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+#![cfg(unix)]
 //! Multi-process Jepsen tests.
 //!
 //! These tests spawn real `neumann_server` processes, inject faults via TCP

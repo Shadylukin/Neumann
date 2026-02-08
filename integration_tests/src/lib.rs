@@ -14,7 +14,9 @@ pub mod dst;
 pub mod jepsen;
 pub mod jepsen_client;
 pub mod linearizability;
+#[cfg(unix)]
 pub mod network_proxy;
+#[cfg(unix)]
 pub mod process_jepsen;
 
 use std::sync::Arc;
