@@ -12441,13 +12441,13 @@ mod tests {
             _ => panic!("Expected Value result"),
         };
 
-        // Write to a valid temp path (cross-platform)
+        // Write to a valid temp path (use forward slashes for cross-platform compatibility)
         let temp_dir = std::env::temp_dir();
         let temp_path = temp_dir.join("neumann_test_blob_output.txt");
-        let temp_str = temp_path.to_string_lossy();
-        let result =
-            router.execute_parsed(&format!("BLOB GET '{}' TO '{}'", artifact_id, temp_str));
-        assert!(result.is_ok());
+        // Convert to forward slashes so the query parser handles Windows paths correctly
+        let temp_str = temp_path.to_string_lossy().replace('\\', "/");
+        let result = router.execute_parsed(&format!("BLOB GET '{artifact_id}' TO '{temp_str}'"));
+        assert!(result.is_ok(), "BLOB GET TO failed: {result:?}");
 
         // Clean up
         let _ = std::fs::remove_file(&temp_path);
