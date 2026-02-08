@@ -1,8 +1,28 @@
 [profile.default]
 retries = 1
-slow-warning = "30s"
+slow-timeout = { period = "30s" }
 fail-fast = false
 
 [profile.ci]
 retries = 2
 fail-fast = true
+
+# Fast stress tests for PR checks (~3-5 min)
+[profile.stress-pr]
+retries = 0
+fail-fast = true
+slow-timeout = { period = "45s" }
+
+[[profile.stress-pr.overrides]]
+filter = "package(stress_tests)"
+slow-timeout = { period = "60s" }
+
+# Nightly stress tests, all tiers except endurance (~20-30 min)
+[profile.stress-nightly]
+retries = 1
+fail-fast = false
+slow-timeout = { period = "120s" }
+
+[[profile.stress-nightly.overrides]]
+filter = "package(stress_tests)"
+slow-timeout = { period = "300s" }
