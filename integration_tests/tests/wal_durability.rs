@@ -695,6 +695,7 @@ fn entry_sizes_store(path: &Path, count: usize) -> Vec<u64> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(unix)]
 fn test_raft_wal_readonly_file_append_fails() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -741,6 +742,7 @@ fn test_raft_wal_readonly_file_append_fails() {
 }
 
 #[test]
+#[cfg(unix)]
 fn test_tensor_store_readonly_wal_put_fails_gracefully() {
     use std::os::unix::fs::PermissionsExt;
 
