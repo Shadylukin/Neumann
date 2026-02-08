@@ -1,0 +1,87 @@
+services:
+  node-0:
+    build:
+      context: .
+      target: jepsen
+    image: neumann:jepsen
+    container_name: neumann-node-0
+    hostname: node-0
+    ports:
+      - "19200:9200"
+    volumes:
+      - node0-data:/var/lib/neumann
+    environment:
+      NEUMANN_BIND_ADDR: "0.0.0.0:9200"
+      NEUMANN_CLUSTER_NODE_ID: "node-0"
+      NEUMANN_CLUSTER_BIND_ADDR: "0.0.0.0:9300"
+      NEUMANN_CLUSTER_PEERS: "node-1=node-1:9300,node-2=node-2:9300"
+      NEUMANN_DATA_DIR: "/var/lib/neumann"
+      NEUMANN_ENABLE_GRPC_WEB: "false"
+      NEUMANN_ENABLE_REFLECTION: "false"
+      RUST_LOG: "warn"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - jepsen-net
+    restart: "no"
+
+  node-1:
+    build:
+      context: .
+      target: jepsen
+    image: neumann:jepsen
+    container_name: neumann-node-1
+    hostname: node-1
+    ports:
+      - "19201:9200"
+    volumes:
+      - node1-data:/var/lib/neumann
+    environment:
+      NEUMANN_BIND_ADDR: "0.0.0.0:9200"
+      NEUMANN_CLUSTER_NODE_ID: "node-1"
+      NEUMANN_CLUSTER_BIND_ADDR: "0.0.0.0:9300"
+      NEUMANN_CLUSTER_PEERS: "node-0=node-0:9300,node-2=node-2:9300"
+      NEUMANN_DATA_DIR: "/var/lib/neumann"
+      NEUMANN_ENABLE_GRPC_WEB: "false"
+      NEUMANN_ENABLE_REFLECTION: "false"
+      RUST_LOG: "warn"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - jepsen-net
+    restart: "no"
+
+  node-2:
+    build:
+      context: .
+      target: jepsen
+    image: neumann:jepsen
+    container_name: neumann-node-2
+    hostname: node-2
+    ports:
+      - "19202:9200"
+    volumes:
+      - node2-data:/var/lib/neumann
+    environment:
+      NEUMANN_BIND_ADDR: "0.0.0.0:9200"
+      NEUMANN_CLUSTER_NODE_ID: "node-2"
+      NEUMANN_CLUSTER_BIND_ADDR: "0.0.0.0:9300"
+      NEUMANN_CLUSTER_PEERS: "node-0=node-0:9300,node-1=node-1:9300"
+      NEUMANN_DATA_DIR: "/var/lib/neumann"
+      NEUMANN_ENABLE_GRPC_WEB: "false"
+      NEUMANN_ENABLE_REFLECTION: "false"
+      RUST_LOG: "warn"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - jepsen-net
+    restart: "no"
+
+networks:
+  jepsen-net:
+    driver: bridge
+
+volumes:
+  node0-data:
+  node1-data:
+  node2-data:

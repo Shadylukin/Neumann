@@ -10,6 +10,7 @@
 #![allow(clippy::cast_precision_loss)] // Precision loss acceptable in test data generation
 
 pub mod chaos;
+pub mod docker_jepsen;
 pub mod dst;
 pub mod jepsen;
 pub mod jepsen_client;
