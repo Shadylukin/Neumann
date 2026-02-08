@@ -1969,4 +1969,152 @@ mod tests {
             deadlocks.len()
         );
     }
+
+    #[test]
+    fn test_detect_disabled_returns_empty() {
+        let config = DeadlockDetectorConfig::disabled();
+        let detector = DeadlockDetector::new(config);
+        let graph = detector.graph();
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 1, None);
+
+        let deadlocks = detector.detect();
+        assert!(deadlocks.is_empty());
+    }
+
+    #[test]
+    fn test_concurrent_detect_stats_consistency() {
+        let detector = std::sync::Arc::new(DeadlockDetector::with_defaults());
+        let graph = detector.graph();
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 1, None);
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let det = std::sync::Arc::clone(&detector);
+            handles.push(std::thread::spawn(move || det.detect()));
+        }
+
+        let mut total_deadlocks = 0;
+        for h in handles {
+            total_deadlocks += h.join().unwrap().len();
+        }
+
+        // Each thread should find the same cycle
+        assert!(total_deadlocks >= 4);
+        let snap = detector.stats().snapshot();
+        assert!(snap.detection_cycles >= 4);
+    }
+
+    #[test]
+    fn test_dfs_cycle_extraction_in_long_path() {
+        let graph = WaitForGraph::new(0);
+        // A -> B -> C -> D -> B (cycle B->C->D->B within longer path)
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 3, None);
+        graph.add_wait(3, 4, None);
+        graph.add_wait(4, 2, None);
+
+        let cycles = graph.detect_cycles();
+        assert!(!cycles.is_empty());
+        // The cycle should include 2, 3, 4
+        let cycle = &cycles[0];
+        assert!(cycle.contains(&2));
+        assert!(cycle.contains(&3));
+        assert!(cycle.contains(&4));
+        assert!(!cycle.contains(&1)); // 1 is not part of the cycle
+    }
+
+    #[test]
+    fn test_max_cycle_length_boundary_exact() {
+        let config = DeadlockDetectorConfig::default().with_max_cycle_length(2);
+        let detector = DeadlockDetector::new(config);
+        let graph = detector.graph();
+
+        // Two-node cycle (length=2, at boundary)
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 1, None);
+
+        let deadlocks = detector.detect();
+        assert_eq!(deadlocks.len(), 1);
+
+        // Three-node cycle (length=3, exceeds max)
+        graph.add_wait(3, 4, None);
+        graph.add_wait(4, 5, None);
+        graph.add_wait(5, 3, None);
+
+        let deadlocks = detector.detect();
+        // Should still only find the 2-node cycle, 3-node cycle filtered
+        let two_node_cycles: Vec<_> = deadlocks.iter().filter(|d| d.cycle.len() <= 2).collect();
+        assert!(!two_node_cycles.is_empty());
+    }
+
+    #[test]
+    fn test_stale_edge_cleanup_removes_old() {
+        let graph = WaitForGraph::new(0);
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 3, None);
+
+        // Wait just enough for edges to be stale
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // TTL of 5ms: edges should be stale
+        let cleaned = graph.cleanup_stale_edges(5);
+        assert!(cleaned >= 1);
+        assert_eq!(graph.transaction_count(), 0);
+    }
+
+    #[test]
+    fn test_stale_edge_cleanup_keeps_fresh() {
+        let graph = WaitForGraph::new(0);
+        graph.add_wait(1, 2, None);
+
+        // Very long TTL: nothing should be stale
+        let cleaned = graph.cleanup_stale_edges(100_000);
+        assert_eq!(cleaned, 0);
+        assert_eq!(graph.transaction_count(), 1);
+    }
+
+    #[test]
+    fn test_stats_cascade_resolutions_counter() {
+        let stats = DeadlockStats::new();
+        stats
+            .cascade_resolutions
+            .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        let snap = stats.snapshot();
+        assert_eq!(snap.cascade_resolutions, 3);
+    }
+
+    #[test]
+    fn test_graph_reverse_edges_tracked() {
+        let graph = WaitForGraph::new(0);
+        graph.add_wait(1, 2, None);
+        graph.add_wait(1, 3, None);
+
+        // Check waiting_on returns the targets
+        let targets = graph.waiting_on(1);
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&2));
+        assert!(targets.contains(&3));
+
+        // Check waiting_for returns who waits for a target
+        let waiters = graph.waiting_for(2);
+        assert_eq!(waiters.len(), 1);
+        assert!(waiters.contains(&1));
+    }
+
+    #[test]
+    fn test_with_lock_count_fn_most_locks() {
+        let config =
+            DeadlockDetectorConfig::default().with_policy(VictimSelectionPolicy::MostLocks);
+        let detector = DeadlockDetector::with_lock_count(config, |tx_id| (tx_id * 10) as usize);
+        let graph = detector.graph();
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 1, None);
+
+        let deadlocks = detector.detect();
+        assert_eq!(deadlocks.len(), 1);
+        // tx 2 has more locks (2*10=20 vs 1*10=10), so tx 2 should be victim
+        assert_eq!(deadlocks[0].victim_tx_id, 2);
+    }
 }

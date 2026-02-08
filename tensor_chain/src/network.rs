@@ -4011,4 +4011,304 @@ mod tests {
         let debug = format!("{:?}", op);
         assert!(debug.contains("Update"));
     }
+
+    #[tokio::test]
+    async fn test_partition_drops_messages() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Partition node2
+        t1.partition(&"node2".to_string());
+        assert!(t1.is_partitioned(&"node2".to_string()));
+
+        // Send should fail due to partition
+        let msg = Message::Ping { term: 1 };
+        let result = t1.send(&"node2".to_string(), msg).await;
+        assert!(result.is_err());
+        assert_eq!(t1.dropped_message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_partition_heal_restores() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        t1.partition(&"node2".to_string());
+        assert!(t1.is_partitioned(&"node2".to_string()));
+
+        t1.heal(&"node2".to_string());
+        assert!(!t1.is_partitioned(&"node2".to_string()));
+
+        // Send should succeed after healing
+        let msg = Message::Ping { term: 1 };
+        let result = t1.send(&"node2".to_string(), msg).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_partition_all_and_heal_all_coverage() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        let t3 = MemoryTransport::new("node3".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.connect_to("node3".to_string(), t3.sender());
+
+        t1.partition_all();
+        assert_eq!(t1.partitioned_peers().len(), 2);
+
+        t1.heal_all();
+        assert!(t1.partitioned_peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_skips_partitioned_peers() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        let t3 = MemoryTransport::new("node3".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.connect_to("node3".to_string(), t3.sender());
+
+        // Partition node2 only
+        t1.partition(&"node2".to_string());
+
+        let msg = Message::Ping { term: 1 };
+        t1.broadcast(msg).await.unwrap();
+
+        // node3 should receive the message
+        let received = t3.receiver.write().try_recv();
+        assert!(received.is_ok());
+
+        // node2 should not receive (partitioned)
+        let received2 = t2.receiver.write().try_recv();
+        assert!(received2.is_err());
+    }
+
+    #[test]
+    fn test_routing_embedding_request_vote() {
+        let rv = RequestVote {
+            term: 1,
+            candidate_id: "node1".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(4),
+        };
+        let msg = Message::RequestVote(rv);
+        assert!(msg.has_routing_embedding());
+        assert!(msg.routing_embedding().is_some());
+    }
+
+    #[test]
+    fn test_routing_embedding_pre_vote() {
+        let pv = PreVote {
+            term: 1,
+            candidate_id: "node1".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(4),
+        };
+        let msg = Message::PreVote(pv);
+        assert!(msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_routing_embedding_append_entries_none() {
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        let msg = Message::AppendEntries(ae);
+        assert!(!msg.has_routing_embedding());
+        assert!(msg.routing_embedding().is_none());
+    }
+
+    #[test]
+    fn test_routing_embedding_ping_none() {
+        let msg = Message::Ping { term: 1 };
+        assert!(!msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_joint_config_has_joint_quorum() {
+        let config = JointConfig::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        );
+
+        let mut votes = HashSet::new();
+        votes.insert("b".to_string());
+        votes.insert("c".to_string());
+
+        // b,c: majority of old (a,b,c) = 2 >= 2, majority of new (b,c,d) = 2 >= 2
+        assert!(config.has_joint_quorum(&votes));
+    }
+
+    #[test]
+    fn test_joint_config_no_joint_quorum() {
+        let config = JointConfig::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["d".to_string(), "e".to_string(), "f".to_string()],
+        );
+
+        let mut votes = HashSet::new();
+        votes.insert("a".to_string());
+        votes.insert("b".to_string());
+
+        // Has old majority but no new majority
+        assert!(!config.has_joint_quorum(&votes));
+    }
+
+    #[test]
+    fn test_joint_config_all_voters() {
+        let config = JointConfig::new(
+            vec!["a".to_string(), "b".to_string()],
+            vec!["b".to_string(), "c".to_string()],
+        );
+
+        let all = config.all_voters();
+        assert_eq!(all.len(), 3); // a, b, c (b deduplicated)
+        assert!(all.contains(&"a".to_string()));
+        assert!(all.contains(&"b".to_string()));
+        assert!(all.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_membership_config_in_joint_consensus() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string()]);
+        assert!(!config.in_joint_consensus());
+
+        config.joint = Some(JointConfig::new(
+            vec!["a".to_string()],
+            vec!["a".to_string(), "b".to_string()],
+        ));
+        assert!(config.in_joint_consensus());
+    }
+
+    #[test]
+    fn test_membership_config_replication_targets_with_joint() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string(), "b".to_string()]);
+        config.learners = vec!["l1".to_string()];
+        config.joint = Some(JointConfig::new(
+            vec!["a".to_string()],
+            vec!["a".to_string(), "c".to_string()],
+        ));
+
+        let targets = config.replication_targets();
+        assert!(targets.contains(&"a".to_string()));
+        assert!(targets.contains(&"b".to_string()));
+        assert!(targets.contains(&"l1".to_string()));
+        assert!(targets.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_log_entry_codebook() {
+        let change = CodebookChange::Replace(GlobalCodebookSnapshot::default());
+        let entry = LogEntry::codebook(1, 1, change);
+        assert!(entry.is_codebook_change());
+        assert!(!entry.is_config_change());
+    }
+
+    #[test]
+    fn test_log_entry_with_codebook_change() {
+        let entry = LogEntry::new(1, 1, Block::default());
+        assert!(!entry.is_codebook_change());
+
+        let entry =
+            entry.with_codebook_change(CodebookChange::Replace(GlobalCodebookSnapshot::default()));
+        assert!(entry.is_codebook_change());
+    }
+
+    #[test]
+    fn test_merge_delta_entry_construction() {
+        let entry = MergeDeltaEntry {
+            key: "test_key".to_string(),
+            log_index: 42,
+            log_term: 5,
+            op_type: MergeOpType::Put,
+            data_hash: [0xabu8; 32],
+        };
+        assert_eq!(entry.key, "test_key");
+        assert_eq!(entry.log_index, 42);
+        assert_eq!(entry.log_term, 5);
+        assert_eq!(entry.op_type, MergeOpType::Put);
+    }
+
+    #[test]
+    fn test_merge_op_type_all_variants() {
+        let put = MergeOpType::Put;
+        let delete = MergeOpType::Delete;
+        let update = MergeOpType::Update;
+        assert_ne!(put, delete);
+        assert_ne!(delete, update);
+        assert_ne!(put, update);
+    }
+
+    #[tokio::test]
+    async fn test_dropped_message_count_increments() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.partition(&"node2".to_string());
+
+        assert_eq!(t1.dropped_message_count(), 0);
+
+        let _ = t1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert_eq!(t1.dropped_message_count(), 1);
+
+        let _ = t1
+            .send(&"node2".to_string(), Message::Ping { term: 2 })
+            .await;
+        assert_eq!(t1.dropped_message_count(), 2);
+    }
+
+    #[test]
+    fn test_membership_config_add_remove_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string()]);
+        config.add_learner("l1".to_string());
+        assert!(config.is_learner(&"l1".to_string()));
+        assert!(!config.is_voter(&"l1".to_string()));
+
+        let promoted = config.promote_learner(&"l1".to_string());
+        assert!(promoted);
+        assert!(config.is_voter(&"l1".to_string()));
+        assert!(!config.is_learner(&"l1".to_string()));
+    }
+
+    #[test]
+    fn test_membership_config_remove_node() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string(), "b".to_string()]);
+        config.add_learner("l1".to_string());
+
+        assert!(config.remove_node(&"a".to_string()));
+        assert!(!config.is_voter(&"a".to_string()));
+
+        assert!(config.remove_node(&"l1".to_string()));
+        assert!(!config.is_learner(&"l1".to_string()));
+
+        assert!(!config.remove_node(&"nonexistent".to_string()));
+    }
+
+    #[test]
+    fn test_membership_has_quorum_with_joint() {
+        let mut config =
+            RaftMembershipConfig::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        config.joint = Some(JointConfig::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        ));
+
+        let mut votes = HashSet::new();
+        votes.insert("b".to_string());
+        votes.insert("c".to_string());
+
+        assert!(config.has_quorum(&votes));
+    }
 }

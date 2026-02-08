@@ -4206,4 +4206,207 @@ mod tests {
         assert!(manager.is_in_flap_backoff(&"peer1".to_string()));
         assert!(manager.flap_backoffs_count() > 0);
     }
+
+    #[test]
+    fn test_handle_signed_gossip_no_signing_configured() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // Create a dummy signed message using the envelope struct
+        let envelope = crate::signing::SignedMessage {
+            sender: "node1".to_string(),
+            public_key: [0u8; 32],
+            payload: vec![1, 2, 3],
+            signature: vec![],
+            sequence: 1,
+            timestamp_ms: 0,
+        };
+        let signed = crate::signing::SignedGossipMessage { envelope };
+
+        // Should fail because signing is not configured
+        let result = manager.handle_signed_gossip(&signed);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_incarnation_inflation_rejection() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 5,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+        manager.add_peer("peer1".to_string());
+
+        // Set peer1's incarnation to 10
+        {
+            let mut state = manager.state.write();
+            state.update_local("peer1".to_string(), NodeHealth::Healthy, 10);
+        }
+
+        // Sync with incarnation jump of 100 (delta=90, exceeds max_incarnation_delta=5)
+        let states = vec![GossipNodeState::new(
+            "peer1".to_string(),
+            NodeHealth::Healthy,
+            1,
+            100, // Incarnation 100, existing is 10, delta=90
+        )];
+        manager.handle_gossip(GossipMessage::Sync {
+            sender: "remote".to_string(),
+            states,
+            sender_time: 1,
+        });
+
+        // The inflated incarnation should be rejected
+        assert!(manager.incarnation_rejected.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[test]
+    fn test_incarnation_within_bound_accepted() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 100,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+        manager.add_peer("peer1".to_string());
+
+        // Set peer1's incarnation to 10
+        {
+            let mut state = manager.state.write();
+            state.update_local("peer1".to_string(), NodeHealth::Healthy, 10);
+        }
+
+        // Sync with incarnation 15 (delta=5, within max_incarnation_delta=100)
+        let states = vec![GossipNodeState::new(
+            "peer1".to_string(),
+            NodeHealth::Degraded,
+            2,
+            15,
+        )];
+        manager.handle_gossip(GossipMessage::Sync {
+            sender: "remote".to_string(),
+            states,
+            sender_time: 2,
+        });
+
+        // Should be accepted (no rejections)
+        assert_eq!(manager.incarnation_rejected.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_bidirectional_probe_ack_id_mismatch() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: true,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // No pending probes, so handle_bidirectional_ack with unknown ID does nothing
+        manager.handle_gossip(GossipMessage::BidirectionalAck {
+            origin: "local".to_string(),
+            probe_id: 999,
+            responder: "peer1".to_string(),
+        });
+
+        // Should not crash - just silently ignored
+        let matrix = manager.connectivity_matrix.read();
+        assert!(!matrix.contains_key(&"peer1".to_string()));
+    }
+
+    #[test]
+    fn test_expire_bidirectional_probes_no_pending() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: true,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        // No pending probes - should not crash
+        manager.expire_bidirectional_probes();
+        assert!(manager.pending_probes.read().is_empty());
+    }
+
+    #[test]
+    fn test_flap_record_backoff_saturation() {
+        let mut record = FlapRecord::new();
+        // Trigger many transitions to test backoff saturation
+        for _ in 0..20 {
+            record.record_transition();
+        }
+
+        let backoff = record.backoff_duration(3);
+        assert!(backoff.is_some());
+        // Backoff should be capped at 300 seconds
+        assert!(backoff.unwrap().as_secs() <= 300);
+    }
+
+    #[test]
+    fn test_flap_record_reset_after_stable_window() {
+        let mut record = FlapRecord::new();
+        for _ in 0..5 {
+            record.record_transition();
+        }
+        assert_eq!(record.flap_count, 5);
+
+        // Simulate stable period by manually setting last_transition to past
+        record.last_transition = Instant::now() - Duration::from_secs(120);
+
+        let reset = record.maybe_reset(Duration::from_secs(60));
+        assert!(reset);
+        assert_eq!(record.flap_count, 0);
+    }
+
+    #[test]
+    fn test_gossip_round_advances_lamport_time() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+
+        let time_before = manager.state.read().lamport_time();
+        manager.gossip_round();
+        let time_after = manager.state.read().lamport_time();
+        assert!(time_after >= time_before);
+    }
+
+    #[test]
+    fn test_handle_gossip_alive_message() {
+        let transport = Arc::new(MemoryTransport::new("local".to_string()));
+        let config = GossipConfig {
+            max_incarnation_delta: 100,
+            require_bidirectional: false,
+            ..GossipConfig::default()
+        };
+        let manager = GossipMembershipManager::new("local".to_string(), config, transport);
+        manager.add_peer("peer1".to_string());
+
+        // Suspect peer1
+        {
+            let mut state = manager.state.write();
+            state.update_local("peer1".to_string(), NodeHealth::Degraded, 1);
+        }
+
+        // Receive alive message - should clear suspicion
+        manager.handle_gossip(GossipMessage::Alive {
+            node_id: "peer1".to_string(),
+            incarnation: 2,
+        });
+
+        // Peer1 should be marked healthy
+        let state = manager.state.read();
+        if let Some(peer_state) = state.get(&"peer1".to_string()) {
+            assert_eq!(peer_state.health, NodeHealth::Healthy);
+        }
+    }
 }

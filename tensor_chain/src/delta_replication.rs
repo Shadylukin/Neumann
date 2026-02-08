@@ -2206,6 +2206,150 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_stats_queue_depth_operations() {
+        let stats = ReplicationStats::new();
+
+        assert_eq!(stats.queue_depth(), 0);
+
+        let depth = stats.increment_queue_depth();
+        assert_eq!(depth, 1);
+        assert_eq!(stats.queue_depth(), 1);
+
+        stats.increment_queue_depth();
+        assert_eq!(stats.queue_depth(), 2);
+
+        stats.decrement_queue_depth();
+        assert_eq!(stats.queue_depth(), 1);
+
+        stats.set_queue_depth(10);
+        assert_eq!(stats.queue_depth(), 10);
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.queue_depth, 10);
+        assert_eq!(snap.peak_queue_depth, 10);
+    }
+
+    #[test]
+    fn test_stats_peak_queue_depth_tracking() {
+        let stats = ReplicationStats::new();
+
+        stats.set_queue_depth(5);
+        stats.set_queue_depth(10);
+        stats.set_queue_depth(3);
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.queue_depth, 3);
+        assert_eq!(snap.peak_queue_depth, 10);
+    }
+
+    #[test]
+    fn test_stats_record_auto_drain() {
+        let stats = ReplicationStats::new();
+        stats.record_auto_drain();
+        stats.record_auto_drain();
+        let snap = stats.snapshot();
+        assert_eq!(snap.auto_drains, 2);
+    }
+
+    #[test]
+    fn test_stats_record_backpressure() {
+        let stats = ReplicationStats::new();
+        stats.record_backpressure();
+        let snap = stats.snapshot();
+        assert_eq!(snap.backpressure_events, 1);
+    }
+
+    #[test]
+    fn test_stats_effective_compression_no_data() {
+        let stats = ReplicationStats::new();
+        let ratio = stats.effective_compression();
+        assert!((ratio - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_manager_stats_accessor() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+        let stats = manager.stats();
+        assert_eq!(stats.bytes_sent, 0);
+        assert_eq!(stats.updates_sent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_auto_drain_shutdown() {
+        let config = DeltaReplicationConfig {
+            auto_drain_interval_ms: 10,
+            ..Default::default()
+        };
+        let manager = Arc::new(DeltaReplicationManager::new("node1".to_string(), config));
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let peer_transport = Arc::new(MemoryTransport::new("peer1".to_string()));
+        transport.connect_to("peer1".to_string(), peer_transport.sender());
+
+        let handle = manager.start_auto_drain(transport, "peer1".to_string());
+        assert!(handle.is_running());
+
+        // Shutdown
+        handle.shutdown().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!handle.is_running());
+    }
+
+    #[test]
+    fn test_queue_update_increments_depth() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        manager
+            .queue_update("key1".to_string(), &[1.0, 2.0], 1)
+            .unwrap();
+        manager
+            .queue_update("key2".to_string(), &[3.0, 4.0], 2)
+            .unwrap();
+
+        let stats = manager.stats();
+        assert_eq!(stats.queue_depth, 2);
+    }
+
+    #[test]
+    fn test_archetype_registry_initialize() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let samples = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![1.0, 1.0, 0.0],
+        ];
+
+        let count = manager.initialize_archetypes(&samples, 2);
+        assert!(count > 0);
+        assert!(count <= 2);
+    }
+
+    #[test]
+    fn test_archetype_sync_roundtrip() {
+        let config = DeltaReplicationConfig::default();
+        let manager1 = DeltaReplicationManager::new("node1".to_string(), config.clone());
+
+        let samples = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        manager1.initialize_archetypes(&samples, 2);
+
+        let archetypes = manager1.get_archetype_sync();
+        assert!(!archetypes.is_empty());
+
+        let manager2 = DeltaReplicationManager::new("node2".to_string(), config);
+        let added = manager2.apply_archetype_sync(archetypes);
+        assert!(added > 0);
+    }
+
     #[tokio::test]
     async fn test_queue_update_async_channel_closed() {
         let config = DeltaReplicationConfig::default();

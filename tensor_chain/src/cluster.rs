@@ -2310,4 +2310,85 @@ mod tests {
         let config = OrchestratorConfig::new(local, peers);
         assert_eq!(config.peers.len(), 2);
     }
+
+    #[test]
+    fn test_orchestrator_config_with_handler_timeouts() {
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let config = OrchestratorConfig::new(local, vec![])
+            .with_handler_timeouts(HandlerTimeoutConfig::new(100, 200, 300));
+        assert_eq!(config.handler_timeouts.query_timeout_ms, 100);
+        assert_eq!(config.handler_timeouts.prepare_timeout_ms, 200);
+        assert_eq!(config.handler_timeouts.commit_abort_timeout_ms, 300);
+    }
+
+    #[test]
+    fn test_orchestrator_config_with_message_validation() {
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let validation = crate::message_validation::MessageValidationConfig::default();
+        let config = OrchestratorConfig::new(local, vec![]).with_message_validation(validation);
+        assert!(config.message_validation.enabled);
+    }
+
+    #[test]
+    fn test_orchestrator_config_with_security_mode() {
+        use crate::tcp::SecurityMode;
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let config = OrchestratorConfig::new(local, vec![]).with_security_mode(SecurityMode::Plain);
+        assert!(config.security_mode.is_some());
+    }
+
+    #[test]
+    fn test_handler_timeout_config_default() {
+        let config = HandlerTimeoutConfig::default();
+        assert_eq!(config.query_timeout_ms, 5000);
+        assert_eq!(config.prepare_timeout_ms, 3000);
+        assert_eq!(config.commit_abort_timeout_ms, 2000);
+    }
+
+    #[test]
+    fn test_orchestrator_config_fast_path_clamping_above() {
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let config = OrchestratorConfig::new(local, vec![]).with_fast_path_threshold(1.5);
+        assert!((config.fast_path_threshold - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_orchestrator_config_fast_path_clamping_below() {
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let config = OrchestratorConfig::new(local, vec![]).with_fast_path_threshold(-0.5);
+        assert!(config.fast_path_threshold.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_orchestrator_config_all_builders_chain() {
+        use crate::tcp::SecurityMode;
+        let local = LocalNodeConfig::new("node1", test_addr(8080));
+        let config = OrchestratorConfig::new(local, vec![])
+            .with_raft(RaftConfig::default())
+            .with_geometric(GeometricMembershipConfig::default())
+            .with_gossip(GossipConfig::default())
+            .with_dtx(DistributedTxConfig::default())
+            .with_delta_replication(DeltaReplicationConfig::default())
+            .with_fast_path_threshold(0.9)
+            .with_handler_timeouts(HandlerTimeoutConfig::default())
+            .with_message_validation(crate::message_validation::MessageValidationConfig::default())
+            .with_security_mode(SecurityMode::Plain);
+        assert!((config.fast_path_threshold - 0.9).abs() < f32::EPSILON);
+        assert!(config.security_mode.is_some());
+    }
+
+    #[test]
+    fn test_local_node_config_debug_format() {
+        let config = LocalNodeConfig::new("test_node", test_addr(9090));
+        let debug = format!("{config:?}");
+        assert!(debug.contains("test_node"));
+        assert!(debug.contains("9090"));
+    }
+
+    #[test]
+    fn test_peer_config_new() {
+        let config = PeerConfig::new("peer1", test_addr(9091));
+        assert_eq!(config.node_id, "peer1");
+        assert_eq!(config.address.port(), 9091);
+    }
 }
