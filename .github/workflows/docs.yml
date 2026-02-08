@@ -126,7 +126,7 @@ jobs:
   benchmarks:
     name: Generate Benchmark Docs
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout
@@ -145,14 +145,23 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install jq, bc, and protoc
+      - name: Install jq, bc, protoc, mold, and clang
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y jq bc protobuf-compiler
+          sudo apt-get install -y jq bc protobuf-compiler mold clang
 
       - name: Run benchmarks (quick mode)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
         run: |
-          cargo bench --workspace --bench '*' -- --noplot
+          cargo bench --workspace --bench '*' -- \
+            --noplot \
+            --warm-up-time 1 \
+            --measurement-time 2 \
+            --sample-size 10 \
+            --nresamples 1000
 
       - name: Generate benchmark summary
         run: |
