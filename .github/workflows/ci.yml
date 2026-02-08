@@ -538,6 +538,7 @@ jobs:
 
       - name: Test core crates (non-Linux)
         if: runner.os != 'Linux'
+        shell: bash
         run: |
           cargo nextest run --profile ci \
             -p tensor_store \
