@@ -1,0 +1,59 @@
+# Mutation testing configuration for tensor_chain.
+#
+# Excludes low-value targets (builders, pure accessors, config defaults,
+# monitoring/logging) to focus mutation budget on safety-critical code.
+#
+# NOTE: exclude_re patterns match against the full mutation name string
+# shown by `cargo mutants --list`, e.g.:
+#   "tensor_chain/src/raft.rs:100:9: replace RaftNode::state -> State with ..."
+# Use " " (space after name) instead of "$" to anchor to function name boundary.
+
+# Examine only these critical files
+examine_re = [
+    "deadlock\\.rs",
+    "distributed_tx\\.rs",
+    "raft\\.rs",
+]
+
+exclude_re = [
+    # Builder/accessor patterns
+    "DeadlockDetectorConfig::with_",
+    "DeadlockDetectorConfig::disabled",
+    "WaitForGraph::with_max_edges_per_tx",
+    "WaitForGraph::with_defaults",
+    "DistributedTxStats::new ",
+    "DistributedTxStats::snapshot",
+    "DeadlockStats::new ",
+    "DeadlockStatsSnapshot::new",
+    "RaftNode::state ",
+    "RaftNode::current_term ",
+    "RaftNode::commit_index ",
+    "RaftNode::log_length ",
+    "RaftNode::fast_path_stats ",
+    "RaftNode::finalized_height ",
+    "DistributedTxConfig::default",
+    "DistributedTransaction::new ",
+    "LockManager::new ",
+    "DistributedTxCoordinator::new ",
+    "DistributedTxCoordinator::with_consensus ",
+    "DistributedTxCoordinator::with_wal ",
+    "TxParticipant::new ",
+    "CoordinatorState::from",
+    "RecoveryStats::default",
+
+    # Monitoring/logging functions (not safety-critical)
+    "next_lock_handle",
+    "lock_handle_current",
+    "lock_handle_high_water",
+
+    # Display/Debug impls
+    "Display for VoteRecordError",
+    "Debug for DeadlockDetector",
+
+    # Accessors
+    "TxParticipant::store ",
+
+    # Error-handling match guards (defensive, non-safety-critical)
+    "DistributedTxCoordinator::clear_persisted_state",
+    "TxParticipant::clear_persisted_state",
+]

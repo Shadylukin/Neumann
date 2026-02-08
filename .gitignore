@@ -30,6 +30,20 @@ tarpaulin-report.html
 # Fuzzing artifacts (corpus is tracked, but crashes/artifacts are not)
 fuzz/artifacts/
 
+# Mutation testing output
+mutants.out/
+mutants.out.old/
+
+# TLA+ generated artifacts
+specs/tla/*.bin
+specs/tla/*_TTrace_*.tla
+specs/tla/states/
+specs/tla/tla2tools.jar
+specs/tla/tlc-results/
+
+# Backup files
+*.toml.old
+
 # Private/experimental crates (not for public release)
 experiments/
 seed_model/
