@@ -36,7 +36,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 zeroize = { version = "1", features = ["derive"] }
 
 # Concurrency
-dashmap = "5"
+dashmap = "6"
 parking_lot = "0.12"
 
 # Utilities

@@ -770,19 +770,6 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
-name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
@@ -1857,7 +1844,7 @@ dependencies = [
  "axum",
  "bytes",
  "criterion",
- "dashmap 6.1.0",
+ "dashmap",
  "futures",
  "graph_engine",
  "http-body-util",
@@ -2476,7 +2463,7 @@ dependencies = [
  "base64 0.22.1",
  "bitcode",
  "criterion",
- "dashmap 6.1.0",
+ "dashmap",
  "futures",
  "graph_engine",
  "hex",
@@ -2679,7 +2666,7 @@ name = "relational_engine"
 version = "0.3.0"
 dependencies = [
  "criterion",
- "dashmap 5.5.3",
+ "dashmap",
  "hex",
  "parking_lot",
  "rayon",
@@ -3275,7 +3262,7 @@ version = "0.3.0"
 dependencies = [
  "bitcode",
  "criterion",
- "dashmap 6.1.0",
+ "dashmap",
  "serde",
  "serde_json",
  "tensor_store",
@@ -3297,7 +3284,7 @@ dependencies = [
  "bytes",
  "crc32fast",
  "criterion",
- "dashmap 5.5.3",
+ "dashmap",
  "ed25519-dalek",
  "graph_engine",
  "hex",
@@ -3402,7 +3389,7 @@ dependencies = [
  "base64 0.22.1",
  "blake2",
  "criterion",
- "dashmap 6.1.0",
+ "dashmap",
  "graph_engine",
  "hkdf",
  "peak_alloc",
