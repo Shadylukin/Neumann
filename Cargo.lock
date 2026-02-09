@@ -1556,7 +1556,7 @@ dependencies = [
  "parking_lot",
  "query_router",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
  "relational_engine",
  "serde_json",
  "sha2",
