@@ -41,7 +41,7 @@ rand = "0.8"
 sys-info = "0.9"
 
 # TLS certificate parsing for doctor diagnostics
-x509-parser = "0.16"
+x509-parser = "0.18"
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -44,7 +44,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
 axum = { version = "0.8", features = ["json", "macros"] }
 maud = { version = "0.27", features = ["axum"] }
 urlencoding = "2"
-x509-parser = "0.16"
+x509-parser = "0.18"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
