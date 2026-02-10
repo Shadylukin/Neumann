@@ -240,7 +240,7 @@ jobs:
         if: always()
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: coverage-report
           path: target/llvm-cov/html
@@ -458,7 +458,7 @@ jobs:
       - name: Upload coverage report
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: coverage-typescript-sdk
           path: neumann-ts/coverage
@@ -513,7 +513,7 @@ jobs:
       - name: Upload coverage report
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: coverage-python-sdk
           path: neumann-py/htmlcov
