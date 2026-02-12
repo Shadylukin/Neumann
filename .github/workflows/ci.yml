@@ -60,7 +60,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: rustfmt
@@ -95,7 +95,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: clippy
@@ -135,7 +135,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -181,7 +181,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: llvm-tools-preview
@@ -282,7 +282,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -321,7 +321,7 @@ jobs:
       - name: Install Rust
         # nightly
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: nightly
 
@@ -394,7 +394,7 @@ jobs:
       - name: Install Rust
         # Pin nightly to avoid regressions in cargo-miri runner
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: nightly-2026-02-01
           components: miri
@@ -537,7 +537,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -678,7 +678,7 @@ jobs:
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
