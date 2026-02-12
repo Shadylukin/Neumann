@@ -399,6 +399,9 @@ jobs:
           toolchain: nightly
           components: miri
 
+      - name: Clean stale Miri artifacts
+        run: rm -rf target/miri
+
       - name: Setup Miri
         working-directory: tensor_store
         run: cargo miri setup
