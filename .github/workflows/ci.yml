@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Filter paths
         # v3.0.2
@@ -55,7 +55,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -75,7 +75,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Validate benchmark inventory
         run: |
@@ -90,7 +90,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -130,7 +130,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -176,7 +176,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -277,7 +277,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -316,7 +316,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # nightly
@@ -350,7 +350,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Run audit
         # v2.0.0
@@ -366,7 +366,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Run cargo-deny
         # v2
@@ -389,7 +389,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # Pin nightly to avoid regressions in cargo-miri runner
@@ -427,7 +427,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Node.js
         # v4.1.0
@@ -477,7 +477,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Python
         # v5.6.0
@@ -532,7 +532,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -610,7 +610,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Set up Docker Buildx
         # v3.10.0
@@ -673,7 +673,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
@@ -725,7 +725,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
 
