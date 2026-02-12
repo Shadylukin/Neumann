@@ -192,7 +192,9 @@ impl From<Range<usize>> for Span {
 /// A value with an associated source span.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Spanned<T> {
+    /// The wrapped value.
     pub node: T,
+    /// Source location of the value.
     pub span: Span,
 }
 

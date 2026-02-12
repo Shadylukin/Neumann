@@ -24,6 +24,11 @@ tensor_cache = { path = "../tensor_cache" }
 relational_engine = { path = "../relational_engine", features = ["test-internals"] }
 graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
+query_router = { path = "../query_router" }
+neumann_shell = { path = "../neumann_shell" }
+tensor_blob = { path = "../tensor_blob" }
+tensor_unified = { path = "../tensor_unified" }
+tokio = { version = "1", features = ["rt", "macros"] }
 bitcode = { version = "0.6", features = ["serde"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -950,6 +955,78 @@ bench = false
 [[bin]]
 name = "consensus_conflict"
 path = "fuzz_targets/consensus_conflict.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 44: Query router, shell, blob, unified, vault access, checkpoint snapshot targets
+
+[[bin]]
+name = "query_router_dispatch"
+path = "fuzz_targets/query_router_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "query_router_async_dispatch"
+path = "fuzz_targets/query_router_async_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "query_router_cursor"
+path = "fuzz_targets/query_router_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shell_execute_line"
+path = "fuzz_targets/shell_execute_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shell_wal_replay"
+path = "fuzz_targets/shell_wal_replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blob_chunker"
+path = "fuzz_targets/blob_chunker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blob_metadata_roundtrip"
+path = "fuzz_targets/blob_metadata_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unified_entity_ops"
+path = "fuzz_targets/unified_entity_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_access_control"
+path = "fuzz_targets/vault_access_control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkpoint_snapshot_parse"
+path = "fuzz_targets/checkpoint_snapshot_parse.rs"
 test = false
 doc = false
 bench = false

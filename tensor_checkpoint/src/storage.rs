@@ -9,9 +9,11 @@ use crate::{
 const CHECKPOINT_TAG: &str = "_system:checkpoint";
 const CHECKPOINT_CONTENT_TYPE: &str = "application/x-neumann-checkpoint";
 
+/// Persistence layer for checkpoints, backed by the blob store.
 pub struct CheckpointStorage;
 
 impl CheckpointStorage {
+    /// Serialize and store a checkpoint, returning its blob artifact ID.
     pub async fn store(state: &CheckpointState, blob: &BlobStore) -> Result<String> {
         let data =
             bitcode::serialize(state).map_err(|e| CheckpointError::Serialization(e.to_string()))?;
@@ -43,6 +45,7 @@ impl CheckpointStorage {
         Ok(artifact_id)
     }
 
+    /// Load a checkpoint by ID or name, deserializing the full state.
     pub async fn load(checkpoint_id: &str, blob: &BlobStore) -> Result<CheckpointState> {
         let artifact_id = Self::find_by_id_or_name(checkpoint_id, blob).await?;
 
@@ -57,6 +60,7 @@ impl CheckpointStorage {
         Ok(state)
     }
 
+    /// List all checkpoints sorted by creation time (most recent first).
     pub async fn list(blob: &BlobStore) -> Result<Vec<CheckpointInfo>> {
         let artifact_ids = blob
             .by_tag(CHECKPOINT_TAG)
@@ -95,6 +99,7 @@ impl CheckpointStorage {
         Ok(checkpoints)
     }
 
+    /// Delete a checkpoint by its blob artifact ID.
     pub async fn delete(artifact_id: &str, blob: &BlobStore) -> Result<()> {
         blob.delete(artifact_id)
             .await

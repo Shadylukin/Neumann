@@ -17,6 +17,7 @@ use loom::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ChainError;
+use crate::sync_compat::Mutex;
 
 /// A hybrid logical clock timestamp.
 ///
@@ -117,6 +118,8 @@ pub struct HybridLogicalClock {
     wall_start_ms: u64,
     /// Simulated clock drift offset in milliseconds (for testing).
     drift_offset_ms: AtomicI64,
+    /// Mutex protecting the non-atomic read-modify-write in `receive()`.
+    receive_lock: Mutex<()>,
 }
 
 impl HybridLogicalClock {
@@ -142,6 +145,7 @@ impl HybridLogicalClock {
             monotonic_start: Instant::now(),
             wall_start_ms,
             drift_offset_ms: AtomicI64::new(0),
+            receive_lock: Mutex::new(()),
         })
     }
 
@@ -157,6 +161,7 @@ impl HybridLogicalClock {
             node_id_hash,
             wall_start_ms,
             drift_offset_ms: AtomicI64::new(0),
+            receive_lock: Mutex::new(()),
         }
     }
 
@@ -247,6 +252,10 @@ impl HybridLogicalClock {
     /// # Errors
     /// This method currently always succeeds after construction.
     pub fn receive(&self, received: &HLCTimestamp) -> Result<HLCTimestamp, ChainError> {
+        // Acquire the receive lock to prevent concurrent receive() calls from
+        // producing duplicate timestamps. The non-atomic read-modify-write on
+        // last_wall_ms and logical is not safe without this serialization.
+        let _guard = self.receive_lock.lock();
         let current_wall = self.wall_with_drift();
 
         let last = self.last_wall_ms.load(Ordering::SeqCst);

@@ -18,7 +18,9 @@ use crate::span::Span;
 /// A token with its span.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Token {
+    /// The kind of this token.
     pub kind: TokenKind,
+    /// Source location of this token.
     pub span: Span,
 }
 
@@ -65,234 +67,437 @@ pub enum TokenKind {
     Null,
 
     // === SQL Keywords ===
+    /// SQL `SELECT` keyword.
     Select,
+    /// SQL `FROM` keyword.
     From,
+    /// SQL `WHERE` keyword.
     Where,
+    /// SQL `AND` keyword.
     And,
+    /// SQL `OR` keyword.
     Or,
+    /// SQL `NOT` keyword.
     Not,
+    /// SQL `IN` keyword.
     In,
+    /// SQL `IS` keyword.
     Is,
+    /// SQL `LIKE` keyword.
     Like,
+    /// SQL `BETWEEN` keyword.
     Between,
+    /// SQL `CASE` keyword.
     Case,
+    /// SQL `WHEN` keyword.
     When,
+    /// SQL `THEN` keyword.
     Then,
+    /// SQL `ELSE` keyword.
     Else,
+    /// SQL `END` keyword.
     End,
+    /// SQL `AS` keyword.
     As,
+    /// SQL `ON` keyword.
     On,
+    /// SQL `JOIN` keyword.
     Join,
+    /// SQL `LEFT` keyword.
     Left,
+    /// SQL `RIGHT` keyword.
     Right,
+    /// SQL `INNER` keyword.
     Inner,
+    /// SQL `OUTER` keyword.
     Outer,
+    /// SQL `FULL` keyword.
     Full,
+    /// SQL `CROSS` keyword.
     Cross,
+    /// SQL `NATURAL` keyword.
     Natural,
+    /// SQL `USING` keyword.
     Using,
+    /// SQL `GROUP` keyword.
     Group,
+    /// SQL `BY` keyword.
     By,
+    /// SQL `HAVING` keyword.
     Having,
+    /// SQL `ORDER` keyword.
     Order,
+    /// SQL `ASC` keyword.
     Asc,
+    /// SQL `DESC` keyword.
     Desc,
+    /// SQL `NULLS` keyword.
     Nulls,
+    /// SQL `FIRST` keyword.
     First,
+    /// SQL `LAST` keyword.
     Last,
+    /// SQL `LIMIT` keyword.
     Limit,
+    /// SQL `OFFSET` keyword.
     Offset,
+    /// SQL `DISTINCT` keyword.
     Distinct,
+    /// SQL `ALL` keyword.
     All,
+    /// SQL `UNION` keyword.
     Union,
+    /// SQL `INTERSECT` keyword.
     Intersect,
+    /// SQL `EXCEPT` keyword.
     Except,
+    /// SQL `EXISTS` keyword.
     Exists,
+    /// SQL `CAST` keyword.
     Cast,
+    /// SQL `ANY` keyword.
     Any,
+    /// SQL `INSERT` keyword.
     Insert,
+    /// SQL `INTO` keyword.
     Into,
+    /// SQL `VALUES` keyword.
     Values,
+    /// SQL `UPDATE` keyword.
     Update,
+    /// SQL `SET` keyword.
     Set,
+    /// SQL `DELETE` keyword.
     Delete,
+    /// SQL `CREATE` keyword.
     Create,
+    /// SQL `TABLE` keyword.
     Table,
+    /// SQL `INDEX` keyword.
     Index,
+    /// SQL `DROP` keyword.
     Drop,
+    /// SQL `ALTER` keyword.
     Alter,
+    /// SQL `ADD` keyword.
     Add,
+    /// SQL `COLUMN` keyword.
     Column,
+    /// SQL `PRIMARY` keyword.
     Primary,
+    /// SQL `KEY` keyword.
     Key,
+    /// SQL `FOREIGN` keyword.
     Foreign,
+    /// SQL `REFERENCES` keyword.
     References,
+    /// SQL `UNIQUE` keyword.
     Unique,
+    /// SQL `CHECK` keyword.
     Check,
+    /// SQL `DEFAULT` keyword.
     Default,
+    /// SQL `CONSTRAINT` keyword.
     Constraint,
+    /// SQL `CASCADE` keyword.
     Cascade,
+    /// SQL `RESTRICT` keyword.
     Restrict,
+    /// SQL `IF` keyword.
     If,
+    /// SQL `SHOW` keyword.
     Show,
+    /// SQL `TABLES` keyword.
     Tables,
+    /// SQL `DESCRIBE` keyword.
     Describe,
+    /// SQL `EMBEDDINGS` keyword.
     Embeddings,
 
     // === Type Keywords ===
+    /// SQL `INT` type keyword.
     Int,
+    /// SQL `INTEGER` type keyword.
     Integer_,
+    /// SQL `BIGINT` type keyword.
     Bigint,
+    /// SQL `SMALLINT` type keyword.
     Smallint,
+    /// SQL `FLOAT` type keyword.
     Float_,
+    /// SQL `DOUBLE` type keyword.
     Double,
+    /// SQL `REAL` type keyword.
     Real,
+    /// SQL `DECIMAL` type keyword.
     Decimal,
+    /// SQL `NUMERIC` type keyword.
     Numeric,
+    /// SQL `VARCHAR` type keyword.
     Varchar,
+    /// SQL `CHAR` type keyword.
     Char,
+    /// SQL `TEXT` type keyword.
     Text,
+    /// SQL `BOOLEAN` type keyword.
     Boolean,
+    /// SQL `DATE` type keyword.
     Date,
+    /// SQL `TIME` type keyword.
     Time,
+    /// SQL `TIMESTAMP` type keyword.
     Timestamp,
+    /// SQL `BLOB` type keyword.
     Blob,
 
     // === Aggregate Functions ===
+    /// SQL `COUNT` aggregate function.
     Count,
+    /// SQL `SUM` aggregate function.
     Sum,
+    /// SQL `AVG` aggregate function.
     Avg,
+    /// SQL `MIN` aggregate function.
     Min,
+    /// SQL `MAX` aggregate function.
     Max,
 
     // === Graph Keywords ===
+    /// Graph `NODE` keyword.
     Node,
+    /// Graph `EDGE` keyword.
     Edge,
+    /// Graph `NEIGHBORS` keyword.
     Neighbors,
+    /// Graph `PATH` keyword.
     Path,
+    /// Graph `GET` keyword.
     Get,
+    /// Graph `LIST` keyword.
     List,
+    /// Graph `STORE` keyword.
     Store,
+    /// Graph `OUTGOING` keyword.
     Outgoing,
+    /// Graph `INCOMING` keyword.
     Incoming,
+    /// Graph `BOTH` keyword.
     Both,
+    /// Graph `SHORTEST` keyword.
     Shortest,
+    /// Graph `PROPERTIES` keyword.
     Properties,
+    /// Graph `LABEL` keyword.
     Label,
+    /// Graph `VERTEX` keyword.
     Vertex,
+    /// Graph `VERTICES` keyword.
     Vertices,
+    /// Graph `EDGES` keyword.
     Edges,
 
     // === Vector Keywords ===
+    /// Vector `EMBED` keyword.
     Embed,
+    /// Vector `SIMILAR` keyword.
     Similar,
+    /// Vector `VECTOR` keyword.
     Vector,
+    /// Vector `EMBEDDING` keyword.
     Embedding,
+    /// Vector `DIMENSION` keyword.
     Dimension,
+    /// Vector `DISTANCE` keyword.
     Distance,
+    /// Vector `COSINE` keyword.
     Cosine,
+    /// Vector `EUCLIDEAN` keyword.
     Euclidean,
+    /// Vector `DOT_PRODUCT` keyword.
     DotProduct,
+    /// Vector `BUILD` keyword.
     Build,
+    /// Vector `BATCH` keyword.
     Batch,
 
     // === Unified Query Keywords ===
+    /// Unified `FIND` keyword.
     Find,
+    /// Unified `WITH` keyword.
     With,
+    /// Unified `RETURN` keyword.
     Return,
+    /// Unified `MATCH` keyword.
     Match,
+    /// Unified `ENTITY` keyword.
     Entity,
+    /// Unified `CONNECTED` keyword.
     Connected,
+    /// Unified `ROWS` keyword.
     Rows,
 
     // === Vault Keywords ===
+    /// Vault `VAULT` keyword.
     Vault,
+    /// Vault `GRANT` keyword.
     Grant,
+    /// Vault `REVOKE` keyword.
     Revoke,
+    /// Vault `ROTATE` keyword.
     Rotate,
 
     // === Cache Keywords ===
+    /// Cache `CACHE` keyword.
     Cache,
+    /// Cache `INIT` keyword.
     Init,
+    /// Cache `STATS` keyword.
     Stats,
+    /// Cache `CLEAR` keyword.
     Clear,
+    /// Cache `EVICT` keyword.
     Evict,
+    /// Cache `PUT` keyword.
     Put,
+    /// Cache `SEMANTIC` keyword.
     Semantic,
+    /// Cache `THRESHOLD` keyword.
     Threshold,
 
     // === Checkpoint Keywords ===
+    /// Checkpoint `CHECKPOINT` keyword.
     Checkpoint,
+    /// Checkpoint `CHECKPOINTS` keyword.
     Checkpoints,
+    /// Checkpoint `ROLLBACK` keyword.
     Rollback,
 
     // === Chain Keywords ===
+    /// Chain `CHAIN` keyword.
     Chain,
+    /// Chain `BEGIN` keyword.
     Begin,
+    /// Chain `COMMIT` keyword.
     Commit,
+    /// Chain `TRANSACTION` keyword.
     Transaction,
+    /// Chain `HISTORY` keyword.
     History,
+    /// Chain `DRIFT` keyword.
     Drift,
+    /// Chain `CODEBOOK` keyword.
     Codebook,
+    /// Chain `GLOBAL` keyword.
     Global,
+    /// Chain `LOCAL` keyword.
     Local,
+    /// Chain `ANALYZE` keyword.
     Analyze,
+    /// Chain `HEIGHT` keyword.
     Height,
+    /// Chain `TRANSITIONS` keyword.
     Transitions,
+    /// Chain `TIP` keyword.
     Tip,
+    /// Chain `BLOCK` keyword.
     Block,
 
     // === Cluster Keywords ===
+    /// Cluster `CLUSTER` keyword.
     Cluster,
+    /// Cluster `CONNECT` keyword.
     Connect,
+    /// Cluster `DISCONNECT` keyword.
     Disconnect,
+    /// Cluster `STATUS` keyword.
     Status,
+    /// Cluster `NODES` keyword.
     Nodes,
+    /// Cluster `LEADER` keyword.
     Leader,
 
     // === Blob Storage Keywords ===
+    /// Blob `BLOBS` keyword.
     Blobs,
+    /// Blob `INFO` keyword.
     Info,
+    /// Blob `LINK` keyword.
     Link,
+    /// Blob `UNLINK` keyword.
     Unlink,
+    /// Blob `LINKS` keyword.
     Links,
+    /// Blob `TAG` keyword.
     Tag,
+    /// Blob `UNTAG` keyword.
     Untag,
+    /// Blob `VERIFY` keyword.
     Verify,
+    /// Blob `GC` keyword.
     Gc,
+    /// Blob `REPAIR` keyword.
     Repair,
+    /// Blob `TO` keyword.
     To,
+    /// Blob `FOR` keyword.
     For,
+    /// Blob `META` keyword.
     Meta,
+    /// Blob `ARTIFACTS` keyword.
     Artifacts,
 
     // === Graph Algorithm Keywords ===
+    /// Graph algorithm `PAGERANK` keyword.
     PageRank,
+    /// Graph algorithm `BETWEENNESS` keyword.
     Betweenness,
+    /// Graph algorithm `CLOSENESS` keyword.
     Closeness,
+    /// Graph algorithm `EIGENVECTOR` keyword.
     Eigenvector,
+    /// Graph algorithm `CENTRALITY` keyword.
     Centrality,
+    /// Graph algorithm `LOUVAIN` keyword.
     Louvain,
+    /// Graph algorithm `COMMUNITIES` keyword.
     Communities,
+    /// Graph algorithm `PROPAGATION` keyword.
     Propagation,
+    /// Graph algorithm `DAMPING` keyword.
     Damping,
+    /// Graph algorithm `TOLERANCE` keyword.
     Tolerance,
+    /// Graph algorithm `ITERATIONS` keyword.
     Iterations,
+    /// Graph algorithm `SAMPLING` keyword.
     Sampling,
+    /// Graph algorithm `RESOLUTION` keyword.
     Resolution,
+    /// Graph algorithm `PASSES` keyword.
     Passes,
 
     // === Graph Extended Keywords ===
+    /// Graph `WEIGHTED` keyword.
     Weighted,
+    /// Graph `VARIABLE` keyword.
     Variable,
+    /// Graph `HOPS` keyword.
     Hops,
+    /// Graph `DEPTH` keyword.
     Depth,
+    /// Graph `SKIP` keyword.
     Skip,
+    /// Graph `TOTAL` keyword.
     Total,
+    /// Graph `PATTERN` keyword.
     Pattern,
+    /// Graph `AGGREGATE` keyword.
     Aggregate,
+    /// Graph `PROPERTY` keyword.
     Property,
+    /// Graph `TYPE` keyword.
     Type,
+    /// Graph `GRAPH` keyword.
     Graph,
 
     // === Operators ===

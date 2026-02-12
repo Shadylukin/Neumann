@@ -1528,9 +1528,10 @@ impl QueryRouter {
             "EMBED" => self.execute_embed(command),
             "SIMILAR" => self.execute_similar(command),
 
-            // Parser-based execution: unified, entity, graph, constraint, batch, aggregate, cluster, show
+            // Parser-based execution for commands that need full AST
             "FIND" | "ENTITY" | "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" | "CLUSTER"
-            | "SHOW" => self.execute_parsed(command),
+            | "SHOW" | "VAULT" | "CACHE" | "BLOB" | "CHECKPOINT" | "CHAIN" | "MATCH" | "BEGIN"
+            | "COMMIT" | "ROLLBACK" => self.execute_parsed(command),
 
             _ => Err(RouterError::UnknownCommand(keyword)),
         }

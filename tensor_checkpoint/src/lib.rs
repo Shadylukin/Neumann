@@ -39,11 +39,16 @@ use tensor_blob::BlobStore;
 use tensor_store::TensorStore;
 use tokio::sync::Mutex;
 
+/// Configuration for the checkpoint manager.
 #[derive(Debug, Clone)]
 pub struct CheckpointConfig {
+    /// Maximum number of checkpoints to retain (oldest are purged).
     pub max_checkpoints: usize,
+    /// Whether to auto-checkpoint before destructive operations.
     pub auto_checkpoint: bool,
+    /// Whether to prompt the user for confirmation before destructive operations.
     pub interactive_confirm: bool,
+    /// Maximum number of sample data items shown in operation previews.
     pub preview_sample_size: usize,
 }
 
@@ -59,33 +64,39 @@ impl Default for CheckpointConfig {
 }
 
 impl CheckpointConfig {
+    /// Create a default checkpoint configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the maximum number of checkpoints to retain.
     pub fn with_max_checkpoints(mut self, max: usize) -> Self {
         self.max_checkpoints = max;
         self
     }
 
+    /// Enable or disable auto-checkpoints before destructive operations.
     pub fn with_auto_checkpoint(mut self, enabled: bool) -> Self {
         self.auto_checkpoint = enabled;
         self
     }
 
+    /// Enable or disable interactive confirmation prompts.
     pub fn with_interactive_confirm(mut self, enabled: bool) -> Self {
         self.interactive_confirm = enabled;
         self
     }
 
+    /// Set the number of sample data items shown in operation previews.
     pub fn with_preview_sample_size(mut self, size: usize) -> Self {
         self.preview_sample_size = size;
         self
     }
 }
 
-/// Trait for handling confirmation prompts.
+/// Trait for handling confirmation prompts before destructive operations.
 pub trait ConfirmationHandler: Send + Sync {
+    /// Return `true` to proceed with the operation, `false` to cancel.
     fn confirm(&self, op: &DestructiveOp, preview: &OperationPreview) -> bool;
 }
 
@@ -107,6 +118,7 @@ impl ConfirmationHandler for AutoReject {
     }
 }
 
+/// Central coordinator for creating, listing, restoring, and deleting checkpoints.
 pub struct CheckpointManager {
     blob: Arc<Mutex<BlobStore>>,
     config: CheckpointConfig,
@@ -116,6 +128,7 @@ pub struct CheckpointManager {
 }
 
 impl CheckpointManager {
+    /// Create a checkpoint manager backed by the given blob store and configuration.
     pub fn new(blob: Arc<Mutex<BlobStore>>, config: CheckpointConfig) -> Self {
         let retention = RetentionManager::new(config.max_checkpoints);
         let preview_gen = PreviewGenerator::new(config.preview_sample_size);
@@ -129,10 +142,12 @@ impl CheckpointManager {
         }
     }
 
+    /// Register a handler to be called for destructive operation confirmation.
     pub fn set_confirmation_handler(&mut self, handler: Arc<dyn ConfirmationHandler>) {
         self.confirm_handler = Some(handler);
     }
 
+    /// Returns a reference to the current configuration.
     pub fn config(&self) -> &CheckpointConfig {
         &self.config
     }
@@ -265,10 +280,12 @@ impl CheckpointManager {
         }
     }
 
+    /// Returns whether auto-checkpoints are enabled for destructive operations.
     pub fn auto_checkpoint_enabled(&self) -> bool {
         self.config.auto_checkpoint
     }
 
+    /// Returns whether interactive confirmation prompts are enabled.
     pub fn interactive_confirm_enabled(&self) -> bool {
         self.config.interactive_confirm
     }

@@ -112,14 +112,18 @@ pub fn validate_request_with_audit<T>(
         }
     }
 
-    // Check rate limit for authenticated identity
-    if let Ok(Some(ref identity)) = result {
+    // Check rate limit for all requests (authenticated and anonymous)
+    if let Ok(ref identity_opt) = result {
         if let Some(limiter) = rate_limiter {
-            if let Err(msg) = limiter.check_and_record(identity, Operation::Request) {
+            // Use identity for authenticated requests, remote address for anonymous
+            let rate_limit_key = identity_opt
+                .as_deref()
+                .unwrap_or_else(|| remote_addr.as_deref().unwrap_or("anonymous"));
+            if let Err(msg) = limiter.check_and_record(rate_limit_key, Operation::Request) {
                 if let Some(logger) = audit_logger {
                     logger.record(
                         AuditEvent::RateLimited {
-                            identity: identity.clone(),
+                            identity: rate_limit_key.to_string(),
                             operation: "request".to_string(),
                         },
                         remote_addr.as_deref(),

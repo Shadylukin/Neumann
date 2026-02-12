@@ -483,20 +483,20 @@ impl UnifiedEngine {
             self.vector.set_entity_embedding(key, emb)?;
         }
 
-        // Store fields in TensorStore
+        // Store all fields atomically in a single TensorStore put
+        let mut tensor = self
+            .store
+            .get(key)
+            .unwrap_or_else(|_| tensor_store::TensorData::new());
         for (field_name, field_value) in fields {
-            let mut tensor = self
-                .store
-                .get(key)
-                .unwrap_or_else(|_| tensor_store::TensorData::new());
             tensor.set(
                 &field_name,
                 tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(field_value)),
             );
-            self.store
-                .put(key, tensor)
-                .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
         }
+        self.store
+            .put(key, tensor)
+            .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
 
         Ok(())
     }
