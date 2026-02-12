@@ -392,29 +392,26 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust
-        # nightly
+        # Pin nightly to avoid regressions in cargo-miri runner
         uses: >-
           dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-02-01
           components: miri
-
-      - name: Clean stale Miri artifacts
-        run: rm -rf target/miri
 
       - name: Setup Miri
         working-directory: tensor_store
-        run: cargo miri setup
+        run: cargo +nightly-2026-02-01 miri setup
 
       - name: Run Miri on mmap module
         working-directory: tensor_store
         run: |
-          cargo miri test mmap:: --lib
+          cargo +nightly-2026-02-01 miri test mmap:: --lib
 
       - name: Run Miri on embedding_slab module
         working-directory: tensor_store
         run: |
-          cargo miri test embedding_slab:: --lib
+          cargo +nightly-2026-02-01 miri test embedding_slab:: --lib
 
   typescript-sdk:
     name: TypeScript SDK

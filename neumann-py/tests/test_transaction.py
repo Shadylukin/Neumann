@@ -272,9 +272,11 @@ class TestTransactionContextManager:
         client = MagicMock()
         client.execute.return_value = QueryResult(QueryResultType.EMPTY)
 
-        with pytest.raises(ValueError), Transaction(client) as tx:
-            tx.execute("INSERT users name='Alice'")
-            raise ValueError("Test error")
+        tx = Transaction(client)
+        with pytest.raises(ValueError):
+            with tx:
+                tx.execute("INSERT users name='Alice'")
+                raise ValueError("Test error")
 
         assert tx._rolled_back
         assert not tx.is_active

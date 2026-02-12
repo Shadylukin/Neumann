@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import neumann.client
 from neumann.client import NeumannClient
 from neumann.errors import (
     ConnectionError,
@@ -867,11 +869,8 @@ class TestNeumannClientEmbeddedDirect:
 
         with patch.dict("sys.modules", {"neumann._native": mock_native}):
             # Need to reload to pick up the mock
-            import importlib
-
-            import neumann.client as client_mod
-
-            importlib.reload(client_mod)
+            importlib.reload(neumann.client)
+            client_mod = neumann.client
 
             client = client_mod.NeumannClient.embedded()
             assert client.is_connected
@@ -885,11 +884,8 @@ class TestNeumannClientEmbeddedDirect:
         mock_native.QueryRouter.with_path.return_value = mock_router
 
         with patch.dict("sys.modules", {"neumann._native": mock_native}):
-            import importlib
-
-            import neumann.client as client_mod
-
-            importlib.reload(client_mod)
+            importlib.reload(neumann.client)
+            client_mod = neumann.client
 
             client = client_mod.NeumannClient.embedded(path="/tmp/neumann-db")
             assert client.is_connected
@@ -918,11 +914,8 @@ class TestNeumannClientConnectDirect:
                 "neumann.proto.neumann_pb2_grpc": mock_stub_module,
             },
         ):
-            import importlib
-
-            import neumann.client as client_mod
-
-            importlib.reload(client_mod)
+            importlib.reload(neumann.client)
+            client_mod = neumann.client
 
             client = client_mod.NeumannClient.connect("localhost:50051")
             assert client.is_connected
@@ -952,11 +945,8 @@ class TestNeumannClientConnectDirect:
                 "neumann.proto.neumann_pb2_grpc": mock_stub_module,
             },
         ):
-            import importlib
-
-            import neumann.client as client_mod
-
-            importlib.reload(client_mod)
+            importlib.reload(neumann.client)
+            client_mod = neumann.client
 
             client = client_mod.NeumannClient.connect("localhost:50051", tls=True)
             assert client.is_connected
@@ -986,11 +976,8 @@ class TestNeumannClientConnectDirect:
                 "neumann.proto.neumann_pb2_grpc": mock_stub_module,
             },
         ):
-            import importlib
-
-            import neumann.client as client_mod
-
-            importlib.reload(client_mod)
+            importlib.reload(neumann.client)
+            client_mod = neumann.client
 
             client = client_mod.NeumannClient.connect("localhost:50051", api_key="secret-key")
             assert client._api_key == "secret-key"
@@ -1001,11 +988,8 @@ class TestNeumannClientConnectDirect:
         mock_grpc.insecure_channel.side_effect = RuntimeError("Connection failed")
 
         with patch.dict("sys.modules", {"grpc": mock_grpc}):
-            import importlib
-
-            import neumann.client as client_mod
-
-            importlib.reload(client_mod)
+            importlib.reload(neumann.client)
+            client_mod = neumann.client
 
             with pytest.raises(ConnectionError) as exc_info:
                 client_mod.NeumannClient.connect("localhost:50051")
