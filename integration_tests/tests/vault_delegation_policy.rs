@@ -430,9 +430,7 @@ fn test_quota_enforcement() {
     };
 
     // Set quota for the namespace prefix
-    vault
-        .set_quota(Vault::ROOT, "limited", quota)
-        .unwrap();
+    vault.set_quota(Vault::ROOT, "limited", quota).unwrap();
 
     // Store two secrets within quota
     vault.set(Vault::ROOT, "limited/s1", "value1").unwrap();
@@ -446,9 +444,7 @@ fn test_quota_enforcement() {
     );
 
     // Updating an existing secret should still work (not a new secret)
-    vault
-        .set(Vault::ROOT, "limited/s1", "updated")
-        .unwrap();
+    vault.set(Vault::ROOT, "limited/s1", "updated").unwrap();
     assert_eq!(vault.get(Vault::ROOT, "limited/s1").unwrap(), "updated");
 }
 

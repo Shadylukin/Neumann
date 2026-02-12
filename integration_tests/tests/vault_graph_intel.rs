@@ -136,10 +136,16 @@ fn test_infer_roles_with_multiple_entities() {
     let role_members: usize = result.roles.iter().map(|r| r.members.len()).sum();
     let total_covered = role_members + result.unassigned.len();
     // populate_vault creates 3 entities: alice, bob, carol
-    assert!(total_covered >= 3, "expected at least 3 entities, got {total_covered}");
+    assert!(
+        total_covered >= 3,
+        "expected at least 3 entities, got {total_covered}"
+    );
     // Each role should have a valid ID and at least one member
     for role in &result.roles {
-        assert!(!role.members.is_empty(), "role should have at least one member");
+        assert!(
+            !role.members.is_empty(),
+            "role should have at least one member"
+        );
         assert!(
             !role.common_secrets.is_empty(),
             "role should share at least one secret"
