@@ -260,12 +260,14 @@ source</li>
 <li>Download a pre-built binary if available</li>
 <li>Fall back to building from source if needed</li>
 <li>Install to <code>/usr/local/bin</code> or <code>~/.local/bin</code></li>
+<li>Install shell completions and man pages</li>
 </ul>
 <h3 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>NEUMANN_INSTALL_DIR</code></td><td>Custom installation directory</td></tr>
 <tr><td><code>NEUMANN_VERSION</code></td><td>Install a specific version (e.g., <code>v0.1.0</code>)</td></tr>
 <tr><td><code>NEUMANN_NO_MODIFY_PATH</code></td><td>Set to <code>1</code> to skip PATH modification</td></tr>
+<tr><td><code>NEUMANN_SKIP_EXTRAS</code></td><td>Set to <code>1</code> to skip completions and man page installation</td></tr>
 </tbody></table>
 </div>
 <h2 id="homebrew-macoslinux"><a class="header" href="#homebrew-macoslinux">Homebrew (macOS/Linux)</a></h2>
@@ -276,12 +278,15 @@ brew install neumann
 <p>If you have Rust installed:</p>
 <pre><code class="language-bash">cargo install neumann_shell
 </code></pre>
+<p>To install the gRPC server:</p>
+<pre><code class="language-bash">cargo install neumann_server
+</code></pre>
 <h2 id="docker"><a class="header" href="#docker">Docker</a></h2>
 <h3 id="interactive-cli"><a class="header" href="#interactive-cli">Interactive CLI</a></h3>
-<pre><code class="language-bash">docker run -it shadylukin/neumann:latest
+<pre><code class="language-bash">docker run -it shadylukinack/neumann:latest
 </code></pre>
 <h3 id="server-mode"><a class="header" href="#server-mode">Server Mode</a></h3>
-<pre><code class="language-bash">docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukin/neumann:server
+<pre><code class="language-bash">docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukinack/neumann:server
 </code></pre>
 <h3 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h3>
 <pre><code class="language-bash"># Clone the repository
@@ -316,6 +321,19 @@ cargo install --path neumann_shell
 <h3 id="run-tests"><a class="header" href="#run-tests">Run Tests</a></h3>
 <pre><code class="language-bash">cargo test
 </code></pre>
+<h2 id="sdk-installation"><a class="header" href="#sdk-installation">SDK Installation</a></h2>
+<h3 id="python"><a class="header" href="#python">Python</a></h3>
+<pre><code class="language-bash">pip install neumann-db
+</code></pre>
+<p>For embedded mode (in-process database):</p>
+<pre><code class="language-bash">pip install neumann-db[native]
+</code></pre>
+<h3 id="typescript--javascript"><a class="header" href="#typescript--javascript">TypeScript / JavaScript</a></h3>
+<pre><code class="language-bash">npm install neumann-db
+</code></pre>
+<p>Or with yarn:</p>
+<pre><code class="language-bash">yarn add neumann-db
+</code></pre>
 <h2 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h2>
 <pre><code class="language-bash">neumann --version
 </code></pre>
@@ -348,8 +366,15 @@ sudo apt-get install protobuf-compiler
 sudo dnf install protobuf-compiler
 </code></pre>
 <h3 id="permission-denied-during-install"><a class="header" href="#permission-denied-during-install">Permission denied during install</a></h3>
-<p>The installer tries <code>/usr/local/bin</code> first (requires sudo) then falls back to <code>~/.local/bin</code>. You can specify a custom directory:</p>
-<pre><code class="language-bash">NEUMANN_INSTALL_DIR=~/bin curl -sSfL .../install.sh | bash
+<p>The installer tries <code>/usr/local/bin</code> first (requires sudo) then falls back
+to <code>~/.local/bin</code>. You can specify a custom directory:</p>
+<pre><code class="language-bash">NEUMANN_INSTALL_DIR=~/bin \
+  curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+</code></pre>
+<h3 id="python-sdk-native-module-errors"><a class="header" href="#python-sdk-native-module-errors">Python SDK native module errors</a></h3>
+<p>If you get errors about the native module, ensure you have a Rust toolchain:</p>
+<pre><code class="language-bash">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+pip install neumann-db[native]
 </code></pre>
 <h2 id="updating"><a class="header" href="#updating">Updating</a></h2>
 <h3 id="quick-install"><a class="header" href="#quick-install">Quick Install</a></h3>
@@ -362,6 +387,12 @@ sudo dnf install protobuf-compiler
 <h3 id="cargo"><a class="header" href="#cargo">Cargo</a></h3>
 <pre><code class="language-bash">cargo install neumann_shell --force
 </code></pre>
+<h3 id="python-sdk"><a class="header" href="#python-sdk">Python SDK</a></h3>
+<pre><code class="language-bash">pip install --upgrade neumann-db
+</code></pre>
+<h3 id="typescript-sdk"><a class="header" href="#typescript-sdk">TypeScript SDK</a></h3>
+<pre><code class="language-bash">npm update neumann-db
+</code></pre>
 <h2 id="uninstalling"><a class="header" href="#uninstalling">Uninstalling</a></h2>
 <h3 id="quick-install--cargo"><a class="header" href="#quick-install--cargo">Quick Install / Cargo</a></h3>
 <pre><code class="language-bash">rm $(which neumann)
@@ -370,8 +401,14 @@ sudo dnf install protobuf-compiler
 <pre><code class="language-bash">brew uninstall neumann
 </code></pre>
 <h3 id="docker-1"><a class="header" href="#docker-1">Docker</a></h3>
-<pre><code class="language-bash">docker rmi shadylukin/neumann:latest shadylukin/neumann:server
+<pre><code class="language-bash">docker rmi shadylukinack/neumann:latest shadylukinack/neumann:server
 docker volume rm neumann-data
+</code></pre>
+<h3 id="python-sdk-1"><a class="header" href="#python-sdk-1">Python SDK</a></h3>
+<pre><code class="language-bash">pip uninstall neumann-db
+</code></pre>
+<h3 id="typescript-sdk-1"><a class="header" href="#typescript-sdk-1">TypeScript SDK</a></h3>
+<pre><code class="language-bash">npm uninstall neumann-db
 </code></pre>
 <h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
 <ul>
@@ -873,7 +910,7 @@ useful for sparse key spaces where most lookups are misses.</p>
 </ul>
 <p><strong>Number of hash functions</strong>: <code>k = (m/n) * ln(2)</code></p>
 <ul>
-<li>Clamped to range [1, 16]</li>
+<li>Clamped to range 1 to 16</li>
 </ul>
 <h3 id="implementation-details"><a class="header" href="#implementation-details">Implementation Details</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -1087,14 +1124,14 @@ let orthogonal = v.project_orthogonal(&amp;conflict_direction);
 <span class="boring">}</span></code></pre></pre>
 <h3 id="distance-metrics"><a class="header" href="#distance-metrics">Distance Metrics</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Range</th><th>Use Case</th></tr></thead><tbody>
-<tr><td><code>cosine_similarity</code></td><td>[-1, 1]</td><td>Directional similarity</td></tr>
-<tr><td><code>angular_distance</code></td><td>[0, PI]</td><td>Linear for small angles</td></tr>
-<tr><td><code>geodesic_distance</code></td><td>[0, PI]</td><td>Arc length on unit sphere</td></tr>
-<tr><td><code>jaccard_index</code></td><td>[0, 1]</td><td>Structural overlap (positions)</td></tr>
-<tr><td><code>overlap_coefficient</code></td><td>[0, 1]</td><td>Subset containment</td></tr>
-<tr><td><code>weighted_jaccard</code></td><td>[0, 1]</td><td>Value-weighted structural overlap</td></tr>
-<tr><td><code>euclidean_distance</code></td><td>[0, inf)</td><td>L2 norm of difference</td></tr>
-<tr><td><code>manhattan_distance</code></td><td>[0, inf)</td><td>L1 norm of difference</td></tr>
+<tr><td><code>cosine_similarity</code></td><td>-1 to 1</td><td>Directional similarity</td></tr>
+<tr><td><code>angular_distance</code></td><td>0 to PI</td><td>Linear for small angles</td></tr>
+<tr><td><code>geodesic_distance</code></td><td>0 to PI</td><td>Arc length on unit sphere</td></tr>
+<tr><td><code>jaccard_index</code></td><td>0 to 1</td><td>Structural overlap (positions)</td></tr>
+<tr><td><code>overlap_coefficient</code></td><td>0 to 1</td><td>Subset containment</td></tr>
+<tr><td><code>weighted_jaccard</code></td><td>0 to 1</td><td>Value-weighted structural overlap</td></tr>
+<tr><td><code>euclidean_distance</code></td><td>0 to inf</td><td>L2 norm of difference</td></tr>
+<tr><td><code>manhattan_distance</code></td><td>0 to inf</td><td>L1 norm of difference</td></tr>
 </tbody></table>
 </div>
 <h3 id="security-naninf-sanitization"><a class="header" href="#security-naninf-sanitization">Security: NaN/Inf Sanitization</a></h3>
@@ -4994,18 +5031,18 @@ fn box_muller(u1: f32, u2: f32) -&gt; (f32, f32) {
 <h3 id="optimal-shape-selection"><a class="header" href="#optimal-shape-selection">Optimal Shape Selection</a></h3>
 <p>The module includes hardcoded optimal shapes for common embedding dimensions:</p>
 <div class="table-wrapper"><table><thead><tr><th>Dimension</th><th>Shape</th><th>Why</th></tr></thead><tbody>
-<tr><td>64</td><td>[4, 4, 4]</td><td>3 balanced factors</td></tr>
-<tr><td>128</td><td>[4, 4, 8]</td><td>Near-balanced</td></tr>
-<tr><td>256</td><td>[4, 8, 8]</td><td>Near-balanced</td></tr>
-<tr><td>384</td><td>[4, 8, 12]</td><td>all-MiniLM-L6-v2</td></tr>
-<tr><td>512</td><td>[8, 8, 8]</td><td>Perfect cube</td></tr>
-<tr><td>768</td><td>[8, 8, 12]</td><td>BERT dimension</td></tr>
-<tr><td>1024</td><td>[8, 8, 16]</td><td>Common LLM size</td></tr>
-<tr><td>1536</td><td>[8, 12, 16]</td><td>OpenAI ada-002</td></tr>
-<tr><td>2048</td><td>[8, 16, 16]</td><td>Near-balanced</td></tr>
-<tr><td>3072</td><td>[8, 16, 24]</td><td>Large models</td></tr>
-<tr><td>4096</td><td>[8, 8, 8, 8]</td><td>4D balanced</td></tr>
-<tr><td>8192</td><td>[8, 8, 8, 16]</td><td>Extra large</td></tr>
+<tr><td>64</td><td><code>[4, 4, 4]</code></td><td>3 balanced factors</td></tr>
+<tr><td>128</td><td><code>[4, 4, 8]</code></td><td>Near-balanced</td></tr>
+<tr><td>256</td><td><code>[4, 8, 8]</code></td><td>Near-balanced</td></tr>
+<tr><td>384</td><td><code>[4, 8, 12]</code></td><td>all-MiniLM-L6-v2</td></tr>
+<tr><td>512</td><td><code>[8, 8, 8]</code></td><td>Perfect cube</td></tr>
+<tr><td>768</td><td><code>[8, 8, 12]</code></td><td>BERT dimension</td></tr>
+<tr><td>1024</td><td><code>[8, 8, 16]</code></td><td>Common LLM size</td></tr>
+<tr><td>1536</td><td><code>[8, 12, 16]</code></td><td>OpenAI ada-002</td></tr>
+<tr><td>2048</td><td><code>[8, 16, 16]</code></td><td>Near-balanced</td></tr>
+<tr><td>3072</td><td><code>[8, 16, 24]</code></td><td>Large models</td></tr>
+<tr><td>4096</td><td><code>[8, 8, 8, 8]</code></td><td>4D balanced</td></tr>
+<tr><td>8192</td><td><code>[8, 8, 8, 16]</code></td><td>Extra large</td></tr>
 </tbody></table>
 </div>
 <p>For non-standard dimensions, <code>factorize_balanced</code> finds factors close to the nth
@@ -5033,7 +5070,7 @@ root:</p>
 <tr><td><code>tt_euclidean_distance</code></td><td>Euclidean distance in TT space</td><td>O(n <em>d</em> r^4)</td></tr>
 <tr><td><code>tt_euclidean_distance_batch</code></td><td>Batch Euclidean distances</td><td>Parallel when &gt;= 4 targets</td></tr>
 <tr><td><code>tt_norm</code></td><td>L2 norm of TT vector</td><td>O(n <em>d</em> r^4)</td></tr>
-<tr><td><code>tt_scale</code></td><td>Scale TT vector by constant</td><td>O(cores[0].size)</td></tr>
+<tr><td><code>tt_scale</code></td><td>Scale TT vector by constant</td><td><code>O(cores[0].size)</code></td></tr>
 </tbody></table>
 </div>
 <p>Where: n = number of modes, d = mode size, r = TT-rank</p>
@@ -5462,9 +5499,9 @@ assert_eq!(encoded.runs(), 1);  // Single run
 <span class="boring">}</span></code></pre></pre>
 <p><strong>Compression scenarios:</strong></p>
 <div class="table-wrapper"><table><thead><tr><th>Data Pattern</th><th>Runs</th><th>Compression</th></tr></thead><tbody>
-<tr><td>[5, 5, 5, 5, 5] (1000x)</td><td>1</td><td>500x</td></tr>
-<tr><td>[1, 2, 3, 4, 5] (all different)</td><td>5</td><td>0.8x (overhead)</td></tr>
-<tr><td>[1, 1, 2, 2, 2, 3, 1, 1, 1, 1]</td><td>4</td><td>2.5x</td></tr>
+<tr><td><code>[5, 5, 5, 5, 5]</code> (1000x)</td><td>1</td><td>500x</td></tr>
+<tr><td><code>[1, 2, 3, 4, 5]</code> (all different)</td><td>5</td><td>0.8x (overhead)</td></tr>
+<tr><td><code>[1, 1, 2, 2, 2, 3, 1, 1, 1, 1]</code></td><td>4</td><td>2.5x</td></tr>
 <tr><td>Status column (pending/active/done)</td><td>~300 per 10000</td><td>~33x</td></tr>
 </tbody></table>
 </div>
@@ -5699,13 +5736,29 @@ than traditional ACLs.</p>
 maintains a permanent audit trail of all operations and supports features like
 rate limiting, TTL-based grants, and namespace isolation for multi-tenant
 deployments.</p>
+<h2 id="when-to-use-tensor-vault"><a class="header" href="#when-to-use-tensor-vault">When to Use Tensor Vault</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>How Tensor Vault Helps</th></tr></thead><tbody>
+<tr><td>Multiple agents need access to shared secrets</td><td>Graph-based access control with per-agent permission levels</td></tr>
+<tr><td>You need to audit who accessed what and when</td><td>Tamper-evident audit log with HMAC integrity and AEAD encryption</td></tr>
+<tr><td>Temporary access to secrets</td><td>TTL-based grants and secret expiration auto-revoke access</td></tr>
+<tr><td>Agent delegation chains</td><td>Delegation with ceiling model, depth limits, and cascading revocation</td></tr>
+<tr><td>Security posture review</td><td>Graph intelligence: blast radius, privilege analysis, role inference</td></tr>
+<tr><td>Incident response</td><td>Break-glass emergency access with justification and auto-expiry</td></tr>
+<tr><td>Application-level encryption</td><td>Transit encryption lets agents encrypt data without holding keys</td></tr>
+<tr><td>Regulatory compliance</td><td>Immutable audit trail, key rotation, and anomaly detection</td></tr>
+</tbody></table>
+</div>
 <h2 id="design-principles-3"><a class="header" href="#design-principles-3">Design Principles</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Principle</th><th>Description</th></tr></thead><tbody>
 <tr><td>Encryption at Rest</td><td>All secrets encrypted with AES-256-GCM</td></tr>
 <tr><td>Topological Access Control</td><td>Access determined by graph path, not ACLs</td></tr>
 <tr><td>Zero Trust</td><td>No bypass mode; <code>node:root</code> is the only universal accessor</td></tr>
 <tr><td>Memory Safety</td><td>Keys zeroized on drop via <code>zeroize</code> crate</td></tr>
-<tr><td>Permanent Audit Trail</td><td>All operations logged with queryable API</td></tr>
+<tr><td>Tamper-Evident Graph</td><td>All permission edges HMAC-signed; tampering detected on traversal</td></tr>
+<tr><td>Distance Attenuation</td><td>Permissions degrade with graph distance from the secret</td></tr>
+<tr><td>Least Privilege Delegation</td><td>Agents delegate subsets of their own access with ceiling model</td></tr>
+<tr><td>Behavioral Monitoring</td><td>Per-agent anomaly detection flags spikes, bulk ops, and dormancy</td></tr>
+<tr><td>Permanent Audit Trail</td><td>All operations logged with HMAC integrity and AEAD encryption</td></tr>
 <tr><td>Defense in Depth</td><td>Multiple obfuscation layers hide patterns</td></tr>
 <tr><td>Multi-Tenant Ready</td><td>Namespace isolation and rate limiting for agent systems</td></tr>
 </tbody></table>
@@ -5738,24 +5791,68 @@ deployments.</p>
 <tr><td><code>RateLimitConfig</code></td><td>Configurable limits per operation type</td></tr>
 </tbody></table>
 </div>
+<h3 id="edge-signing-types"><a class="header" href="#edge-signing-types">Edge Signing Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>EdgeSigner</code></td><td>HMAC-BLAKE2b signer for graph edge integrity</td></tr>
+</tbody></table>
+</div>
+<h3 id="attenuation-types"><a class="header" href="#attenuation-types">Attenuation Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>AttenuationPolicy</code></td><td>Distance-based permission degradation policy</td></tr>
+</tbody></table>
+</div>
+<h3 id="delegation-types"><a class="header" href="#delegation-types">Delegation Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>DelegationManager</code></td><td>Agent-to-agent delegation with depth limits and ceiling model</td></tr>
+<tr><td><code>DelegationRecord</code></td><td>Single delegation grant (parent, child, secrets, ceiling, TTL)</td></tr>
+</tbody></table>
+</div>
+<h3 id="anomaly-detection-types"><a class="header" href="#anomaly-detection-types">Anomaly Detection Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>AnomalyMonitor</code></td><td>Real-time per-agent behavioral anomaly tracker</td></tr>
+<tr><td><code>AnomalyThresholds</code></td><td>Configurable limits for spike, bulk, and inactivity detection</td></tr>
+<tr><td><code>AgentProfile</code></td><td>Per-agent access history (known secrets, counts, timestamps)</td></tr>
+<tr><td><code>AnomalyEvent</code></td><td>Event variants: FrequencySpike, BulkOperation, InactiveAgentResumed, FirstSecretAccess</td></tr>
+</tbody></table>
+</div>
 <h3 id="audit-types"><a class="header" href="#audit-types">Audit Types</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>AuditLog</code></td><td>Query interface for audit entries</td></tr>
+<tr><td><code>AuditLog</code></td><td>Query interface for audit entries with optional HMAC/AEAD protection</td></tr>
 <tr><td><code>AuditEntry</code></td><td>Single operation record (entity, key, operation, timestamp)</td></tr>
 <tr><td><code>AuditOperation</code></td><td>Operation types: Get, Set, Delete, Rotate, Grant, Revoke, List</td></tr>
 </tbody></table>
 </div>
+<h3 id="graph-intelligence-types"><a class="header" href="#graph-intelligence-types">Graph Intelligence Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>AccessExplanation</code></td><td>Path-level explanation of why access was granted or denied</td></tr>
+<tr><td><code>BlastRadius</code></td><td>All secrets reachable by an entity with permission and hop detail</td></tr>
+<tr><td><code>SimulationResult</code></td><td>Dry-run impact analysis of a hypothetical grant</td></tr>
+<tr><td><code>SecurityAuditReport</code></td><td>SCC cycles, single points of failure, over-privileged entities</td></tr>
+<tr><td><code>CriticalEntity</code></td><td>Articulation-point analysis with PageRank and dependency counts</td></tr>
+<tr><td><code>PrivilegeAnalysisReport</code></td><td>PageRank-weighted reachability scores per entity</td></tr>
+<tr><td><code>DelegationAnomalyScore</code></td><td>Jaccard and Adamic-Adar similarity for delegation edges</td></tr>
+<tr><td><code>RoleInferenceResult</code></td><td>Louvain community detection mapped to inferred roles</td></tr>
+<tr><td><code>TrustTransitivityReport</code></td><td>Triangle counting and clustering coefficients</td></tr>
+<tr><td><code>RiskPropagationReport</code></td><td>Eigenvector centrality weighted by admin reachability</td></tr>
+</tbody></table>
+</div>
 <h2 id="architecture-6"><a class="header" href="#architecture-6">Architecture</a></h2>
-<pre class="mermaid">graph TB
+<pre class="mermaid">flowchart TB
     subgraph &quot;Tensor Vault&quot;
         API[Vault API]
         AC[AccessController]
         Cipher[Cipher&lt;br/&gt;AES-256-GCM]
         KDF[MasterKey&lt;br/&gt;Argon2id + HKDF]
         Obf[Obfuscator&lt;br/&gt;HMAC + Padding]
-        Audit[AuditLog]
+        Sign[EdgeSigner&lt;br/&gt;HMAC-BLAKE2b]
+        Atten[Attenuation&lt;br/&gt;Distance Policy]
+        Deleg[DelegationManager&lt;br/&gt;Ceiling Model]
+        Anomaly[AnomalyMonitor&lt;br/&gt;Behavior Tracking]
+        Transit[Transit Cipher&lt;br/&gt;Encrypt-as-a-Service]
+        Audit[AuditLog&lt;br/&gt;HMAC + AEAD]
         TTL[GrantTTLTracker]
         RL[RateLimiter]
+        GI[GraphIntel&lt;br/&gt;Security Analytics]
     end
 
     subgraph &quot;Storage&quot;
@@ -5766,16 +5863,28 @@ deployments.</p>
     API --&gt; AC
     API --&gt; Cipher
     API --&gt; Obf
+    API --&gt; Sign
     API --&gt; Audit
     API --&gt; TTL
     API --&gt; RL
+    API --&gt; Deleg
+    API --&gt; Anomaly
+    API --&gt; Transit
+    API --&gt; GI
 
     AC --&gt; GE
+    AC --&gt; Atten
+    AC --&gt; Sign
     Cipher --&gt; KDF
     Obf --&gt; KDF
+    Transit --&gt; KDF
+    Audit --&gt; KDF
+    GI --&gt; GE
 
     API --&gt; TS
     Audit --&gt; TS
+    Deleg --&gt; TS
+    Anomaly --&gt; TS
 </pre>
 <h3 id="data-flow-1"><a class="header" href="#data-flow-1">Data Flow</a></h3>
 <ol>
@@ -5957,6 +6066,155 @@ prevents privilege escalation via group membership.</p>
     CheckLevel --&gt;|Yes| Granted2([Access Granted])
     CheckLevel --&gt;|No| Insufficient([Insufficient Permission])
 </pre>
+<h2 id="edge-signing"><a class="header" href="#edge-signing">Edge Signing</a></h2>
+<p>Every permission edge in the graph is signed with HMAC-BLAKE2b to
+prevent topology tampering. When the vault creates or modifies a
+<code>VAULT_ACCESS_*</code> edge, it computes a signature over the canonicalized
+tuple <code>(from, to, edge_type, timestamp)</code> and stores it as an edge
+property.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From signing.rs
+impl EdgeSigner {
+    pub fn sign_edge(
+        &amp;self,
+        from: &amp;str,
+        to: &amp;str,
+        edge_type: &amp;str,
+        timestamp: i64,
+    ) -&gt; Vec&lt;u8&gt; {
+        // HMAC-BLAKE2b over canonical representation
+        // from || ":" || to || ":" || edge_type || ":" || timestamp
+    }
+
+    pub fn verify_edge(
+        &amp;self,
+        from: &amp;str,
+        to: &amp;str,
+        edge_type: &amp;str,
+        timestamp: i64,
+        signature: &amp;[u8],
+    ) -&gt; bool {
+        // Constant-time comparison to prevent timing attacks
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Signature verification happens during BFS traversal. If a tampered
+edge is encountered, the <code>AccessController</code> skips it and the
+<code>explain_access</code> API reports a <code>TamperedEdge</code> denial reason.</p>
+<h2 id="distance-based-attenuation"><a class="header" href="#distance-based-attenuation">Distance-Based Attenuation</a></h2>
+<p>Permissions degrade as graph distance increases between an entity
+and a secret. This limits the blast radius of transitive access
+chains.</p>
+<h3 id="attenuationpolicy"><a class="header" href="#attenuationpolicy">AttenuationPolicy</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>admin_limit</code></td><td><code>usize</code></td><td>1</td><td>Maximum hops that preserve Admin</td></tr>
+<tr><td><code>write_limit</code></td><td><code>usize</code></td><td>2</td><td>Maximum hops that preserve Write</td></tr>
+<tr><td><code>horizon</code></td><td><code>usize</code></td><td>10</td><td>BFS cutoff; access denied beyond this</td></tr>
+</tbody></table>
+</div>
+<h3 id="permission-at-each-hop"><a class="header" href="#permission-at-each-hop">Permission at Each Hop</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Hops</th><th>Effective Permission</th></tr></thead><tbody>
+<tr><td>1</td><td>Admin (if granted Admin)</td></tr>
+<tr><td>2</td><td>Write (Admin attenuates to Write)</td></tr>
+<tr><td>3-10</td><td>Read (Write attenuates to Read)</td></tr>
+<tr><td>&gt;10</td><td>Denied (beyond horizon)</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From attenuation.rs
+impl AttenuationPolicy {
+    pub fn attenuate(
+        &amp;self,
+        perm: Permission,
+        hops: usize,
+    ) -&gt; Option&lt;Permission&gt; {
+        if hops &gt; self.horizon {
+            return None; // Beyond horizon
+        }
+        match perm {
+            Permission::Admin if hops &gt; self.admin_limit =&gt;
+                self.attenuate(Permission::Write, hops),
+            Permission::Write if hops &gt; self.write_limit =&gt;
+                Some(Permission::Read),
+            other =&gt; Some(other),
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Use <code>AttenuationPolicy::none()</code> to disable attenuation for backward
+compatibility with legacy deployments.</p>
+<h2 id="delegation"><a class="header" href="#delegation">Delegation</a></h2>
+<p>Agents can delegate subsets of their own access to child agents.
+Delegation follows a ceiling model: the child can never exceed the
+parent’s permission level.</p>
+<h3 id="key-properties-1"><a class="header" href="#key-properties-1">Key Properties</a></h3>
+<ul>
+<li><strong>Ceiling model</strong>: <code>effective = min(parent_permission, requested)</code></li>
+<li><strong>Depth limits</strong>: Configurable maximum chain depth (default 3)</li>
+<li><strong>Cycle prevention</strong>: A child cannot delegate back to an ancestor</li>
+<li><strong>Cascading revocation</strong>: Revoking a parent revokes all descendants</li>
+<li><strong>TTL support</strong>: Delegations can expire automatically</li>
+</ul>
+<h3 id="delegationrecord-fields"><a class="header" href="#delegationrecord-fields">DelegationRecord Fields</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>parent</code></td><td><code>String</code></td><td>Delegating (parent) agent</td></tr>
+<tr><td><code>child</code></td><td><code>String</code></td><td>Receiving (child) agent</td></tr>
+<tr><td><code>secrets</code></td><td><code>Vec&lt;String&gt;</code></td><td>Secret names delegated</td></tr>
+<tr><td><code>max_permission</code></td><td><code>Permission</code></td><td>Ceiling permission level</td></tr>
+<tr><td><code>ttl_ms</code></td><td><code>Option&lt;i64&gt;</code></td><td>Optional TTL in milliseconds</td></tr>
+<tr><td><code>created_at_ms</code></td><td><code>i64</code></td><td>Creation timestamp (unix ms)</td></tr>
+<tr><td><code>delegation_depth</code></td><td><code>u32</code></td><td>Hops from root to this child</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Delegation creates graph edges with ceiling enforcement
+vault.delegate(
+    "user:alice",   // parent
+    "agent:deploy", // child
+    &amp;["db/password", "api/key"],
+    Permission::Read,
+    Some(3_600_000), // 1-hour TTL
+)?;
+
+// Cascading revocation removes agent:deploy and all its children
+vault.revoke_delegation_cascading("user:alice", "agent:deploy")?;
+<span class="boring">}</span></code></pre></pre>
+<p>Delegation composes with attenuation: the effective permission is
+the minimum of the delegation ceiling and the attenuated permission
+at the child’s graph distance.</p>
+<h2 id="anomaly-detection"><a class="header" href="#anomaly-detection">Anomaly Detection</a></h2>
+<p>The vault monitors per-agent behavior in real time and flags
+suspicious patterns. The <code>AnomalyMonitor</code> is non-blocking; it
+records events but does not deny access.</p>
+<h3 id="anomalythresholds"><a class="header" href="#anomalythresholds">AnomalyThresholds</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>frequency_spike_limit</code></td><td><code>u64</code></td><td>50</td><td>Ops per window that trigger a spike</td></tr>
+<tr><td><code>frequency_window_ms</code></td><td><code>i64</code></td><td>60,000</td><td>Sliding window size (1 minute)</td></tr>
+<tr><td><code>bulk_operation_threshold</code></td><td><code>u64</code></td><td>10</td><td>Burst size that triggers a bulk event</td></tr>
+<tr><td><code>inactive_threshold_ms</code></td><td><code>i64</code></td><td>86,400,000</td><td>Inactivity before resumption is flagged (24h)</td></tr>
+</tbody></table>
+</div>
+<h3 id="anomalyevent-variants"><a class="header" href="#anomalyevent-variants">AnomalyEvent Variants</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Event</th><th>Trigger</th></tr></thead><tbody>
+<tr><td><code>FirstSecretAccess</code></td><td>Entity accesses a secret it has never accessed before</td></tr>
+<tr><td><code>FrequencySpike</code></td><td>Operations in window exceed <code>frequency_spike_limit</code></td></tr>
+<tr><td><code>BulkOperation</code></td><td>Burst of operations exceeds <code>bulk_operation_threshold</code></td></tr>
+<tr><td><code>InactiveAgentResumed</code></td><td>Entity resumes after <code>inactive_threshold_ms</code> of silence</td></tr>
+</tbody></table>
+</div>
+<h3 id="agentprofile"><a class="header" href="#agentprofile">AgentProfile</a></h3>
+<p>Each entity accumulates an <code>AgentProfile</code> containing:</p>
+<ul>
+<li>Set of known (obfuscated) secret keys accessed</li>
+<li>Per-secret access counts</li>
+<li>Timestamp of most recent operation</li>
+<li>Total lifetime operation count</li>
+<li>Recent timestamps for sliding-window frequency analysis</li>
+</ul>
+<p>Profiles are persisted to <code>TensorStore</code> and survive vault restarts.</p>
 <h2 id="storage-format"><a class="header" href="#storage-format">Storage Format</a></h2>
 <p>Secrets use a two-tier storage model for security:</p>
 <h3 id="metadata-tensor"><a class="header" href="#metadata-tensor">Metadata Tensor</a></h3>
@@ -6030,7 +6288,8 @@ impl MasterKey {
     pub fn derive_subkey(&amp;self, domain: &amp;[u8]) -&gt; [u8; KEY_SIZE] {
         let hk = Hkdf::&lt;Sha256&gt;::new(None, &amp;self.bytes);
         let mut output = [0u8; KEY_SIZE];
-        hk.expand(domain, &amp;mut output).expect("HKDF expand cannot fail for 32 bytes");
+        hk.expand(domain, &amp;mut output)
+            .expect("HKDF expand cannot fail for 32 bytes");
         output
     }
 
@@ -6045,6 +6304,14 @@ impl MasterKey {
     pub fn metadata_key(&amp;self) -&gt; [u8; KEY_SIZE] {
         self.derive_subkey(b"neumann_vault_metadata_v1")
     }
+
+    pub fn audit_key(&amp;self) -&gt; [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_audit_v1")
+    }
+
+    pub fn transit_key(&amp;self) -&gt; [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_transit_v1")
+    }
 }
 <span class="boring">}</span></code></pre></pre>
 <p><strong>Key Hierarchy</strong>:</p>
@@ -6053,10 +6320,14 @@ impl MasterKey {
         ▼ Argon2id
     MasterKey (32 bytes)
         │
-        ├──▶ HKDF("encryption_v1") ──▶ AES-256-GCM key
-        ├──▶ HKDF("obfuscation_v1") ──▶ HMAC key for obfuscation
-        └──▶ HKDF("metadata_v1") ──▶ AES-256-GCM key for metadata
+        ├──▶ HKDF("encryption_v1")  ──▶ AES-256-GCM key (secret data)
+        ├──▶ HKDF("obfuscation_v1") ──▶ HMAC-BLAKE2b key (key names)
+        ├──▶ HKDF("metadata_v1")    ──▶ AES-256-GCM key (metadata)
+        ├──▶ HKDF("audit_v1")       ──▶ HMAC + AES-256-GCM key (audit)
+        └──▶ HKDF("transit_v1")     ──▶ AES-256-GCM key (transit encryption)
 </code></pre>
+<p>Each subkey is cryptographically independent via HKDF domain separation.
+Compromising one subkey does not reveal any other.</p>
 <h3 id="salt-persistence"><a class="header" href="#salt-persistence">Salt Persistence</a></h3>
 <p>The vault automatically manages salt persistence:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -6480,6 +6751,24 @@ pub fn cleanup_expired_grants(&amp;self) -&gt; usize {
 }
 <span class="boring">}</span></code></pre></pre>
 <h2 id="audit-logging"><a class="header" href="#audit-logging">Audit Logging</a></h2>
+<h3 id="keyed-vs-legacy-mode"><a class="header" href="#keyed-vs-legacy-mode">Keyed vs Legacy Mode</a></h3>
+<p>The audit log supports two modes:</p>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Audit Key</th><th>Entity/Target</th><th>Integrity</th></tr></thead><tbody>
+<tr><td>Legacy (unkeyed)</td><td><code>None</code></td><td>Plaintext</td><td>None</td></tr>
+<tr><td>Keyed</td><td><code>Some([u8; 32])</code></td><td>AEAD-encrypted</td><td>HMAC per entry</td></tr>
+</tbody></table>
+</div>
+<p>When an <code>audit_key</code> is provided (derived from <code>MasterKey::audit_key()</code>),
+each entry gets:</p>
+<ul>
+<li><strong><code>_entity_enc</code> / <code>_target_enc</code></strong>: AES-256-GCM encrypted entity and
+target fields (nonce prepended). Prevents casual log readers from
+learning who accessed what.</li>
+<li><strong><code>_hmac</code></strong>: HMAC-BLAKE2b over the full entry. Any modification
+(timestamp, operation, entity) is detected on read.</li>
+<li><strong><code>_audit_epoch</code></strong>: Key rotation counter. Entries from a previous
+epoch are still readable during transition but flagged as stale.</li>
+</ul>
 <h3 id="audit-entry-storage"><a class="header" href="#audit-entry-storage">Audit Entry Storage</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -6487,14 +6776,19 @@ pub fn cleanup_expired_grants(&amp;self) -&gt; usize {
 const AUDIT_PREFIX: &amp;str = "_va:";
 static AUDIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub fn record(&amp;self, entity: &amp;str, secret_key: &amp;str, operation: &amp;AuditOperation) {
+pub fn record(
+    &amp;self,
+    entity: &amp;str,
+    secret_key: &amp;str,
+    operation: &amp;AuditOperation,
+) {
     let timestamp = now_millis();
     let counter = AUDIT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let key = format!("{AUDIT_PREFIX}{timestamp}:{counter}");
 
     let mut tensor = TensorData::new();
     tensor.set("_entity", entity);
-    tensor.set("_secret", secret_key);  // Already obfuscated by caller
+    tensor.set("_secret", secret_key);
     tensor.set("_op", operation.as_str());
     tensor.set("_ts", timestamp);
 
@@ -6503,14 +6797,16 @@ pub fn record(&amp;self, entity: &amp;str, secret_key: &amp;str, operation: &amp
         AuditOperation::Grant { to, permission } =&gt; {
             tensor.set("_target", to);
             tensor.set("_permission", permission);
-        },
+        }
         AuditOperation::Revoke { from } =&gt; {
             tensor.set("_target", from);
-        },
-        _ =&gt; {},
+        }
+        _ =&gt; {}
     }
 
-    // Best effort - audit failures don't block operations
+    // In keyed mode: encrypt entity/target with AEAD,
+    // compute HMAC over all fields, attach epoch counter
+
     let _ = self.store.put(&amp;key, tensor);
 }
 <span class="boring">}</span></code></pre></pre>
@@ -6523,8 +6819,373 @@ pub fn record(&amp;self, entity: &amp;str, secret_key: &amp;str, operation: &amp
 <tr><td><code>recent(limit)</code></td><td>Last N entries</td><td>O(n log n) sort + truncate</td></tr>
 </tbody></table>
 </div>
-<p><strong>Note</strong>: Secret keys are obfuscated in audit logs to prevent leaking plaintext
-names.</p>
+<p><strong>Note</strong>: Secret keys are obfuscated in audit logs to prevent leaking
+plaintext names. In keyed mode, entity and target fields are
+additionally encrypted with AEAD.</p>
+<h2 id="transit-encryption"><a class="header" href="#transit-encryption">Transit Encryption</a></h2>
+<p>Transit encryption provides encrypt-as-a-service: agents can encrypt
+data using a vault-managed key without ever seeing the key material.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Encrypt data for storage outside the vault
+let sealed = vault.encrypt_for("user:alice", "db/password", b"plaintext")?;
+
+// Later, decrypt it
+let plaintext = vault.decrypt_as("user:alice", "db/password", &amp;sealed)?;
+<span class="boring">}</span></code></pre></pre>
+<p>Transit encryption uses a dedicated <code>transit_key</code> subkey, separate
+from the secret-encryption key. The caller must have at least Read
+permission on the referenced secret. This enables use cases like
+encrypting application data at rest without storing it in the vault.</p>
+<h2 id="secret-expiration"><a class="header" href="#secret-expiration">Secret Expiration</a></h2>
+<p>Secrets themselves can have a TTL, distinct from grant TTLs. When a
+secret expires, any <code>get()</code> call returns <code>SecretExpired</code>.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::time::Duration;
+
+// Store a secret that expires in 24 hours
+vault.set_with_ttl(
+    Vault::ROOT,
+    "temp/token",
+    "abc123",
+    Duration::from_secs(86400),
+)?;
+
+// Check remaining lifetime
+let expires_at = vault.get_expiration(Vault::ROOT, "temp/token")?;
+
+// Remove expiration (make permanent)
+vault.clear_expiration(Vault::ROOT, "temp/token")?;
+<span class="boring">}</span></code></pre></pre>
+<p>Secret expiration is enforced on read. The ciphertext remains in
+storage until explicitly deleted or overwritten.</p>
+<h2 id="break-glass-emergency-access"><a class="header" href="#break-glass-emergency-access">Break-Glass Emergency Access</a></h2>
+<p>Emergency access bypasses the normal graph-based access check for
+time-critical scenarios. It is rate-limited, heavily audited, and
+auto-expires.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Break-glass: get a secret you don't normally have access to
+let value = vault.emergency_access(
+    "ops:oncall",
+    "prod/db_root",
+    "P1 incident INC-4521",
+    Duration::from_secs(1800), // 30-minute window
+)?;
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Constraints</strong>:</p>
+<ul>
+<li>Rate-limited to 1 emergency access per rate-limit window</li>
+<li>The justification string is recorded in the audit log</li>
+<li>Access auto-expires after the specified duration</li>
+<li>All break-glass events generate a distinct audit operation</li>
+</ul>
+<h2 id="batch-operations-3"><a class="header" href="#batch-operations-3">Batch Operations</a></h2>
+<p>Batch operations reduce round-trip overhead for bulk reads and
+writes. Both methods acquire locks in sorted key order to prevent
+deadlocks.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Read multiple secrets in one call
+let results = vault.batch_get("user:alice", &amp;["db/pass", "api/key"])?;
+for (key, result) in &amp;results {
+    match result {
+        Ok(value) =&gt; println!("{key}: {value}"),
+        Err(e) =&gt; println!("{key}: {e}"),
+    }
+}
+
+// Write multiple secrets atomically
+vault.batch_set(Vault::ROOT, &amp;[
+    ("db/pass", "new_pass"),
+    ("api/key", "new_key"),
+])?;
+<span class="boring">}</span></code></pre></pre>
+<p><code>batch_set</code> is atomic: either all writes succeed or none are
+applied. <code>batch_get</code> returns per-key results so partial failures
+are visible.</p>
+<h2 id="master-key-rotation"><a class="header" href="#master-key-rotation">Master Key Rotation</a></h2>
+<p><code>rotate_master_key()</code> re-derives all 5 subkeys from a new password
+and atomically re-encrypts all secrets, re-signs all graph edges,
+and increments the audit epoch.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Rotate the master password
+let mut vault = Vault::new(b"old_password", graph, store, config)?;
+let secrets_rotated = vault.rotate_master_key(b"new_password")?;
+println!("Re-encrypted {secrets_rotated} secrets");
+<span class="boring">}</span></code></pre></pre>
+<p>The rotation is atomic: if any re-encryption fails, the vault
+reverts to the old key. After rotation, all previously issued
+transit ciphertexts become undecryptable (forward secrecy for
+transit data).</p>
+<h2 id="graph-intelligence"><a class="header" href="#graph-intelligence">Graph Intelligence</a></h2>
+<p>The vault includes three tiers of graph-based security analysis,
+all operating on the live permission graph.</p>
+<h3 id="tier-1--graph-native-features"><a class="header" href="#tier-1--graph-native-features">Tier 1 – Graph-Native Features</a></h3>
+<p>These features use the permission graph directly for access
+explanation, impact analysis, and structural auditing.</p>
+<h4 id="explain_access"><a class="header" href="#explain_access">explain_access</a></h4>
+<p>Returns a path-level explanation of why access was granted or
+denied, including denial reasons (no path, insufficient permission,
+attenuation, tampered edge).</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let explanation = vault.explain_access("user:bob", "db/password");
+if explanation.granted {
+    for path in &amp;explanation.paths {
+        for hop in path {
+            println!("{} --{}--&gt;", hop.entity, hop.edge_type);
+        }
+    }
+} else if let Some(reason) = &amp;explanation.denial_reason {
+    println!("Denied: {reason:?}");
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="blast_radius"><a class="header" href="#blast_radius">blast_radius</a></h4>
+<p>Computes all secrets reachable by an entity, with permission level
+and hop count for each.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let radius = vault.blast_radius("user:alice");
+println!("{} can reach {} secrets", radius.entity, radius.total_secrets);
+for secret in &amp;radius.secrets {
+    println!(
+        "  {} ({:?}, {} hops)",
+        secret.secret_name, secret.permission, secret.hop_count
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="simulate_grant"><a class="header" href="#simulate_grant">simulate_grant</a></h4>
+<p>Dry-run a hypothetical grant and see what new access it would
+create across the graph, without actually modifying anything.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let sim = vault.simulate_grant("user:bob", "db/password", Permission::Write);
+println!("{} entities would gain new access", sim.total_affected);
+for access in &amp;sim.new_accesses {
+    println!("  {} gains {:?} on {}", access.entity, access.permission, access.secret);
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="security_audit"><a class="header" href="#security_audit">security_audit</a></h4>
+<p>Runs a structural security audit detecting:</p>
+<ul>
+<li><strong>Cycles</strong>: Strongly connected components in the access graph</li>
+<li><strong>Single points of failure</strong>: Entities whose removal disconnects
+secrets</li>
+<li><strong>Over-privileged entities</strong>: High PageRank with excessive
+reachability</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let report = vault.security_audit();
+println!("Cycles: {}", report.cycles.len());
+println!("SPOFs: {}", report.single_points_of_failure.len());
+println!("Over-privileged: {}", report.over_privileged.len());
+<span class="boring">}</span></code></pre></pre>
+<h4 id="find_critical_entities"><a class="header" href="#find_critical_entities">find_critical_entities</a></h4>
+<p>Identifies articulation points in the permission graph –
+entities whose removal would isolate secrets from all other
+accessors.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let critical = vault.find_critical_entities();
+for entity in &amp;critical {
+    println!(
+        "{}: SPOF={}, {} secrets solely dependent, PageRank={:.4}",
+        entity.entity,
+        entity.is_single_point_of_failure,
+        entity.secrets_solely_dependent,
+        entity.pagerank_score,
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="tier-2--production-features"><a class="header" href="#tier-2--production-features">Tier 2 – Production Features</a></h3>
+<p>Transit encryption, secret expiration, break-glass emergency access,
+batch operations, and master key rotation are covered in their own
+sections above.</p>
+<h3 id="tier-3--graph-analytics"><a class="header" href="#tier-3--graph-analytics">Tier 3 – Graph Analytics</a></h3>
+<p>These features apply well-known graph algorithms to the permission
+topology for deeper security insights.</p>
+<h4 id="privilege_analysis"><a class="header" href="#privilege_analysis">privilege_analysis</a></h4>
+<p>Uses PageRank to rank entities by influence, combined with
+reachability counts to produce a privilege score.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let report = vault.privilege_analysis();
+for entity in &amp;report.entities {
+    println!(
+        "{}: PageRank={:.4}, reachable={}, privilege={:.4}",
+        entity.entity,
+        entity.pagerank_score,
+        entity.reachable_secrets,
+        entity.privilege_score,
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="delegation_anomaly_scores"><a class="header" href="#delegation_anomaly_scores">delegation_anomaly_scores</a></h4>
+<p>Computes Jaccard similarity and Adamic-Adar scores for each
+entity-secret delegation edge. Low Jaccard scores indicate
+unusual delegations that may warrant review.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let scores = vault.delegation_anomaly_scores();
+for score in &amp;scores {
+    println!(
+        "{} -&gt; {}: Jaccard={:.3}, anomaly={:.3}",
+        score.entity, score.secret,
+        score.jaccard, score.anomaly_score,
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="infer_roles"><a class="header" href="#infer_roles">infer_roles</a></h4>
+<p>Applies Louvain community detection to discover implicit role
+groupings among entities based on shared access patterns.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let roles = vault.infer_roles();
+println!("Modularity: {:.4}", roles.modularity);
+for role in &amp;roles.roles {
+    println!(
+        "Role {}: {} members, {} common secrets",
+        role.role_id,
+        role.members.len(),
+        role.common_secrets.len(),
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="trust_transitivity"><a class="header" href="#trust_transitivity">trust_transitivity</a></h4>
+<p>Counts triangles and computes clustering coefficients to
+measure how “tightly knit” trust relationships are. High
+clustering suggests robust mutual oversight.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let trust = vault.trust_transitivity();
+println!("Global clustering: {:.4}", trust.global_clustering);
+println!("Total triangles: {}", trust.total_triangles);
+for entity in &amp;trust.entities {
+    println!(
+        "{}: triangles={}, clustering={:.4}, trust={:.4}",
+        entity.entity,
+        entity.triangle_count,
+        entity.clustering_coefficient,
+        entity.trust_score,
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="risk_propagation"><a class="header" href="#risk_propagation">risk_propagation</a></h4>
+<p>Uses eigenvector centrality to model how risk propagates through
+the access graph, weighted by admin reachability.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let risk = vault.risk_propagation();
+println!("Max risk: {:.4}", risk.max_risk);
+for entity in &amp;risk.entities {
+    println!(
+        "{}: eigenvector={:.4}, admin_secrets={}, risk={:.4}",
+        entity.entity,
+        entity.eigenvector_score,
+        entity.reachable_admin_secrets,
+        entity.risk_score,
+    );
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="use-cases"><a class="header" href="#use-cases">Use Cases</a></h2>
+<h3 id="multi-agent-secret-sharing"><a class="header" href="#multi-agent-secret-sharing">Multi-Agent Secret Sharing</a></h3>
+<p>A deployment pipeline has three agents: a CI runner, a deploy agent,
+and a monitoring agent. Each needs different access levels to database
+credentials.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// CI runner needs read-only access to run migrations
+vault.grant_with_permission(
+    Vault::ROOT, "agent:ci", "db/password", Permission::Read,
+)?;
+
+// Deploy agent needs write to rotate credentials
+vault.grant_with_permission(
+    Vault::ROOT, "agent:deploy", "db/password", Permission::Write,
+)?;
+
+// Monitoring agent gets temporary read access
+vault.grant_with_ttl(
+    Vault::ROOT, "agent:monitor", "db/password",
+    Permission::Read, Duration::from_secs(3600),
+)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="agent-delegation-chains"><a class="header" href="#agent-delegation-chains">Agent Delegation Chains</a></h3>
+<p>A team lead delegates a subset of secrets to a deploy agent, which
+further delegates to a canary agent. The ceiling model ensures no
+agent exceeds its parent’s permissions.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Team lead delegates read-only access to deploy agent
+vault.delegate(
+    "user:lead",
+    "agent:deploy",
+    &amp;["prod/db", "prod/api_key"],
+    Permission::Read,
+    None, // no TTL
+)?;
+
+// Deploy agent delegates to canary (ceiling: Read)
+vault.delegate(
+    "agent:deploy",
+    "agent:canary",
+    &amp;["prod/db"],
+    Permission::Read, // cannot exceed parent's Read
+    Some(Duration::from_secs(600)), // 10-minute window
+)?;
+
+// Revoking deploy agent cascades to canary
+vault.revoke_delegation_cascading("user:lead", "agent:deploy")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="security-posture-review"><a class="header" href="#security-posture-review">Security Posture Review</a></h3>
+<p>Run periodic security audits to detect over-privileged agents,
+single points of failure, and unusual delegation patterns.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Find entities with excessive access
+let audit = vault.security_audit();
+for entity in &amp;audit.over_privileged {
+    println!("Over-privileged: {} (PageRank {:.4}, {} secrets)",
+        entity.entity, entity.pagerank_score, entity.reachable_secrets);
+}
+
+// Detect unusual delegations via Jaccard similarity
+let anomalies = vault.delegation_anomaly_scores();
+for score in anomalies.iter().filter(|s| s.anomaly_score &gt; 0.8) {
+    println!("Unusual delegation: {} -&gt; {} (anomaly {:.2})",
+        score.entity, score.secret, score.anomaly_score);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="incident-response"><a class="header" href="#incident-response">Incident Response</a></h3>
+<p>During a security incident, use break-glass access to retrieve a
+secret you don’t normally have permission to read, with full
+audit trail.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let value = vault.emergency_access(
+    "ops:oncall",
+    "prod/db_root",
+    "P1 incident INC-4521 -- database compromise",
+    Duration::from_secs(1800),
+)?;
+// Access is audited, rate-limited, and auto-expires
+<span class="boring">}</span></code></pre></pre>
+<h3 id="application-level-encryption"><a class="header" href="#application-level-encryption">Application-Level Encryption</a></h3>
+<p>Use transit encryption to protect application data at rest without
+storing it in the vault. The application never sees the key.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Encrypt data using a vault-managed key
+let sealed = vault.encrypt_for("app:backend", "encryption/key", b"user PII data")?;
+// Store `sealed` in application database
+
+// Later, decrypt it
+let plaintext = vault.decrypt_as("app:backend", "encryption/key", &amp;sealed)?;
+<span class="boring">}</span></code></pre></pre>
 <h2 id="usage-examples-4"><a class="header" href="#usage-examples-4">Usage Examples</a></h2>
 <h3 id="basic-operations-3"><a class="header" href="#basic-operations-3">Basic Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -6671,8 +7332,27 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 <tr><td><code>argon2_parallelism</code></td><td><code>u32</code></td><td>4</td><td>Thread count</td></tr>
 <tr><td><code>rate_limit</code></td><td><code>Option&lt;RateLimitConfig&gt;</code></td><td>None</td><td>Rate limiting (disabled if None)</td></tr>
 <tr><td><code>max_versions</code></td><td><code>usize</code></td><td>5</td><td>Maximum versions to retain per secret</td></tr>
+<tr><td><code>attenuation</code></td><td><code>AttenuationPolicy</code></td><td><code>default()</code></td><td>Distance-based permission degradation</td></tr>
+<tr><td><code>anomaly_thresholds</code></td><td><code>Option&lt;AnomalyThresholds&gt;</code></td><td>None</td><td>Anomaly detection config (default thresholds if None)</td></tr>
+<tr><td><code>max_delegation_depth</code></td><td><code>Option&lt;u32&gt;</code></td><td>None</td><td>Maximum delegation chain depth (default 3)</td></tr>
 </tbody></table>
 </div>
+<p>VaultConfig supports a builder pattern for ergonomic construction:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = VaultConfig::default()
+    .with_rate_limit(RateLimitConfig::default())
+    .with_attenuation(AttenuationPolicy {
+        admin_limit: 1,
+        write_limit: 2,
+        horizon: 5,
+    })
+    .with_anomaly_thresholds(AnomalyThresholds {
+        frequency_spike_limit: 100,
+        ..AnomalyThresholds::default()
+    })
+    .with_max_delegation_depth(4);
+<span class="boring">}</span></code></pre></pre>
 <h3 id="ratelimitconfig"><a class="header" href="#ratelimitconfig">RateLimitConfig</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>max_gets</code></td><td><code>u32</code></td><td>60</td><td>Maximum get() calls per window</td></tr>
@@ -6688,6 +7368,7 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 </tbody></table>
 </div>
 <h2 id="shell-commands"><a class="header" href="#shell-commands">Shell Commands</a></h2>
+<h3 id="core-operations"><a class="header" href="#core-operations">Core Operations</a></h3>
 <pre><code class="language-text">VAULT INIT                              Initialize vault from NEUMANN_VAULT_KEY
 VAULT IDENTITY 'node:alice'             Set current identity
 VAULT NAMESPACE 'team:backend'          Set current namespace
@@ -6700,40 +7381,75 @@ VAULT LIST 'prefix:*'                   List accessible secrets
 VAULT ROTATE 'api_key' 'new'            Rotate secret value
 VAULT VERSIONS 'api_key'                List version history
 VAULT ROLLBACK 'api_key' VERSION 2      Rollback to version
-
-VAULT GRANT 'user:bob' ON 'api_key'              Grant admin access
+</code></pre>
+<h3 id="access-control"><a class="header" href="#access-control">Access Control</a></h3>
+<pre><code class="language-text">VAULT GRANT 'user:bob' ON 'api_key'              Grant admin access
 VAULT GRANT 'user:bob' ON 'api_key' READ         Grant read-only access
 VAULT GRANT 'user:bob' ON 'api_key' WRITE        Grant write access
 VAULT GRANT 'user:bob' ON 'api_key' TTL 3600     Grant with 1-hour expiry
 VAULT REVOKE 'user:bob' ON 'api_key'             Revoke access
-
-VAULT AUDIT 'api_key'                   View audit log for secret
+</code></pre>
+<h3 id="audit"><a class="header" href="#audit">Audit</a></h3>
+<pre><code class="language-text">VAULT AUDIT 'api_key'                   View audit log for secret
 VAULT AUDIT BY 'user:alice'             View audit log for entity
 VAULT AUDIT RECENT 10                   View last 10 operations
 </code></pre>
+<h3 id="rust-api-only"><a class="header" href="#rust-api-only">Rust API Only</a></h3>
+<p>The following features are available through the Rust API but do not
+yet have shell command equivalents:</p>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>API Method</th></tr></thead><tbody>
+<tr><td>Delegation</td><td><code>vault.delegate()</code>, <code>vault.revoke_delegation()</code></td></tr>
+<tr><td>Transit encryption</td><td><code>vault.encrypt_for()</code>, <code>vault.decrypt_as()</code></td></tr>
+<tr><td>Secret expiration</td><td><code>vault.set_with_ttl()</code>, <code>vault.get_expiration()</code></td></tr>
+<tr><td>Break-glass</td><td><code>vault.emergency_access()</code></td></tr>
+<tr><td>Batch operations</td><td><code>vault.batch_get()</code>, <code>vault.batch_set()</code></td></tr>
+<tr><td>Key rotation</td><td><code>vault.rotate_master_key()</code></td></tr>
+<tr><td>Access explanation</td><td><code>vault.explain_access()</code></td></tr>
+<tr><td>Blast radius</td><td><code>vault.blast_radius()</code></td></tr>
+<tr><td>Grant simulation</td><td><code>vault.simulate_grant()</code></td></tr>
+<tr><td>Security audit</td><td><code>vault.security_audit()</code></td></tr>
+<tr><td>Critical entities</td><td><code>vault.find_critical_entities()</code></td></tr>
+<tr><td>Privilege analysis</td><td><code>vault.privilege_analysis()</code></td></tr>
+<tr><td>Delegation anomalies</td><td><code>vault.delegation_anomaly_scores()</code></td></tr>
+<tr><td>Role inference</td><td><code>vault.infer_roles()</code></td></tr>
+<tr><td>Trust transitivity</td><td><code>vault.trust_transitivity()</code></td></tr>
+<tr><td>Risk propagation</td><td><code>vault.risk_propagation()</code></td></tr>
+</tbody></table>
+</div>
 <h2 id="security-considerations"><a class="header" href="#security-considerations">Security Considerations</a></h2>
 <h3 id="best-practices-3"><a class="header" href="#best-practices-3">Best Practices</a></h3>
 <ol>
 <li><strong>Use strong master passwords</strong>: At least 128 bits of entropy</li>
 <li><strong>Rotate secrets regularly</strong>: Use <code>rotate()</code> to maintain version history</li>
+<li><strong>Rotate the master key periodically</strong>: <code>rotate_master_key()</code> re-encrypts everything</li>
 <li><strong>Grant minimal permissions</strong>: Use Read when Write/Admin not needed</li>
 <li><strong>Use TTL grants for temporary access</strong>: Prevents forgotten grants</li>
+<li><strong>Use delegation instead of direct grants for agents</strong>: Ceiling model limits blast radius</li>
 <li><strong>Enable rate limiting in production</strong>: Prevents brute-force attacks</li>
+<li><strong>Enable anomaly detection</strong>: Flags suspicious behavioral patterns early</li>
 <li><strong>Use namespaces for multi-tenant</strong>: Enforces isolation</li>
-<li><strong>Review audit logs</strong>: Monitor for suspicious access patterns</li>
+<li><strong>Review audit logs and run security_audit()</strong>: Detect cycles, SPOFs, over-privilege</li>
+<li><strong>Use explain_access() to debug permission problems</strong>: Shows exact paths and denial reasons</li>
+<li><strong>Keep attenuation horizon low</strong>: Limits transitive privilege escalation</li>
 </ol>
 <h3 id="edge-cases-and-gotchas-5"><a class="header" href="#edge-cases-and-gotchas-5">Edge Cases and Gotchas</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Behavior</th></tr></thead><tbody>
 <tr><td>Grant to non-existent entity</td><td>Succeeds (edge created, entity may exist later)</td></tr>
 <tr><td>Revoke non-existent grant</td><td>Succeeds silently (idempotent)</td></tr>
 <tr><td>Get non-existent secret</td><td>Returns <code>NotFound</code> error</td></tr>
+<tr><td>Get expired secret</td><td>Returns <code>SecretExpired</code> error</td></tr>
 <tr><td>Set by non-root without Write</td><td>Returns <code>AccessDenied</code> or <code>InsufficientPermission</code></td></tr>
-<tr><td>TTL grant cleanup</td><td>Opportunistic on <code>get()</code> - may not be immediate</td></tr>
+<tr><td>TTL grant cleanup</td><td>Opportunistic on <code>get()</code> – may not be immediate</td></tr>
 <tr><td>Version limit exceeded</td><td>Oldest versions automatically deleted</td></tr>
 <tr><td>Plaintext &gt; 64KB</td><td>Returns <code>CryptoError</code></td></tr>
 <tr><td>Invalid UTF-8 in secret</td><td><code>get()</code> returns <code>CryptoError</code></td></tr>
 <tr><td>Concurrent modifications</td><td>Thread-safe via DashMap sharding</td></tr>
 <tr><td>MEMBER edge to secret</td><td>Path exists but NO permission granted</td></tr>
+<tr><td>Tampered graph edge</td><td>BFS skips the edge; <code>explain_access</code> reports <code>TamperedEdge</code></td></tr>
+<tr><td>Delegation depth exceeded</td><td>Returns error; configurable via <code>max_delegation_depth</code></td></tr>
+<tr><td>Delegation cycle attempt</td><td>Returns error; ancestors cannot be children</td></tr>
+<tr><td>Break-glass rate limited</td><td>Only 1 emergency access per rate-limit window</td></tr>
+<tr><td>Transit ciphertext after key rotation</td><td>Undecryptable (forward secrecy)</td></tr>
 </tbody></table>
 </div>
 <h3 id="threat-model"><a class="header" href="#threat-model">Threat Model</a></h3>
@@ -6742,11 +7458,18 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 <tr><td>Offline dictionary attack</td><td>Random 128-bit salt, stored in TensorStore</td></tr>
 <tr><td>Ciphertext tampering</td><td>AES-GCM authentication tag (128-bit)</td></tr>
 <tr><td>Nonce reuse</td><td>Random 96-bit nonce per encryption</td></tr>
-<tr><td>Key leakage</td><td>Keys zeroized on drop, subkeys via HKDF</td></tr>
+<tr><td>Key leakage</td><td>Keys zeroized on drop, 5 independent subkeys via HKDF</td></tr>
 <tr><td>Pattern analysis</td><td>Key obfuscation, padding, metadata encryption</td></tr>
 <tr><td>Access enumeration</td><td>Rate limiting, audit logging</td></tr>
 <tr><td>Privilege escalation</td><td>MEMBER edges don’t grant permissions</td></tr>
 <tr><td>Replay attacks</td><td>Per-operation nonces, timestamps in metadata</td></tr>
+<tr><td>Topology tampering</td><td>HMAC-BLAKE2b edge signatures with constant-time verification</td></tr>
+<tr><td>Transitive escalation</td><td>Distance-based attenuation degrades permissions with hops</td></tr>
+<tr><td>Delegation abuse</td><td>Ceiling model, depth limits, cycle prevention</td></tr>
+<tr><td>Behavioral anomaly</td><td>Real-time per-agent anomaly detection</td></tr>
+<tr><td>Emergency misuse</td><td>Rate-limited break-glass with mandatory justification and audit</td></tr>
+<tr><td>Audit log tampering</td><td>HMAC integrity protection per entry, AEAD encryption of fields</td></tr>
+<tr><td>Stale audit after rotation</td><td>Audit epoch counter detects entries from previous key</td></tr>
 </tbody></table>
 </div>
 <h2 id="performance-1"><a class="header" href="#performance-1">Performance</a></h2>
@@ -6774,14 +7497,16 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 </div>
 <h2 id="dependencies-4"><a class="header" href="#dependencies-4">Dependencies</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Purpose</th></tr></thead><tbody>
-<tr><td><code>aes-gcm</code></td><td>AES-256-GCM encryption</td></tr>
-<tr><td><code>argon2</code></td><td>Key derivation</td></tr>
-<tr><td><code>hkdf</code></td><td>Subkey derivation</td></tr>
-<tr><td><code>blake2</code></td><td>HMAC and obfuscation hashing</td></tr>
-<tr><td><code>rand</code></td><td>Nonce generation</td></tr>
-<tr><td><code>zeroize</code></td><td>Secure memory cleanup</td></tr>
-<tr><td><code>dashmap</code></td><td>Concurrent rate limit tracking</td></tr>
-<tr><td><code>serde</code></td><td>TTL grant persistence</td></tr>
+<tr><td><code>aes-gcm</code></td><td>AES-256-GCM authenticated encryption</td></tr>
+<tr><td><code>argon2</code></td><td>Argon2id key derivation</td></tr>
+<tr><td><code>hkdf</code></td><td>HKDF-SHA256 subkey derivation</td></tr>
+<tr><td><code>blake2</code></td><td>HMAC-BLAKE2b for obfuscation, edge signing, audit integrity</td></tr>
+<tr><td><code>rand</code></td><td>Nonce and salt generation</td></tr>
+<tr><td><code>zeroize</code></td><td>Secure memory cleanup on drop</td></tr>
+<tr><td><code>dashmap</code></td><td>Concurrent rate limit and anomaly tracking</td></tr>
+<tr><td><code>serde</code></td><td>TTL grant and delegation persistence</td></tr>
+<tr><td><code>graph_engine</code></td><td>BFS traversal, PageRank, Louvain, eigenvector centrality</td></tr>
+<tr><td><code>tensor_store</code></td><td>Underlying key-value storage for all vault data</td></tr>
 </tbody></table>
 </div><div style="break-before: page; page-break-before: always;"></div><h1 id="tensor-cache-architecture"><a class="header" href="#tensor-cache-architecture">Tensor Cache Architecture</a></h1>
 <p>Semantic caching for LLM responses with cost tracking and background eviction.
@@ -7014,11 +7739,11 @@ format to reduce memory usage:</p>
 <h2 id="distance-metrics-2"><a class="header" href="#distance-metrics-2">Distance Metrics</a></h2>
 <p>Configurable distance metrics for semantic similarity:</p>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Best For</th><th>Range</th><th>Formula</th></tr></thead><tbody>
-<tr><td>Cosine</td><td>Dense embeddings (default)</td><td>[-1, 1]</td><td><code>dot(a,b) / (‖a‖ * ‖b‖)</code></td></tr>
-<tr><td>Angular</td><td>Linear angle relationships</td><td>[0, PI]</td><td><code>acos(cosine_sim)</code></td></tr>
-<tr><td>Jaccard</td><td>Sparse/binary embeddings</td><td>[0, 1]</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td></tr>
-<tr><td>Euclidean</td><td>Absolute distances</td><td>[0, inf)</td><td><code>sqrt(sum((a-b)^2))</code></td></tr>
-<tr><td>WeightedJaccard</td><td>Sparse with magnitudes</td><td>[0, 1]</td><td>Weighted set similarity</td></tr>
+<tr><td>Cosine</td><td>Dense embeddings (default)</td><td>-1 to 1</td><td><code>dot(a,b) / (‖a‖ * ‖b‖)</code></td></tr>
+<tr><td>Angular</td><td>Linear angle relationships</td><td>0 to PI</td><td><code>acos(cosine_sim)</code></td></tr>
+<tr><td>Jaccard</td><td>Sparse/binary embeddings</td><td>0 to 1</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td></tr>
+<tr><td>Euclidean</td><td>Absolute distances</td><td>0 to inf</td><td><code>sqrt(sum((a-b)^2))</code></td></tr>
+<tr><td>WeightedJaccard</td><td>Sparse with magnitudes</td><td>0 to 1</td><td>Weighted set similarity</td></tr>
 </tbody></table>
 </div>
 <p><strong>Auto-selection</strong>: When <code>auto_select_metric</code> is true, the cache automatically
@@ -7437,8 +8162,8 @@ if !is_new {
     }
 }
 
-impl From&lt;bincode::Error&gt; for CacheError {
-    fn from(e: bincode::Error) -&gt; Self {
+impl From&lt;bitcode::Error&gt; for CacheError {
+    fn from(e: bitcode::Error) -&gt; Self {
         Self::SerializationError(e.to_string())
     }
 }
@@ -8531,7 +9256,7 @@ let config = BlobConfig::new()
     .with_gc_batch_size(50)                       // Small batches
     .with_gc_min_age(Duration::from_secs(86400)); // 24 hour grace period
 <span class="boring">}</span></code></pre></pre>
-<h3 id="batch-operations-3"><a class="header" href="#batch-operations-3">Batch Operations</a></h3>
+<h3 id="batch-operations-4"><a class="header" href="#batch-operations-4">Batch Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// For multiple related artifacts, batch metadata updates
@@ -8693,7 +9418,7 @@ policies.</p>
     Store--&gt;&gt;Manager: Vec&lt;u8&gt;
     Manager-&gt;&gt;Manager: Create CheckpointState
     Manager-&gt;&gt;Storage: store(state, blob)
-    Storage-&gt;&gt;Storage: bincode::serialize(state)
+    Storage-&gt;&gt;Storage: bitcode::encode(state)
     Storage-&gt;&gt;Blob: put(filename, data, options)
     Blob--&gt;&gt;Storage: artifact_id
     Storage--&gt;&gt;Manager: artifact_id
@@ -8719,7 +9444,7 @@ policies.</p>
     Storage-&gt;&gt;Storage: list() and match
     Storage-&gt;&gt;Blob: get(artifact_id)
     Blob--&gt;&gt;Storage: checkpoint_bytes
-    Storage-&gt;&gt;Storage: bincode::deserialize()
+    Storage-&gt;&gt;Storage: bitcode::decode()
     Storage--&gt;&gt;Manager: CheckpointState
     Manager-&gt;&gt;Store: restore_from_bytes(state.store_snapshot)
     Store-&gt;&gt;Store: SlabRouter::from_bytes()
@@ -9862,7 +10587,7 @@ entities:</p>
 </div>
 <p><strong>Gotcha:</strong> Conditions other than <code>Eq</code>, <code>And</code>, <code>Or</code> return <code>true</code> (not yet
 implemented for graph entities).</p>
-<h2 id="batch-operations-4"><a class="header" href="#batch-operations-4">Batch Operations</a></h2>
+<h2 id="batch-operations-5"><a class="header" href="#batch-operations-5">Batch Operations</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// Store multiple embeddings
@@ -12849,8 +13574,8 @@ COUNT EMBEDDINGS
 <h3 id="distance-metrics-3"><a class="header" href="#distance-metrics-3">Distance Metrics</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Description</th><th>Use Case</th><th>Formula</th></tr></thead><tbody>
 <tr><td><code>COSINE</code></td><td>Cosine similarity (default)</td><td>Semantic similarity</td><td><code>1 - (a.b) / (‖a‖ * ‖b‖)</code></td></tr>
-<tr><td><code>EUCLIDEAN</code></td><td>Euclidean distance (L2)</td><td>Spatial distance</td><td>sqrt(sum((a[i] - b[i])^2))</td></tr>
-<tr><td><code>DOT_PRODUCT</code></td><td>Dot product</td><td>Magnitude-aware similarity</td><td>sum(a[i] * b[i])</td></tr>
+<tr><td><code>EUCLIDEAN</code></td><td>Euclidean distance (L2)</td><td>Spatial distance</td><td><code>sqrt(sum((a_i - b_i)^2))</code></td></tr>
+<tr><td><code>DOT_PRODUCT</code></td><td>Dot product</td><td>Magnitude-aware similarity</td><td><code>sum(a_i * b_i)</code></td></tr>
 </tbody></table>
 </div>
 <h3 id="unified-entity-operations"><a class="header" href="#unified-entity-operations">Unified Entity Operations</a></h3>
@@ -17605,10 +18330,10 @@ let residual = vec.project_orthogonal(&amp;basis);
 <span class="boring">}</span></code></pre></pre>
 <h3 id="similarity-metrics"><a class="header" href="#similarity-metrics">Similarity Metrics</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Formula</th><th>Range</th></tr></thead><tbody>
-<tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>[-1, 1]</td></tr>
-<tr><td>Euclidean</td><td><code>sqrt(sum((a-b)^2))</code></td><td>[0, inf)</td></tr>
-<tr><td>Jaccard</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td><td>[0, 1]</td></tr>
-<tr><td>Angular</td><td><code>acos(cosine) / pi</code></td><td>[0, 1]</td></tr>
+<tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>-1 to 1</td></tr>
+<tr><td>Euclidean</td><td><code>sqrt(sum((a-b)^2))</code></td><td>0 to inf</td></tr>
+<tr><td>Jaccard</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td><td>0 to 1</td></tr>
+<tr><td>Angular</td><td><code>acos(cosine) / pi</code></td><td>0 to 1</td></tr>
 </tbody></table>
 </div>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -17724,7 +18449,7 @@ codebook.update(&amp;new_embeddings, 0.1); // EMA update
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Use Case</th><th>Properties</th></tr></thead><tbody>
 <tr><td>Cosine</td><td>Text similarity</td><td>Scale-invariant</td></tr>
 <tr><td>Euclidean</td><td>Spatial data</td><td>Absolute distance</td></tr>
-<tr><td>Angular</td><td>Normalized comparison</td><td>[0, 1] range</td></tr>
+<tr><td>Angular</td><td>Normalized comparison</td><td>0 to 1 range</td></tr>
 <tr><td>Geodesic</td><td>Manifold data</td><td>Curvature-aware</td></tr>
 </tbody></table>
 </div>
@@ -18223,14 +18948,14 @@ if similarity.abs() &lt; 0.1 {
 </tbody></table>
 </div>
 <h2 id="serialization"><a class="header" href="#serialization">Serialization</a></h2>
-<p>The state machine supports bincode serialization for persistence:</p>
+<p>The state machine supports bitcode serialization for persistence:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// Serialize
-let bytes = bincode::serialize(&amp;state)?;
+let bytes = bitcode::encode(&amp;state);
 
 // Deserialize
-let restored: EmbeddingState = bincode::deserialize(&amp;bytes)?;
+let restored: EmbeddingState = bitcode::decode(&amp;bytes)?;
 
 // State is preserved
 assert_eq!(state.is_computed(), restored.is_computed());
@@ -20738,6 +21463,7 @@ cargo bench --package tensor_chain
 </code></pre>
 <p>Benchmark reports are generated in <code>target/criterion/</code> with HTML visualizations.</p>
 <h2 id="performance-summary"><a class="header" href="#performance-summary">Performance Summary</a></h2>
+<h3 id="in-memory-operations"><a class="header" href="#in-memory-operations">In-Memory Operations</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Component</th><th>Key Metric</th><th>Performance</th></tr></thead><tbody>
 <tr><td><a href="benchmarks/tensor-store.html">tensor_store</a></td><td>Concurrent writes</td><td>7.5M/sec @ 1M entities</td></tr>
 <tr><td><a href="benchmarks/relational-engine.html">relational_engine</a></td><td>Indexed lookup</td><td>2.9us (1,604x vs scan)</td></tr>
@@ -20751,6 +21477,14 @@ cargo bench --package tensor_chain
 <tr><td><a href="benchmarks/query-router.html">query_router</a></td><td>Mixed workload</td><td>455 queries/sec</td></tr>
 </tbody></table>
 </div>
+<h3 id="durable-storage-wal"><a class="header" href="#durable-storage-wal">Durable Storage (WAL)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Key Metric</th><th>Performance</th></tr></thead><tbody>
+<tr><td>WAL writes</td><td>Durable PUT (128d embeddings)</td><td>1.4M ops/sec</td></tr>
+<tr><td>WAL recovery</td><td>Replay 10K records</td><td>~400us (25M records/sec)</td></tr>
+</tbody></table>
+</div>
+<p>All engines (<code>RelationalEngine</code>, <code>GraphEngine</code>, <code>VectorEngine</code>) support
+optional durability via <code>open_durable()</code> with full crash consistency.</p>
 <h2 id="hardware-notes"><a class="header" href="#hardware-notes">Hardware Notes</a></h2>
 <p>Benchmarks run on:</p>
 <ul>
@@ -20797,7 +21531,7 @@ finding</li>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="tensor_store-benchmarks"><a class="header" href="#tensor_store-benchmarks">tensor_store Benchmarks</a></h1>
 <p>The tensor store uses DashMap (sharded concurrent HashMap) for thread-safe
 key-value storage.</p>
-<h2 id="core-operations"><a class="header" href="#core-operations">Core Operations</a></h2>
+<h2 id="core-operations-1"><a class="header" href="#core-operations-1">Core Operations</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Operation</th><th>100 items</th><th>1,000 items</th><th>10,000 items</th></tr></thead><tbody>
 <tr><td><strong>put</strong></td><td>40us (2.5M/s)</td><td>447us (2.2M/s)</td><td>7ms (1.4M/s)</td></tr>
 <tr><td><strong>get</strong></td><td>33us (3.0M/s)</td><td>320us (3.1M/s)</td><td>3ms (3.3M/s)</td></tr>
@@ -20878,6 +21612,41 @@ database), where the early rejection of non-existent keys avoids expensive I/O.<
 <li><strong>File size</strong>: ~600 bytes per item with 128-dim embeddings (dominated by
 vector data)</li>
 </ul>
+<h2 id="write-ahead-log-wal-1"><a class="header" href="#write-ahead-log-wal-1">Write-Ahead Log (WAL)</a></h2>
+<p>WAL provides crash-consistent durability with minimal performance overhead.
+Benchmarks use same payload as in-memory tests (128-dim embeddings).</p>
+<h3 id="wal-writes"><a class="header" href="#wal-writes">WAL Writes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Records</th><th>Time</th><th>Throughput</th></tr></thead><tbody>
+<tr><td>100</td><td>152 us</td><td>657K ops/s</td></tr>
+<tr><td>1,000</td><td>753 us</td><td>1.33M ops/s</td></tr>
+<tr><td>10,000</td><td>6.95 ms</td><td>1.44M ops/s</td></tr>
+</tbody></table>
+</div>
+<h3 id="wal-recovery"><a class="header" href="#wal-recovery">WAL Recovery</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Records</th><th>Time</th><th>Throughput</th></tr></thead><tbody>
+<tr><td>100</td><td>382 us</td><td>261K elem/s</td></tr>
+<tr><td>1,000</td><td>394 us</td><td>2.5M elem/s</td></tr>
+<tr><td>10,000</td><td>391 us</td><td>25.6M elem/s</td></tr>
+</tbody></table>
+</div>
+<h3 id="wal-analysis"><a class="header" href="#wal-analysis">WAL Analysis</a></h3>
+<ul>
+<li><strong>Near constant recovery time</strong>: Recovery is dominated by file open overhead
+(~400us), not record count</li>
+<li><strong>Sequential I/O</strong>: WAL replay reads sequentially, hitting 25M records/sec</li>
+<li><strong>Durable vs in-memory</strong>: WAL writes at 1.4M ops/sec vs 2.0M ops/sec in-memory
+(72% of in-memory speed)</li>
+<li><strong>Use case</strong>: Production deployments requiring crash consistency</li>
+</ul>
+<p>All engines support WAL via <code>open_durable()</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Durable graph engine
+let engine = GraphEngine::open_durable("data/graph.wal", WalConfig::default())?;
+
+// Recovery after crash
+let engine = GraphEngine::recover("data/graph.wal", &amp;WalConfig::default(), None)?;
+<span class="boring">}</span></code></pre></pre>
 <h2 id="sparse-vectors-2"><a class="header" href="#sparse-vectors-2">Sparse Vectors</a></h2>
 <p>SparseVector provides memory-efficient storage for high-sparsity embeddings by
 storing only non-zero values.</p>
@@ -24014,20 +24783,20 @@ RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc \
   -Zrustdoc-scrape-examples \
   --all-features
 </code></pre>
-<h2 id="online-documentation"><a class="header" href="#online-documentation">Online Documentation</a></h2>
-<p>When deployed, the API reference is available at:</p>
+<h2 id="crate-documentation"><a class="header" href="#crate-documentation">Crate Documentation</a></h2>
+<p>After generating docs locally with <code>cargo doc</code>, you can browse documentation for:</p>
 <ul>
-<li><a href="api/tensor_store/index.html">tensor_store</a></li>
-<li><a href="api/relational_engine/index.html">relational_engine</a></li>
-<li><a href="api/graph_engine/index.html">graph_engine</a></li>
-<li><a href="api/vector_engine/index.html">vector_engine</a></li>
-<li><a href="api/tensor_chain/index.html">tensor_chain</a></li>
-<li><a href="api/neumann_parser/index.html">neumann_parser</a></li>
-<li><a href="api/query_router/index.html">query_router</a></li>
-<li><a href="api/tensor_cache/index.html">tensor_cache</a></li>
-<li><a href="api/tensor_vault/index.html">tensor_vault</a></li>
-<li><a href="api/tensor_blob/index.html">tensor_blob</a></li>
-<li><a href="api/tensor_checkpoint/index.html">tensor_checkpoint</a></li>
+<li><code>tensor_store</code> - Core storage layer</li>
+<li><code>relational_engine</code> - SQL-like tables</li>
+<li><code>graph_engine</code> - Graph operations</li>
+<li><code>vector_engine</code> - Vector similarity search</li>
+<li><code>tensor_chain</code> - Distributed consensus</li>
+<li><code>neumann_parser</code> - Query language parser</li>
+<li><code>query_router</code> - Unified query execution</li>
+<li><code>tensor_cache</code> - Multi-layer caching</li>
+<li><code>tensor_vault</code> - Encrypted secrets</li>
+<li><code>tensor_blob</code> - Blob storage</li>
+<li><code>tensor_checkpoint</code> - Snapshot/restore</li>
 </ul>
 
                     </main>

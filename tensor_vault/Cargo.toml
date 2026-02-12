@@ -13,6 +13,7 @@ description = "AES-256-GCM encrypted secret storage with graph-based access cont
 [dependencies]
 tensor_store = { path = "../tensor_store" }
 graph_engine = { path = "../graph_engine" }
+tensor_compress = { path = "../tensor_compress" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dashmap = "6"
@@ -26,6 +27,12 @@ rand = "0.8"
 sha2 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
+
+# Shamir secret sharing
+sharks = "0.5"
+
+# X.509 certificate generation for PKI engine
+rcgen = "0.13"
 
 [features]
 fuzzing = []

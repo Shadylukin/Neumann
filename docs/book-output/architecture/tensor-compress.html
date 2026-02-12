@@ -366,18 +366,18 @@ fn box_muller(u1: f32, u2: f32) -&gt; (f32, f32) {
 <h3 id="optimal-shape-selection"><a class="header" href="#optimal-shape-selection">Optimal Shape Selection</a></h3>
 <p>The module includes hardcoded optimal shapes for common embedding dimensions:</p>
 <div class="table-wrapper"><table><thead><tr><th>Dimension</th><th>Shape</th><th>Why</th></tr></thead><tbody>
-<tr><td>64</td><td>[4, 4, 4]</td><td>3 balanced factors</td></tr>
-<tr><td>128</td><td>[4, 4, 8]</td><td>Near-balanced</td></tr>
-<tr><td>256</td><td>[4, 8, 8]</td><td>Near-balanced</td></tr>
-<tr><td>384</td><td>[4, 8, 12]</td><td>all-MiniLM-L6-v2</td></tr>
-<tr><td>512</td><td>[8, 8, 8]</td><td>Perfect cube</td></tr>
-<tr><td>768</td><td>[8, 8, 12]</td><td>BERT dimension</td></tr>
-<tr><td>1024</td><td>[8, 8, 16]</td><td>Common LLM size</td></tr>
-<tr><td>1536</td><td>[8, 12, 16]</td><td>OpenAI ada-002</td></tr>
-<tr><td>2048</td><td>[8, 16, 16]</td><td>Near-balanced</td></tr>
-<tr><td>3072</td><td>[8, 16, 24]</td><td>Large models</td></tr>
-<tr><td>4096</td><td>[8, 8, 8, 8]</td><td>4D balanced</td></tr>
-<tr><td>8192</td><td>[8, 8, 8, 16]</td><td>Extra large</td></tr>
+<tr><td>64</td><td><code>[4, 4, 4]</code></td><td>3 balanced factors</td></tr>
+<tr><td>128</td><td><code>[4, 4, 8]</code></td><td>Near-balanced</td></tr>
+<tr><td>256</td><td><code>[4, 8, 8]</code></td><td>Near-balanced</td></tr>
+<tr><td>384</td><td><code>[4, 8, 12]</code></td><td>all-MiniLM-L6-v2</td></tr>
+<tr><td>512</td><td><code>[8, 8, 8]</code></td><td>Perfect cube</td></tr>
+<tr><td>768</td><td><code>[8, 8, 12]</code></td><td>BERT dimension</td></tr>
+<tr><td>1024</td><td><code>[8, 8, 16]</code></td><td>Common LLM size</td></tr>
+<tr><td>1536</td><td><code>[8, 12, 16]</code></td><td>OpenAI ada-002</td></tr>
+<tr><td>2048</td><td><code>[8, 16, 16]</code></td><td>Near-balanced</td></tr>
+<tr><td>3072</td><td><code>[8, 16, 24]</code></td><td>Large models</td></tr>
+<tr><td>4096</td><td><code>[8, 8, 8, 8]</code></td><td>4D balanced</td></tr>
+<tr><td>8192</td><td><code>[8, 8, 8, 16]</code></td><td>Extra large</td></tr>
 </tbody></table>
 </div>
 <p>For non-standard dimensions, <code>factorize_balanced</code> finds factors close to the nth
@@ -405,7 +405,7 @@ root:</p>
 <tr><td><code>tt_euclidean_distance</code></td><td>Euclidean distance in TT space</td><td>O(n <em>d</em> r^4)</td></tr>
 <tr><td><code>tt_euclidean_distance_batch</code></td><td>Batch Euclidean distances</td><td>Parallel when &gt;= 4 targets</td></tr>
 <tr><td><code>tt_norm</code></td><td>L2 norm of TT vector</td><td>O(n <em>d</em> r^4)</td></tr>
-<tr><td><code>tt_scale</code></td><td>Scale TT vector by constant</td><td>O(cores[0].size)</td></tr>
+<tr><td><code>tt_scale</code></td><td>Scale TT vector by constant</td><td><code>O(cores[0].size)</code></td></tr>
 </tbody></table>
 </div>
 <p>Where: n = number of modes, d = mode size, r = TT-rank</p>
@@ -834,9 +834,9 @@ assert_eq!(encoded.runs(), 1);  // Single run
 <span class="boring">}</span></code></pre></pre>
 <p><strong>Compression scenarios:</strong></p>
 <div class="table-wrapper"><table><thead><tr><th>Data Pattern</th><th>Runs</th><th>Compression</th></tr></thead><tbody>
-<tr><td>[5, 5, 5, 5, 5] (1000x)</td><td>1</td><td>500x</td></tr>
-<tr><td>[1, 2, 3, 4, 5] (all different)</td><td>5</td><td>0.8x (overhead)</td></tr>
-<tr><td>[1, 1, 2, 2, 2, 3, 1, 1, 1, 1]</td><td>4</td><td>2.5x</td></tr>
+<tr><td><code>[5, 5, 5, 5, 5]</code> (1000x)</td><td>1</td><td>500x</td></tr>
+<tr><td><code>[1, 2, 3, 4, 5]</code> (all different)</td><td>5</td><td>0.8x (overhead)</td></tr>
+<tr><td><code>[1, 1, 2, 2, 2, 3, 1, 1, 1, 1]</code></td><td>4</td><td>2.5x</td></tr>
 <tr><td>Status column (pending/active/done)</td><td>~300 per 10000</td><td>~33x</td></tr>
 </tbody></table>
 </div>

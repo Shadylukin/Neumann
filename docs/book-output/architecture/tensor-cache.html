@@ -412,11 +412,11 @@ format to reduce memory usage:</p>
 <h2 id="distance-metrics"><a class="header" href="#distance-metrics">Distance Metrics</a></h2>
 <p>Configurable distance metrics for semantic similarity:</p>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Best For</th><th>Range</th><th>Formula</th></tr></thead><tbody>
-<tr><td>Cosine</td><td>Dense embeddings (default)</td><td>[-1, 1]</td><td><code>dot(a,b) / (‖a‖ * ‖b‖)</code></td></tr>
-<tr><td>Angular</td><td>Linear angle relationships</td><td>[0, PI]</td><td><code>acos(cosine_sim)</code></td></tr>
-<tr><td>Jaccard</td><td>Sparse/binary embeddings</td><td>[0, 1]</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td></tr>
-<tr><td>Euclidean</td><td>Absolute distances</td><td>[0, inf)</td><td><code>sqrt(sum((a-b)^2))</code></td></tr>
-<tr><td>WeightedJaccard</td><td>Sparse with magnitudes</td><td>[0, 1]</td><td>Weighted set similarity</td></tr>
+<tr><td>Cosine</td><td>Dense embeddings (default)</td><td>-1 to 1</td><td><code>dot(a,b) / (‖a‖ * ‖b‖)</code></td></tr>
+<tr><td>Angular</td><td>Linear angle relationships</td><td>0 to PI</td><td><code>acos(cosine_sim)</code></td></tr>
+<tr><td>Jaccard</td><td>Sparse/binary embeddings</td><td>0 to 1</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td></tr>
+<tr><td>Euclidean</td><td>Absolute distances</td><td>0 to inf</td><td><code>sqrt(sum((a-b)^2))</code></td></tr>
+<tr><td>WeightedJaccard</td><td>Sparse with magnitudes</td><td>0 to 1</td><td>Weighted set similarity</td></tr>
 </tbody></table>
 </div>
 <p><strong>Auto-selection</strong>: When <code>auto_select_metric</code> is true, the cache automatically
@@ -835,8 +835,8 @@ if !is_new {
     }
 }
 
-impl From&lt;bincode::Error&gt; for CacheError {
-    fn from(e: bincode::Error) -&gt; Self {
+impl From&lt;bitcode::Error&gt; for CacheError {
+    fn from(e: bitcode::Error) -&gt; Self {
         Self::SerializationError(e.to_string())
     }
 }

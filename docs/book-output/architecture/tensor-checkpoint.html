@@ -296,7 +296,7 @@ policies.</p>
     Store--&gt;&gt;Manager: Vec&lt;u8&gt;
     Manager-&gt;&gt;Manager: Create CheckpointState
     Manager-&gt;&gt;Storage: store(state, blob)
-    Storage-&gt;&gt;Storage: bincode::serialize(state)
+    Storage-&gt;&gt;Storage: bitcode::encode(state)
     Storage-&gt;&gt;Blob: put(filename, data, options)
     Blob--&gt;&gt;Storage: artifact_id
     Storage--&gt;&gt;Manager: artifact_id
@@ -322,7 +322,7 @@ policies.</p>
     Storage-&gt;&gt;Storage: list() and match
     Storage-&gt;&gt;Blob: get(artifact_id)
     Blob--&gt;&gt;Storage: checkpoint_bytes
-    Storage-&gt;&gt;Storage: bincode::deserialize()
+    Storage-&gt;&gt;Storage: bitcode::decode()
     Storage--&gt;&gt;Manager: CheckpointState
     Manager-&gt;&gt;Store: restore_from_bytes(state.store_snapshot)
     Store-&gt;&gt;Store: SlabRouter::from_bytes()

@@ -631,8 +631,8 @@ COUNT EMBEDDINGS
 <h3 id="distance-metrics"><a class="header" href="#distance-metrics">Distance Metrics</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Description</th><th>Use Case</th><th>Formula</th></tr></thead><tbody>
 <tr><td><code>COSINE</code></td><td>Cosine similarity (default)</td><td>Semantic similarity</td><td><code>1 - (a.b) / (‖a‖ * ‖b‖)</code></td></tr>
-<tr><td><code>EUCLIDEAN</code></td><td>Euclidean distance (L2)</td><td>Spatial distance</td><td>sqrt(sum((a[i] - b[i])^2))</td></tr>
-<tr><td><code>DOT_PRODUCT</code></td><td>Dot product</td><td>Magnitude-aware similarity</td><td>sum(a[i] * b[i])</td></tr>
+<tr><td><code>EUCLIDEAN</code></td><td>Euclidean distance (L2)</td><td>Spatial distance</td><td><code>sqrt(sum((a_i - b_i)^2))</code></td></tr>
+<tr><td><code>DOT_PRODUCT</code></td><td>Dot product</td><td>Magnitude-aware similarity</td><td><code>sum(a_i * b_i)</code></td></tr>
 </tbody></table>
 </div>
 <h3 id="unified-entity-operations"><a class="header" href="#unified-entity-operations">Unified Entity Operations</a></h3>

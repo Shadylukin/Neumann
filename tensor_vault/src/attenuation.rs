@@ -8,7 +8,90 @@
 //!
 //! The policy is configurable via `AttenuationPolicy`.
 
+use serde::{Deserialize, Serialize};
+
 use crate::Permission;
+
+/// Smooth exponential decay attenuation policy.
+///
+/// Permission strength decays as `exp(-lambda * hops)`. Thresholds map
+/// the continuous strength to discrete permission levels.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExponentialAttenuationPolicy {
+    /// Decay rate lambda (default: 0.5). Higher = faster decay.
+    pub decay_rate: f64,
+    /// Minimum strength to preserve Admin permission (default: 0.7).
+    pub admin_threshold: f64,
+    /// Minimum strength to preserve Write permission (default: 0.3).
+    pub write_threshold: f64,
+    /// Minimum strength to preserve Read permission (default: 0.05).
+    pub read_threshold: f64,
+    /// Hard BFS depth cap (default: 20).
+    pub max_depth: usize,
+}
+
+impl Default for ExponentialAttenuationPolicy {
+    fn default() -> Self {
+        Self {
+            decay_rate: 0.5,
+            admin_threshold: 0.7,
+            write_threshold: 0.3,
+            read_threshold: 0.05,
+            max_depth: 20,
+        }
+    }
+}
+
+impl ExponentialAttenuationPolicy {
+    /// Compute the strength at a given hop count: `exp(-decay_rate * hops)`.
+    pub fn strength(&self, hops: usize) -> f64 {
+        #[allow(clippy::cast_precision_loss)] // hop count will never exceed 2^52
+        let h = hops as f64;
+        (-self.decay_rate * h).exp()
+    }
+
+    /// Attenuate a permission based on exponential decay.
+    ///
+    /// Returns `None` if the hop count exceeds `max_depth` or the strength
+    /// drops below the read threshold.
+    pub fn attenuate(&self, perm: Permission, hops: usize) -> Option<Permission> {
+        if hops > self.max_depth {
+            return None;
+        }
+
+        let s = self.strength(hops);
+
+        match perm {
+            Permission::Admin => {
+                if s >= self.admin_threshold {
+                    Some(Permission::Admin)
+                } else if s >= self.write_threshold {
+                    Some(Permission::Write)
+                } else if s >= self.read_threshold {
+                    Some(Permission::Read)
+                } else {
+                    None
+                }
+            },
+            Permission::Write => {
+                if s >= self.write_threshold {
+                    Some(Permission::Write)
+                } else if s >= self.read_threshold {
+                    Some(Permission::Read)
+                } else {
+                    None
+                }
+            },
+            Permission::Read => {
+                if s >= self.read_threshold {
+                    Some(Permission::Read)
+                } else {
+                    None
+                }
+            },
+        }
+    }
+}
 
 /// Policy controlling how permissions attenuate with graph distance.
 ///
@@ -211,5 +294,96 @@ mod tests {
             Some(Permission::Read)
         );
         assert_eq!(policy.attenuate(Permission::Read, 11), None);
+    }
+
+    // ===== Exponential Attenuation Tests =====
+
+    #[test]
+    fn test_exp_strength_zero_hops() {
+        let policy = ExponentialAttenuationPolicy::default();
+        let s = policy.strength(0);
+        assert!(
+            (s - 1.0).abs() < f64::EPSILON,
+            "strength at 0 hops should be 1.0"
+        );
+    }
+
+    #[test]
+    fn test_exp_strength_decays() {
+        let policy = ExponentialAttenuationPolicy::default();
+        let s0 = policy.strength(0);
+        let s1 = policy.strength(1);
+        let s2 = policy.strength(2);
+        assert!(s0 > s1, "strength should decrease with hops");
+        assert!(s1 > s2, "strength should decrease with hops");
+        assert!(s2 > 0.0, "strength should remain positive");
+    }
+
+    #[test]
+    fn test_exp_admin_preserved() {
+        let policy = ExponentialAttenuationPolicy::default();
+        // At 0 hops, strength=1.0 > 0.7 threshold
+        assert_eq!(
+            policy.attenuate(Permission::Admin, 0),
+            Some(Permission::Admin)
+        );
+    }
+
+    #[test]
+    fn test_exp_admin_to_write() {
+        let policy = ExponentialAttenuationPolicy::default();
+        // decay_rate=0.5, strength(1)=exp(-0.5)~0.607 < 0.7, > 0.3
+        assert_eq!(
+            policy.attenuate(Permission::Admin, 1),
+            Some(Permission::Write)
+        );
+    }
+
+    #[test]
+    fn test_exp_admin_to_read() {
+        let policy = ExponentialAttenuationPolicy::default();
+        // strength(2)=exp(-1.0)~0.368 > 0.3 -> Write
+        // strength(3)=exp(-1.5)~0.223 < 0.3, > 0.05 -> Read
+        assert_eq!(
+            policy.attenuate(Permission::Admin, 3),
+            Some(Permission::Read)
+        );
+    }
+
+    #[test]
+    fn test_exp_denied_below_threshold() {
+        let policy = ExponentialAttenuationPolicy::default();
+        // strength(6)=exp(-3.0)~0.0498 < 0.05 threshold -> denied
+        assert_eq!(policy.attenuate(Permission::Admin, 6), None);
+        assert_eq!(policy.attenuate(Permission::Read, 6), None);
+    }
+
+    #[test]
+    fn test_exp_max_depth() {
+        let policy = ExponentialAttenuationPolicy::default();
+        assert_eq!(policy.attenuate(Permission::Admin, 21), None);
+        assert_eq!(policy.attenuate(Permission::Read, 21), None);
+    }
+
+    #[test]
+    fn test_exp_custom_decay_rate() {
+        let policy = ExponentialAttenuationPolicy {
+            decay_rate: 0.1,
+            admin_threshold: 0.7,
+            write_threshold: 0.3,
+            read_threshold: 0.05,
+            max_depth: 50,
+        };
+        // With slow decay, admin should persist further
+        // strength(3)=exp(-0.3)~0.741 > 0.7
+        assert_eq!(
+            policy.attenuate(Permission::Admin, 3),
+            Some(Permission::Admin)
+        );
+        // strength(10)=exp(-1.0)~0.368 > 0.3
+        assert_eq!(
+            policy.attenuate(Permission::Admin, 10),
+            Some(Permission::Write)
+        );
     }
 }

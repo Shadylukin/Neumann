@@ -238,10 +238,10 @@ let residual = vec.project_orthogonal(&amp;basis);
 <span class="boring">}</span></code></pre></pre>
 <h3 id="similarity-metrics"><a class="header" href="#similarity-metrics">Similarity Metrics</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Formula</th><th>Range</th></tr></thead><tbody>
-<tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>[-1, 1]</td></tr>
-<tr><td>Euclidean</td><td><code>sqrt(sum((a-b)^2))</code></td><td>[0, inf)</td></tr>
-<tr><td>Jaccard</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td><td>[0, 1]</td></tr>
-<tr><td>Angular</td><td><code>acos(cosine) / pi</code></td><td>[0, 1]</td></tr>
+<tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>-1 to 1</td></tr>
+<tr><td>Euclidean</td><td><code>sqrt(sum((a-b)^2))</code></td><td>0 to inf</td></tr>
+<tr><td>Jaccard</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td><td>0 to 1</td></tr>
+<tr><td>Angular</td><td><code>acos(cosine) / pi</code></td><td>0 to 1</td></tr>
 </tbody></table>
 </div>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]

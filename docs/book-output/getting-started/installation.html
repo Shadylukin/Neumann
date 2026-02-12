@@ -193,12 +193,14 @@
 <li>Download a pre-built binary if available</li>
 <li>Fall back to building from source if needed</li>
 <li>Install to <code>/usr/local/bin</code> or <code>~/.local/bin</code></li>
+<li>Install shell completions and man pages</li>
 </ul>
 <h3 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>NEUMANN_INSTALL_DIR</code></td><td>Custom installation directory</td></tr>
 <tr><td><code>NEUMANN_VERSION</code></td><td>Install a specific version (e.g., <code>v0.1.0</code>)</td></tr>
 <tr><td><code>NEUMANN_NO_MODIFY_PATH</code></td><td>Set to <code>1</code> to skip PATH modification</td></tr>
+<tr><td><code>NEUMANN_SKIP_EXTRAS</code></td><td>Set to <code>1</code> to skip completions and man page installation</td></tr>
 </tbody></table>
 </div>
 <h2 id="homebrew-macoslinux"><a class="header" href="#homebrew-macoslinux">Homebrew (macOS/Linux)</a></h2>
@@ -209,12 +211,15 @@ brew install neumann
 <p>If you have Rust installed:</p>
 <pre><code class="language-bash">cargo install neumann_shell
 </code></pre>
+<p>To install the gRPC server:</p>
+<pre><code class="language-bash">cargo install neumann_server
+</code></pre>
 <h2 id="docker"><a class="header" href="#docker">Docker</a></h2>
 <h3 id="interactive-cli"><a class="header" href="#interactive-cli">Interactive CLI</a></h3>
-<pre><code class="language-bash">docker run -it shadylukin/neumann:latest
+<pre><code class="language-bash">docker run -it shadylukinack/neumann:latest
 </code></pre>
 <h3 id="server-mode"><a class="header" href="#server-mode">Server Mode</a></h3>
-<pre><code class="language-bash">docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukin/neumann:server
+<pre><code class="language-bash">docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukinack/neumann:server
 </code></pre>
 <h3 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h3>
 <pre><code class="language-bash"># Clone the repository
@@ -249,6 +254,19 @@ cargo install --path neumann_shell
 <h3 id="run-tests"><a class="header" href="#run-tests">Run Tests</a></h3>
 <pre><code class="language-bash">cargo test
 </code></pre>
+<h2 id="sdk-installation"><a class="header" href="#sdk-installation">SDK Installation</a></h2>
+<h3 id="python"><a class="header" href="#python">Python</a></h3>
+<pre><code class="language-bash">pip install neumann-db
+</code></pre>
+<p>For embedded mode (in-process database):</p>
+<pre><code class="language-bash">pip install neumann-db[native]
+</code></pre>
+<h3 id="typescript--javascript"><a class="header" href="#typescript--javascript">TypeScript / JavaScript</a></h3>
+<pre><code class="language-bash">npm install neumann-db
+</code></pre>
+<p>Or with yarn:</p>
+<pre><code class="language-bash">yarn add neumann-db
+</code></pre>
 <h2 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h2>
 <pre><code class="language-bash">neumann --version
 </code></pre>
@@ -281,8 +299,15 @@ sudo apt-get install protobuf-compiler
 sudo dnf install protobuf-compiler
 </code></pre>
 <h3 id="permission-denied-during-install"><a class="header" href="#permission-denied-during-install">Permission denied during install</a></h3>
-<p>The installer tries <code>/usr/local/bin</code> first (requires sudo) then falls back to <code>~/.local/bin</code>. You can specify a custom directory:</p>
-<pre><code class="language-bash">NEUMANN_INSTALL_DIR=~/bin curl -sSfL .../install.sh | bash
+<p>The installer tries <code>/usr/local/bin</code> first (requires sudo) then falls back
+to <code>~/.local/bin</code>. You can specify a custom directory:</p>
+<pre><code class="language-bash">NEUMANN_INSTALL_DIR=~/bin \
+  curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+</code></pre>
+<h3 id="python-sdk-native-module-errors"><a class="header" href="#python-sdk-native-module-errors">Python SDK native module errors</a></h3>
+<p>If you get errors about the native module, ensure you have a Rust toolchain:</p>
+<pre><code class="language-bash">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+pip install neumann-db[native]
 </code></pre>
 <h2 id="updating"><a class="header" href="#updating">Updating</a></h2>
 <h3 id="quick-install"><a class="header" href="#quick-install">Quick Install</a></h3>
@@ -295,6 +320,12 @@ sudo dnf install protobuf-compiler
 <h3 id="cargo"><a class="header" href="#cargo">Cargo</a></h3>
 <pre><code class="language-bash">cargo install neumann_shell --force
 </code></pre>
+<h3 id="python-sdk"><a class="header" href="#python-sdk">Python SDK</a></h3>
+<pre><code class="language-bash">pip install --upgrade neumann-db
+</code></pre>
+<h3 id="typescript-sdk"><a class="header" href="#typescript-sdk">TypeScript SDK</a></h3>
+<pre><code class="language-bash">npm update neumann-db
+</code></pre>
 <h2 id="uninstalling"><a class="header" href="#uninstalling">Uninstalling</a></h2>
 <h3 id="quick-install--cargo"><a class="header" href="#quick-install--cargo">Quick Install / Cargo</a></h3>
 <pre><code class="language-bash">rm $(which neumann)
@@ -303,8 +334,14 @@ sudo dnf install protobuf-compiler
 <pre><code class="language-bash">brew uninstall neumann
 </code></pre>
 <h3 id="docker-1"><a class="header" href="#docker-1">Docker</a></h3>
-<pre><code class="language-bash">docker rmi shadylukin/neumann:latest shadylukin/neumann:server
+<pre><code class="language-bash">docker rmi shadylukinack/neumann:latest shadylukinack/neumann:server
 docker volume rm neumann-data
+</code></pre>
+<h3 id="python-sdk-1"><a class="header" href="#python-sdk-1">Python SDK</a></h3>
+<pre><code class="language-bash">pip uninstall neumann-db
+</code></pre>
+<h3 id="typescript-sdk-1"><a class="header" href="#typescript-sdk-1">TypeScript SDK</a></h3>
+<pre><code class="language-bash">npm uninstall neumann-db
 </code></pre>
 <h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
 <ul>

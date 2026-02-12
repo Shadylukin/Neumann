@@ -203,6 +203,7 @@ cargo bench --package tensor_chain
 </code></pre>
 <p>Benchmark reports are generated in <code>target/criterion/</code> with HTML visualizations.</p>
 <h2 id="performance-summary"><a class="header" href="#performance-summary">Performance Summary</a></h2>
+<h3 id="in-memory-operations"><a class="header" href="#in-memory-operations">In-Memory Operations</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Component</th><th>Key Metric</th><th>Performance</th></tr></thead><tbody>
 <tr><td><a href="tensor-store.html">tensor_store</a></td><td>Concurrent writes</td><td>7.5M/sec @ 1M entities</td></tr>
 <tr><td><a href="relational-engine.html">relational_engine</a></td><td>Indexed lookup</td><td>2.9us (1,604x vs scan)</td></tr>
@@ -216,6 +217,14 @@ cargo bench --package tensor_chain
 <tr><td><a href="query-router.html">query_router</a></td><td>Mixed workload</td><td>455 queries/sec</td></tr>
 </tbody></table>
 </div>
+<h3 id="durable-storage-wal"><a class="header" href="#durable-storage-wal">Durable Storage (WAL)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Key Metric</th><th>Performance</th></tr></thead><tbody>
+<tr><td>WAL writes</td><td>Durable PUT (128d embeddings)</td><td>1.4M ops/sec</td></tr>
+<tr><td>WAL recovery</td><td>Replay 10K records</td><td>~400us (25M records/sec)</td></tr>
+</tbody></table>
+</div>
+<p>All engines (<code>RelationalEngine</code>, <code>GraphEngine</code>, <code>VectorEngine</code>) support
+optional durability via <code>open_durable()</code> with full crash consistency.</p>
 <h2 id="hardware-notes"><a class="header" href="#hardware-notes">Hardware Notes</a></h2>
 <p>Benchmarks run on:</p>
 <ul>

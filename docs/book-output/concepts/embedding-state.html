@@ -354,14 +354,14 @@ if similarity.abs() &lt; 0.1 {
 </tbody></table>
 </div>
 <h2 id="serialization"><a class="header" href="#serialization">Serialization</a></h2>
-<p>The state machine supports bincode serialization for persistence:</p>
+<p>The state machine supports bitcode serialization for persistence:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// Serialize
-let bytes = bincode::serialize(&amp;state)?;
+let bytes = bitcode::encode(&amp;state);
 
 // Deserialize
-let restored: EmbeddingState = bincode::deserialize(&amp;bytes)?;
+let restored: EmbeddingState = bitcode::decode(&amp;bytes)?;
 
 // State is preserved
 assert_eq!(state.is_computed(), restored.is_computed());
