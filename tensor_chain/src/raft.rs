@@ -330,6 +330,33 @@ struct PersistentState {
     voted_for: Option<NodeId>,
     /// Log entries.
     log: Vec<LogEntry>,
+    /// Number of entries drained from the front of the log via compaction.
+    ///
+    /// After `truncate_log()` drains entries, the remaining entries' `index`
+    /// fields no longer match their array positions. This offset tracks how
+    /// many entries have been removed so that log index lookups can be
+    /// adjusted: `array_index = log_index - 1 - log_base_index`.
+    log_base_index: u64,
+}
+
+impl PersistentState {
+    /// Convert an absolute log index (1-based) to an array index.
+    ///
+    /// Returns `None` if the log index has been compacted away or is
+    /// otherwise out of range.
+    fn log_index_to_array_index(&self, log_index: u64) -> Option<usize> {
+        log_index.checked_sub(self.log_base_index + 1).map(|i| {
+            // Log indices are bounded by the Vec length which fits in usize.
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = i as usize;
+            idx
+        })
+    }
+
+    /// Return the highest log index stored, accounting for compacted entries.
+    fn array_len_as_log_index(&self) -> u64 {
+        self.log.len() as u64 + self.log_base_index
+    }
 }
 
 /// State for active leadership transfer.
@@ -775,6 +802,12 @@ struct SnapshotState {
     buffer_config: SnapshotBufferConfig,
     /// When the current snapshot transfer started (for timeout enforcement).
     transfer_started_at: Option<Instant>,
+    /// Cached leader snapshot for serving chunks without re-serializing.
+    ///
+    /// The leader caches the snapshot data on the first chunk request and
+    /// reuses it for subsequent chunks. The cache is invalidated when the
+    /// last chunk is sent or when the snapshot metadata changes.
+    cached_leader_snapshot: Option<(SnapshotMetadata, Vec<u8>)>,
 }
 
 impl SnapshotState {
@@ -786,6 +819,7 @@ impl SnapshotState {
             pending_total_size: 0,
             buffer_config: config,
             transfer_started_at: None,
+            cached_leader_snapshot: None,
         }
     }
 
@@ -1020,6 +1054,7 @@ impl RaftNode {
                 current_term: 0,
                 voted_for: None,
                 log: Vec::new(),
+                log_base_index: 0,
             }),
             volatile: RwLock::new(VolatileState {
                 commit_index: 0,
@@ -1360,6 +1395,7 @@ impl RaftNode {
                 current_term: term,
                 voted_for,
                 log,
+                log_base_index: 0,
             }),
             volatile: RwLock::new(VolatileState {
                 commit_index: 0,
@@ -2198,30 +2234,37 @@ impl RaftNode {
     }
 
     /// Append entries from leader, persisting to WAL. Returns false on WAL failure.
-    fn append_leader_entries(&self, entries: &[LogEntry], log: &mut Vec<LogEntry>) -> bool {
+    fn append_leader_entries(
+        &self,
+        entries: &[LogEntry],
+        persistent: &mut PersistentState,
+    ) -> bool {
         for entry in entries {
-            #[allow(clippy::cast_possible_truncation)]
-            let idx = entry.index as usize;
-            if idx > log.len() {
-                log.push(entry.clone());
+            let logical_len = persistent.array_len_as_log_index();
+            if entry.index > logical_len {
+                persistent.log.push(entry.clone());
                 if self.persist_log_entry(entry).is_err() {
                     return false;
                 }
-            } else if log[idx - 1].term != entry.term {
-                // Conflict - persist truncation to WAL
-                if let Some(ref wal) = self.wal {
-                    let _ = wal
-                        .lock()
-                        .append(&crate::raft_wal::RaftWalEntry::LogTruncate {
-                            from_index: idx as u64,
-                        });
-                }
-                log.truncate(idx - 1);
-                log.push(entry.clone());
-                if self.persist_log_entry(entry).is_err() {
-                    return false;
+            } else if let Some(arr_idx) = persistent.log_index_to_array_index(entry.index) {
+                if arr_idx < persistent.log.len() && persistent.log[arr_idx].term != entry.term {
+                    // Conflict - persist truncation to WAL
+                    if let Some(ref wal) = self.wal {
+                        let _ = wal
+                            .lock()
+                            .append(&crate::raft_wal::RaftWalEntry::LogTruncate {
+                                from_index: entry.index,
+                            });
+                    }
+                    persistent.log.truncate(arr_idx);
+                    persistent.log.push(entry.clone());
+                    if self.persist_log_entry(entry).is_err() {
+                        return false;
+                    }
                 }
             }
+            // If log_index_to_array_index returns None, the entry was
+            // compacted away and is already covered by a snapshot.
         }
         true
     }
@@ -2304,23 +2347,28 @@ impl RaftNode {
             // Check log consistency
             let log_ok = if ae.prev_log_index == 0 {
                 true
-            } else if ae.prev_log_index <= persistent.log.len() as u64 {
-                #[allow(clippy::cast_possible_truncation)]
-                let idx = (ae.prev_log_index - 1) as usize;
-                persistent.log[idx].term == ae.prev_log_term
+            } else if ae.prev_log_index <= persistent.array_len_as_log_index() {
+                // Entry compacted away is treated as consistent since the
+                // snapshot that removed it was already verified.
+                persistent
+                    .log_index_to_array_index(ae.prev_log_index)
+                    .map_or(true, |idx| {
+                        idx < persistent.log.len() && persistent.log[idx].term == ae.prev_log_term
+                    })
             } else {
                 false
             };
 
             if log_ok {
-                success = self.append_leader_entries(&ae.entries, &mut persistent.log);
+                success = self.append_leader_entries(&ae.entries, &mut persistent);
 
-                match_index = persistent.log.len() as u64;
+                match_index = persistent.array_len_as_log_index();
 
                 // Update commit index
                 let mut volatile = self.volatile.write();
                 if ae.leader_commit > volatile.commit_index {
-                    volatile.commit_index = ae.leader_commit.min(persistent.log.len() as u64);
+                    volatile.commit_index =
+                        ae.leader_commit.min(persistent.array_len_as_log_index());
                 }
             }
         }
@@ -2426,17 +2474,37 @@ impl RaftNode {
             return None;
         }
 
-        // Get current snapshot metadata and data
+        // Get current snapshot metadata
         let snapshot_meta = self.get_snapshot_metadata()?;
 
-        // Create snapshot data
-        let Ok((_, data)) = self.create_snapshot() else {
-            return None;
-        };
+        // Use cached snapshot data if available and still valid, otherwise
+        // create a new snapshot and cache it for subsequent chunk requests.
+        let mut snapshot_state = self.snapshot_state.write();
+        let cache_valid =
+            snapshot_state
+                .cached_leader_snapshot
+                .as_ref()
+                .is_some_and(|(cached_meta, _)| {
+                    cached_meta.last_included_index == snapshot_meta.last_included_index
+                        && cached_meta.last_included_term == snapshot_meta.last_included_term
+                });
+
+        if !cache_valid {
+            drop(snapshot_state);
+            let Ok((meta, data)) = self.create_snapshot() else {
+                return None;
+            };
+            snapshot_state = self.snapshot_state.write();
+            snapshot_state.cached_leader_snapshot = Some((meta, data));
+        }
+
+        let (cached_meta, data) = snapshot_state.cached_leader_snapshot.as_ref()?;
+        let cached_meta = cached_meta.clone();
 
         // Calculate the chunk to send
         let offset = sr.offset;
         let chunk_size = sr.chunk_size.min(self.config.snapshot_chunk_size);
+        #[allow(clippy::cast_possible_truncation)]
         let total_size = data.len() as u64;
 
         if offset >= total_size {
@@ -2450,9 +2518,15 @@ impl RaftNode {
         let chunk_data = data[start..end].to_vec();
         let is_last = end >= data.len();
 
+        // Clear the cache after the last chunk is sent
+        if is_last {
+            snapshot_state.cached_leader_snapshot = None;
+        }
+        drop(snapshot_state);
+
         Some(Message::SnapshotResponse(SnapshotResponse {
-            snapshot_height: snapshot_meta.last_included_index,
-            snapshot_hash: snapshot_meta.snapshot_hash,
+            snapshot_height: cached_meta.last_included_index,
+            snapshot_hash: cached_meta.snapshot_hash,
             data: chunk_data,
             offset,
             total_size,
@@ -2620,7 +2694,7 @@ impl RaftNode {
         if let Some(ref ls) = leadership.leader_volatile {
             // Find the highest N such that majority have match_index >= N
             let mut match_indices: Vec<u64> = ls.match_index.values().copied().collect();
-            match_indices.push(persistent.log.len() as u64); // Include self
+            match_indices.push(persistent.array_len_as_log_index()); // Include self
             match_indices.sort_unstable();
 
             let quorum_idx = match_indices.len() - self.quorum_size();
@@ -2628,12 +2702,12 @@ impl RaftNode {
 
             // Only commit if entry is from current term
             if new_commit > volatile.commit_index {
-                #[allow(clippy::cast_possible_truncation)]
-                let entry_idx = (new_commit - 1) as usize;
-                if entry_idx < persistent.log.len()
-                    && persistent.log[entry_idx].term == persistent.current_term
-                {
-                    volatile.commit_index = new_commit;
+                if let Some(arr_idx) = persistent.log_index_to_array_index(new_commit) {
+                    if arr_idx < persistent.log.len()
+                        && persistent.log[arr_idx].term == persistent.current_term
+                    {
+                        volatile.commit_index = new_commit;
+                    }
                 }
             }
         }
@@ -2667,7 +2741,7 @@ impl RaftNode {
         let embedding = block.header.delta_embedding.clone();
 
         let mut persistent = self.persistent.write();
-        let index = persistent.log.len() as u64 + 1;
+        let index = persistent.array_len_as_log_index() + 1;
         let term = persistent.current_term;
 
         let entry = LogEntry::new(term, index, block);
@@ -2725,7 +2799,7 @@ impl RaftNode {
         }
 
         let mut persistent = self.persistent.write();
-        let index = persistent.log.len() as u64 + 1;
+        let index = persistent.array_len_as_log_index() + 1;
         let term = persistent.current_term;
 
         let entry = LogEntry::codebook(term, index, CodebookChange::replace(snapshot));
@@ -2875,11 +2949,25 @@ impl RaftNode {
         let persistent = self.persistent.read();
         let volatile = self.volatile.read();
 
-        #[allow(clippy::cast_possible_truncation)]
-        let start = volatile.last_applied as usize;
-        #[allow(clippy::cast_possible_truncation)]
-        let end = volatile.commit_index as usize;
+        let last_applied = volatile.last_applied;
+        let commit_index = volatile.commit_index;
         drop(volatile);
+
+        // Convert logical indices to array positions, clamping to valid range.
+        // These values are bounded by the Vec length which always fits in usize.
+        let base = persistent.log_base_index;
+        #[allow(clippy::cast_possible_truncation)]
+        let start = if last_applied > base {
+            (last_applied - base) as usize
+        } else {
+            0
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let end = if commit_index > base {
+            (commit_index - base) as usize
+        } else {
+            0
+        };
 
         if end > start && end <= persistent.log.len() {
             persistent.log[start..end].to_vec()
@@ -2938,13 +3026,19 @@ impl RaftNode {
 
         let persistent = self.persistent.read();
 
-        // Find the log entry at finalized height
-        #[allow(clippy::cast_possible_truncation)]
-        let snapshot_idx = finalized.saturating_sub(1) as usize;
+        // Convert finalized height (logical log index) to array index
+        let snapshot_idx = persistent
+            .log_index_to_array_index(finalized)
+            .ok_or_else(|| {
+                let logical_len = persistent.array_len_as_log_index();
+                ChainError::SnapshotError(format!(
+                    "finalized height {finalized} out of range (logical log length {logical_len})"
+                ))
+            })?;
         if snapshot_idx >= persistent.log.len() {
-            let log_len = persistent.log.len();
+            let logical_len = persistent.array_len_as_log_index();
             return Err(ChainError::SnapshotError(format!(
-                "finalized height {finalized} exceeds log length {log_len}"
+                "finalized height {finalized} exceeds log length {logical_len}"
             )));
         }
 
@@ -3009,13 +3103,19 @@ impl RaftNode {
 
         let persistent = self.persistent.read();
 
-        // Find the log entry at finalized height
-        #[allow(clippy::cast_possible_truncation)]
-        let snapshot_idx = finalized.saturating_sub(1) as usize;
+        // Convert finalized height (logical log index) to array index
+        let snapshot_idx = persistent
+            .log_index_to_array_index(finalized)
+            .ok_or_else(|| {
+                let logical_len = persistent.array_len_as_log_index();
+                ChainError::SnapshotError(format!(
+                    "finalized height {finalized} out of range (logical log length {logical_len})"
+                ))
+            })?;
         if snapshot_idx >= persistent.log.len() {
-            let log_len = persistent.log.len();
+            let logical_len = persistent.array_len_as_log_index();
             return Err(ChainError::SnapshotError(format!(
-                "finalized height {finalized} exceeds log length {log_len}"
+                "finalized height {finalized} exceeds log length {logical_len}"
             )));
         }
 
@@ -3063,14 +3163,17 @@ impl RaftNode {
         let snapshot_idx = snapshot_meta.last_included_index;
         let trailing = self.config.snapshot_trailing_logs;
 
-        // Find the index in our log array
-        // Log entries are 1-indexed, array is 0-indexed
+        // Compute the absolute cut point (in log-index space), then convert
+        // to an array position by subtracting the entries already drained.
         #[allow(clippy::cast_possible_truncation)]
-        let cut_point = (snapshot_idx as usize).saturating_sub(trailing);
+        let absolute_cut = (snapshot_idx as usize).saturating_sub(trailing);
+        #[allow(clippy::cast_possible_truncation)]
+        let already_drained = persistent.log_base_index as usize;
+        let cut_point = absolute_cut.saturating_sub(already_drained);
 
         if cut_point > 0 && cut_point < persistent.log.len() {
-            // Remove entries before the cut point
             persistent.log.drain(..cut_point);
+            persistent.log_base_index += cut_point as u64;
         }
         drop(persistent);
 
@@ -3136,9 +3239,7 @@ impl RaftNode {
         // (log only grows, but be defensive against concurrent modifications)
         {
             let persistent = self.persistent.read();
-            #[allow(clippy::cast_possible_truncation)]
-            let snapshot_idx = metadata.last_included_index as usize;
-            if snapshot_idx > persistent.log.len() {
+            if metadata.last_included_index > persistent.array_len_as_log_index() {
                 return Err(ChainError::SnapshotError(
                     "snapshot index no longer valid".to_string(),
                 ));
@@ -3317,8 +3418,10 @@ impl RaftNode {
 
         // Install the snapshot
         let mut persistent = self.persistent.write();
-        // Replace log with entries from snapshot
+        // Replace log with entries from snapshot - reset base since we have
+        // a complete set of entries starting from index 1
         persistent.log = entries;
+        persistent.log_base_index = 0;
 
         // Update term if snapshot has higher term (re-check after WAL persist)
         if metadata.last_included_term > persistent.current_term {
@@ -3594,22 +3697,20 @@ impl RaftNode {
         let (prev_log_index, prev_log_term) = if next_idx <= 1 {
             (0, 0)
         } else {
-            #[allow(clippy::cast_possible_truncation)]
-            let idx = (next_idx - 2) as usize;
-            if idx < persistent.log.len() {
-                (persistent.log[idx].index, persistent.log[idx].term)
-            } else {
-                (0, 0)
-            }
+            // prev entry is at log index (next_idx - 1)
+            persistent
+                .log_index_to_array_index(next_idx - 1)
+                .filter(|&idx| idx < persistent.log.len())
+                .map_or((0, 0), |idx| {
+                    (persistent.log[idx].index, persistent.log[idx].term)
+                })
         };
 
-        #[allow(clippy::cast_possible_truncation)]
-        let start = (next_idx - 1) as usize;
-        let entries = if start < persistent.log.len() {
-            persistent.log[start..].to_vec()
-        } else {
-            Vec::new()
-        };
+        // Entries to send start at log index next_idx
+        let entries = persistent
+            .log_index_to_array_index(next_idx)
+            .filter(|&start| start < persistent.log.len())
+            .map_or_else(Vec::new, |start| persistent.log[start..].to_vec());
         drop(persistent);
 
         // Extract embedding from last entry for fast-path (already sparse)
@@ -9757,10 +9858,15 @@ mod tests {
 
         // Directly test append_leader_entries
         let entries = vec![create_test_log_entry(1), create_test_log_entry(2)];
-        let mut log = Vec::new();
-        let ok = node.append_leader_entries(&entries, &mut log);
+        let mut persistent = PersistentState {
+            current_term: 0,
+            voted_for: None,
+            log: Vec::new(),
+            log_base_index: 0,
+        };
+        let ok = node.append_leader_entries(&entries, &mut persistent);
         assert!(ok);
-        assert_eq!(log.len(), 2);
+        assert_eq!(persistent.log.len(), 2);
 
         // Verify WAL has entries by recovering
         drop(node);
@@ -9799,15 +9905,20 @@ mod tests {
             LogEntry::new(1, 2, create_test_block(2)),
             LogEntry::new(1, 3, create_test_block(3)),
         ];
-        let mut log = Vec::new();
-        assert!(node.append_leader_entries(&initial, &mut log));
-        assert_eq!(log.len(), 3);
+        let mut persistent = PersistentState {
+            current_term: 0,
+            voted_for: None,
+            log: Vec::new(),
+            log_base_index: 0,
+        };
+        assert!(node.append_leader_entries(&initial, &mut persistent));
+        assert_eq!(persistent.log.len(), 3);
 
         // Conflict at index 2 (term 2 vs term 1) - truncates entries 2,3 and appends new
         let conflict_entries = vec![LogEntry::new(2, 2, create_test_block(20))];
-        assert!(node.append_leader_entries(&conflict_entries, &mut log));
-        assert_eq!(log.len(), 2);
-        assert_eq!(log[1].term, 2);
+        assert!(node.append_leader_entries(&conflict_entries, &mut persistent));
+        assert_eq!(persistent.log.len(), 2);
+        assert_eq!(persistent.log[1].term, 2);
 
         // Recover from WAL and verify truncation was persisted
         drop(node);

@@ -3372,22 +3372,35 @@ impl GraphEngine {
 
     fn add_edge_to_list(&self, key: String, edge_id: u64) -> Result<()> {
         let mut tensor = self.store.get(&key).unwrap_or_else(|_| TensorData::new());
-
-        let edge_key = format!("e{edge_id}");
+        let mut edges = Self::extract_edge_ids(&tensor);
+        if !edges.contains(&edge_id) {
+            edges.push(edge_id);
+        }
+        // Remove legacy e* fields if present
+        let legacy_keys: Vec<String> = tensor
+            .keys()
+            .filter(|k| k.starts_with('e') && k[1..].parse::<u64>().is_ok())
+            .cloned()
+            .collect();
+        for k in &legacy_keys {
+            tensor.remove(k);
+        }
         tensor.set(
-            &edge_key,
-            TensorValue::Scalar(ScalarValue::Int(edge_id.cast_signed())),
+            "_edges",
+            TensorValue::Pointers(edges.iter().map(ToString::to_string).collect()),
         );
-
         self.store.put(key, tensor)?;
         Ok(())
     }
 
-    fn get_edge_list(&self, key: &str) -> Vec<u64> {
-        let Ok(tensor) = self.store.get(key) else {
-            return Vec::new();
-        };
-
+    /// Extracts edge IDs from a tensor, supporting both the new `_edges`
+    /// Pointers format and the legacy per-field `e*` format.
+    fn extract_edge_ids(tensor: &TensorData) -> Vec<u64> {
+        // New format: single _edges Pointers field
+        if let Some(TensorValue::Pointers(ptrs)) = tensor.get("_edges") {
+            return ptrs.iter().filter_map(|s| s.parse().ok()).collect();
+        }
+        // Legacy format: individual e* fields
         let mut edges = Vec::new();
         for k in tensor.keys() {
             if k.starts_with('e') {
@@ -3397,6 +3410,13 @@ impl GraphEngine {
             }
         }
         edges
+    }
+
+    fn get_edge_list(&self, key: &str) -> Vec<u64> {
+        let Ok(tensor) = self.store.get(key) else {
+            return Vec::new();
+        };
+        Self::extract_edge_ids(&tensor)
     }
 
     pub fn node_exists(&self, id: u64) -> bool {
@@ -4795,9 +4815,19 @@ impl GraphEngine {
         visited.insert(from);
 
         while let Some(current) = queue.pop_front() {
+            // Collect edges from both outgoing and incoming lists to support
+            // undirected graphs and paths that traverse incoming edges.
             let out_edges = self.get_edge_list(&Self::outgoing_edges_key(current));
+            let in_edges = self.get_edge_list(&Self::incoming_edges_key(current));
 
-            for edge_id in out_edges {
+            let mut all_edge_ids = out_edges;
+            for eid in in_edges {
+                if !all_edge_ids.contains(&eid) {
+                    all_edge_ids.push(eid);
+                }
+            }
+
+            for edge_id in all_edge_ids {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     // Apply edge filter
                     if let Some(f) = filter {
@@ -4808,7 +4838,7 @@ impl GraphEngine {
 
                     let neighbor = if edge.from == current {
                         edge.to
-                    } else if !edge.directed && edge.to == current {
+                    } else if edge.to == current {
                         edge.from
                     } else {
                         continue;
@@ -6409,6 +6439,13 @@ impl GraphEngine {
 
     fn remove_edge_from_list(&self, key: &str, edge_id: u64) -> Result<()> {
         if let Ok(mut tensor) = self.store.get(key) {
+            // Remove from new Pointers format
+            if let Some(TensorValue::Pointers(ptrs)) = tensor.get("_edges") {
+                let id_str = edge_id.to_string();
+                let updated: Vec<String> = ptrs.iter().filter(|s| **s != id_str).cloned().collect();
+                tensor.set("_edges", TensorValue::Pointers(updated));
+            }
+            // Remove legacy field if present
             let edge_key = format!("e{edge_id}");
             tensor.remove(&edge_key);
             self.store.put(key, tensor)?;

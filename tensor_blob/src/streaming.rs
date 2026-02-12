@@ -140,107 +140,57 @@ impl BlobWriter {
             self.store_chunk(chunk)?;
         }
 
+        let content_type_for_idx = self.state.content_type.clone();
+        let linked_to_for_idx = self.state.linked_to.clone();
+        let tags_for_idx = self.state.tags.clone();
+
         let checksum = self.hasher.finalize();
-        let now = current_timestamp();
-
-        // Build metadata tensor
-        let mut tensor = TensorData::new();
-        tensor.set(
-            "_type",
-            TensorValue::Scalar(ScalarValue::String("blob_artifact".to_string())),
+        let tensor = build_metadata_tensor(
+            &mut self.state,
+            &mut self.chunks,
+            self.total_size,
+            self.chunker.chunk_size(),
+            &checksum,
         );
-        tensor.set(
-            "_id",
-            TensorValue::Scalar(ScalarValue::String(self.state.artifact_id.clone())),
-        );
-        tensor.set(
-            "_filename",
-            TensorValue::Scalar(ScalarValue::String(self.state.filename)),
-        );
-        tensor.set(
-            "_content_type",
-            TensorValue::Scalar(ScalarValue::String(self.state.content_type)),
-        );
-        tensor.set(
-            "_size",
-            TensorValue::Scalar(ScalarValue::Int(
-                i64::try_from(self.total_size).unwrap_or(0),
-            )),
-        );
-        tensor.set(
-            "_checksum",
-            TensorValue::Scalar(ScalarValue::String(checksum)),
-        );
-        tensor.set(
-            "_chunk_size",
-            TensorValue::Scalar(ScalarValue::Int(
-                i64::try_from(self.chunker.chunk_size()).unwrap_or(0),
-            )),
-        );
-        tensor.set(
-            "_chunk_count",
-            TensorValue::Scalar(ScalarValue::Int(
-                i64::try_from(self.chunks.len()).unwrap_or(0),
-            )),
-        );
-        tensor.set("_chunks", TensorValue::Pointers(self.chunks));
-        tensor.set(
-            "_created",
-            TensorValue::Scalar(ScalarValue::Int(i64::try_from(now).unwrap_or(0))),
-        );
-        tensor.set(
-            "_modified",
-            TensorValue::Scalar(ScalarValue::Int(i64::try_from(now).unwrap_or(0))),
-        );
-        tensor.set(
-            "_created_by",
-            TensorValue::Scalar(ScalarValue::String(self.state.created_by)),
-        );
-
-        if !self.state.linked_to.is_empty() {
-            tensor.set("_linked_to", TensorValue::Pointers(self.state.linked_to));
-        }
-
-        if !self.state.tags.is_empty() {
-            tensor.set(
-                "_tags",
-                TensorValue::Pointers(
-                    self.state
-                        .tags
-                        .into_iter()
-                        .map(|t| format!("tag:{t}"))
-                        .collect(),
-                ),
-            );
-        }
-
-        // Custom metadata
-        for (key, value) in self.state.custom_metadata {
-            tensor.set(
-                format!("_meta:{key}"),
-                TensorValue::Scalar(ScalarValue::String(value)),
-            );
-        }
-
-        // Embedding with sparse detection
-        if let Some((embedding, model)) = self.state.embedding {
-            use tensor_store::SparseVector;
-            let storage = if should_use_sparse(&embedding) {
-                TensorValue::Sparse(SparseVector::from_dense(&embedding))
-            } else {
-                TensorValue::Vector(embedding)
-            };
-            tensor.set("_embedding", storage);
-            tensor.set(
-                "_embedded_model",
-                TensorValue::Scalar(ScalarValue::String(model)),
-            );
-        }
 
         let meta_key = format!("_blob:meta:{}", self.state.artifact_id);
         self.store.put(&meta_key, tensor)?;
 
+        Self::write_secondary_indexes(
+            &self.store,
+            &self.state.artifact_id,
+            &content_type_for_idx,
+            &linked_to_for_idx,
+            &tags_for_idx,
+        )?;
+
         Ok(self.state.artifact_id)
+    }
+
+    /// Write secondary index entries for content type, links, and tags.
+    fn write_secondary_indexes(
+        store: &TensorStore,
+        artifact_id: &str,
+        content_type: &str,
+        linked_to: &[String],
+        tags: &[String],
+    ) -> Result<()> {
+        if !content_type.is_empty() {
+            let idx_key = format!("_blob:idx:ct:{content_type}:{artifact_id}");
+            store.put(&idx_key, TensorData::new())?;
+        }
+
+        for entity in linked_to {
+            let idx_key = format!("_blob:idx:link:{entity}:{artifact_id}");
+            store.put(&idx_key, TensorData::new())?;
+        }
+
+        for tag in tags {
+            let idx_key = format!("_blob:idx:tag:{tag}:{artifact_id}");
+            store.put(&idx_key, TensorData::new())?;
+        }
+
+        Ok(())
     }
 
     /// Get the current total size written.
@@ -255,6 +205,103 @@ impl BlobWriter {
     pub fn chunks_written(&self) -> usize {
         self.chunks.len()
     }
+}
+
+/// Build the metadata tensor from the writer's accumulated state.
+///
+/// This is a free function rather than a method because `finish()` partially
+/// moves `self.hasher` before calling this, which prevents borrowing `self`.
+fn build_metadata_tensor(
+    state: &mut WriteState,
+    chunks: &mut Vec<String>,
+    total_size: usize,
+    chunk_size: usize,
+    checksum: &str,
+) -> TensorData {
+    let now = current_timestamp();
+    let mut tensor = TensorData::new();
+
+    tensor.set(
+        "_type",
+        TensorValue::Scalar(ScalarValue::String("blob_artifact".to_string())),
+    );
+    tensor.set(
+        "_id",
+        TensorValue::Scalar(ScalarValue::String(state.artifact_id.clone())),
+    );
+    tensor.set(
+        "_filename",
+        TensorValue::Scalar(ScalarValue::String(std::mem::take(&mut state.filename))),
+    );
+    tensor.set(
+        "_content_type",
+        TensorValue::Scalar(ScalarValue::String(std::mem::take(&mut state.content_type))),
+    );
+    tensor.set(
+        "_size",
+        TensorValue::Scalar(ScalarValue::Int(i64::try_from(total_size).unwrap_or(0))),
+    );
+    tensor.set(
+        "_checksum",
+        TensorValue::Scalar(ScalarValue::String(checksum.to_string())),
+    );
+    tensor.set(
+        "_chunk_size",
+        TensorValue::Scalar(ScalarValue::Int(i64::try_from(chunk_size).unwrap_or(0))),
+    );
+    tensor.set(
+        "_chunk_count",
+        TensorValue::Scalar(ScalarValue::Int(i64::try_from(chunks.len()).unwrap_or(0))),
+    );
+    tensor.set("_chunks", TensorValue::Pointers(std::mem::take(chunks)));
+    tensor.set(
+        "_created",
+        TensorValue::Scalar(ScalarValue::Int(i64::try_from(now).unwrap_or(0))),
+    );
+    tensor.set(
+        "_modified",
+        TensorValue::Scalar(ScalarValue::Int(i64::try_from(now).unwrap_or(0))),
+    );
+    tensor.set(
+        "_created_by",
+        TensorValue::Scalar(ScalarValue::String(std::mem::take(&mut state.created_by))),
+    );
+
+    let linked_to = std::mem::take(&mut state.linked_to);
+    if !linked_to.is_empty() {
+        tensor.set("_linked_to", TensorValue::Pointers(linked_to));
+    }
+
+    let tags = std::mem::take(&mut state.tags);
+    if !tags.is_empty() {
+        tensor.set(
+            "_tags",
+            TensorValue::Pointers(tags.into_iter().map(|t| format!("tag:{t}")).collect()),
+        );
+    }
+
+    for (key, value) in std::mem::take(&mut state.custom_metadata) {
+        tensor.set(
+            format!("_meta:{key}"),
+            TensorValue::Scalar(ScalarValue::String(value)),
+        );
+    }
+
+    if let Some((embedding, model)) = state.embedding.take() {
+        use tensor_store::SparseVector;
+        let storage = if should_use_sparse(&embedding) {
+            TensorValue::Sparse(SparseVector::from_dense(&embedding))
+        } else {
+            TensorValue::Vector(embedding)
+        };
+        tensor.set("_embedding", storage);
+        tensor.set(
+            "_embedded_model",
+            TensorValue::Scalar(ScalarValue::String(model)),
+        );
+    }
+
+    tensor
 }
 
 /// Streaming reader for downloading artifacts.

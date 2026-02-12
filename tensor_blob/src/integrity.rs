@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 use std::collections::HashSet;
 
-use tensor_store::{ScalarValue, TensorStore, TensorValue};
+use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
 
 use crate::{
     chunker::StreamingHasher,
@@ -189,6 +189,30 @@ pub fn delete_artifact(store: &TensorStore, artifact_id: &str) -> Result<()> {
         }
     }
 
+    // Clean up secondary index entries for links
+    if let Some(linked_to) = get_pointers(&tensor, "_linked_to") {
+        for entity in linked_to {
+            let idx_key = format!("_blob:idx:link:{entity}:{artifact_id}");
+            let _ = store.delete(&idx_key);
+        }
+    }
+
+    // Clean up secondary index entries for tags
+    if let Some(tags) = get_pointers(&tensor, "_tags") {
+        for tag_ref in tags {
+            if let Some(tag) = tag_ref.strip_prefix("tag:") {
+                let idx_key = format!("_blob:idx:tag:{tag}:{artifact_id}");
+                let _ = store.delete(&idx_key);
+            }
+        }
+    }
+
+    // Clean up secondary index entry for content type
+    if let Some(ct) = get_string(&tensor, "_content_type") {
+        let idx_key = format!("_blob:idx:ct:{ct}:{artifact_id}");
+        let _ = store.delete(&idx_key);
+    }
+
     // Delete metadata
     store.delete(&meta_key)?;
 
@@ -240,6 +264,10 @@ pub fn add_artifact_link(store: &TensorStore, artifact_id: &str, entity: &str) -
         linked_to.push(entity.to_string());
         tensor.set("_linked_to", TensorValue::Pointers(linked_to));
         store.put(&meta_key, tensor)?;
+
+        // Write secondary index entry for link lookup
+        let idx_key = format!("_blob:idx:link:{entity}:{artifact_id}");
+        store.put(&idx_key, TensorData::new())?;
     }
 
     Ok(())
@@ -260,6 +288,10 @@ pub fn remove_artifact_link(store: &TensorStore, artifact_id: &str, entity: &str
         linked_to.retain(|e| e != entity);
         tensor.set("_linked_to", TensorValue::Pointers(linked_to));
         store.put(&meta_key, tensor)?;
+
+        // Remove secondary index entry for link lookup
+        let idx_key = format!("_blob:idx:link:{entity}:{artifact_id}");
+        let _ = store.delete(&idx_key);
     }
 
     Ok(())
@@ -282,6 +314,10 @@ pub fn add_artifact_tag(store: &TensorStore, artifact_id: &str, tag: &str) -> Re
         tags.push(tag_ref);
         tensor.set("_tags", TensorValue::Pointers(tags));
         store.put(&meta_key, tensor)?;
+
+        // Write secondary index entry for tag lookup
+        let idx_key = format!("_blob:idx:tag:{tag}:{artifact_id}");
+        store.put(&idx_key, TensorData::new())?;
     }
 
     Ok(())
@@ -303,6 +339,10 @@ pub fn remove_artifact_tag(store: &TensorStore, artifact_id: &str, tag: &str) ->
         tags.retain(|t| t != &tag_ref);
         tensor.set("_tags", TensorValue::Pointers(tags));
         store.put(&meta_key, tensor)?;
+
+        // Remove secondary index entry for tag lookup
+        let idx_key = format!("_blob:idx:tag:{tag}:{artifact_id}");
+        let _ = store.delete(&idx_key);
     }
 
     Ok(())
