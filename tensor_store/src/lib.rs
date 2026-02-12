@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! `TensorStore` - Unified Storage Layer for Neumann
 //!
 //! A thread-safe, sharded key-value store optimized for tensor data:
@@ -1211,7 +1211,7 @@ impl TensorStore {
                 continue;
             };
 
-            let mut fields = HashMap::new();
+            let mut fields = std::collections::BTreeMap::new();
             for (field_name, value) in tensor.iter() {
                 let compressed = match value {
                     TensorValue::Scalar(s) => CompressedValue::Scalar(match s {

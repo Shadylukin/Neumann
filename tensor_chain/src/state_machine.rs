@@ -1,15 +1,15 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
-//! State machine for applying Raft log entries to TensorChain.
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+//! State machine for applying Raft log entries to `TensorChain`.
 //!
 //! Bridges the gap between Raft consensus (log commitment) and
-//! TensorChain storage (block persistence). Uses block embeddings
+//! `TensorChain` storage (block persistence). Uses block embeddings
 //! for fast-path validation when possible.
 //!
 //! Transactions are applied to the appropriate storage layer:
-//! - Put/Delete → TensorStore directly
-//! - Embed → VectorEngine (emb: prefix)
-//! - NodeCreate/Delete, EdgeCreate → GraphEngine (node:/edge: prefix)
-//! - TableInsert/Update/Delete → RelationalEngine (table: prefix)
+//! - `Put`/`Delete` -> `TensorStore` directly
+//! - `Embed` -> `VectorEngine` (`emb:` prefix)
+//! - `NodeCreate`/`Delete`, `EdgeCreate` -> `GraphEngine` (`node:`/`edge:` prefix)
+//! - `TableInsert`/`Update`/`Delete` -> `RelationalEngine` (`table:` prefix)
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ use crate::{
     transaction::apply_transaction_to_store,
 };
 
-/// Tensor-native state machine that applies Raft log entries to TensorChain.
+/// Tensor-native state machine that applies Raft log entries to `TensorChain`.
 ///
 /// Uses block embeddings for fast-path validation, skipping heavy
 /// validation when blocks are similar to recently applied ones.
@@ -34,7 +34,7 @@ pub struct TensorStateMachine {
     chain: Arc<Chain>,
     /// The Raft consensus node.
     raft: Arc<RaftNode>,
-    /// TensorStore for transaction application.
+    /// `TensorStore` for transaction application.
     store: TensorStore,
     /// Embedding similarity threshold for fast-path (skip full validation).
     fast_path_threshold: f32,
@@ -46,7 +46,7 @@ pub struct TensorStateMachine {
 
 impl TensorStateMachine {
     #[must_use]
-    pub fn new(chain: Arc<Chain>, raft: Arc<RaftNode>, store: TensorStore) -> Self {
+    pub const fn new(chain: Arc<Chain>, raft: Arc<RaftNode>, store: TensorStore) -> Self {
         Self {
             chain,
             raft,
@@ -75,7 +75,7 @@ impl TensorStateMachine {
     }
 
     #[must_use]
-    pub fn fast_path_threshold(&self) -> f32 {
+    pub const fn fast_path_threshold(&self) -> f32 {
         self.fast_path_threshold
     }
 
@@ -146,7 +146,7 @@ impl TensorStateMachine {
     fn apply_entry(&self, entry: &LogEntry) -> Result<()> {
         // Handle config changes first (membership updates)
         if let Some(ref config_change) = entry.config_change {
-            self.apply_config_change(entry.index, config_change)?;
+            self.apply_config_change(entry.index, config_change);
         }
 
         // Skip block processing for pure config entries
@@ -191,7 +191,7 @@ impl TensorStateMachine {
         Ok(())
     }
 
-    fn apply_config_change(&self, index: u64, change: &crate::network::ConfigChange) -> Result<()> {
+    fn apply_config_change(&self, index: u64, change: &crate::network::ConfigChange) {
         use crate::network::ConfigChange;
 
         let mut config = self.raft.membership_config();
@@ -223,7 +223,7 @@ impl TensorStateMachine {
                     // Already in joint - this is the commit of the new config
                     // Keep only new_voters from the joint config
                     if let Some(joint) = &config.joint {
-                        config.voters = joint.new_voters.clone();
+                        config.voters.clone_from(&joint.new_voters);
                     }
                     config.joint = None;
                 } else {
@@ -248,7 +248,6 @@ impl TensorStateMachine {
 
         config.config_index = index;
         self.raft.set_membership_config(config);
-        Ok(())
     }
 
     fn apply_transaction(&self, tx: &Transaction) -> Result<()> {
@@ -274,6 +273,7 @@ impl TensorStateMachine {
             .iter()
             .map(|recent_emb| block_embedding.cosine_similarity(recent_emb))
             .fold(f32::NEG_INFINITY, f32::max);
+        drop(recent);
 
         max_similarity >= self.fast_path_threshold
     }
@@ -319,6 +319,7 @@ impl TensorStateMachine {
         while recent.len() > self.max_recent {
             recent.remove(0);
         }
+        drop(recent);
     }
 
     pub fn clear_recent(&self) {
@@ -351,7 +352,7 @@ impl TensorStateMachine {
     }
 
     #[must_use]
-    pub fn store(&self) -> &TensorStore {
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 }
@@ -979,7 +980,7 @@ mod tests {
         let change = crate::network::ConfigChange::AddLearner {
             node_id: "new_learner".to_string(),
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify learner was added
         let new_config = sm.raft().membership_config();
@@ -1003,7 +1004,7 @@ mod tests {
         let change = crate::network::ConfigChange::AddLearner {
             node_id: "existing_voter".to_string(),
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify it wasn't added as learner
         let new_config = sm.raft().membership_config();
@@ -1026,7 +1027,7 @@ mod tests {
         let change = crate::network::ConfigChange::PromoteLearner {
             node_id: "learner_node".to_string(),
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify it's now a voter and not a learner
         let new_config = sm.raft().membership_config();
@@ -1046,7 +1047,7 @@ mod tests {
         let change = crate::network::ConfigChange::PromoteLearner {
             node_id: "not_a_learner".to_string(),
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify voter count unchanged
         let new_config = sm.raft().membership_config();
@@ -1069,7 +1070,7 @@ mod tests {
         let change = crate::network::ConfigChange::RemoveNode {
             node_id: "to_remove".to_string(),
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify it's removed
         let new_config = sm.raft().membership_config();
@@ -1092,7 +1093,7 @@ mod tests {
         let change = crate::network::ConfigChange::RemoveNode {
             node_id: "learner_to_remove".to_string(),
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify it's removed
         let new_config = sm.raft().membership_config();
@@ -1118,7 +1119,7 @@ mod tests {
             additions: vec!["node3".to_string()],
             removals: vec!["node2".to_string()],
         };
-        sm.apply_config_change(1, &change).unwrap();
+        sm.apply_config_change(1, &change);
 
         // Verify we're in joint consensus
         let new_config = sm.raft().membership_config();
@@ -1152,7 +1153,7 @@ mod tests {
             additions: vec![],
             removals: vec![],
         };
-        sm.apply_config_change(2, &change).unwrap();
+        sm.apply_config_change(2, &change);
 
         // Verify we've exited joint consensus with new config
         let new_config = sm.raft().membership_config();

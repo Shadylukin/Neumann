@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Error types for the Neumann gRPC server.
 
 use thiserror::Error;
@@ -59,29 +59,29 @@ const INTERNAL_ERROR_MESSAGE: &str = "An internal error occurred. Please try aga
 impl From<ServerError> for Status {
     fn from(err: ServerError) -> Self {
         match &err {
-            ServerError::Config(msg) => Status::invalid_argument(msg.clone()),
+            ServerError::Config(msg)
+            | ServerError::Query(msg)
+            | ServerError::InvalidArgument(msg) => Self::invalid_argument(msg.clone()),
             ServerError::Transport(e) => {
                 tracing::warn!(error = %e, "Transport error");
-                Status::unavailable("Service temporarily unavailable")
+                Self::unavailable("Service temporarily unavailable")
             },
-            ServerError::Query(msg) => Status::invalid_argument(msg.clone()),
-            ServerError::Auth(msg) => Status::unauthenticated(msg.clone()),
+            ServerError::Auth(msg) => Self::unauthenticated(msg.clone()),
             ServerError::Blob(msg) => {
                 tracing::error!(error = %msg, "Blob storage error");
-                Status::internal(INTERNAL_ERROR_MESSAGE)
+                Self::internal(INTERNAL_ERROR_MESSAGE)
             },
             ServerError::Internal(msg) => {
                 tracing::error!(error = %msg, "Internal server error");
-                Status::internal(INTERNAL_ERROR_MESSAGE)
+                Self::internal(INTERNAL_ERROR_MESSAGE)
             },
-            ServerError::InvalidArgument(msg) => Status::invalid_argument(msg.clone()),
-            ServerError::NotFound(msg) => Status::not_found(msg.clone()),
-            ServerError::PermissionDenied(msg) => Status::permission_denied(msg.clone()),
+            ServerError::NotFound(msg) => Self::not_found(msg.clone()),
+            ServerError::PermissionDenied(msg) => Self::permission_denied(msg.clone()),
             ServerError::Io(e) => {
                 tracing::error!(error = %e, "I/O error");
-                Status::internal(INTERNAL_ERROR_MESSAGE)
+                Self::internal(INTERNAL_ERROR_MESSAGE)
             },
-            ServerError::RateLimited(msg) => Status::resource_exhausted(msg.clone()),
+            ServerError::RateLimited(msg) => Self::resource_exhausted(msg.clone()),
         }
     }
 }

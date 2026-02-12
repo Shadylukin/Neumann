@@ -50,9 +50,16 @@ CONSTANT EnablePreVote
 \* Whether geometric tie-breaking is enabled
 CONSTANT EnableGeometricTiebreak
 
+\* Whether similarity fast-path is enabled
+CONSTANT EnableFastPath
+
+\* Upper bound on in-flight messages for model checking
+CONSTANT MessageBound
+
 ASSUME MaxTerm \in Nat /\ MaxTerm >= 1
 ASSUME MaxLogLen \in Nat /\ MaxLogLen >= 1
 ASSUME Nil \notin Nodes
+ASSUME MessageBound \in Nat /\ MessageBound >= 1
 
 \* ========================================================================
 \* Variables
@@ -90,6 +97,9 @@ vars == <<currentTerm, votedFor, log, state, commitIndex,
           nextIndex, matchIndex, votesGranted,
           inPreVote, preVotesGranted,
           fastPathUsed, messages>>
+
+\* State-space bound: cap in-flight messages for tractable model checking
+StateConstraint == Cardinality(messages) <= MessageBound
 
 \* ========================================================================
 \* Helper Operators
@@ -333,20 +343,29 @@ HandleRequestVote(n, m) ==
          logOk == LogUpToDate(m.mlastLogTerm, m.mlastLogIndex,
                               LastLogTerm(n), LastLogIndex(n))
 
-         \* Geometric tie-breaking: modeled as non-deterministic for
-         \* equal logs. The model checker explores both grant and deny
-         \* paths, which is sound for safety verification.
-         grant == /\ m.mterm >= newTerm
-                  /\ canVote
-                  /\ logOk
+         \* Geometric tie-breaking: when enabled and logs are equal,
+         \* the grant decision is non-deterministic (models similarity
+         \* oracle). TLC explores both paths for safety verification.
+         equalLogs == /\ m.mlastLogTerm = LastLogTerm(n)
+                      /\ m.mlastLogIndex = LastLogIndex(n)
+         standardGrant == /\ m.mterm >= newTerm /\ canVote /\ logOk
        IN
+       \E grant \in
+            (IF /\ EnableGeometricTiebreak
+                /\ m.mterm >= newTerm
+                /\ canVote
+                /\ equalLogs
+             THEN BOOLEAN
+             ELSE {standardGrant}) :
        /\ currentTerm' = [currentTerm EXCEPT ![n] = newTerm]
        /\ votedFor' = [votedFor EXCEPT ![n] =
             IF grant THEN m.mcandidateId ELSE newVotedFor]
        /\ state' = [state EXCEPT ![n] = newState]
+       /\ inPreVote' = [inPreVote EXCEPT ![n] =
+            IF m.mterm > currentTerm[n] THEN FALSE ELSE inPreVote[n]]
        /\ Reply(RequestVoteResponseMsg(newTerm, grant, n, m.mcandidateId), m)
        /\ UNCHANGED <<log, commitIndex, nextIndex, matchIndex, votesGranted,
-                      inPreVote, preVotesGranted, fastPathUsed>>
+                      preVotesGranted, fastPathUsed>>
 
 \* --- Handle RequestVoteResponse ---
 \*
@@ -374,14 +393,15 @@ HandleRequestVoteResponse(n, m) ==
                                nextIndex, matchIndex, votesGranted,
                                inPreVote, preVotesGranted, fastPathUsed>>
        \/ /\ m.mterm > currentTerm[n]
-          \* Step down: higher term discovered
+          \* Step down: higher term discovered -- reset inPreVote
           /\ currentTerm' = [currentTerm EXCEPT ![n] = m.mterm]
           /\ votedFor' = [votedFor EXCEPT ![n] = Nil]
           /\ state' = [state EXCEPT ![n] = "Follower"]
           /\ votesGranted' = [votesGranted EXCEPT ![n] = {}]
+          /\ inPreVote' = [inPreVote EXCEPT ![n] = FALSE]
           /\ Discard(m)
           /\ UNCHANGED <<log, commitIndex, nextIndex, matchIndex,
-                         inPreVote, preVotesGranted, fastPathUsed>>
+                         preVotesGranted, fastPathUsed>>
        \/ \* Stale response (term < currentTerm or not candidate): discard
           /\ m.mterm < currentTerm[n]
           /\ Discard(m)
@@ -442,7 +462,7 @@ AppendEntries(n, peer) ==
     \* Non-deterministic fast-path flag (models similarity oracle).
     \* TLC explores both TRUE and FALSE paths, verifying safety
     \* regardless of whether fast-path is used.
-    /\ \E useFP \in BOOLEAN :
+    /\ \E useFP \in (IF EnableFastPath THEN BOOLEAN ELSE {FALSE}) :
        LET
          prevIdx == nextIndex[n][peer] - 1
          prevTerm == IF prevIdx > 0 /\ prevIdx <= Len(log[n])
@@ -475,6 +495,7 @@ AppendEntries(n, peer) ==
 HandleAppendEntries(n, m) ==
     /\ m \in messages
     /\ m.mtype = "AppendEntries"
+    /\ m.mleaderId /= n  \* A node never processes its own AppendEntries
     /\ LET
          \* Update term if needed
          newTerm == IF m.mterm > currentTerm[n] THEN m.mterm ELSE currentTerm[n]
@@ -490,18 +511,43 @@ HandleAppendEntries(n, m) ==
          accept == /\ m.mterm >= currentTerm[n]
                    /\ logOk
 
-         \* Compute new log: truncate conflicts and append
+         \* Compute new log per Raft paper Section 5.3:
+         \*   Step 3: Delete existing entries only on conflict
+         \*           (same index, different term).
+         \*   Step 4: Append entries not already in the log.
+         \* Heartbeats (empty mentries) do not modify the log.
          newLog ==
-            IF accept
+            IF accept /\ Len(m.mentries) > 0
             THEN LET
-                   \* Keep entries up to prevLogIndex
-                   base == IF m.mprevLogIndex > 0
-                           THEN SubSeq(log[n], 1, m.mprevLogIndex)
-                           ELSE << >>
-                 IN base \o m.mentries
+                   startIdx == m.mprevLogIndex + 1
+                   \* How many new entries overlap with existing log?
+                   overlapLen ==
+                      IF startIdx > Len(log[n]) THEN 0
+                      ELSE IF startIdx + Len(m.mentries) - 1 <= Len(log[n])
+                           THEN Len(m.mentries)
+                           ELSE Len(log[n]) - startIdx + 1
+                   \* Is there a conflict in the overlapping region?
+                   hasConflict ==
+                      \E j \in 1..overlapLen :
+                         log[n][startIdx + j - 1].term /= m.mentries[j].term
+                 IN IF hasConflict
+                    THEN \* Conflict: truncate from prevLogIndex and replace
+                         (IF m.mprevLogIndex > 0
+                          THEN SubSeq(log[n], 1, m.mprevLogIndex)
+                          ELSE << >>) \o m.mentries
+                    ELSE IF Len(m.mentries) > overlapLen
+                         THEN \* No conflict; append only the truly new tail
+                              log[n] \o SubSeq(m.mentries,
+                                               overlapLen + 1,
+                                               Len(m.mentries))
+                         ELSE log[n]  \* All entries already present
             ELSE log[n]
 
-         newMatchIdx == IF accept THEN Len(newLog) ELSE 0
+         \* Report match up to what the leader sent, not full log length.
+         \* The leader can only trust agreement up to prevLogIndex + entries.
+         newMatchIdx == IF accept
+                        THEN m.mprevLogIndex + Len(m.mentries)
+                        ELSE 0
 
          \* Advance commit index
          newCommitIdx ==
@@ -526,8 +572,10 @@ HandleAppendEntries(n, m) ==
        /\ fastPathUsed' = [fastPathUsed EXCEPT ![n] = newFP]
        /\ Reply(AppendEntriesResponseMsg(newTerm, accept, n, newMatchIdx,
                                           accept /\ m.museFastPath), m)
+       /\ inPreVote' = [inPreVote EXCEPT ![n] =
+            IF m.mterm >= currentTerm[n] THEN FALSE ELSE inPreVote[n]]
        /\ UNCHANGED <<nextIndex, matchIndex, votesGranted,
-                      inPreVote, preVotesGranted>>
+                      preVotesGranted>>
 
 \* --- Handle AppendEntries Response ---
 \*
@@ -551,10 +599,13 @@ HandleAppendEntriesResponse(n, m) ==
                          inPreVote, preVotesGranted, fastPathUsed>>
        \/ /\ m.mterm = currentTerm[n]
           /\ \/ /\ m.msuccess
-                /\ nextIndex' = [nextIndex EXCEPT ![n][m.mfollowerId] =
-                     m.mmatchIndex + 1]
-                /\ matchIndex' = [matchIndex EXCEPT ![n][m.mfollowerId] =
-                     m.mmatchIndex]
+                \* Take max to handle out-of-order responses
+                /\ LET newMatch == IF m.mmatchIndex > matchIndex[n][m.mfollowerId]
+                                   THEN m.mmatchIndex
+                                   ELSE matchIndex[n][m.mfollowerId]
+                   IN
+                   /\ matchIndex' = [matchIndex EXCEPT ![n][m.mfollowerId] = newMatch]
+                   /\ nextIndex' = [nextIndex EXCEPT ![n][m.mfollowerId] = newMatch + 1]
                 /\ Discard(m)
                 /\ UNCHANGED <<currentTerm, votedFor, log, state, commitIndex,
                                votesGranted, inPreVote, preVotesGranted,
@@ -681,13 +732,17 @@ LogMatching ==
 \* Formally: for any committed entry at index i, every leader in a
 \* later term has an entry at index i with the same term and value.
 
+\* A leader in term T must have all entries committed in terms < T.
+\* Stale leaders at lower terms are not a violation (they will
+\* step down when they discover the higher term).
 LeaderCompleteness ==
     \A n \in Nodes :
         state[n] = "Leader" =>
             \A m \in Nodes :
                 \A i \in 1..commitIndex[m] :
-                    /\ i <= Len(log[n])
-                    /\ log[n][i] = log[m][i]
+                    (i <= Len(log[m]) /\ log[m][i].term < currentTerm[n])
+                    => (/\ i <= Len(log[n])
+                        /\ log[n][i] = log[m][i])
 
 \* --- StateMachineSafety ---
 \* No two servers apply different entries at the same log index.
@@ -755,6 +810,94 @@ PreVoteSafety ==
             \A m \in Nodes :
                 state[m] = "Leader" =>
                     currentTerm[m] >= currentTerm[n]
+
+\* ========================================================================
+\* Additional Safety Properties (from CCF Raft / Raft paper)
+\* ========================================================================
+
+\* --- CommittedLogAppendOnlyProp ---
+\* Once an entry is committed, it is never removed or overwritten.
+\* Temporal property: committed prefix of every node's log only grows.
+
+CommittedLogAppendOnlyProp ==
+    [][\A n \in Nodes :
+        \A i \in 1..commitIndex[n] :
+            /\ i <= Len(log'[n])
+            /\ log'[n][i] = log[n][i]
+    ]_vars
+
+\* --- MonotonicCommitIndexProp ---
+\* commitIndex never decreases on any server.
+
+MonotonicCommitIndexProp ==
+    [][\A n \in Nodes : commitIndex'[n] >= commitIndex[n]]_vars
+
+\* --- MonotonicMatchIndexProp ---
+\* matchIndex never decreases for any (leader, follower) pair while
+\* the leader remains leader in the same term.
+
+MonotonicMatchIndexProp ==
+    [][\A n \in Nodes :
+        (state[n] = "Leader" /\ state'[n] = "Leader" /\
+         currentTerm'[n] = currentTerm[n])
+        => \A p \in Nodes \ {n} : matchIndex'[n][p] >= matchIndex[n][p]
+    ]_vars
+
+\* --- NeverCommitEntryPrevTermsProp ---
+\* Raft Section 5.4.2: a leader only counts replicas in its own term
+\* when advancing commitIndex. Equivalently, when commitIndex advances,
+\* the newly committed entry has the leader's current term.
+
+NeverCommitEntryPrevTermsProp ==
+    [][\A n \in Nodes :
+        (/\ state'[n] = "Leader"
+         /\ commitIndex'[n] > commitIndex[n])
+        => log'[n][commitIndex'[n]].term = currentTerm'[n]
+    ]_vars
+
+\* --- ReplicationInv ---
+\* Every committed entry exists on a quorum of servers.
+
+ReplicationInv ==
+    \A n \in Nodes :
+        \A i \in 1..commitIndex[n] :
+            Cardinality({m \in Nodes :
+                /\ i <= Len(log[m])
+                /\ log[m][i] = log[n][i]}) >= Quorum
+
+\* --- StateTransitionsProp ---
+\* Valid state machine transitions:
+\*   Follower -> Candidate (start election)
+\*   Candidate -> Leader (win election)
+\*   Candidate -> Follower (discover higher term or lose)
+\*   Leader -> Follower (discover higher term)
+\* Notably: Follower -/-> Leader and Leader -/-> Candidate.
+
+StateTransitionsProp ==
+    [][\A n \in Nodes :
+        \/ state'[n] = state[n]  \* no change
+        \/ (state[n] = "Follower" /\ state'[n] = "Candidate")
+        \/ (state[n] = "Candidate" /\ state'[n] = "Leader")
+        \/ (state[n] = "Candidate" /\ state'[n] = "Follower")
+        \/ (state[n] = "Leader" /\ state'[n] = "Follower")
+    ]_vars
+
+\* --- PermittedLogChangesProp ---
+\* Log entries can only change via:
+\*   1. Append to the end (leader replication)
+\*   2. Truncation + replacement (conflict resolution in AppendEntries)
+\* A committed prefix is never modified (see CommittedLogAppendOnlyProp).
+
+PermittedLogChangesProp ==
+    [][\A n \in Nodes :
+        \/ log'[n] = log[n]  \* no change
+        \/ \* Append: existing entries unchanged, new entries added
+           /\ Len(log'[n]) >= Len(log[n])
+           /\ SubSeq(log'[n], 1, Len(log[n])) = log[n]
+        \/ \* Truncation + replace: some suffix removed and replaced
+           /\ \E k \in 0..Len(log[n]) :
+                /\ SubSeq(log'[n], 1, k) = SubSeq(log[n], 1, k)
+    ]_vars
 
 \* ========================================================================
 \* Type Invariant (for debugging)

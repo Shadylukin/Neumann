@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration test helpers for Neumann.
 //!
 //! Provides utilities for setting up multi-engine test scenarios.
@@ -10,8 +10,15 @@
 #![allow(clippy::cast_precision_loss)] // Precision loss acceptable in test data generation
 
 pub mod chaos;
+pub mod docker_jepsen;
+pub mod dst;
 pub mod jepsen;
+pub mod jepsen_client;
 pub mod linearizability;
+#[cfg(unix)]
+pub mod network_proxy;
+#[cfg(unix)]
+pub mod process_jepsen;
 
 use std::sync::Arc;
 
@@ -203,7 +210,7 @@ pub fn assert_find_count(result: &QueryResult, expected: usize) {
 }
 
 /// Assert that a query result is not empty.
-pub fn assert_result_not_empty(result: &QueryResult) -> bool {
+pub const fn assert_result_not_empty(result: &QueryResult) -> bool {
     match result {
         QueryResult::Empty => false,
         QueryResult::Unified(u) => !u.items.is_empty(),

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Graph engine index operations stress test.
 //!
 //! Tests concurrent index create/drop with writers.

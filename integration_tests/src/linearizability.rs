@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Linearizability checking module using the Wing-Gong-Liu (WGL) algorithm.
 //!
 //! Verifies that concurrent operations on a distributed key-value store appear
@@ -54,7 +54,7 @@ pub struct HistoryRecorder {
 
 impl HistoryRecorder {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             operations: Vec::new(),
             next_id: 0,
@@ -105,17 +105,59 @@ impl HistoryRecorder {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.operations.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.operations.is_empty()
     }
 }
 
 impl Default for HistoryRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Thread-safe wrapper around `HistoryRecorder` for concurrent operation
+/// recording from multiple tasks.
+pub struct ConcurrentHistoryRecorder {
+    inner: std::sync::Mutex<HistoryRecorder>,
+}
+
+impl ConcurrentHistoryRecorder {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(HistoryRecorder::new()),
+        }
+    }
+
+    /// Record the invocation of an operation. Returns the operation id.
+    pub fn invoke(&self, client_id: u64, op_type: OpType, key: String, input: Value) -> u64 {
+        self.inner
+            .lock()
+            .expect("recorder lock poisoned")
+            .invoke(client_id, op_type, key, input)
+    }
+
+    /// Record the completion of an operation, attaching its output value.
+    pub fn complete(&self, op_id: u64, output: Value) {
+        self.inner
+            .lock()
+            .expect("recorder lock poisoned")
+            .complete(op_id, output);
+    }
+
+    /// Consume the wrapper and return the inner `HistoryRecorder`.
+    pub fn into_inner(self) -> HistoryRecorder {
+        self.inner.into_inner().expect("recorder lock poisoned")
+    }
+}
+
+impl Default for ConcurrentHistoryRecorder {
     fn default() -> Self {
         Self::new()
     }
@@ -181,11 +223,39 @@ impl SequentialModel for RegisterModel {
                         other => other.clone(),
                     };
                     next.insert(op.key.clone(), new_value);
-                    (next, current)
-                } else {
-                    (next, current)
                 }
+                (next, current)
             },
+        }
+    }
+}
+
+/// Sequential model for Raft log proposals.
+///
+/// Proposals are modeled as writes to a single "key" register. Successful
+/// proposals return `Value::Int(1)` and failed proposals return `Value::None`.
+/// This matches the DST harness convention (dst.rs:373-383).
+pub struct RaftLogModel;
+
+impl SequentialModel for RaftLogModel {
+    type State = HashMap<String, Value>;
+
+    fn init(&self) -> Self::State {
+        HashMap::new()
+    }
+
+    fn apply(&self, state: &Self::State, op: &Operation) -> (Self::State, Value) {
+        match op.op_type {
+            OpType::Write => {
+                let mut s = state.clone();
+                s.insert(op.key.clone(), op.input.clone());
+                (s, Value::Int(1)) // success
+            },
+            OpType::Read => {
+                let val = state.get(&op.key).cloned().unwrap_or(Value::None);
+                (state.clone(), val)
+            },
+            OpType::Cas => (state.clone(), Value::None),
         }
     }
 }
@@ -205,7 +275,7 @@ pub struct LinearizabilityChecker<M: SequentialModel> {
 
 impl<M: SequentialModel> LinearizabilityChecker<M> {
     #[must_use]
-    pub fn new(model: M) -> Self {
+    pub const fn new(model: M) -> Self {
         Self {
             model,
             timeout: Duration::from_secs(30),
@@ -213,8 +283,56 @@ impl<M: SequentialModel> LinearizabilityChecker<M> {
     }
 
     #[must_use]
-    pub fn with_timeout(model: M, timeout: Duration) -> Self {
+    pub const fn with_timeout(model: M, timeout: Duration) -> Self {
         Self { model, timeout }
+    }
+
+    /// Check linearizability by partitioning the history by key.
+    ///
+    /// For independent keys (where each key's state is independent of others),
+    /// a history is linearizable iff each key's projection is independently
+    /// linearizable. This is dramatically faster than checking the full history
+    /// because the WGL search space is exponential in the number of concurrent
+    /// operations per key, not the total number of operations.
+    #[must_use]
+    pub fn check_per_key(&self, history: &[Operation]) -> LinearizabilityResult {
+        let completed: Vec<&Operation> = history
+            .iter()
+            .filter(|op| op.complete_time.is_some() && op.output.is_some())
+            .collect();
+
+        if completed.is_empty() {
+            return LinearizabilityResult::Ok;
+        }
+
+        // Group operations by key
+        let mut by_key: HashMap<&str, Vec<&Operation>> = HashMap::new();
+        for op in &completed {
+            by_key.entry(&op.key).or_default().push(op);
+        }
+
+        for (key, ops) in &by_key {
+            let start = Instant::now();
+            let init_state = self.model.init();
+            let remaining: Vec<usize> = (0..ops.len()).collect();
+
+            match self.search(ops, &init_state, &remaining, start) {
+                SearchResult::Found => {},
+                SearchResult::NotFound => {
+                    return LinearizabilityResult::Violation(format!(
+                        "no valid linearization ordering exists for key '{key}'"
+                    ));
+                },
+                SearchResult::Timeout => {
+                    return LinearizabilityResult::Unknown(format!(
+                        "search timed out for key '{key}' ({} ops)",
+                        ops.len()
+                    ));
+                },
+            }
+        }
+
+        LinearizabilityResult::Ok
     }
 
     /// Check whether the given history is linearizable with respect to the
@@ -306,20 +424,11 @@ fn find_candidates(ops: &[&Operation], remaining: &[usize]) -> Vec<usize> {
             // `op` can be next if no other operation completed strictly
             // before `op` was invoked (meaning `op` is not forced to come
             // after `other`).
-            match other.complete_time {
-                Some(ct) => op.invoke_time <= ct,
-                Option::None => true,
-            }
+            other.complete_time.is_none_or(|ct| op.invoke_time <= ct)
         });
         if can_go_next {
             candidates.push(idx);
         }
-    }
-
-    // If no candidate was found due to timing constraints, fall back to
-    // allowing all remaining operations (conservative approach).
-    if candidates.is_empty() {
-        candidates = remaining.to_vec();
     }
 
     candidates
@@ -548,5 +657,51 @@ mod tests {
         assert_eq!(ok, LinearizabilityResult::Ok);
         assert_ne!(ok, violation);
         assert_ne!(violation, unknown);
+    }
+
+    #[test]
+    fn test_checker_no_silent_fallback() {
+        // Craft a history where timing forces a violation that the old fallback
+        // would have masked. Write x=1 (completes), write x=2 (completes after
+        // first), read x -> 1 (starts after both writes complete).
+        // Without the fallback, the checker correctly returns Violation.
+        let ops = vec![
+            make_op(0, OpType::Write, "x", Value::Int(1), Value::None, 0, 10, 1),
+            make_op(1, OpType::Write, "x", Value::Int(2), Value::None, 20, 10, 1),
+            make_op(2, OpType::Read, "x", Value::None, Value::Int(1), 40, 10, 2),
+        ];
+        let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(5));
+        let result = checker.check(&ops);
+        assert!(
+            matches!(result, LinearizabilityResult::Violation(_)),
+            "stale read after sequential writes must be detected as violation, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_checker_concurrent_ops_linearizable() {
+        // Overlapping concurrent ops that ARE linearizable: two writes overlap,
+        // then a concurrent read returns one valid value. The checker must not
+        // produce false negatives after the fallback removal.
+        //
+        // Timeline:
+        //   W(x=1): [0ms, 50ms]
+        //   W(x=2): [10ms, 40ms]   (overlaps with W(x=1))
+        //   R(x):   [20ms, 60ms]   (overlaps with both writes)
+        //
+        // Valid linearization: W(x=1) -> W(x=2) -> R(x)=2
+        // or: W(x=2) -> W(x=1) -> R(x)=1, etc.
+        let ops = vec![
+            make_op(0, OpType::Write, "x", Value::Int(1), Value::None, 0, 50, 1),
+            make_op(1, OpType::Write, "x", Value::Int(2), Value::None, 10, 30, 2),
+            make_op(2, OpType::Read, "x", Value::None, Value::Int(2), 20, 40, 3),
+        ];
+        let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(5));
+        let result = checker.check(&ops);
+        assert_eq!(
+            result,
+            LinearizabilityResult::Ok,
+            "concurrent ops with valid linearization must pass: {result:?}"
+        );
     }
 }

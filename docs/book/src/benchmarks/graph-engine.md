@@ -3,6 +3,7 @@
 The graph engine stores nodes and edges as tensors, using adjacency lists for
 neighbor lookups.
 
+<!-- BENCH:START -->
 ## Node Creation
 
 | Count | Time | Per Node |
@@ -43,6 +44,7 @@ neighbor lookups.
 | Chain | 100 nodes | 96us |
 | Grid | 5x5 | 55us |
 | Grid | 10x10 | 265us |
+<!-- BENCH:END -->
 
 ## Analysis
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Error types for the Neumann client SDK.
 
 use thiserror::Error;
@@ -54,7 +54,7 @@ pub enum ClientError {
 impl ClientError {
     /// Get the error code.
     #[must_use]
-    pub fn code(&self) -> u32 {
+    pub const fn code(&self) -> u32 {
         match self {
             Self::Query(_) => 9,    // QUERY_ERROR
             Self::Parse(_) => 8,    // PARSE_ERROR
@@ -69,7 +69,7 @@ impl ClientError {
 
     /// Check if this is a retryable error.
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         matches!(
             self,
             Self::Connection(_) | Self::Timeout(_) | Self::Unavailable(_)

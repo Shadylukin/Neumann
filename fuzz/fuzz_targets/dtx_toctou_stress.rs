@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 #![no_main]
 
 //! Fuzz test for TOCTOU (Time-of-Check-Time-of-Use) safety in 2PC.
@@ -93,7 +93,7 @@ fuzz_target!(|input: FuzzInput| {
                 let count = (*participant_count as usize % 5).max(1);
                 let participants: Vec<usize> = (0..count).collect();
 
-                match coordinator.begin(node, participants) {
+                match coordinator.begin(&node, &participants) {
                     Ok(tx) => {
                         active_tx_ids.insert(tx.tx_id, true);
                         begin_success_count += 1;

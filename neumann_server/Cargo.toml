@@ -40,7 +40,7 @@ opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.31", features = ["metrics", "grpc-tonic"] }
 uuid = { version = "1", features = ["v4"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
-tower-http = { version = "0.5", features = ["cors", "trace", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
 axum = { version = "0.8", features = ["json", "macros"] }
 maud = { version = "0.27", features = ["axum"] }
 urlencoding = "2"

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Embedded CSS and JavaScript assets for the dystopian terminal admin UI.
 //!
 //! Inspired by Fallout 1/2 terminals, Rupture Farms industrial aesthetic,

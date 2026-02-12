@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Network message compression for TCP transport.
 //!
 //! Provides frame-level LZ4 compression with capability negotiation.
@@ -48,7 +48,7 @@ pub struct CompressionConfig {
     pub compression_version: u8,
 }
 
-fn default_compression_version() -> u8 {
+const fn default_compression_version() -> u8 {
     COMPRESSION_VERSION
 }
 
@@ -64,7 +64,8 @@ impl Default for CompressionConfig {
 }
 
 impl CompressionConfig {
-    pub fn disabled() -> Self {
+    #[must_use]
+    pub const fn disabled() -> Self {
         Self {
             enabled: false,
             method: CompressionMethod::None,
@@ -73,17 +74,20 @@ impl CompressionConfig {
         }
     }
 
-    pub fn with_method(mut self, method: CompressionMethod) -> Self {
+    #[must_use]
+    pub const fn with_method(mut self, method: CompressionMethod) -> Self {
         self.method = method;
         self
     }
 
-    pub fn with_min_size(mut self, min_size: usize) -> Self {
+    #[must_use]
+    pub const fn with_min_size(mut self, min_size: usize) -> Self {
         self.min_size = min_size;
         self
     }
 
-    pub fn with_compression_version(mut self, version: u8) -> Self {
+    #[must_use]
+    pub const fn with_compression_version(mut self, version: u8) -> Self {
         self.compression_version = version;
         self
     }
@@ -103,16 +107,19 @@ pub mod flags {
 }
 
 /// Maximum decompressed message size (16 MB).
-/// SECURITY: Prevents memory DoS from malicious size prefixes.
+/// SECURITY: Prevents memory `DoS` from malicious size prefixes.
 pub const MAX_DECOMPRESSED_SIZE: usize = 16 * 1024 * 1024;
 
-pub fn frame_flags(method: CompressionMethod) -> u8 {
+#[must_use]
+pub const fn frame_flags(method: CompressionMethod) -> u8 {
     match method {
         CompressionMethod::None => flags::NONE,
         CompressionMethod::Lz4 => flags::LZ4,
     }
 }
 
+/// # Errors
+/// Returns an error if the flag byte contains an unsupported compression method.
 pub fn method_from_flags(flag_byte: u8) -> TcpResult<CompressionMethod> {
     match flag_byte & 0x01 {
         0 => Ok(CompressionMethod::None),
@@ -121,6 +128,7 @@ pub fn method_from_flags(flag_byte: u8) -> TcpResult<CompressionMethod> {
     }
 }
 
+#[must_use]
 pub fn compress(data: &[u8], method: CompressionMethod) -> Vec<u8> {
     match method {
         CompressionMethod::None => data.to_vec(),
@@ -129,7 +137,10 @@ pub fn compress(data: &[u8], method: CompressionMethod) -> Vec<u8> {
 }
 
 /// Decompress data using the specified method.
-/// SECURITY: Validates the claimed size before decompression to prevent memory DoS.
+/// SECURITY: Validates the claimed size before decompression to prevent memory `DoS`.
+///
+/// # Errors
+/// Returns an error if the data is malformed or the claimed size exceeds the limit.
 pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> {
     match method {
         CompressionMethod::None => Ok(data.to_vec()),
@@ -149,8 +160,7 @@ pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> 
                 return Err(TcpError::Compression {
                     operation: "decompress",
                     message: format!(
-                        "Claimed decompressed size {} exceeds maximum {}",
-                        claimed_size, MAX_DECOMPRESSED_SIZE
+                        "Claimed decompressed size {claimed_size} exceeds maximum {MAX_DECOMPRESSED_SIZE}"
                     ),
                 });
             }
@@ -164,7 +174,8 @@ pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> 
     }
 }
 
-pub fn is_beneficial(original_len: usize, compressed_len: usize) -> bool {
+#[must_use]
+pub const fn is_beneficial(original_len: usize, compressed_len: usize) -> bool {
     compressed_len < original_len
 }
 
@@ -365,5 +376,16 @@ mod tests {
         let config = CompressionConfig::default().with_min_size(1024);
         let cloned = config.clone();
         assert_eq!(cloned.min_size, 1024);
+    }
+
+    #[test]
+    fn test_config_with_compression_version() {
+        let config = CompressionConfig::default().with_compression_version(42);
+        assert_eq!(config.compression_version, 42);
+    }
+
+    #[test]
+    fn test_default_compression_version_fn() {
+        assert_eq!(default_compression_version(), COMPRESSION_VERSION);
     }
 }

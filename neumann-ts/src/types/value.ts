@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 /**
  * Scalar value types supported by Neumann.
  */
@@ -80,5 +80,5 @@ export function valueFromNative(v: unknown): Value {
   if (v instanceof Uint8Array) {
     return bytesValue(v);
   }
-  return stringValue(String(v));
+  return stringValue(typeof v === 'object' ? JSON.stringify(v) : String(v as string | number | boolean | bigint | symbol));
 }

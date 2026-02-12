@@ -3,7 +3,15 @@ name: Benchmark PR
 
 "on":
   pull_request:
-    types: [labeled]
+    types: [labeled, opened, synchronize]
+    paths:
+      - 'tensor_store/src/**'
+      - 'relational_engine/src/**'
+      - 'graph_engine/src/**'
+      - 'vector_engine/src/**'
+      - 'tensor_chain/src/**'
+      - 'query_router/src/**'
+      - '**/benches/**'
 
 permissions:
   contents: read
@@ -12,7 +20,9 @@ permissions:
 jobs:
   benchmark:
     name: Run Benchmarks
-    if: github.event.label.name == 'bench'
+    if: >-
+      github.event.label.name == 'bench' ||
+      (github.event_name == 'pull_request' && github.event.action != 'labeled')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -20,7 +30,21 @@ jobs:
         # v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Checkout base branch
+      - name: Try to download main baseline
+        id: baseline
+        # v4.3.0
+        uses: >-
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: criterion-baseline
+          path: target/criterion
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.pull_request.base.sha }}
+
+      - name: Checkout base branch (fallback)
+        if: steps.baseline.outcome == 'failure'
         # v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -45,7 +69,8 @@ jobs:
       - name: Install critcmp
         run: cargo install critcmp
 
-      - name: Benchmark base branch
+      - name: Benchmark base branch (fallback)
+        if: steps.baseline.outcome == 'failure'
         working-directory: base
         run: |
           cargo bench --workspace \
@@ -54,6 +79,11 @@ jobs:
             --exclude integration_tests \
             --exclude stress_tests \
             -- --save-baseline base
+
+      - name: Copy cached baseline
+        if: steps.baseline.outcome == 'success'
+        run: |
+          echo "Using cached main baseline from artifact"
 
       - name: Benchmark PR branch
         run: |
@@ -64,25 +94,124 @@ jobs:
             --exclude stress_tests \
             -- --save-baseline pr
 
-      - name: Compare benchmarks
+      - name: Compare benchmarks with per-crate thresholds
         id: compare
         run: |
           critcmp base pr > bench-comparison.txt 2>&1 || true
 
-          PATTERN='\+[1-9][5-9]\.[0-9]+%'
-          PATTERN="$PATTERN|\+[2-9][0-9]+\.[0-9]+%"
-          PATTERN="$PATTERN|\+[0-9]{3,}\.[0-9]+%"
-          REGRESSIONS=$(grep -cE "$PATTERN" bench-comparison.txt || echo 0)
+          python3 - << 'PYEOF'
+          import re
+          import sys
+
+          # Parse bench-thresholds.toml for per-crate thresholds
+          thresholds = {}
+          default_pct = 15
+          current_crate = None
+
+          with open("bench-thresholds.toml") as f:
+              for line in f:
+                  line = line.strip()
+                  m = re.match(r'^\[defaults\]', line)
+                  if m:
+                      current_crate = "__defaults__"
+                      continue
+                  m = re.match(r'^\[crates\.(\w+)\]', line)
+                  if m:
+                      current_crate = m.group(1)
+                      continue
+                  m = re.match(r'^max_regression_pct\s*=\s*(\d+)', line)
+                  if m:
+                      val = int(m.group(1))
+                      if current_crate == "__defaults__":
+                          default_pct = val
+                      elif current_crate:
+                          thresholds[current_crate] = val
+
+          # Map benchmark group names to crate names
+          group_to_crate = {
+              "insert": "relational_engine",
+              "batch_insert": "relational_engine",
+              "select": "relational_engine",
+              "aggregation": "relational_engine",
+              "group_by": "relational_engine",
+              "join": "relational_engine",
+              "create_nodes": "graph_engine",
+              "create_edges": "graph_engine",
+              "neighbors": "graph_engine",
+              "traverse": "graph_engine",
+              "find_path": "graph_engine",
+              "weighted_shortest_path": "graph_engine",
+              "store_embedding": "vector_engine",
+              "search_similar": "vector_engine",
+              "metric_comparison": "vector_engine",
+              "hnsw": "vector_engine",
+              "tensor_store": "tensor_store",
+              "tensor_compress": "tensor_compress",
+              "tensor_chain": "tensor_chain",
+              "distributed": "tensor_chain",
+              "tensor_vault": "tensor_vault",
+              "tensor_cache": "tensor_cache",
+              "tensor_blob": "tensor_blob",
+              "blob": "tensor_blob",
+              "neumann_parser": "neumann_parser",
+              "query_router": "query_router",
+              "neumann_shell": "neumann_shell",
+              "neumann_server": "neumann_server",
+              "tensor_unified": "tensor_unified",
+              "tensor_checkpoint": "tensor_checkpoint",
+              "checkpoint": "tensor_checkpoint",
+          }
+
+          violations = []
+          with open("bench-comparison.txt") as f:
+              for line in f:
+                  # Match lines like: group/bench  base  1.234 ms  pr  1.500 ms  +21.55%
+                  m = re.search(r'\+(\d+\.?\d*)%', line)
+                  if not m:
+                      continue
+                  pct = float(m.group(1))
+                  # Extract group name (first column, before /)
+                  parts = line.strip().split()
+                  if not parts:
+                      continue
+                  bench_name = parts[0]
+                  group = bench_name.split("/")[0] if "/" in bench_name else bench_name
+
+                  # Find crate for this group
+                  crate_name = None
+                  for prefix, crate in group_to_crate.items():
+                      if group.startswith(prefix):
+                          crate_name = crate
+                          break
+
+                  threshold = thresholds.get(crate_name, default_pct) if crate_name else default_pct
+                  if pct >= threshold:
+                      violations.append(f"{bench_name}: +{pct:.1f}% (threshold: {threshold}%)")
+
+          with open("regression-report.txt", "w") as f:
+              if violations:
+                  f.write("REGRESSIONS DETECTED:\n")
+                  for v in violations:
+                      f.write(f"  {v}\n")
+              else:
+                  f.write("No significant regressions.\n")
+
+          sys.exit(0)
+          PYEOF
+
+          HAS_REGRESSIONS=false
+          if grep -q "REGRESSIONS DETECTED" regression-report.txt; then
+            HAS_REGRESSIONS=true
+          fi
 
           {
             echo "comparison<<EOF"
             cat bench-comparison.txt
             echo "EOF"
-            if [ "$REGRESSIONS" -gt 0 ]; then
-              echo "has_regressions=true"
-            else
-              echo "has_regressions=false"
-            fi
+            echo "regression_report<<REOF"
+            cat regression-report.txt
+            echo "REOF"
+            echo "has_regressions=$HAS_REGRESSIONS"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post benchmark results
@@ -91,16 +220,20 @@ jobs:
         with:
           script: |
             const comparison = `${{ steps.compare.outputs.comparison }}`;
+            const regressionReport = `${{ steps.compare.outputs.regression_report }}`;
             const hasRegressions = ${{ steps.compare.outputs.has_regressions }};
 
             let body = '## Benchmark Results\n\n';
 
             if (hasRegressions) {
               body += '> [!WARNING]\n';
-              body += '> Significant regressions detected (>15%)\n\n';
+              body += '> Per-crate regression thresholds exceeded\n\n';
+              body += '```\n' + regressionReport + '\n```\n\n';
             }
 
+            body += '<details>\n<summary>Full comparison</summary>\n\n';
             body += '```\n' + comparison + '\n```\n\n';
+            body += '</details>\n\n';
             const prSha = context.sha.substring(0, 7);
             const pr = context.payload.pull_request;
             const baseSha = pr.base.sha.substring(0, 7);

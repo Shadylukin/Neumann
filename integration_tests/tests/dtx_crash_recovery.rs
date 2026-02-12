@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for distributed transaction crash recovery.
 //!
 //! Tests the persistence and recovery of 2PC coordinator and participant state:
@@ -568,6 +568,7 @@ fn test_participant_state_bincode_roundtrip() {
             delta: DeltaVector::new(&[1.0], HashSet::new(), 1),
             prepared_at_ms: 1000,
             undo_log: Vec::new(),
+            undo_checksums: Vec::new(),
         },
     );
 

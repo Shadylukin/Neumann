@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for asymmetric and partial network partitions.
 //!
 //! Tests link quality degradation, one-way partitions, and bridge failures.

@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TLS support for TCP transport.
 //!
 //! Provides wrapper functions to upgrade TCP streams to TLS,
-//! including mutual TLS (mTLS) with certificate-based NodeId verification.
+//! including mutual TLS (`mTLS`) with certificate-based `NodeId` verification.
 
 #[cfg(feature = "tls")]
 use std::io::BufReader;
@@ -38,13 +38,13 @@ pub type ClientTlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 /// Identity extracted from a peer's TLS certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedPeerIdentity {
-    /// NodeId extracted from certificate (CN or SAN).
+    /// `NodeId` extracted from certificate (CN or SAN).
     pub node_id: String,
-    /// How the NodeId was extracted.
+    /// How the `NodeId` was extracted.
     pub source: NodeIdSource,
 }
 
-/// Source of NodeId in the certificate.
+/// Source of `NodeId` in the certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeIdSource {
     /// Extracted from Common Name (CN).
@@ -72,16 +72,12 @@ impl VerifiedPeerIdentity {
 #[cfg(feature = "tls")]
 fn load_certs(path: &Path) -> TcpResult<Vec<CertificateDer<'static>>> {
     let file = std::fs::File::open(path).map_err(|e| {
-        TcpError::TlsError(format!(
-            "failed to open cert file {}: {}",
-            path.display(),
-            e
-        ))
+        TcpError::TlsError(format!("failed to open cert file {}: {e}", path.display()))
     })?;
     let mut reader = BufReader::new(file);
 
     let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
-        .filter_map(|r| r.ok())
+        .filter_map(Result::ok)
         .collect();
 
     if certs.is_empty() {
@@ -97,29 +93,21 @@ fn load_certs(path: &Path) -> TcpResult<Vec<CertificateDer<'static>>> {
 #[cfg(feature = "tls")]
 fn load_private_key(path: &Path) -> TcpResult<PrivateKeyDer<'static>> {
     let file = std::fs::File::open(path).map_err(|e| {
-        TcpError::TlsError(format!("failed to open key file {}: {}", path.display(), e))
+        TcpError::TlsError(format!("failed to open key file {}: {e}", path.display()))
     })?;
     let mut reader = BufReader::new(file);
 
     // Try to read PKCS8 key first, then RSA, then EC
-    let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if let Some(key) = keys.into_iter().next() {
+    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut reader).find_map(Result::ok) {
         return Ok(PrivateKeyDer::Pkcs8(key));
     }
 
     // Reopen and try RSA
     let file = std::fs::File::open(path).map_err(|e| {
-        TcpError::TlsError(format!("failed to open key file {}: {}", path.display(), e))
+        TcpError::TlsError(format!("failed to open key file {}: {e}", path.display()))
     })?;
     let mut reader = BufReader::new(file);
-    let keys: Vec<_> = rustls_pemfile::rsa_private_keys(&mut reader)
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if let Some(key) = keys.into_iter().next() {
+    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut reader).find_map(Result::ok) {
         return Ok(PrivateKeyDer::Pkcs1(key));
     }
 
@@ -129,10 +117,14 @@ fn load_private_key(path: &Path) -> TcpResult<PrivateKeyDer<'static>> {
     )))
 }
 
-/// Extract NodeId from a certificate based on the verification mode.
+/// Extract `NodeId` from a certificate based on the verification mode.
 ///
-/// For CommonName mode: extracts from the CN field of the subject.
-/// For SubjectAltName mode: extracts from the first DNS SAN entry.
+/// For `CommonName` mode: extracts from the CN field of the subject.
+/// For `SubjectAltName` mode: extracts from the first DNS SAN entry.
+///
+/// # Errors
+///
+/// Returns an error if the required identity field is missing from the certificate.
 #[cfg(feature = "tls")]
 pub fn extract_node_id_from_cert(
     cert: &CertificateDer<'_>,
@@ -147,28 +139,26 @@ pub fn extract_node_id_from_cert(
 
 #[cfg(feature = "tls")]
 fn extract_from_common_name(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerIdentity>> {
-    let cert_der = cert.as_ref();
-
-    if let Some(cn) = extract_cn_from_der(cert_der) {
-        Ok(Some(VerifiedPeerIdentity::from_common_name(cn)))
-    } else {
-        Err(TcpError::TlsError(
-            "no Common Name found in certificate".to_string(),
-        ))
-    }
+    extract_cn_from_der(cert.as_ref()).map_or_else(
+        || {
+            Err(TcpError::TlsError(
+                "no Common Name found in certificate".to_string(),
+            ))
+        },
+        |cn| Ok(Some(VerifiedPeerIdentity::from_common_name(cn))),
+    )
 }
 
 #[cfg(feature = "tls")]
 fn extract_from_san(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerIdentity>> {
-    let cert_der = cert.as_ref();
-
-    if let Some(san) = extract_san_from_der(cert_der) {
-        Ok(Some(VerifiedPeerIdentity::from_san(san)))
-    } else {
-        Err(TcpError::TlsError(
-            "no Subject Alternative Name found in certificate".to_string(),
-        ))
-    }
+    extract_san_from_der(cert.as_ref()).map_or_else(
+        || {
+            Err(TcpError::TlsError(
+                "no Subject Alternative Name found in certificate".to_string(),
+            ))
+        },
+        |san| Ok(Some(VerifiedPeerIdentity::from_san(san))),
+    )
 }
 
 /// Extract Common Name from DER-encoded certificate using x509-parser.
@@ -179,7 +169,7 @@ fn extract_cn_from_der(der: &[u8]) -> Option<String> {
     for rdn in cert.subject().iter() {
         for attr in rdn.iter() {
             if attr.attr_type() == &oid_registry::OID_X509_COMMON_NAME {
-                return attr.as_str().ok().map(|s| s.to_string());
+                return attr.as_str().ok().map(ToString::to_string);
             }
         }
     }
@@ -195,7 +185,7 @@ fn extract_san_from_der(der: &[u8]) -> Option<String> {
         if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
             for name in &san.general_names {
                 if let GeneralName::DNSName(dns) = name {
-                    return Some(dns.to_string());
+                    return Some((*dns).to_string());
                 }
             }
         }
@@ -206,7 +196,11 @@ fn extract_san_from_der(der: &[u8]) -> Option<String> {
 /// Wrap a TCP stream with TLS (server-side).
 ///
 /// When `require_client_auth` is true, the server will request a client certificate.
-/// Use `wrap_server_with_identity` to also extract the client's NodeId from the certificate.
+/// Use `wrap_server_with_identity` to also extract the client's `NodeId` from the certificate.
+///
+/// # Errors
+///
+/// Returns an error if TLS configuration or handshake fails.
 #[cfg(feature = "tls")]
 pub async fn wrap_server(stream: TcpStream, config: &TlsConfig) -> TcpResult<ServerTlsStream> {
     let (stream, _identity) = wrap_server_with_identity(stream, config).await?;
@@ -217,6 +211,10 @@ pub async fn wrap_server(stream: TcpStream, config: &TlsConfig) -> TcpResult<Ser
 ///
 /// Returns the TLS stream and optionally the verified peer identity
 /// extracted from the client certificate (when using mTLS).
+///
+/// # Errors
+///
+/// Returns an error if certificate loading, TLS configuration, or handshake fails.
 #[cfg(feature = "tls")]
 pub async fn wrap_server_with_identity(
     stream: TcpStream,
@@ -235,27 +233,25 @@ pub async fn wrap_server_with_identity(
             for cert in ca_certs {
                 root_store
                     .add(cert)
-                    .map_err(|e| TcpError::TlsError(format!("failed to add CA cert: {}", e)))?;
+                    .map_err(|e| TcpError::TlsError(format!("failed to add CA cert: {e}")))?;
             }
         }
 
         let client_verifier =
             tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
                 .build()
-                .map_err(|e| {
-                    TcpError::TlsError(format!("failed to build client verifier: {}", e))
-                })?;
+                .map_err(|e| TcpError::TlsError(format!("failed to build client verifier: {e}")))?;
 
         ServerConfig::builder()
             .with_client_cert_verifier(client_verifier)
             .with_single_cert(certs, key)
-            .map_err(|e| TcpError::TlsError(format!("TLS config error: {}", e)))?
+            .map_err(|e| TcpError::TlsError(format!("TLS config error: {e}")))?
     } else {
         // No client auth
         ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, key)
-            .map_err(|e| TcpError::TlsError(format!("TLS config error: {}", e)))?
+            .map_err(|e| TcpError::TlsError(format!("TLS config error: {e}")))?
     };
 
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
@@ -263,7 +259,7 @@ pub async fn wrap_server_with_identity(
     let tls_stream = acceptor
         .accept(stream)
         .await
-        .map_err(|e| TcpError::TlsError(format!("TLS handshake failed: {}", e)))?;
+        .map_err(|e| TcpError::TlsError(format!("TLS handshake failed: {e}")))?;
 
     // Extract peer identity from client certificate if mTLS is enabled
     let peer_identity = if config.require_client_auth {
@@ -285,6 +281,9 @@ pub async fn wrap_server_with_identity(
     Ok((tls_stream, peer_identity))
 }
 
+/// # Errors
+///
+/// Returns an error if CA loading, TLS configuration, or handshake fails.
 #[cfg(feature = "tls")]
 pub async fn wrap_client(
     stream: TcpStream,
@@ -299,7 +298,7 @@ pub async fn wrap_client(
         for cert in ca_certs {
             root_store
                 .add(cert)
-                .map_err(|e| TcpError::TlsError(format!("failed to add CA cert: {}", e)))?;
+                .map_err(|e| TcpError::TlsError(format!("failed to add CA cert: {e}")))?;
         }
     }
 
@@ -320,12 +319,12 @@ pub async fn wrap_client(
     let connector = TlsConnector::from(Arc::new(client_config));
 
     let domain = ServerName::try_from(server_name.to_string())
-        .map_err(|_| TcpError::TlsError(format!("invalid server name: {}", server_name)))?;
+        .map_err(|_| TcpError::TlsError(format!("invalid server name: {server_name}")))?;
 
     connector
         .connect(domain, stream)
         .await
-        .map_err(|e| TcpError::TlsError(format!("TLS handshake failed: {}", e)))
+        .map_err(|e| TcpError::TlsError(format!("TLS handshake failed: {e}")))
 }
 
 #[cfg(feature = "tls")]

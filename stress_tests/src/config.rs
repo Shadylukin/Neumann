@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Test configuration presets for stress tests.
 
 use std::env;
@@ -26,7 +26,8 @@ pub struct StressConfig {
 }
 
 impl StressConfig {
-    /// Get thread count, respecting STRESS_THREADS env var override.
+    /// Get thread count, respecting `STRESS_THREADS` env var override.
+    #[must_use]
     pub fn effective_thread_count(&self) -> usize {
         env::var("STRESS_THREADS")
             .ok()
@@ -34,17 +35,28 @@ impl StressConfig {
             .unwrap_or(self.thread_count)
     }
 
-    /// Get entity count, respecting STRESS_ENTITIES env var override.
+    /// Get entity count, respecting `STRESS_ENTITIES` env var override.
+    #[must_use]
     pub fn effective_entity_count(&self) -> usize {
         env::var("STRESS_ENTITIES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(self.entity_count)
     }
+
+    /// Get duration in seconds, respecting `STRESS_DURATION` env var override.
+    #[must_use]
+    pub fn effective_duration_secs(&self) -> u64 {
+        env::var("STRESS_DURATION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.duration_secs)
+    }
 }
 
 /// Quick stress config: 100K entities, 8 threads, ~2 min.
-pub fn quick_config() -> StressConfig {
+#[must_use]
+pub const fn quick_config() -> StressConfig {
     StressConfig {
         scale: ScaleLevel::Quick,
         entity_count: 100_000,
@@ -56,7 +68,8 @@ pub fn quick_config() -> StressConfig {
 }
 
 /// Full stress config: 1M entities, 16 threads, ~10 min.
-pub fn full_config() -> StressConfig {
+#[must_use]
+pub const fn full_config() -> StressConfig {
     StressConfig {
         scale: ScaleLevel::Full,
         entity_count: 1_000_000,
@@ -68,7 +81,8 @@ pub fn full_config() -> StressConfig {
 }
 
 /// Endurance stress config: 500K entities, 8 threads, 1 hour.
-pub fn endurance_config() -> StressConfig {
+#[must_use]
+pub const fn endurance_config() -> StressConfig {
     StressConfig {
         scale: ScaleLevel::Endurance,
         entity_count: 500_000,
@@ -95,5 +109,12 @@ mod tests {
         let config = full_config();
         assert_eq!(config.entity_count, 1_000_000);
         assert_eq!(config.thread_count, 16);
+    }
+
+    #[test]
+    fn test_effective_duration_secs_default() {
+        let config = quick_config();
+        // Without STRESS_DURATION set, returns the configured default
+        assert_eq!(config.effective_duration_secs(), config.duration_secs);
     }
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Linearizability tests under network partition scenarios.
 //!
 //! Uses the chaos cluster to inject partitions, then records operation

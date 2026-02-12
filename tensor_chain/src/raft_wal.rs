@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Write-Ahead Log (WAL) for Raft consensus.
 //!
 //! Ensures durability of Raft state transitions by persisting changes to disk
@@ -7,7 +7,7 @@
 //!
 //! ## Critical Invariants
 //!
-//! 1. Term and voted_for MUST be persisted before any state change
+//! 1. Term and `voted_for` MUST be persisted before any state change
 //! 2. All writes MUST be fsynced before returning
 //! 3. Recovery MUST restore the exact state from the WAL
 //!
@@ -24,6 +24,54 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Abstraction over WAL write I/O for testability.
+pub trait WalWriter: Send {
+    /// Write all bytes to the underlying writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the write fails.
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()>;
+
+    /// Flush buffered data to the underlying writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the flush fails.
+    fn flush(&mut self) -> io::Result<()>;
+
+    /// Sync all data to durable storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the sync fails.
+    fn sync_all(&mut self) -> io::Result<()>;
+}
+
+/// Default production backend wrapping `BufWriter<File>`.
+pub struct FileWriter(BufWriter<File>);
+
+impl FileWriter {
+    fn new(file: File) -> Self {
+        Self(BufWriter::new(file))
+    }
+}
+
+impl WalWriter for FileWriter {
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        Write::write_all(&mut self.0, buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Write::flush(&mut self.0)
+    }
+
+    fn sync_all(&mut self) -> io::Result<()> {
+        self.0.flush()?;
+        self.0.get_ref().sync_all()
+    }
+}
 
 /// WAL-specific error types.
 #[derive(Debug, thiserror::Error)]
@@ -53,13 +101,14 @@ impl From<WalError> for io::Error {
     fn from(e: WalError) -> Self {
         match e {
             WalError::Io(io_err) => io_err,
-            other => io::Error::other(other.to_string()),
+            other => Self::other(other.to_string()),
         }
     }
 }
 
 /// Configuration for WAL behavior.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct WalConfig {
     /// Enable CRC32 checksums for new entries (default: true).
     pub enable_checksums: bool,
@@ -122,24 +171,42 @@ pub enum RaftWalEntry {
         last_included_index: u64,
         last_included_term: u64,
     },
+
+    /// Full log entry (for recovery of complete log state).
+    LogEntryFull {
+        index: u64,
+        term: u64,
+        entry_data: Vec<u8>,
+    },
 }
 
 /// Write-Ahead Log for Raft state.
-pub struct RaftWal {
-    file: BufWriter<File>,
+///
+/// Generic over the writer backend to support fault injection in tests.
+/// The default `FileWriter` wraps `BufWriter<File>` for production use.
+pub struct RaftWal<W: WalWriter = FileWriter> {
+    writer: W,
     path: PathBuf,
     entry_count: u64,
     current_size: u64,
     config: WalConfig,
 }
 
-impl RaftWal {
+impl RaftWal<FileWriter> {
     /// Open or create a WAL file with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or created.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_with_config(path, WalConfig::default())
     }
 
     /// Open or create a WAL file with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened, created, or read for entry counting.
     pub fn open_with_config(path: impl AsRef<Path>, config: WalConfig) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -151,7 +218,7 @@ impl RaftWal {
         let entry_count = Self::count_entries(&path)?;
 
         Ok(Self {
-            file: BufWriter::new(file),
+            writer: FileWriter::new(file),
             path,
             entry_count,
             current_size,
@@ -189,14 +256,8 @@ impl RaftWal {
             }
 
             // Detect format on first entry, then use consistently
-            let is_v2 = match detected_format {
-                Some(v2) => v2,
-                None => {
-                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
-                    detected_format = Some(v2);
-                    v2
-                },
-            };
+            let is_v2 = *detected_format
+                .get_or_insert_with(|| !Self::looks_like_bincode_start(checksum_buf));
 
             if is_v2 {
                 // V2: skip the remaining payload bytes
@@ -226,7 +287,7 @@ impl RaftWal {
 
     /// Check if bytes look like a bitcode discriminant start (legacy V1 format detection).
     /// After migration to bitcode, always returns false since V2 format is assumed.
-    fn looks_like_bincode_start(_bytes: &[u8; 4]) -> bool {
+    const fn looks_like_bincode_start(_bytes: [u8; 4]) -> bool {
         // After migrating to bitcode, we always assume V2 format.
         // Old bincode V1 files are not readable with bitcode anyway.
         false
@@ -236,7 +297,7 @@ impl RaftWal {
     fn available_disk_space(&self) -> io::Result<u64> {
         #[cfg(unix)]
         {
-            let parent = self.path.parent().unwrap_or(Path::new("."));
+            let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
             let stat = nix_statvfs(parent)?;
             Ok(stat.available_bytes)
         }
@@ -263,28 +324,20 @@ impl RaftWal {
         Ok(())
     }
 
-    /// Check if WAL size exceeds the limit.
-    fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
-        let new_size = self.current_size + additional_size;
-        if new_size > self.config.max_size_bytes {
-            return Err(WalError::SizeLimitExceeded {
-                current: new_size,
-                max: self.config.max_size_bytes,
-            });
-        }
-        Ok(())
-    }
-
     /// Get the path for a rotated WAL file.
     fn rotated_path(&self, index: usize) -> PathBuf {
         let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
-        self.path.with_file_name(format!("{}.{}", file_name, index))
+        self.path.with_file_name(format!("{file_name}.{index}"))
     }
 
     /// Rotate the WAL file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing, renaming, or creating the new file fails.
     pub fn rotate(&mut self) -> Result<(), WalError> {
-        self.file.flush()?;
-        self.file.get_ref().sync_all()?;
+        self.writer.flush()?;
+        self.writer.sync_all()?;
 
         // Delete oldest FIRST to make room for the shift
         let oldest = self.rotated_path(self.config.max_rotated_files);
@@ -308,7 +361,7 @@ impl RaftWal {
 
         // Create fresh WAL
         let file = File::create(&self.path)?;
-        self.file = BufWriter::new(file);
+        self.writer = FileWriter::new(file);
         self.current_size = 0;
         self.entry_count = 0;
 
@@ -316,6 +369,12 @@ impl RaftWal {
     }
 
     /// Append an entry to the WAL with fsync.
+    ///
+    /// Includes disk space checks and auto-rotation for the production backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, disk space checks, or writing fails.
     pub fn append(&mut self, entry: &RaftWalEntry) -> io::Result<()> {
         let bytes = bitcode::serialize(entry).map_err(io::Error::other)?;
         let write_size = 4 + 4 + bytes.len() as u64; // length + checksum + payload
@@ -336,34 +395,20 @@ impl RaftWal {
             }
         }
 
-        // Compute checksum
-        let checksum = if self.config.enable_checksums {
-            crc32fast::hash(&bytes)
-        } else {
-            0
-        };
-
-        // Write length-prefixed entry with checksum (V2 format)
-        self.file.write_all(&(bytes.len() as u32).to_le_bytes())?;
-        self.file.write_all(&checksum.to_le_bytes())?;
-        self.file.write_all(&bytes)?;
-        self.file.flush()?;
-
-        // CRITICAL: fsync to ensure durability
-        self.file.get_ref().sync_all()?;
-
-        self.current_size += write_size;
-        self.entry_count += 1;
-        Ok(())
+        self.write_entry_bytes(&bytes)
     }
 
     /// Truncate the WAL (after snapshot).
     ///
     /// Uses atomic file operations to ensure crash safety. The old file
     /// is replaced atomically with an empty file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing or atomic truncation fails.
     pub fn truncate(&mut self) -> io::Result<()> {
         // Flush any pending writes before truncation
-        self.file.flush()?;
+        self.writer.flush()?;
 
         // Atomically create an empty file at the WAL path
         crate::atomic_io::atomic_truncate(&self.path)?;
@@ -373,18 +418,102 @@ impl RaftWal {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        self.file = BufWriter::new(file);
+        self.writer = FileWriter::new(file);
         self.entry_count = 0;
         self.current_size = 0;
         Ok(())
     }
+}
+
+impl<W: WalWriter> RaftWal<W> {
+    /// Create a WAL with a custom writer backend.
+    ///
+    /// Used for testing with fault-injecting writers. The WAL file at `path`
+    /// must already exist (used for replay). The writer handles all I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the path is invalid or entry counting fails.
+    pub fn with_writer(path: impl AsRef<Path>, config: WalConfig, writer: W) -> io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let current_size = if path.exists() {
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        let entry_count = if path.exists() {
+            RaftWal::<FileWriter>::count_entries(&path)?
+        } else {
+            0
+        };
+        Ok(Self {
+            writer,
+            path,
+            entry_count,
+            current_size,
+            config,
+        })
+    }
+
+    /// Write a serialized entry to the WAL (no disk space check or rotation).
+    fn write_entry_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let checksum = if self.config.enable_checksums {
+            crc32fast::hash(bytes)
+        } else {
+            0
+        };
+
+        #[allow(clippy::cast_possible_truncation)]
+        let len_u32 = bytes.len() as u32;
+        let write_size = 4 + 4 + bytes.len() as u64;
+
+        self.writer.write_all(&len_u32.to_le_bytes())?;
+        self.writer.write_all(&checksum.to_le_bytes())?;
+        self.writer.write_all(bytes)?;
+        self.writer.flush()?;
+        self.writer.sync_all()?;
+
+        self.current_size += write_size;
+        self.entry_count += 1;
+        Ok(())
+    }
+
+    /// Append an entry to the WAL using the generic writer (no disk checks).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing fails.
+    pub fn append_entry(&mut self, entry: &RaftWalEntry) -> io::Result<()> {
+        let bytes = bitcode::serialize(entry).map_err(io::Error::other)?;
+        self.write_entry_bytes(&bytes)
+    }
+
+    /// Check if WAL size exceeds the limit.
+    const fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
+        let new_size = self.current_size + additional_size;
+        if new_size > self.config.max_size_bytes {
+            return Err(WalError::SizeLimitExceeded {
+                current: new_size,
+                max: self.config.max_size_bytes,
+            });
+        }
+        Ok(())
+    }
 
     /// Replay all entries from the WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or deserializing entries fails.
     pub fn replay(&self) -> io::Result<Vec<RaftWalEntry>> {
         self.replay_with_validation(self.config.verify_on_replay)
     }
 
     /// Replay all entries with optional checksum verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading fails or a checksum mismatch is detected.
     pub fn replay_with_validation(&self, verify_checksums: bool) -> io::Result<Vec<RaftWalEntry>> {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
@@ -411,14 +540,9 @@ impl RaftWal {
             }
 
             // Detect format on first entry, then use consistently
-            let is_v2 = match detected_format {
-                Some(v2) => v2,
-                None => {
-                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
-                    detected_format = Some(v2);
-                    v2
-                },
-            };
+            let is_v2 = *detected_format.get_or_insert_with(|| {
+                !RaftWal::<FileWriter>::looks_like_bincode_start(checksum_buf)
+            });
 
             let data = if is_v2 {
                 // V2: checksum_buf contains CRC32, read payload separately
@@ -478,22 +602,26 @@ impl RaftWal {
     }
 
     /// Get the number of entries in the WAL.
-    pub fn entry_count(&self) -> u64 {
+    #[must_use]
+    pub const fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
     /// Get the path to the WAL file.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get the current size of the WAL in bytes.
-    pub fn current_size(&self) -> u64 {
+    #[must_use]
+    pub const fn current_size(&self) -> u64 {
         self.current_size
     }
 
     /// Get the current configuration.
-    pub fn config(&self) -> &WalConfig {
+    #[must_use]
+    pub const fn config(&self) -> &WalConfig {
         &self.config
     }
 }
@@ -520,8 +648,8 @@ fn nix_statvfs(path: &Path) -> io::Result<StatVfsResult> {
     }
 
     Ok(StatVfsResult {
-        // Cast needed for cross-platform compatibility (types differ between Linux/macOS)
-        #[allow(clippy::unnecessary_cast)]
+        // Cast needed: f_bavail is u32 on macOS, u64 on Linux
+        #[allow(clippy::unnecessary_cast, clippy::cast_lossless)]
         available_bytes: stat.f_bavail as u64 * stat.f_frsize as u64,
     })
 }
@@ -537,12 +665,18 @@ pub struct RaftRecoveryState {
     pub last_snapshot_index: Option<u64>,
     /// Last snapshot term (if any).
     pub last_snapshot_term: Option<u64>,
+    /// Recovered log entries (serialized bytes, ordered by index).
+    pub recovered_log: Vec<Vec<u8>>,
 }
 
 impl RaftRecoveryState {
     /// Reconstruct state from WAL entries.
+    #[must_use]
     pub fn from_entries(entries: &[RaftWalEntry]) -> Self {
+        use std::collections::BTreeMap;
+
         let mut state = Self::default();
+        let mut log_map: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
 
         for entry in entries {
             match entry {
@@ -565,10 +699,10 @@ impl RaftRecoveryState {
                 RaftWalEntry::TermAndVote { term, voted_for } => {
                     if *term > state.current_term {
                         state.current_term = *term;
-                        state.voted_for = voted_for.clone();
+                        state.voted_for.clone_from(voted_for);
                     } else if *term == state.current_term && state.voted_for.is_none() {
                         // Only accept first vote for same term
-                        state.voted_for = voted_for.clone();
+                        state.voted_for.clone_from(voted_for);
                     }
                     // Ignore duplicate votes for same term
                 },
@@ -584,17 +718,35 @@ impl RaftRecoveryState {
                         state.voted_for = None;
                     }
                 },
-                RaftWalEntry::LogAppend { .. } | RaftWalEntry::LogTruncate { .. } => {
-                    // Log entries handled separately
+                RaftWalEntry::LogEntryFull {
+                    index, entry_data, ..
+                } => {
+                    log_map.insert(*index, entry_data.clone());
+                },
+                RaftWalEntry::LogTruncate { from_index } => {
+                    // Remove all entries at or after from_index
+                    let to_remove: Vec<u64> =
+                        log_map.range(*from_index..).map(|(k, _)| *k).collect();
+                    for key in to_remove {
+                        log_map.remove(&key);
+                    }
+                },
+                RaftWalEntry::LogAppend { .. } => {
+                    // Legacy variant - no full data to recover
                 },
             }
         }
 
+        state.recovered_log = log_map.into_values().collect();
         state
     }
 
     /// Reconstruct state directly from a WAL.
-    pub fn from_wal(wal: &RaftWal) -> io::Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL replay fails.
+    pub fn from_wal<W: WalWriter>(wal: &RaftWal<W>) -> io::Result<Self> {
         let entries = wal.replay()?;
         Ok(Self::from_entries(&entries))
     }
@@ -1554,5 +1706,406 @@ mod tests {
         let state = RaftRecoveryState::from_entries(&entries);
         // voted_for should be reset when term changes
         assert_eq!(state.voted_for, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // FaultyWriter and fault injection tests
+    // -----------------------------------------------------------------------
+
+    /// Writer that injects I/O faults for testing ENOSPC/EIO scenarios.
+    struct FaultyWriter {
+        inner: FileWriter,
+        /// Fail after this many total bytes written (simulates ENOSPC).
+        fail_after_bytes: Option<u64>,
+        bytes_written: u64,
+        /// Fail on `sync_all()` (simulates EIO on fsync).
+        fail_on_sync: bool,
+        error_kind: io::ErrorKind,
+        /// Fail after this many `write_all()` calls.
+        writes_until_fail: Option<u32>,
+        write_count: u32,
+    }
+
+    impl FaultyWriter {
+        fn new(file: File) -> Self {
+            Self {
+                inner: FileWriter::new(file),
+                fail_after_bytes: None,
+                bytes_written: 0,
+                fail_on_sync: false,
+                error_kind: io::ErrorKind::Other,
+                writes_until_fail: None,
+                write_count: 0,
+            }
+        }
+
+        fn with_enospc_after(mut self, bytes: u64) -> Self {
+            self.fail_after_bytes = Some(bytes);
+            self.error_kind = io::ErrorKind::Other;
+            self
+        }
+
+        fn with_fail_on_sync(mut self) -> Self {
+            self.fail_on_sync = true;
+            self
+        }
+
+        fn with_writes_until_fail(mut self, count: u32) -> Self {
+            self.writes_until_fail = Some(count);
+            self
+        }
+    }
+
+    impl WalWriter for FaultyWriter {
+        fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+            if let Some(limit) = self.writes_until_fail {
+                if self.write_count >= limit {
+                    return Err(io::Error::new(self.error_kind, "injected write failure"));
+                }
+            }
+            if let Some(limit) = self.fail_after_bytes {
+                #[allow(clippy::cast_possible_truncation)]
+                let new_total = self.bytes_written + buf.len() as u64;
+                if new_total > limit {
+                    return Err(io::Error::new(self.error_kind, "injected ENOSPC"));
+                }
+            }
+            self.inner.write_all(buf)?;
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                self.bytes_written += buf.len() as u64;
+            }
+            self.write_count += 1;
+            Ok(())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+
+        fn sync_all(&mut self) -> io::Result<()> {
+            if self.fail_on_sync {
+                return Err(io::Error::new(io::ErrorKind::Other, "injected EIO on sync"));
+            }
+            self.inner.sync_all()
+        }
+    }
+
+    fn faulty_wal_config() -> WalConfig {
+        WalConfig {
+            enable_checksums: true,
+            verify_on_replay: true,
+            pre_check_space: false,
+            ..WalConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_faulty_writer_enospc_returns_error() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("enospc.wal");
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wal_path)
+            .unwrap();
+        let writer = FaultyWriter::new(file).with_enospc_after(50);
+        let mut wal = RaftWal::with_writer(&wal_path, faulty_wal_config(), writer).unwrap();
+
+        // First small entry should succeed
+        let result1 = wal.append_entry(&RaftWalEntry::TermChange { new_term: 1 });
+        assert!(result1.is_ok(), "first entry should fit: {result1:?}");
+
+        // Keep writing until we hit the limit
+        let mut hit_error = false;
+        for i in 2..20u64 {
+            if wal
+                .append_entry(&RaftWalEntry::TermChange { new_term: i })
+                .is_err()
+            {
+                hit_error = true;
+                break;
+            }
+        }
+        assert!(hit_error, "should have hit ENOSPC");
+    }
+
+    #[test]
+    fn test_faulty_writer_enospc_preserves_prior_entries() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("enospc_preserve.wal");
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wal_path)
+            .unwrap();
+        // Allow enough bytes for 3 entries but not 4
+        let writer = FaultyWriter::new(file).with_enospc_after(120);
+        let mut wal = RaftWal::with_writer(&wal_path, faulty_wal_config(), writer).unwrap();
+
+        let mut ok_count = 0;
+        for i in 1..=10u64 {
+            match wal.append_entry(&RaftWalEntry::TermChange { new_term: i }) {
+                Ok(()) => ok_count += 1,
+                Err(_) => break,
+            }
+        }
+        assert!(ok_count >= 1, "at least one entry should have succeeded");
+
+        // Replay should recover exactly the entries that were written
+        let wal2 = RaftWal::open_with_config(&wal_path, faulty_wal_config()).unwrap();
+        let entries = wal2.replay().unwrap();
+        assert_eq!(
+            entries.len(),
+            ok_count,
+            "replay should recover {ok_count} entries"
+        );
+    }
+
+    #[test]
+    fn test_faulty_writer_eio_on_sync() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("eio_sync.wal");
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wal_path)
+            .unwrap();
+        let writer = FaultyWriter::new(file).with_fail_on_sync();
+        let mut wal = RaftWal::with_writer(&wal_path, faulty_wal_config(), writer).unwrap();
+
+        // Write succeeds but sync fails
+        let result = wal.append_entry(&RaftWalEntry::TermChange { new_term: 1 });
+        assert!(result.is_err(), "sync failure should propagate");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("EIO"),
+            "error should mention EIO: {err}"
+        );
+    }
+
+    #[test]
+    fn test_faulty_writer_partial_write_mid_entry() {
+        // Fail mid-entry: after the length prefix is written but before the
+        // payload completes. Replay should skip the partial entry.
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("partial_mid.wal");
+
+        // Write one complete entry first
+        {
+            let mut wal = RaftWal::open_with_config(&wal_path, faulty_wal_config()).unwrap();
+            wal.append(&RaftWalEntry::TermChange { new_term: 1 })
+                .unwrap();
+        }
+
+        let size_after_one = fs::metadata(&wal_path).unwrap().len();
+
+        // Now open with a faulty writer that fails on the 2nd write_all call
+        // (the length prefix is the 1st write, checksum is 2nd)
+        let file = OpenOptions::new().append(true).open(&wal_path).unwrap();
+        let writer = FaultyWriter::new(file).with_writes_until_fail(1);
+        let mut wal = RaftWal::with_writer(&wal_path, faulty_wal_config(), writer).unwrap();
+
+        let result = wal.append_entry(&RaftWalEntry::TermChange { new_term: 2 });
+        assert!(result.is_err(), "should fail mid-entry");
+
+        // File may have partial data; truncate to simulate crash at partial write
+        let f = OpenOptions::new().write(true).open(&wal_path).unwrap();
+        // Truncate to midpoint between old size and current size
+        let current = fs::metadata(&wal_path).unwrap().len();
+        if current > size_after_one {
+            f.set_len(size_after_one + (current - size_after_one) / 2)
+                .unwrap();
+        }
+        drop(f);
+
+        // Replay should recover only the first entry
+        let wal2 = RaftWal::open_with_config(&wal_path, faulty_wal_config()).unwrap();
+        let entries = wal2.replay().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the first complete entry should survive"
+        );
+        assert_eq!(entries[0], RaftWalEntry::TermChange { new_term: 1 });
+    }
+
+    #[test]
+    fn test_faulty_writer_transient_then_recover() {
+        // Simulates a transient I/O failure: write entry 1 OK, entry 2 fails
+        // mid-write, truncate partial data, heal, write entry 3 OK.
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("transient.wal");
+
+        // Write first entry with normal WAL to get a clean baseline
+        {
+            let mut wal = RaftWal::open_with_config(&wal_path, faulty_wal_config()).unwrap();
+            wal.append(&RaftWalEntry::TermChange { new_term: 1 })
+                .unwrap();
+        }
+        let size_after_first = fs::metadata(&wal_path).unwrap().len();
+
+        // Open with faulty writer that fails immediately
+        let file = OpenOptions::new().append(true).open(&wal_path).unwrap();
+        let writer = FaultyWriter::new(file).with_writes_until_fail(0);
+        let mut wal = RaftWal::with_writer(&wal_path, faulty_wal_config(), writer).unwrap();
+
+        // Second entry fails
+        let r2 = wal.append_entry(&RaftWalEntry::TermChange { new_term: 2 });
+        assert!(r2.is_err(), "second entry should fail");
+        drop(wal);
+
+        // Truncate any partial data back to clean state
+        let f = OpenOptions::new().write(true).open(&wal_path).unwrap();
+        f.set_len(size_after_first).unwrap();
+        drop(f);
+
+        // Heal: write third entry with normal WAL
+        {
+            let mut wal = RaftWal::open_with_config(&wal_path, faulty_wal_config()).unwrap();
+            wal.append(&RaftWalEntry::TermChange { new_term: 3 })
+                .unwrap();
+        }
+
+        // Replay should recover both complete entries
+        let wal2 = RaftWal::open_with_config(&wal_path, faulty_wal_config()).unwrap();
+        let entries = wal2.replay().unwrap();
+        assert_eq!(entries.len(), 2, "should recover entries 1 and 3");
+        assert_eq!(entries[0], RaftWalEntry::TermChange { new_term: 1 });
+        assert_eq!(entries[1], RaftWalEntry::TermChange { new_term: 3 });
+    }
+
+    #[test]
+    fn test_recovery_state_recovers_log_entries() {
+        let entries = vec![
+            RaftWalEntry::LogEntryFull {
+                index: 1,
+                term: 1,
+                entry_data: vec![10, 20, 30],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 2,
+                term: 1,
+                entry_data: vec![40, 50, 60],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 3,
+                term: 2,
+                entry_data: vec![70, 80, 90],
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.recovered_log.len(), 3);
+        assert_eq!(state.recovered_log[0], vec![10, 20, 30]);
+        assert_eq!(state.recovered_log[1], vec![40, 50, 60]);
+        assert_eq!(state.recovered_log[2], vec![70, 80, 90]);
+    }
+
+    #[test]
+    fn test_recovery_state_log_truncate() {
+        let entries = vec![
+            RaftWalEntry::LogEntryFull {
+                index: 1,
+                term: 1,
+                entry_data: vec![1],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 2,
+                term: 1,
+                entry_data: vec![2],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 3,
+                term: 1,
+                entry_data: vec![3],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 4,
+                term: 1,
+                entry_data: vec![4],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 5,
+                term: 1,
+                entry_data: vec![5],
+            },
+            // Truncate from index 3 (removes 3, 4, 5)
+            RaftWalEntry::LogTruncate { from_index: 3 },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.recovered_log.len(), 2);
+        assert_eq!(state.recovered_log[0], vec![1]);
+        assert_eq!(state.recovered_log[1], vec![2]);
+    }
+
+    #[test]
+    fn test_recovery_state_log_and_term_combined() {
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 1,
+                voted_for: Some("node-a".to_string()),
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 1,
+                term: 1,
+                entry_data: vec![10],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 2,
+                term: 1,
+                entry_data: vec![20],
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 3,
+                term: 1,
+                entry_data: vec![30],
+            },
+            // Truncate index 3, then re-add with new term
+            RaftWalEntry::LogTruncate { from_index: 3 },
+            RaftWalEntry::TermAndVote {
+                term: 2,
+                voted_for: None,
+            },
+            RaftWalEntry::LogEntryFull {
+                index: 3,
+                term: 2,
+                entry_data: vec![31],
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, 2);
+        assert!(state.voted_for.is_none());
+        assert_eq!(state.recovered_log.len(), 3);
+        assert_eq!(state.recovered_log[0], vec![10]);
+        assert_eq!(state.recovered_log[1], vec![20]);
+        assert_eq!(state.recovered_log[2], vec![31]); // Re-written entry
+    }
+
+    #[test]
+    fn test_faulty_writer_enospc_raw_os_error() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("enospc_raw.wal");
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wal_path)
+            .unwrap();
+        // Create a writer that fails immediately with realistic ENOSPC
+        let mut writer = FaultyWriter::new(file);
+        writer.fail_after_bytes = Some(0);
+        writer.error_kind = io::ErrorKind::Other;
+        let mut wal = RaftWal::with_writer(&wal_path, faulty_wal_config(), writer).unwrap();
+
+        let result = wal.append_entry(&RaftWalEntry::TermChange { new_term: 1 });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Verify it's an ENOSPC-like error
+        assert!(
+            err.to_string().contains("ENOSPC") || err.kind() == io::ErrorKind::Other,
+            "should be an ENOSPC-like error: {err}"
+        );
     }
 }

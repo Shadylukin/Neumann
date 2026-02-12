@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Reproducible data generation for stress tests.
 
 use rand::{Rng, SeedableRng};
@@ -6,6 +6,7 @@ use rand_chacha::ChaCha8Rng;
 use tensor_store::{ScalarValue, SparseVector, TensorData, TensorValue};
 
 /// Generate normalized embedding vectors.
+#[must_use]
 pub fn generate_embeddings(count: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     (0..count)
@@ -22,6 +23,7 @@ pub fn generate_embeddings(count: usize, dim: usize, seed: u64) -> Vec<Vec<f32>>
 }
 
 /// Generate sparse embedding vectors with given sparsity (0.0-1.0).
+#[must_use]
 pub fn generate_sparse_embeddings(
     count: usize,
     dim: usize,
@@ -29,7 +31,10 @@ pub fn generate_sparse_embeddings(
     seed: u64,
 ) -> Vec<SparseVector> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let non_zero_count = ((1.0 - sparsity) * dim as f32) as usize;
+    #[allow(clippy::cast_precision_loss)]
+    let non_zero_f = (1.0 - sparsity) * dim as f32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let non_zero_count = non_zero_f as usize;
 
     (0..count)
         .map(|_| {
@@ -41,6 +46,7 @@ pub fn generate_sparse_embeddings(
             indices.truncate(non_zero_count);
             indices.sort_unstable();
 
+            #[allow(clippy::cast_possible_truncation)]
             let positions: Vec<u32> = indices.iter().map(|&i| i as u32).collect();
             let values: Vec<f32> = (0..non_zero_count)
                 .map(|_| rng.random_range(-1.0..1.0))
@@ -51,7 +57,8 @@ pub fn generate_sparse_embeddings(
         .collect()
 }
 
-/// Generate TensorData entries with id and embedding.
+/// Generate `TensorData` entries with id and embedding.
+#[must_use]
 pub fn generate_tensor_data(count: usize, dim: usize, seed: u64) -> Vec<TensorData> {
     let embeddings = generate_embeddings(count, dim, seed);
     embeddings
@@ -59,7 +66,9 @@ pub fn generate_tensor_data(count: usize, dim: usize, seed: u64) -> Vec<TensorDa
         .enumerate()
         .map(|(i, emb)| {
             let mut data = TensorData::new();
-            data.set("id", TensorValue::Scalar(ScalarValue::Int(i as i64)));
+            #[allow(clippy::cast_possible_wrap)]
+            let id = i as i64;
+            data.set("id", TensorValue::Scalar(ScalarValue::Int(id)));
             data.set("embedding", TensorValue::Vector(emb));
             data
         })

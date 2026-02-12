@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Adaptive memory/disk buffer for snapshot assembly with bounded memory usage.
 //!
 //! # Overview
@@ -82,7 +82,7 @@
 //! println!("Total bytes: {}", buffer.total_len());
 //! ```
 //!
-//! ## Using SnapshotBufferReader
+//! ## Using `SnapshotBufferReader`
 //!
 //! ```rust
 //! use tensor_chain::snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferReader};
@@ -128,7 +128,7 @@
 //!
 //! - [`SnapshotBufferError::Io`]: Underlying I/O error (file creation, mmap, etc.)
 //! - [`SnapshotBufferError::OutOfBounds`]: Read offset/length exceeds buffer size
-//! - [`SnapshotBufferError::NotFinalized`]: Attempted read before finalize()
+//! - [`SnapshotBufferError::NotFinalized`]: Attempted read before `finalize()`
 //!
 //! # Security Considerations
 //!
@@ -140,10 +140,10 @@
 //!
 //! | Operation | Memory Mode | File Mode |
 //! |-----------|-------------|-----------|
-//! | write() | O(1) amortized | O(1) amortized + possible mmap resize |
-//! | as_slice() | O(1) | O(1) zero-copy via mmap |
-//! | read_chunk() | O(n) copy | O(n) copy |
-//! | finalize() | O(1) | O(1) + fsync |
+//! | `write()` | O(1) amortized | O(1) amortized + possible mmap resize |
+//! | `as_slice()` | O(1) | O(1) zero-copy via mmap |
+//! | `read_chunk()` | O(n) copy | O(n) copy |
+//! | `finalize()` | O(1) | O(1) + fsync |
 //!
 //! # Thread Safety
 //!
@@ -190,11 +190,13 @@ impl Default for SnapshotBufferConfig {
 }
 
 impl SnapshotBufferConfig {
-    pub fn with_max_memory(mut self, bytes: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_memory(mut self, bytes: usize) -> Self {
         self.max_memory_bytes = bytes;
         self
     }
 
+    #[must_use]
     pub fn with_temp_dir<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.temp_dir = path.as_ref().to_path_buf();
         self
@@ -244,6 +246,11 @@ pub struct SnapshotBuffer {
 }
 
 impl SnapshotBuffer {
+    /// Create a new snapshot buffer with the given configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the temp directory cannot be created.
     pub fn new(config: SnapshotBufferConfig) -> Result<Self> {
         // Ensure temp directory exists
         fs::create_dir_all(&config.temp_dir)?;
@@ -258,10 +265,20 @@ impl SnapshotBuffer {
         })
     }
 
+    /// Create a new snapshot buffer with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default temp directory cannot be created.
     pub fn with_defaults() -> Result<Self> {
         Self::new(SnapshotBufferConfig::default())
     }
 
+    /// Write data to the buffer, spilling to disk if the memory threshold is exceeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if disk spill or mmap operations fail.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -287,6 +304,8 @@ impl SnapshotBuffer {
                 file,
                 ..
             } => {
+                #[allow(clippy::cast_possible_truncation)]
+                // Snapshot size bounded by available memory
                 let write_offset = self.total_bytes as usize;
                 let needed = write_offset + data.len();
 
@@ -352,6 +371,10 @@ impl SnapshotBuffer {
     }
 
     /// Finalize the buffer (must be called before reading).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing or syncing the backing file fails.
     pub fn finalize(&mut self) -> Result<()> {
         if let BufferMode::File { mmap, file, .. } = &self.mode {
             mmap.flush()?;
@@ -362,12 +385,12 @@ impl SnapshotBuffer {
     }
 
     #[must_use]
-    pub fn total_len(&self) -> u64 {
+    pub const fn total_len(&self) -> u64 {
         self.total_bytes
     }
 
     #[must_use]
-    pub fn is_file_backed(&self) -> bool {
+    pub const fn is_file_backed(&self) -> bool {
         matches!(self.mode, BufferMode::File { .. })
     }
 
@@ -376,6 +399,11 @@ impl SnapshotBuffer {
         self.hasher.clone().finalize().into()
     }
 
+    /// Read a chunk of data as a new `Vec<u8>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotBufferError::OutOfBounds`] if the requested range exceeds the buffer.
     pub fn read_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         if offset + len as u64 > self.total_bytes {
             return Err(SnapshotBufferError::OutOfBounds {
@@ -385,6 +413,7 @@ impl SnapshotBuffer {
             });
         }
 
+        #[allow(clippy::cast_possible_truncation)] // Offset validated against total_bytes
         let start = offset as usize;
         let end = start + len;
 
@@ -395,6 +424,10 @@ impl SnapshotBuffer {
     }
 
     /// Zero-copy for file mode; copies for memory mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotBufferError::OutOfBounds`] if the requested range exceeds the buffer.
     pub fn as_slice(&self, offset: u64, len: usize) -> Result<&[u8]> {
         if offset + len as u64 > self.total_bytes {
             return Err(SnapshotBufferError::OutOfBounds {
@@ -404,6 +437,7 @@ impl SnapshotBuffer {
             });
         }
 
+        #[allow(clippy::cast_possible_truncation)] // Offset validated against total_bytes
         let start = offset as usize;
         let end = start + len;
 
@@ -413,10 +447,22 @@ impl SnapshotBuffer {
         }
     }
 
+    /// Return the entire buffer contents as a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is empty or the backing file cannot be read.
     pub fn as_bytes(&self) -> Result<&[u8]> {
-        self.as_slice(0, self.total_bytes as usize)
+        #[allow(clippy::cast_possible_truncation)] // Snapshot size bounded by available memory
+        let len = self.total_bytes as usize;
+        self.as_slice(0, len)
     }
 
+    /// Clean up the temp file and reset to memory mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the temp file cannot be removed.
     pub fn cleanup(&mut self) -> Result<()> {
         if let BufferMode::File { path, .. } = &self.mode {
             let path = path.clone();
@@ -440,7 +486,7 @@ impl SnapshotBuffer {
     }
 
     #[must_use]
-    pub fn config(&self) -> &SnapshotBufferConfig {
+    pub const fn config(&self) -> &SnapshotBufferConfig {
         &self.config
     }
 }
@@ -475,7 +521,8 @@ pub struct SnapshotBufferReader<'a> {
 }
 
 impl<'a> SnapshotBufferReader<'a> {
-    pub fn new(buffer: &'a SnapshotBuffer) -> Self {
+    #[must_use]
+    pub const fn new(buffer: &'a SnapshotBuffer) -> Self {
         Self {
             buffer,
             position: 0,
@@ -483,18 +530,19 @@ impl<'a> SnapshotBufferReader<'a> {
     }
 
     #[must_use]
-    pub fn position(&self) -> u64 {
+    pub const fn position(&self) -> u64 {
         self.position
     }
 
     #[must_use]
-    pub fn remaining(&self) -> u64 {
+    pub const fn remaining(&self) -> u64 {
         self.buffer.total_bytes.saturating_sub(self.position)
     }
 }
 
 impl Read for SnapshotBufferReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        #[allow(clippy::cast_possible_truncation)] // Remaining bytes bounded by buffer size
         let remaining = self.remaining() as usize;
         if remaining == 0 {
             return Ok(0);
@@ -513,6 +561,7 @@ impl Read for SnapshotBufferReader<'_> {
 }
 
 impl Seek for SnapshotBufferReader<'_> {
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = match pos {
             SeekFrom::Start(offset) => offset as i64,

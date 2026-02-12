@@ -1,4 +1,7 @@
-# Neumann
+<p align="center">
+  <img src="images/neumann_logo.png" alt="Neumann" height="80" />
+  <img src="images/neumann_text.png" alt="Neumann" height="60" />
+</p>
 
 Stop juggling five databases for one AI app.
 
@@ -78,6 +81,16 @@ cargo build --release
 
 See [Installation Guide](docs/book/src/getting-started/installation.md) for
 platform support, troubleshooting, and environment variables.
+
+### Verify Installation
+
+```bash
+# Check version
+neumann --version
+
+# Run a quick smoke test
+neumann -c "CREATE TABLE test (id INT, name TEXT); INSERT test id=1, name='hello'; SELECT * FROM test"
+```
 
 ## Quick Start
 
@@ -206,11 +219,11 @@ for row in result.rows:
 ### TypeScript
 
 ```bash
-npm install neumann-db
+npm install @scrunchee/client
 ```
 
 ```typescript
-import { NeumannClient } from 'neumann';
+import { NeumannClient } from '@scrunchee/client';
 
 const client = await NeumannClient.connect("localhost:9200");
 const result = await client.execute("SELECT * FROM users");
@@ -273,7 +286,7 @@ Neumann unifies structure, relationships, and semantics.
 
 ## License
 
-Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
+Licensed under the [Business Source License 1.1](LICENSE).
 
 ## Author
 

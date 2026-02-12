@@ -1,15 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Streaming TT decomposition for memory-bounded I/O.
 //!
 //! Enables processing large vector collections without loading all into memory.
 //! Uses a trailer-based format where entry count is written at the end.
-
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::io_other_error)]
 
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
@@ -65,6 +58,9 @@ pub struct StreamingTTWriter<W: Write> {
 
 impl<W: Write> StreamingTTWriter<W> {
     /// Create a new streaming TT writer.
+    ///
+    /// # Errors
+    /// Returns error if writing magic bytes fails.
     pub fn new(writer: W, config: TTConfig) -> io::Result<Self> {
         let mut buf_writer = BufWriter::new(writer);
 
@@ -81,6 +77,9 @@ impl<W: Write> StreamingTTWriter<W> {
     }
 
     /// Decompose and write a single vector.
+    ///
+    /// # Errors
+    /// Returns error if TT decomposition or I/O fails.
     pub fn write_vector(&mut self, vector: &[f32]) -> Result<(), TTError> {
         let tt = tt_decompose(vector, &self.config)?;
         self.write_tt(&tt).map_err(|e| match e {
@@ -90,8 +89,12 @@ impl<W: Write> StreamingTTWriter<W> {
     }
 
     /// Write a pre-decomposed TT vector.
+    ///
+    /// # Errors
+    /// Returns error if serialization or I/O fails.
     pub fn write_tt(&mut self, tt: &TTVector) -> Result<(), FormatError> {
         let bytes = bitcode::serialize(tt)?;
+        #[allow(clippy::cast_possible_truncation)]
         let len = bytes.len() as u32;
 
         self.writer.write_all(&len.to_le_bytes())?;
@@ -103,23 +106,26 @@ impl<W: Write> StreamingTTWriter<W> {
     }
 
     #[must_use]
-    pub fn vector_count(&self) -> u64 {
+    pub const fn vector_count(&self) -> u64 {
         self.vector_count
     }
 
     #[must_use]
-    pub fn bytes_written(&self) -> u64 {
+    pub const fn bytes_written(&self) -> u64 {
         self.bytes_written
     }
 
     #[must_use]
-    pub fn config(&self) -> &TTConfig {
+    pub const fn config(&self) -> &TTConfig {
         &self.config
     }
 }
 
 impl<W: Write + Seek> StreamingTTWriter<W> {
     /// Finish writing, write trailer with final vector count.
+    ///
+    /// # Errors
+    /// Returns error if serialization or I/O fails.
     pub fn finish(mut self) -> Result<W, FormatError> {
         let header = StreamingTTHeader {
             magic: STREAMING_TT_MAGIC,
@@ -139,7 +145,7 @@ impl<W: Write + Seek> StreamingTTWriter<W> {
         self.writer.flush()?;
         self.writer
             .into_inner()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()).into())
+            .map_err(|e| std::io::Error::other(e.to_string()).into())
     }
 }
 
@@ -152,6 +158,9 @@ pub struct StreamingTTReader<R: Read> {
 
 impl<R: Read + Seek> StreamingTTReader<R> {
     /// Open a streaming TT file, reading header from trailer.
+    ///
+    /// # Errors
+    /// Returns error if reading, seeking, or header validation fails.
     pub fn open(mut reader: R) -> Result<Self, FormatError> {
         reader.seek(SeekFrom::End(-8))?;
         let mut trailer_len_bytes = [0u8; 8];
@@ -162,7 +171,10 @@ impl<R: Read + Seek> StreamingTTReader<R> {
             return Err(FormatError::InvalidMagic);
         }
 
-        reader.seek(SeekFrom::End(-(8 + trailer_len as i64)))?;
+        #[allow(clippy::cast_possible_wrap)]
+        let trailer_offset = -(8 + trailer_len as i64);
+        reader.seek(SeekFrom::End(trailer_offset))?;
+        #[allow(clippy::cast_possible_truncation)]
         let mut trailer_bytes = vec![0u8; trailer_len as usize];
         reader.read_exact(&mut trailer_bytes)?;
 
@@ -179,27 +191,27 @@ impl<R: Read + Seek> StreamingTTReader<R> {
     }
 
     #[must_use]
-    pub fn header(&self) -> &StreamingTTHeader {
+    pub const fn header(&self) -> &StreamingTTHeader {
         &self.header
     }
 
     #[must_use]
-    pub fn vector_count(&self) -> u64 {
+    pub const fn vector_count(&self) -> u64 {
         self.header.vector_count
     }
 
     #[must_use]
-    pub fn vectors_read(&self) -> u64 {
+    pub const fn vectors_read(&self) -> u64 {
         self.vectors_read
     }
 
     #[must_use]
-    pub fn has_next(&self) -> bool {
+    pub const fn has_next(&self) -> bool {
         self.vectors_read < self.header.vector_count
     }
 
     #[must_use]
-    pub fn config(&self) -> &TTConfig {
+    pub const fn config(&self) -> &TTConfig {
         &self.header.config
     }
 }
@@ -241,6 +253,9 @@ impl<R: Read> Iterator for StreamingTTReader<R> {
 }
 
 /// Convert dense vectors to streaming TT format.
+///
+/// # Errors
+/// Returns error if TT decomposition or I/O fails.
 pub fn convert_vectors_to_streaming_tt<W, I>(
     vectors: I,
     writer: W,
@@ -267,6 +282,9 @@ where
 /// Perform similarity search on streaming TT data.
 ///
 /// Returns top-k (index, similarity) pairs sorted by descending similarity.
+///
+/// # Errors
+/// Returns error if reading or deserializing TT vectors fails.
 pub fn streaming_tt_similarity_search<R: Read + Seek>(
     reader: R,
     query_tt: &TTVector,
@@ -289,6 +307,9 @@ pub fn streaming_tt_similarity_search<R: Read + Seek>(
 }
 
 /// Read all TT vectors from streaming format into memory.
+///
+/// # Errors
+/// Returns error if reading or deserializing TT vectors fails.
 pub fn read_streaming_tt_all<R: Read + Seek>(reader: R) -> Result<Vec<TTVector>, FormatError> {
     let stream_reader = StreamingTTReader::open(reader)?;
     stream_reader.collect()

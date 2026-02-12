@@ -69,6 +69,7 @@ pub mod snapshot_buffer;
 pub mod snapshot_streaming;
 pub mod state_machine;
 pub mod state_root;
+pub(crate) mod sync_compat;
 pub mod tcp;
 pub mod transaction;
 pub mod tx_id;
@@ -102,6 +103,7 @@ pub use delta_replication::{
     ReplicationStatsSnapshot,
 };
 pub use distributed_tx::{
+    lock_handle_current, lock_handle_high_water_threshold, lock_handle_high_water_warnings,
     AbortRequest, CommitRequest, CoordinatorState, DistributedTransaction, DistributedTxConfig,
     DistributedTxCoordinator, DistributedTxStats, DistributedTxStatsSnapshot, EpochMillis, KeyLock,
     LockManager, ParticipantState, PrepareRequest, PrepareVote, PreparedTx, RecoveryStats,
@@ -111,7 +113,8 @@ pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
 pub use geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager, RankedPeer};
 pub use gossip::{
-    GossipConfig, GossipMembershipManager, GossipMessage, GossipNodeState, LWWMembershipState,
+    ConnectivityEntry, GossipConfig, GossipMembershipManager, GossipMessage, GossipNodeState,
+    LWWMembershipState,
 };
 use graph_engine::GraphEngine;
 pub use hlc::{HLCTimestamp, HybridLogicalClock};
@@ -162,7 +165,8 @@ pub use tcp::{
 use tensor_store::TensorStore;
 use tokio::sync::broadcast;
 pub use transaction::{
-    TransactionDelta, TransactionManager, TransactionState, TransactionWorkspace,
+    apply_transaction_to_store, TransactionDelta, TransactionManager, TransactionState,
+    TransactionWorkspace,
 };
 pub use tx_id::{extract_timestamp_hint, generate_tx_id, is_plausible_tx_id};
 pub use tx_wal::{
@@ -187,11 +191,12 @@ pub use validation::{
 /// - 5 nodes: quorum = 3
 /// - 6 nodes: quorum = 4
 #[inline]
-pub fn quorum_size(total_nodes: usize) -> usize {
+#[must_use]
+pub const fn quorum_size(total_nodes: usize) -> usize {
     (total_nodes / 2) + 1
 }
 
-/// Aggregated metrics from all tensor_chain components.
+/// Aggregated metrics from all `tensor_chain` components.
 ///
 /// Provides a unified interface to collect and snapshot metrics from:
 /// - Raft consensus (elections, heartbeats, quorum)
@@ -211,6 +216,7 @@ pub struct ChainMetrics {
 }
 
 impl ChainMetrics {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             raft: Arc::new(RaftStats::new()),
@@ -220,7 +226,8 @@ impl ChainMetrics {
         }
     }
 
-    pub fn from_components(
+    #[must_use]
+    pub const fn from_components(
         raft: Arc<RaftStats>,
         dtx: Arc<DistributedTxStats>,
         membership: Arc<MembershipStats>,
@@ -235,6 +242,7 @@ impl ChainMetrics {
     }
 
     /// Take a point-in-time snapshot of all metrics.
+    #[must_use]
     pub fn snapshot(&self) -> ChainMetricsSnapshot {
         ChainMetricsSnapshot {
             raft: self.raft.snapshot(),
@@ -310,7 +318,8 @@ pub struct ChainMetricsSnapshot {
 }
 
 impl ChainMetricsSnapshot {
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.raft.fast_path_accepted == 0
             && self.raft.heartbeat_successes == 0
             && self.dtx.started == 0
@@ -318,37 +327,47 @@ impl ChainMetricsSnapshot {
             && self.replication.updates_sent == 0
     }
 
-    pub fn total_heartbeats(&self) -> u64 {
+    #[must_use]
+    pub const fn total_heartbeats(&self) -> u64 {
         self.raft.heartbeat_successes + self.raft.heartbeat_failures
     }
 
     /// Calculate heartbeat success rate (0.0 - 1.0).
+    #[must_use]
     pub fn heartbeat_success_rate(&self) -> f64 {
         let total = self.total_heartbeats();
         if total == 0 {
             1.0 // No heartbeats means no failures
         } else {
-            self.raft.heartbeat_successes as f64 / total as f64
+            #[allow(clippy::cast_precision_loss)]
+            let rate = self.raft.heartbeat_successes as f64 / total as f64;
+            rate
         }
     }
 
     /// Calculate transaction commit rate (0.0 - 1.0).
+    #[must_use]
     pub fn tx_commit_rate(&self) -> f64 {
         if self.dtx.started == 0 {
             1.0
         } else {
-            self.dtx.committed as f64 / self.dtx.started as f64
+            #[allow(clippy::cast_precision_loss)]
+            let rate = self.dtx.committed as f64 / self.dtx.started as f64;
+            rate
         }
     }
 
     /// Calculate health check success rate (0.0 - 1.0).
+    #[must_use]
     pub fn health_check_success_rate(&self) -> f64 {
         if self.membership.health_checks == 0 {
             1.0
         } else {
             let failures = self.membership.health_check_failures;
             let successes = self.membership.health_checks.saturating_sub(failures);
-            successes as f64 / self.membership.health_checks as f64
+            #[allow(clippy::cast_precision_loss)]
+            let rate = successes as f64 / self.membership.health_checks as f64;
+            rate
         }
     }
 
@@ -358,6 +377,7 @@ impl ChainMetricsSnapshot {
     /// - Heartbeat success rate > 0.9
     /// - No quorum lost events
     /// - Health check success rate > 0.9
+    #[must_use]
     pub fn is_cluster_healthy(&self) -> bool {
         self.heartbeat_success_rate() > 0.9
             && self.raft.quorum_lost_events == 0
@@ -379,8 +399,9 @@ pub struct RaftHandle {
 }
 
 impl RaftHandle {
+    #[must_use]
     pub fn spawn(node: Arc<RaftNode>) -> Self {
-        let node_id = node.node_id().to_string();
+        let node_id = node.node_id().clone();
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let join_handle = tokio::spawn(async move { node.run(shutdown_rx).await });
@@ -392,6 +413,7 @@ impl RaftHandle {
         }
     }
 
+    #[must_use]
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
@@ -401,20 +423,24 @@ impl RaftHandle {
         self.shutdown_tx.send(()).ok();
     }
 
+    #[must_use]
     pub fn is_finished(&self) -> bool {
         self.join_handle.is_finished()
     }
 
+    /// # Errors
+    /// Returns an error if the Raft task panicked or returned an error.
     pub async fn join(self) -> Result<()> {
         match self.join_handle.await {
             Ok(result) => result,
             Err(e) => Err(ChainError::ConsensusError(format!(
-                "Raft task panicked: {}",
-                e
+                "Raft task panicked: {e}"
             ))),
         }
     }
 
+    /// # Errors
+    /// Returns an error if shutdown or join fails.
     pub async fn shutdown_and_wait(self) -> Result<()> {
         self.shutdown();
         self.join().await
@@ -447,6 +473,7 @@ impl Default for AutoMergeConfig {
 }
 
 impl AutoMergeConfig {
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -454,17 +481,20 @@ impl AutoMergeConfig {
         }
     }
 
-    pub fn with_threshold(mut self, threshold: f32) -> Self {
+    #[must_use]
+    pub const fn with_threshold(mut self, threshold: f32) -> Self {
         self.orthogonal_threshold = threshold;
         self
     }
 
-    pub fn with_max_batch(mut self, max: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_batch(mut self, max: usize) -> Self {
         self.max_merge_batch = max;
         self
     }
 
-    pub fn with_window(mut self, ms: u64) -> Self {
+    #[must_use]
+    pub const fn with_window(mut self, ms: u64) -> Self {
         self.merge_window_ms = ms;
         self
     }
@@ -493,6 +523,7 @@ impl Default for GeometricRoutingConfig {
 }
 
 impl GeometricRoutingConfig {
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -500,12 +531,14 @@ impl GeometricRoutingConfig {
         }
     }
 
+    #[must_use]
     pub fn with_min_similarity(mut self, threshold: f32) -> Self {
         self.min_similarity = threshold.clamp(0.0, 1.0);
         self
     }
 
-    pub fn without_fallback(mut self) -> Self {
+    #[must_use]
+    pub const fn without_fallback(mut self) -> Self {
         self.fallback_to_hash = false;
         self
     }
@@ -545,38 +578,44 @@ impl ChainConfig {
         }
     }
 
-    pub fn with_max_txs(mut self, max: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_txs(mut self, max: usize) -> Self {
         self.max_txs_per_block = max;
         self
     }
 
-    pub fn with_conflict_threshold(mut self, threshold: f32) -> Self {
+    #[must_use]
+    pub const fn with_conflict_threshold(mut self, threshold: f32) -> Self {
         self.conflict_threshold = threshold;
         self
     }
 
-    pub fn with_auto_merge(mut self, enabled: bool) -> Self {
+    #[must_use]
+    pub const fn with_auto_merge(mut self, enabled: bool) -> Self {
         self.auto_merge.enabled = enabled;
         self
     }
 
-    pub fn with_auto_merge_config(mut self, config: AutoMergeConfig) -> Self {
+    #[must_use]
+    pub const fn with_auto_merge_config(mut self, config: AutoMergeConfig) -> Self {
         self.auto_merge = config;
         self
     }
 
-    pub fn with_geometric_routing(mut self, config: GeometricRoutingConfig) -> Self {
+    #[must_use]
+    pub const fn with_geometric_routing(mut self, config: GeometricRoutingConfig) -> Self {
         self.geometric_routing = config;
         self
     }
 
-    pub fn without_geometric_routing(mut self) -> Self {
+    #[must_use]
+    pub const fn without_geometric_routing(mut self) -> Self {
         self.geometric_routing.enabled = false;
         self
     }
 }
 
-/// The main TensorChain interface.
+/// The main `TensorChain` interface.
 ///
 /// Provides a unified API for:
 /// - Transaction management (begin/commit/rollback)
@@ -612,10 +651,10 @@ pub struct TensorChain {
 }
 
 impl TensorChain {
-    /// Create a new TensorChain with the given store.
+    /// Create a new `TensorChain` with the given store.
     ///
-    /// Generates a new Ed25519 identity for signing blocks. The node_id parameter
-    /// is treated as a requested ID; the actual node_id is derived from the
+    /// Generates a new Ed25519 identity for signing blocks. The `node_id` parameter
+    /// is treated as a requested ID; the actual `node_id` is derived from the
     /// generated identity to ensure signatures can be verified.
     pub fn new(store: TensorStore, node_id: impl Into<NodeId>) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
@@ -791,31 +830,39 @@ impl TensorChain {
         }
     }
 
+    /// # Errors
+    /// Returns an error if chain initialization fails.
     pub fn initialize(&self) -> Result<()> {
         self.chain.initialize()
     }
 
+    #[must_use]
     pub fn height(&self) -> u64 {
         self.chain.height()
     }
 
+    #[must_use]
     pub fn tip_hash(&self) -> BlockHash {
         self.chain.tip_hash()
     }
 
-    pub fn node_id(&self) -> &NodeId {
+    #[must_use]
+    pub const fn node_id(&self) -> &NodeId {
         &self.config.node_id
     }
 
-    pub fn codebook_manager(&self) -> &CodebookManager {
+    #[must_use]
+    pub const fn codebook_manager(&self) -> &CodebookManager {
         &self.codebook_manager
     }
 
-    pub fn transition_validator(&self) -> &TransitionValidator {
+    #[must_use]
+    pub const fn transition_validator(&self) -> &TransitionValidator {
         &self.transition_validator
     }
 
-    pub fn identity(&self) -> &signing::Identity {
+    #[must_use]
+    pub const fn identity(&self) -> &signing::Identity {
         &self.identity
     }
 
@@ -843,11 +890,11 @@ impl TensorChain {
         self.geometric_membership = None;
     }
 
-    pub fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
+    pub const fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
         &self.config.geometric_routing
     }
 
-    pub fn is_geometric_routing_enabled(&self) -> bool {
+    pub const fn is_geometric_routing_enabled(&self) -> bool {
         self.config.geometric_routing.enabled
     }
 
@@ -879,6 +926,7 @@ impl TensorChain {
         self.config.node_id.clone()
     }
 
+    #[allow(clippy::unused_self)]
     fn route_by_hash(
         &self,
         embedding: &tensor_store::SparseVector,
@@ -910,10 +958,13 @@ impl TensorChain {
         let hash = hasher.finalize();
         let mut prefix = [0u8; 8];
         prefix.copy_from_slice(&hash[0..8]);
+        #[allow(clippy::cast_possible_truncation)]
         let idx = u64::from_le_bytes(prefix) as usize % candidates.len();
         Some(candidates[idx].clone())
     }
 
+    /// # Errors
+    /// Returns an error if the transaction cannot be started.
     pub fn begin(&self) -> Result<Arc<TransactionWorkspace>> {
         self.tx_manager.begin(self.graph.store())
     }
@@ -922,23 +973,21 @@ impl TensorChain {
     ///
     /// If auto-merge is enabled and orthogonal transactions are found,
     /// they will be merged into a single block via vector addition.
-    pub fn commit(&self, workspace: Arc<TransactionWorkspace>) -> Result<BlockHash> {
-        // Mark as committing
+    ///
+    /// # Errors
+    /// Returns an error if the transaction cannot be committed or block creation fails.
+    pub fn commit(&self, workspace: &Arc<TransactionWorkspace>) -> Result<BlockHash> {
         workspace.mark_committing()?;
-
-        // Get operations from workspace
         let operations = workspace.operations();
 
         if operations.is_empty() {
-            // No operations - just mark as committed without creating block
             workspace.mark_committed();
             self.tx_manager.remove(workspace.id());
             return Ok(self.chain.tip_hash());
         }
 
         if operations.len() > self.config.max_txs_per_block {
-            workspace.mark_failed();
-            self.tx_manager.remove(workspace.id());
+            self.fail_workspace(workspace, &[]);
             return Err(ChainError::TransactionFailed(format!(
                 "transaction exceeds max_txs_per_block ({} > {})",
                 operations.len(),
@@ -946,117 +995,95 @@ impl TensorChain {
             )));
         }
 
-        // Detect semantic conflicts with other active transactions
-        if let Err(e) = self.detect_conflicts(&workspace) {
-            workspace.mark_failed();
-            self.tx_manager.remove(workspace.id());
+        if let Err(e) = self.detect_conflicts(workspace) {
+            self.fail_workspace(workspace, &[]);
             return Err(e);
         }
 
-        // Compute delta embedding for the workspace
         let delta = workspace.to_delta_vector();
-
-        // Check for auto-merge candidates
-        let (merged_operations, merged_delta, merged_workspaces) = if self.config.auto_merge.enabled
-        {
-            self.find_and_merge_orthogonal(&workspace, delta)?
+        let (merged_ops, merged_delta, merged_ws) = if self.config.auto_merge.enabled {
+            self.find_and_merge_orthogonal(workspace, delta)
         } else {
             (operations, workspace.delta_embedding(), vec![])
         };
 
-        if merged_operations.len() > self.config.max_txs_per_block {
-            workspace.mark_failed();
-            self.tx_manager.remove(workspace.id());
-            for merged_ws in &merged_workspaces {
-                merged_ws.mark_failed();
-                self.tx_manager.remove(merged_ws.id());
-            }
+        if merged_ops.len() > self.config.max_txs_per_block {
+            self.fail_workspace(workspace, &merged_ws);
             return Err(ChainError::TransactionFailed(format!(
                 "merged block exceeds max_txs_per_block ({} > {})",
-                merged_operations.len(),
+                merged_ops.len(),
                 self.config.max_txs_per_block
             )));
         }
 
-        // Snapshot store state before applying operations (for rollback on failure)
-        let pre_commit_snapshot = self
+        let snapshot = self
             .graph
             .store()
             .snapshot_bytes()
             .map_err(|e| ChainError::StorageError(e.to_string()))?;
 
-        if let Err(e) = self.apply_operations_to_store(&merged_operations) {
-            let _ = self.graph.store().restore_from_bytes(&pre_commit_snapshot);
-            workspace.mark_failed();
-            self.tx_manager.remove(workspace.id());
-            for merged_ws in &merged_workspaces {
-                merged_ws.mark_failed();
-                self.tx_manager.remove(merged_ws.id());
-            }
+        if let Err(e) = self.apply_operations_to_store(&merged_ops) {
+            let _ = self.graph.store().restore_from_bytes(&snapshot);
+            self.fail_workspace(workspace, &merged_ws);
             return Err(e);
         }
 
         let state_root = match state_root::compute_state_root(self.graph.store()) {
             Ok(root) => root,
             Err(e) => {
-                let _ = self.graph.store().restore_from_bytes(&pre_commit_snapshot);
-                workspace.mark_failed();
-                self.tx_manager.remove(workspace.id());
-                for merged_ws in &merged_workspaces {
-                    merged_ws.mark_failed();
-                    self.tx_manager.remove(merged_ws.id());
-                }
+                let _ = self.graph.store().restore_from_bytes(&snapshot);
+                self.fail_workspace(workspace, &merged_ws);
                 return Err(e);
             },
         };
 
-        // Quantize delta embedding using codebook
-        let quantized_codes = if !merged_delta.is_empty() {
-            if let Some((code, _similarity)) =
-                self.codebook_manager.global().quantize(&merged_delta)
-            {
-                vec![code as u16]
-            } else {
-                Vec::new()
-            }
-        } else {
+        #[allow(clippy::cast_possible_truncation)]
+        let quantized_codes = if merged_delta.is_empty() {
             Vec::new()
+        } else {
+            self.codebook_manager
+                .global()
+                .quantize(&merged_delta)
+                .map_or_else(Vec::new, |(code, _)| vec![code as u16])
         };
 
-        // Build and sign the block with Ed25519 identity
         let block = self
             .chain
             .new_block()
-            .add_transactions(merged_operations)
+            .add_transactions(merged_ops)
             .with_dense_embedding(&merged_delta)
             .with_codes(quantized_codes)
             .with_state_root(state_root)
             .sign_and_build(&self.identity);
 
-        // Append to chain
         match self.chain.append(block) {
             Ok(hash) => {
-                // Mark all merged workspaces as committed
                 workspace.mark_committed();
                 self.tx_manager.remove(workspace.id());
-
-                for merged_ws in merged_workspaces {
-                    merged_ws.mark_committed();
-                    self.tx_manager.remove(merged_ws.id());
+                for ws in merged_ws {
+                    ws.mark_committed();
+                    self.tx_manager.remove(ws.id());
                 }
-
                 Ok(hash)
             },
             Err(e) => {
-                let _ = self.graph.store().restore_from_bytes(&pre_commit_snapshot);
-                workspace.mark_failed();
-                self.tx_manager.remove(workspace.id());
-                for merged_ws in &merged_workspaces {
-                    merged_ws.mark_failed();
-                    self.tx_manager.remove(merged_ws.id());
-                }
+                let _ = self.graph.store().restore_from_bytes(&snapshot);
+                self.fail_workspace(workspace, &merged_ws);
                 Err(e)
             },
+        }
+    }
+
+    fn fail_workspace(
+        &self,
+        workspace: &Arc<TransactionWorkspace>,
+        merged: &[Arc<TransactionWorkspace>],
+    ) {
+        workspace.mark_failed();
+        self.tx_manager.remove(workspace.id());
+        for ws in merged {
+            ws.mark_failed();
+            self.tx_manager.remove(ws.id());
         }
     }
 
@@ -1066,7 +1093,7 @@ impl TensorChain {
         &self,
         workspace: &Arc<TransactionWorkspace>,
         mut delta: DeltaVector,
-    ) -> Result<(Vec<Transaction>, Vec<f32>, Vec<Arc<TransactionWorkspace>>)> {
+    ) -> (Vec<Transaction>, Vec<f32>, Vec<Arc<TransactionWorkspace>>) {
         let mut all_operations = workspace.operations();
         let mut merged_workspaces = Vec::new();
 
@@ -1122,7 +1149,7 @@ impl TensorChain {
 
         // Convert sparse delta to dense for return (Phase 4 will make this sparse)
         let final_dim = delta.dimension();
-        Ok((all_operations, delta.to_dense(final_dim), merged_workspaces))
+        (all_operations, delta.to_dense(final_dim), merged_workspaces)
     }
 
     fn detect_conflicts(&self, workspace: &TransactionWorkspace) -> Result<()> {
@@ -1166,36 +1193,51 @@ impl TensorChain {
         Ok(())
     }
 
-    pub fn rollback(&self, workspace: Arc<TransactionWorkspace>) -> Result<()> {
+    /// # Errors
+    /// Returns an error if the rollback fails.
+    pub fn rollback(&self, workspace: &Arc<TransactionWorkspace>) -> Result<()> {
         workspace.rollback(self.graph.store())?;
         self.tx_manager.remove(workspace.id());
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if reading the block fails.
     pub fn get_block(&self, height: u64) -> Result<Option<Block>> {
         self.chain.get_block_at(height)
     }
 
+    /// # Errors
+    /// Returns an error if reading the tip fails.
     pub fn get_tip(&self) -> Result<Option<Block>> {
         self.chain.get_tip()
     }
 
+    /// # Errors
+    /// Returns an error if reading the genesis block fails.
     pub fn get_genesis(&self) -> Result<Option<Block>> {
         self.chain.get_genesis()
     }
 
+    /// # Errors
+    /// Returns an error if the chain verification finds inconsistencies.
     pub fn verify(&self) -> Result<()> {
         self.chain.verify_chain()
     }
 
+    /// # Errors
+    /// Returns an error if reading the history fails.
     pub fn history(&self, key: &str) -> Result<Vec<(u64, Transaction)>> {
         self.chain.history(key)
     }
 
+    /// # Errors
+    /// Returns an error if reading the block range fails.
     pub fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<Block>> {
         self.chain.get_blocks_range(start, end)
     }
 
+    #[must_use]
     pub fn iter(&self) -> ChainIterator<'_> {
         self.chain.iter()
     }
@@ -1212,6 +1254,8 @@ impl TensorChain {
         &self.graph
     }
 
+    /// # Errors
+    /// Returns an error if appending the block fails.
     pub fn append_block(&self, block: Block) -> Result<BlockHash> {
         self.chain.append(block)
     }
@@ -1220,9 +1264,11 @@ impl TensorChain {
         self.chain.new_block()
     }
 
-    /// Save global codebook entries to TensorStore.
+    /// Save global codebook entries to `TensorStore`.
     ///
     /// Stores each centroid with key pattern `_codebook:global:{entry_id}`.
+    /// # Errors
+    /// Returns an error if storing codebook entries fails.
     pub fn save_global_codebook(&self) -> Result<usize> {
         use tensor_store::{ScalarValue, TensorData, TensorValue};
 
@@ -1237,15 +1283,17 @@ impl TensorChain {
             // Store metadata
             data.set(
                 "id",
-                TensorValue::Scalar(ScalarValue::Int(entry.id() as i64)),
+                TensorValue::Scalar(ScalarValue::Int(i64::from(entry.id()))),
             );
             data.set(
                 "magnitude",
-                TensorValue::Scalar(ScalarValue::Float(entry.magnitude() as f64)),
+                TensorValue::Scalar(ScalarValue::Float(f64::from(entry.magnitude()))),
             );
+            #[allow(clippy::cast_possible_wrap)]
+            let access_count = entry.access_count() as i64;
             data.set(
                 "access_count",
-                TensorValue::Scalar(ScalarValue::Int(entry.access_count() as i64)),
+                TensorValue::Scalar(ScalarValue::Int(access_count)),
             );
             if let Some(label) = entry.label() {
                 data.set(
@@ -1264,15 +1312,17 @@ impl TensorChain {
         // Store metadata about the codebook
         let meta_key = "_codebook:global:_meta";
         let mut meta = TensorData::new();
+        #[allow(clippy::cast_possible_wrap)]
+        let entry_count_val = count as i64;
         meta.set(
             "entry_count",
-            TensorValue::Scalar(ScalarValue::Int(count as i64)),
+            TensorValue::Scalar(ScalarValue::Int(entry_count_val)),
         );
+        #[allow(clippy::cast_possible_wrap)]
+        let dimension_val = self.codebook_manager.global().dimension() as i64;
         meta.set(
             "dimension",
-            TensorValue::Scalar(ScalarValue::Int(
-                self.codebook_manager.global().dimension() as i64
-            )),
+            TensorValue::Scalar(ScalarValue::Int(dimension_val)),
         );
         self.graph
             .store()
@@ -1282,21 +1332,27 @@ impl TensorChain {
         Ok(count)
     }
 
-    /// Load global codebook from TensorStore.
+    /// Load global codebook from `TensorStore`.
     ///
-    /// Returns a GlobalCodebook constructed from stored entries.
+    /// Returns a `GlobalCodebook` constructed from stored entries.
+    ///
+    /// # Errors
+    /// Returns an error if reading from the store fails.
     pub fn load_global_codebook(&self) -> Result<Option<GlobalCodebook>> {
         use tensor_store::TensorValue;
 
         // First check if metadata exists
         let meta_key = "_codebook:global:_meta";
-        let meta = match self.graph.store().get(meta_key) {
-            Ok(m) => m,
-            Err(_) => return Ok(None),
+        let Ok(meta) = self.graph.store().get(meta_key) else {
+            return Ok(None);
         };
 
         let entry_count = match meta.get("entry_count") {
-            Some(TensorValue::Scalar(tensor_store::ScalarValue::Int(n))) => *n as usize,
+            Some(TensorValue::Scalar(tensor_store::ScalarValue::Int(n))) => {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let count = *n as usize;
+                count
+            },
             _ => return Ok(None),
         };
 
@@ -1307,7 +1363,7 @@ impl TensorChain {
         // Load all centroids
         let mut centroids = Vec::with_capacity(entry_count);
         for id in 0..entry_count {
-            let key = format!("_codebook:global:{}", id);
+            let key = format!("_codebook:global:{id}");
             if let Ok(data) = self.graph.store().get(&key) {
                 if let Some(TensorValue::Vector(centroid)) = data.get("_embedding") {
                     centroids.push(centroid.clone());
@@ -1322,7 +1378,7 @@ impl TensorChain {
         Ok(Some(GlobalCodebook::from_centroids(centroids)))
     }
 
-    /// Create a TensorChain, loading existing codebook from store if available.
+    /// Create a `TensorChain`, loading existing codebook from store if available.
     ///
     /// This is the recommended constructor for production use, as it preserves
     /// learned codebooks across restarts.
@@ -1369,7 +1425,7 @@ impl TensorChain {
         }
     }
 
-    /// Helper to load codebook from a TensorStore.
+    /// Helper to load codebook from a `TensorStore`.
     fn try_load_codebook_from_store(store: &TensorStore) -> Option<GlobalCodebook> {
         use tensor_store::TensorValue;
 
@@ -1377,7 +1433,11 @@ impl TensorChain {
         let meta = store.get(meta_key).ok()?;
 
         let entry_count = match meta.get("entry_count") {
-            Some(TensorValue::Scalar(tensor_store::ScalarValue::Int(n))) => *n as usize,
+            Some(TensorValue::Scalar(tensor_store::ScalarValue::Int(n))) => {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let count = *n as usize;
+                count
+            },
             _ => return None,
         };
 
@@ -1387,7 +1447,7 @@ impl TensorChain {
 
         let mut centroids = Vec::with_capacity(entry_count);
         for id in 0..entry_count {
-            let key = format!("_codebook:global:{}", id);
+            let key = format!("_codebook:global:{id}");
             if let Ok(data) = store.get(&key) {
                 if let Some(TensorValue::Vector(centroid)) = data.get("_embedding") {
                     centroids.push(centroid.clone());
@@ -1400,6 +1460,15 @@ impl TensorChain {
         }
 
         Some(GlobalCodebook::from_centroids(centroids))
+    }
+}
+
+impl<'a> IntoIterator for &'a TensorChain {
+    type Item = Result<Block>;
+    type IntoIter = ChainIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -1464,7 +1533,7 @@ mod tests {
         })
         .unwrap();
 
-        let hash = chain.commit(tx).unwrap();
+        let hash = chain.commit(&tx).unwrap();
 
         assert_eq!(chain.height(), 1);
         assert_eq!(chain.tip_hash(), hash);
@@ -1483,7 +1552,7 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        chain.commit(tx1).unwrap();
+        chain.commit(&tx1).unwrap();
 
         // Begin a new transaction
         let tx2 = chain.begin().unwrap();
@@ -1494,7 +1563,7 @@ mod tests {
         .unwrap();
 
         // Rollback
-        chain.rollback(tx2).unwrap();
+        chain.rollback(&tx2).unwrap();
 
         // Height should still be 1
         assert_eq!(chain.height(), 1);
@@ -1509,7 +1578,7 @@ mod tests {
         let tx = chain.begin().unwrap();
         // No operations added
 
-        let hash = chain.commit(tx).unwrap();
+        let hash = chain.commit(&tx).unwrap();
 
         // Should not create a new block
         assert_eq!(chain.height(), 0);
@@ -1530,7 +1599,7 @@ mod tests {
                 data: vec![i as u8],
             })
             .unwrap();
-            chain.commit(tx).unwrap();
+            chain.commit(&tx).unwrap();
         }
 
         let history = chain.history("tracked_key").unwrap();
@@ -1564,7 +1633,7 @@ mod tests {
                 data: vec![i as u8],
             })
             .unwrap();
-            chain.commit(tx).unwrap();
+            chain.commit(&tx).unwrap();
         }
 
         // Verify should pass
@@ -1629,7 +1698,7 @@ mod tests {
         })
         .unwrap();
 
-        let hash = chain.commit(tx).unwrap();
+        let hash = chain.commit(&tx).unwrap();
 
         assert_eq!(chain.height(), 1);
         assert_eq!(chain.tip_hash(), hash);
@@ -1659,8 +1728,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        tx1.set_before_embedding(vec![0.0, 0.0]);
-        tx1.compute_delta(vec![1.0, 0.0]);
+        tx1.set_before_embedding(&[0.0, 0.0]);
+        tx1.compute_delta(&[1.0, 0.0]);
 
         let tx2 = chain.begin().unwrap();
         tx2.add_operation(Transaction::Put {
@@ -1668,10 +1737,10 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        tx2.set_before_embedding(vec![0.0, 0.0]);
-        tx2.compute_delta(vec![0.0, 1.0]);
+        tx2.set_before_embedding(&[0.0, 0.0]);
+        tx2.compute_delta(&[0.0, 1.0]);
 
-        let result = chain.commit(tx1);
+        let result = chain.commit(&tx1);
         assert!(result.is_ok());
         assert_eq!(tx2.state(), TransactionState::Failed);
     }
@@ -1688,8 +1757,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        tx1.set_before_embedding(vec![0.0, 0.0]);
-        tx1.compute_delta(vec![1.0, 0.0]);
+        tx1.set_before_embedding(&[0.0, 0.0]);
+        tx1.compute_delta(&[1.0, 0.0]);
 
         let tx2 = chain.begin().unwrap();
         tx2.add_operation(Transaction::Put {
@@ -1697,10 +1766,10 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        tx2.set_before_embedding(vec![0.0, 0.0]);
-        tx2.compute_delta(vec![0.0, 0.0]);
+        tx2.set_before_embedding(&[0.0, 0.0]);
+        tx2.compute_delta(&[0.0, 0.0]);
 
-        let result = chain.commit(tx1);
+        let result = chain.commit(&tx1);
         assert!(result.is_ok());
         assert!(tx2.is_active());
     }
@@ -1717,8 +1786,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        tx1.set_before_embedding(vec![0.0, 0.0]);
-        tx1.compute_delta(vec![1.0, 0.0]);
+        tx1.set_before_embedding(&[0.0, 0.0]);
+        tx1.compute_delta(&[1.0, 0.0]);
 
         let tx2 = chain.begin().unwrap();
         tx2.add_operation(Transaction::Put {
@@ -1726,10 +1795,10 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        tx2.set_before_embedding(vec![0.0, 0.0]);
-        tx2.compute_delta(vec![0.9, 0.1]);
+        tx2.set_before_embedding(&[0.0, 0.0]);
+        tx2.compute_delta(&[0.9, 0.1]);
 
-        let result = chain.commit(tx1);
+        let result = chain.commit(&tx1);
         assert!(matches!(result, Err(ChainError::ConflictDetected { .. })));
     }
 
@@ -1748,10 +1817,10 @@ mod tests {
         .unwrap();
 
         // Set delta embedding
-        tx.set_before_embedding(vec![0.0; 128]);
-        tx.compute_delta(vec![1.0; 128]); // Delta: all 1s
+        tx.set_before_embedding(&[0.0; 128]);
+        tx.compute_delta(&[1.0; 128]); // Delta: all 1s
 
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         // Check the block has a non-zero embedding
         let block = chain.get_tip().unwrap().unwrap();
@@ -1784,10 +1853,10 @@ mod tests {
         let tx2 = chain.begin().unwrap();
         assert_eq!(chain.active_transactions(), 2);
 
-        chain.rollback(tx1).unwrap();
+        chain.rollback(&tx1).unwrap();
         assert_eq!(chain.active_transactions(), 1);
 
-        chain.rollback(tx2).unwrap();
+        chain.rollback(&tx2).unwrap();
         assert_eq!(chain.active_transactions(), 0);
     }
 
@@ -1862,7 +1931,7 @@ mod tests {
                 data: vec![i as u8],
             })
             .unwrap();
-            chain.commit(tx).unwrap();
+            chain.commit(&tx).unwrap();
         }
 
         // Iterate over blocks
@@ -1884,7 +1953,7 @@ mod tests {
                 data: vec![i as u8],
             })
             .unwrap();
-            chain.commit(tx).unwrap();
+            chain.commit(&tx).unwrap();
         }
 
         // Get a range
@@ -1957,8 +2026,8 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        tx1.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
-        tx1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+        tx1.set_before_embedding(&[0.0, 0.0, 0.0, 0.0]);
+        tx1.compute_delta(&[1.0, 0.0, 0.0, 0.0]);
 
         // Create second transaction with orthogonal delta (Y direction)
         let tx2 = chain.begin().unwrap();
@@ -1967,11 +2036,11 @@ mod tests {
             data: vec![2],
         })
         .unwrap();
-        tx2.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
-        tx2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]);
+        tx2.set_before_embedding(&[0.0, 0.0, 0.0, 0.0]);
+        tx2.compute_delta(&[0.0, 1.0, 0.0, 0.0]);
 
         // Commit tx1 - should also merge tx2 since they're orthogonal
-        let _hash = chain.commit(tx1).unwrap();
+        let _hash = chain.commit(&tx1).unwrap();
 
         // Both should be merged - only 1 block created, 0 active transactions
         assert_eq!(chain.height(), 1);
@@ -1994,7 +2063,7 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         let tip = chain.get_tip().unwrap().unwrap();
         assert_eq!(tip.header.height, 1);
@@ -2253,10 +2322,10 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        tx.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
-        tx.compute_delta(vec![0.9, 0.1, 0.0, 0.0]); // Close to [1,0,0,0]
+        tx.set_before_embedding(&[0.0, 0.0, 0.0, 0.0]);
+        tx.compute_delta(&[0.9, 0.1, 0.0, 0.0]); // Close to [1,0,0,0]
 
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         // Check block has quantized codes
         let block = chain.get_tip().unwrap().unwrap();
@@ -2276,10 +2345,10 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        tx.set_before_embedding(Vec::new());
-        tx.compute_delta(Vec::new());
+        tx.set_before_embedding(&[]);
+        tx.compute_delta(&[]);
 
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         let block = chain.get_tip().unwrap().unwrap();
         assert!(block.header.quantized_codes.is_empty());
@@ -2740,7 +2809,7 @@ mod tests {
             data: vec![1, 2, 3, 4],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         // Get the committed block
         let block = chain.get_block(1).unwrap().unwrap();
@@ -2781,7 +2850,7 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         // Get the block
         let block = chain.get_block(1).unwrap().unwrap();
@@ -2813,7 +2882,7 @@ mod tests {
             data: vec![1],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
 
         // Get the block and verify signature using the identity's public key
         let block = chain.get_block(1).unwrap().unwrap();

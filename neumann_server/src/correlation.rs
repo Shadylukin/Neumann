@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Request correlation and trace ID propagation.
 //!
 //! This module provides utilities for extracting and propagating trace IDs
@@ -83,7 +83,7 @@ impl RequestSpan {
 
     /// Get a reference to the span.
     #[must_use]
-    pub fn span(&self) -> &Span {
+    pub const fn span(&self) -> &Span {
         &self.span
     }
 

@@ -533,13 +533,19 @@ impl Row {
     /// Gets a column value by name, including the special `_id` column.
     #[must_use]
     pub fn get_with_id(&self, column: &str) -> Option<Value> {
-        if column == "_id" {
-            return Some(Value::Int(i64::try_from(self.id).unwrap_or(i64::MAX)));
-        }
-        self.values
+        // Check values vec first; stored _id is authoritative if present
+        if let Some(val) = self
+            .values
             .iter()
             .find(|(k, _)| k == column)
             .map(|(_, v)| v.clone())
+        {
+            return Some(val);
+        }
+        if column == "_id" {
+            return Some(Value::Int(i64::try_from(self.id).unwrap_or(i64::MAX)));
+        }
+        None
     }
 
     /// Returns true if this row has the given column.

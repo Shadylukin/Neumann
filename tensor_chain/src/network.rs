@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Network transport abstraction for distributed consensus.
 //!
 //! Provides a pluggable transport layer for node communication:
@@ -119,55 +119,58 @@ impl Message {
     /// Extract the routing embedding from a message for geometric routing decisions.
     ///
     /// Returns the most semantically relevant embedding for the message type:
-    /// - RequestVote/PreVote: candidate's state embedding
-    /// - AppendEntries: block embedding (if present)
-    /// - TxPrepare: transaction delta embedding
-    pub fn routing_embedding(&self) -> Option<&SparseVector> {
+    /// - `RequestVote`/`PreVote`: candidate's state embedding
+    /// - `AppendEntries`: block embedding (if present)
+    /// - `TxPrepare`: transaction delta embedding
+    #[must_use]
+    pub const fn routing_embedding(&self) -> Option<&SparseVector> {
         match self {
-            Message::RequestVote(rv) => Some(&rv.state_embedding),
-            Message::PreVote(pv) => Some(&pv.state_embedding),
-            Message::AppendEntries(ae) => ae.block_embedding.as_ref(),
-            Message::TxPrepare(tp) => Some(&tp.delta_embedding),
+            Self::RequestVote(rv) => Some(&rv.state_embedding),
+            Self::PreVote(pv) => Some(&pv.state_embedding),
+            Self::AppendEntries(ae) => ae.block_embedding.as_ref(),
+            Self::TxPrepare(tp) => Some(&tp.delta_embedding),
             _ => None,
         }
     }
 
-    pub fn has_routing_embedding(&self) -> bool {
+    #[must_use]
+    pub const fn has_routing_embedding(&self) -> bool {
         self.routing_embedding().is_some()
     }
 
-    pub fn type_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
         match self {
-            Message::RequestVote(_) => "RequestVote",
-            Message::RequestVoteResponse(_) => "RequestVoteResponse",
-            Message::PreVote(_) => "PreVote",
-            Message::PreVoteResponse(_) => "PreVoteResponse",
-            Message::TimeoutNow(_) => "TimeoutNow",
-            Message::AppendEntries(_) => "AppendEntries",
-            Message::AppendEntriesResponse(_) => "AppendEntriesResponse",
-            Message::BlockRequest(_) => "BlockRequest",
-            Message::BlockResponse(_) => "BlockResponse",
-            Message::SnapshotRequest(_) => "SnapshotRequest",
-            Message::SnapshotResponse(_) => "SnapshotResponse",
-            Message::Ping { .. } => "Ping",
-            Message::Pong { .. } => "Pong",
-            Message::TxPrepare(_) => "TxPrepare",
-            Message::TxPrepareResponse(_) => "TxPrepareResponse",
-            Message::TxCommit(_) => "TxCommit",
-            Message::TxAbort(_) => "TxAbort",
-            Message::TxAck(_) => "TxAck",
-            Message::QueryRequest(_) => "QueryRequest",
-            Message::QueryResponse(_) => "QueryResponse",
-            Message::Gossip(_) => "Gossip",
-            Message::SignedGossip(_) => "SignedGossip",
-            Message::MergeInit(_) => "MergeInit",
-            Message::MergeAck(_) => "MergeAck",
-            Message::ViewExchange(_) => "ViewExchange",
-            Message::DataMergeRequest(_) => "DataMergeRequest",
-            Message::DataMergeResponse(_) => "DataMergeResponse",
-            Message::TxReconcileRequest(_) => "TxReconcileRequest",
-            Message::TxReconcileResponse(_) => "TxReconcileResponse",
-            Message::MergeFinalize(_) => "MergeFinalize",
+            Self::RequestVote(_) => "RequestVote",
+            Self::RequestVoteResponse(_) => "RequestVoteResponse",
+            Self::PreVote(_) => "PreVote",
+            Self::PreVoteResponse(_) => "PreVoteResponse",
+            Self::TimeoutNow(_) => "TimeoutNow",
+            Self::AppendEntries(_) => "AppendEntries",
+            Self::AppendEntriesResponse(_) => "AppendEntriesResponse",
+            Self::BlockRequest(_) => "BlockRequest",
+            Self::BlockResponse(_) => "BlockResponse",
+            Self::SnapshotRequest(_) => "SnapshotRequest",
+            Self::SnapshotResponse(_) => "SnapshotResponse",
+            Self::Ping { .. } => "Ping",
+            Self::Pong { .. } => "Pong",
+            Self::TxPrepare(_) => "TxPrepare",
+            Self::TxPrepareResponse(_) => "TxPrepareResponse",
+            Self::TxCommit(_) => "TxCommit",
+            Self::TxAbort(_) => "TxAbort",
+            Self::TxAck(_) => "TxAck",
+            Self::QueryRequest(_) => "QueryRequest",
+            Self::QueryResponse(_) => "QueryResponse",
+            Self::Gossip(_) => "Gossip",
+            Self::SignedGossip(_) => "SignedGossip",
+            Self::MergeInit(_) => "MergeInit",
+            Self::MergeAck(_) => "MergeAck",
+            Self::ViewExchange(_) => "ViewExchange",
+            Self::DataMergeRequest(_) => "DataMergeRequest",
+            Self::DataMergeResponse(_) => "DataMergeResponse",
+            Self::TxReconcileRequest(_) => "TxReconcileRequest",
+            Self::TxReconcileResponse(_) => "TxReconcileResponse",
+            Self::MergeFinalize(_) => "MergeFinalize",
         }
     }
 }
@@ -248,7 +251,7 @@ pub struct AppendEntries {
     pub leader_id: NodeId,
     /// Index of log entry immediately preceding new ones.
     pub prev_log_index: u64,
-    /// Term of prev_log_index entry.
+    /// Term of `prev_log_index` entry.
     pub prev_log_term: u64,
     /// Log entries to store (empty for heartbeat).
     pub entries: Vec<LogEntry>,
@@ -263,7 +266,7 @@ pub struct AppendEntries {
 pub struct AppendEntriesResponse {
     /// Current term.
     pub term: u64,
-    /// True if follower contained entry matching prev_log.
+    /// True if follower contained entry matching `prev_log`.
     pub success: bool,
     /// Follower's node ID.
     pub follower_id: NodeId,
@@ -291,7 +294,8 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    pub fn new(term: u64, index: u64, block: Block) -> Self {
+    #[must_use]
+    pub const fn new(term: u64, index: u64, block: Block) -> Self {
         Self {
             term,
             index,
@@ -301,6 +305,7 @@ impl LogEntry {
         }
     }
 
+    #[must_use]
     pub fn config(term: u64, index: u64, change: ConfigChange) -> Self {
         Self {
             term,
@@ -311,6 +316,7 @@ impl LogEntry {
         }
     }
 
+    #[must_use]
     pub fn codebook(term: u64, index: u64, change: CodebookChange) -> Self {
         Self {
             term,
@@ -321,15 +327,18 @@ impl LogEntry {
         }
     }
 
-    pub fn is_config_change(&self) -> bool {
+    #[must_use]
+    pub const fn is_config_change(&self) -> bool {
         self.config_change.is_some()
     }
 
-    pub fn is_codebook_change(&self) -> bool {
+    #[must_use]
+    pub const fn is_codebook_change(&self) -> bool {
         self.codebook_change.is_some()
     }
 
     /// Add a codebook change to this log entry (builder pattern).
+    #[must_use]
     pub fn with_codebook_change(mut self, change: CodebookChange) -> Self {
         self.codebook_change = Some(change);
         self
@@ -444,16 +453,16 @@ impl From<crate::distributed_tx::PrepareVote> for TxVote {
     fn from(vote: crate::distributed_tx::PrepareVote) -> Self {
         use crate::distributed_tx::PrepareVote;
         match vote {
-            PrepareVote::Yes { lock_handle, delta } => TxVote::Yes {
+            PrepareVote::Yes { lock_handle, delta } => Self::Yes {
                 lock_handle,
                 delta: delta.delta.clone(),
                 affected_keys: delta.affected_keys.iter().cloned().collect(),
             },
-            PrepareVote::No { reason } => TxVote::No { reason },
+            PrepareVote::No { reason } => Self::No { reason },
             PrepareVote::Conflict {
                 similarity,
                 conflicting_tx,
-            } => TxVote::Conflict {
+            } => Self::Conflict {
                 similarity,
                 conflicting_tx,
             },
@@ -464,21 +473,20 @@ impl From<crate::distributed_tx::PrepareVote> for TxVote {
 impl From<TxVote> for crate::distributed_tx::PrepareVote {
     fn from(vote: TxVote) -> Self {
         use crate::consensus::DeltaVector;
-        use crate::distributed_tx::PrepareVote;
         match vote {
             TxVote::Yes {
                 lock_handle,
                 delta,
                 affected_keys,
-            } => PrepareVote::Yes {
+            } => Self::Yes {
                 lock_handle,
                 delta: DeltaVector::from_sparse(delta, affected_keys.into_iter().collect(), 0),
             },
-            TxVote::No { reason } => PrepareVote::No { reason },
+            TxVote::No { reason } => Self::No { reason },
             TxVote::Conflict {
                 similarity,
                 conflicting_tx,
-            } => PrepareVote::Conflict {
+            } => Self::Conflict {
                 similarity,
                 conflicting_tx,
             },
@@ -524,7 +532,7 @@ pub struct TxAckMsg {
 // ============================================================================
 
 /// Configuration change for Raft membership.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConfigChange {
     /// Add a new node as a non-voting learner.
     AddLearner { node_id: NodeId },
@@ -540,19 +548,23 @@ pub enum ConfigChange {
 }
 
 impl ConfigChange {
-    pub fn add_learner(node_id: NodeId) -> Self {
+    #[must_use]
+    pub const fn add_learner(node_id: NodeId) -> Self {
         Self::AddLearner { node_id }
     }
 
-    pub fn promote_learner(node_id: NodeId) -> Self {
+    #[must_use]
+    pub const fn promote_learner(node_id: NodeId) -> Self {
         Self::PromoteLearner { node_id }
     }
 
-    pub fn remove_node(node_id: NodeId) -> Self {
+    #[must_use]
+    pub const fn remove_node(node_id: NodeId) -> Self {
         Self::RemoveNode { node_id }
     }
 
-    pub fn joint_change(additions: Vec<NodeId>, removals: Vec<NodeId>) -> Self {
+    #[must_use]
+    pub const fn joint_change(additions: Vec<NodeId>, removals: Vec<NodeId>) -> Self {
         Self::JointChange {
             additions,
             removals,
@@ -565,6 +577,7 @@ impl ConfigChange {
 /// The global codebook stores the shared semantic vocabulary used for state
 /// quantization and fast-path validation. Changes to the codebook must be
 /// replicated through Raft to ensure all nodes have consistent state.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CodebookChange {
     /// Replace the entire global codebook.
@@ -574,7 +587,8 @@ pub enum CodebookChange {
 }
 
 impl CodebookChange {
-    pub fn replace(snapshot: crate::codebook::GlobalCodebookSnapshot) -> Self {
+    #[must_use]
+    pub const fn replace(snapshot: crate::codebook::GlobalCodebookSnapshot) -> Self {
         Self::Replace { snapshot }
     }
 }
@@ -583,7 +597,7 @@ impl CodebookChange {
 ///
 /// Implements Raft's joint consensus algorithm (Section 6) where both
 /// old and new configurations must agree during transitions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct JointConfig {
     /// Voters in the old configuration.
     pub old_voters: Vec<NodeId>,
@@ -592,7 +606,8 @@ pub struct JointConfig {
 }
 
 impl JointConfig {
-    pub fn new(old_voters: Vec<NodeId>, new_voters: Vec<NodeId>) -> Self {
+    #[must_use]
+    pub const fn new(old_voters: Vec<NodeId>, new_voters: Vec<NodeId>) -> Self {
         Self {
             old_voters,
             new_voters,
@@ -600,6 +615,7 @@ impl JointConfig {
     }
 
     /// Check if we have a joint quorum (majority in BOTH old and new configs).
+    #[must_use]
     pub fn has_joint_quorum(&self, votes: &HashSet<NodeId>) -> bool {
         let old_quorum = crate::quorum_size(self.old_voters.len());
         let new_quorum = crate::quorum_size(self.new_voters.len());
@@ -618,6 +634,7 @@ impl JointConfig {
         old_votes >= old_quorum && new_votes >= new_quorum
     }
 
+    #[must_use]
     pub fn all_voters(&self) -> Vec<NodeId> {
         let mut all: Vec<_> = self.old_voters.clone();
         for node in &self.new_voters {
@@ -632,7 +649,7 @@ impl JointConfig {
 /// Raft membership configuration.
 ///
 /// Tracks voters, learners, and joint consensus state for dynamic membership.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RaftMembershipConfig {
     /// Current voting members.
     pub voters: Vec<NodeId>,
@@ -645,7 +662,8 @@ pub struct RaftMembershipConfig {
 }
 
 impl RaftMembershipConfig {
-    pub fn new(voters: Vec<NodeId>) -> Self {
+    #[must_use]
+    pub const fn new(voters: Vec<NodeId>) -> Self {
         Self {
             voters,
             learners: Vec::new(),
@@ -655,16 +673,19 @@ impl RaftMembershipConfig {
     }
 
     /// Check if we have quorum (considering joint consensus if active).
+    #[must_use]
     pub fn has_quorum(&self, votes: &HashSet<NodeId>) -> bool {
-        if let Some(ref joint) = self.joint {
-            joint.has_joint_quorum(votes)
-        } else {
-            let quorum = crate::quorum_size(self.voters.len());
-            self.voters.iter().filter(|n| votes.contains(*n)).count() >= quorum
-        }
+        self.joint.as_ref().map_or_else(
+            || {
+                let quorum = crate::quorum_size(self.voters.len());
+                self.voters.iter().filter(|n| votes.contains(*n)).count() >= quorum
+            },
+            |joint| joint.has_joint_quorum(votes),
+        )
     }
 
     /// Get all nodes that should receive log entries (voters + learners + joint).
+    #[must_use]
     pub fn replication_targets(&self) -> Vec<NodeId> {
         let mut targets = self.voters.clone();
         targets.extend(self.learners.clone());
@@ -681,7 +702,8 @@ impl RaftMembershipConfig {
         targets
     }
 
-    pub fn in_joint_consensus(&self) -> bool {
+    #[must_use]
+    pub const fn in_joint_consensus(&self) -> bool {
         self.joint.is_some()
     }
 
@@ -713,10 +735,12 @@ impl RaftMembershipConfig {
         false
     }
 
+    #[must_use]
     pub fn is_voter(&self, node_id: &NodeId) -> bool {
         self.voters.contains(node_id)
     }
 
+    #[must_use]
     pub fn is_learner(&self, node_id: &NodeId) -> bool {
         self.learners.contains(node_id)
     }
@@ -986,6 +1010,7 @@ pub struct MemoryTransport {
 }
 
 impl MemoryTransport {
+    #[must_use]
     pub fn new(local_id: NodeId) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
@@ -1006,7 +1031,7 @@ impl MemoryTransport {
         }
     }
 
-    /// Set global simulated latency range (min_ms, max_ms).
+    /// Set global simulated latency range (`min_ms`, `max_ms`).
     ///
     /// Each message will be delayed by a random duration in this range.
     /// Use `None` to disable latency simulation.
@@ -1042,6 +1067,7 @@ impl MemoryTransport {
                 min_ms
             } else {
                 use std::time::{SystemTime, UNIX_EPOCH};
+                #[allow(clippy::cast_possible_truncation)]
                 let seed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -1187,10 +1213,12 @@ impl MemoryTransport {
         if drop_rate >= 1.0 {
             return true;
         }
+        #[allow(clippy::cast_possible_truncation)]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let threshold = (f64::from(drop_rate) * 1000.0) as u64;
         (seed % 1000) < threshold
     }
@@ -1200,11 +1228,13 @@ impl MemoryTransport {
         if prob <= 0.0 {
             return None;
         }
+        #[allow(clippy::cast_possible_truncation)]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
         if prob < 1.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let threshold = (f64::from(prob) * 1000.0) as u64;
             if (seed % 1000) >= threshold {
                 return None;
@@ -1225,10 +1255,12 @@ impl MemoryTransport {
         if rate >= 1.0 {
             return true;
         }
+        #[allow(clippy::cast_possible_truncation)]
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let threshold = (f64::from(rate) * 1000.0) as u64;
         (seed % 1000) < threshold
     }
@@ -1294,16 +1326,15 @@ impl Transport for MemoryTransport {
 
         let sender = {
             let peers = self.peers.read();
-            match peers.get(to).cloned() {
-                Some(s) => s,
-                None => {
-                    tracing::debug!(
-                        from = %self.local_id,
-                        to = %to,
-                        "Send failed: peer not found"
-                    );
-                    return Err(ChainError::NetworkError(format!("peer not found: {}", to)));
-                },
+            if let Some(s) = peers.get(to).cloned() {
+                s
+            } else {
+                tracing::debug!(
+                    from = %self.local_id,
+                    to = %to,
+                    "Send failed: peer not found"
+                );
+                return Err(ChainError::NetworkError(format!("peer not found: {to}")));
             }
         };
 
@@ -1404,6 +1435,8 @@ impl NetworkManager {
         &self.transport
     }
 
+    /// # Errors
+    /// Returns an error if receiving or sending messages fails.
     pub async fn process_messages(&self) -> Result<()> {
         loop {
             let (from, msg) = self.transport.recv().await?;
@@ -1433,16 +1466,19 @@ impl NetworkManager {
 
 /// Trait for executing queries locally.
 ///
-/// Implemented by QueryRouter to enable distributed query execution.
-/// This trait lives in tensor_chain to avoid circular dependencies.
+/// Implemented by `QueryRouter` to enable distributed query execution.
+/// This trait lives in `tensor_chain` to avoid circular dependencies.
 pub trait QueryExecutor: Send + Sync {
     /// Execute a query and return serialized result.
+    ///
+    /// # Errors
+    /// Returns an error string if query execution fails.
     fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String>;
 }
 
 /// Handler for distributed query messages.
 ///
-/// Bridges network messages (QueryRequest, QueryResponse) to a QueryExecutor.
+/// Bridges network messages (`QueryRequest`, `QueryResponse`) to a `QueryExecutor`.
 pub struct QueryHandler {
     executor: Arc<dyn QueryExecutor>,
     local_shard_id: usize,
@@ -1482,6 +1518,7 @@ impl MessageHandler for QueryHandler {
                     },
                 };
 
+                #[allow(clippy::cast_possible_truncation)]
                 let execution_time_us = start.elapsed().as_micros() as u64;
 
                 Some(Message::QueryResponse(QueryResponse {
@@ -1500,13 +1537,14 @@ impl MessageHandler for QueryHandler {
 
 /// Handler for distributed transaction messages.
 ///
-/// Bridges network messages (TxPrepare, TxCommit, TxAbort) to TxParticipant.
+/// Bridges network messages (`TxPrepare`, `TxCommit`, `TxAbort`) to `TxParticipant`.
 pub struct TxHandler {
     participant: Arc<crate::distributed_tx::TxParticipant>,
 }
 
 impl TxHandler {
-    pub fn new(participant: Arc<crate::distributed_tx::TxParticipant>) -> Self {
+    #[must_use]
+    pub const fn new(participant: Arc<crate::distributed_tx::TxParticipant>) -> Self {
         Self { participant }
     }
 }
@@ -3972,5 +4010,700 @@ mod tests {
 
         let debug = format!("{:?}", op);
         assert!(debug.contains("Update"));
+    }
+
+    #[tokio::test]
+    async fn test_partition_drops_messages() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Partition node2
+        t1.partition(&"node2".to_string());
+        assert!(t1.is_partitioned(&"node2".to_string()));
+
+        // Send should fail due to partition
+        let msg = Message::Ping { term: 1 };
+        let result = t1.send(&"node2".to_string(), msg).await;
+        assert!(result.is_err());
+        assert_eq!(t1.dropped_message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_partition_heal_restores() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        t1.partition(&"node2".to_string());
+        assert!(t1.is_partitioned(&"node2".to_string()));
+
+        t1.heal(&"node2".to_string());
+        assert!(!t1.is_partitioned(&"node2".to_string()));
+
+        // Send should succeed after healing
+        let msg = Message::Ping { term: 1 };
+        let result = t1.send(&"node2".to_string(), msg).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_partition_all_and_heal_all_coverage() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        let t3 = MemoryTransport::new("node3".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.connect_to("node3".to_string(), t3.sender());
+
+        t1.partition_all();
+        assert_eq!(t1.partitioned_peers().len(), 2);
+
+        t1.heal_all();
+        assert!(t1.partitioned_peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_skips_partitioned_peers() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        let t3 = MemoryTransport::new("node3".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.connect_to("node3".to_string(), t3.sender());
+
+        // Partition node2 only
+        t1.partition(&"node2".to_string());
+
+        let msg = Message::Ping { term: 1 };
+        t1.broadcast(msg).await.unwrap();
+
+        // node3 should receive the message
+        let received = t3.receiver.write().try_recv();
+        assert!(received.is_ok());
+
+        // node2 should not receive (partitioned)
+        let received2 = t2.receiver.write().try_recv();
+        assert!(received2.is_err());
+    }
+
+    #[test]
+    fn test_routing_embedding_request_vote() {
+        let rv = RequestVote {
+            term: 1,
+            candidate_id: "node1".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(4),
+        };
+        let msg = Message::RequestVote(rv);
+        assert!(msg.has_routing_embedding());
+        assert!(msg.routing_embedding().is_some());
+    }
+
+    #[test]
+    fn test_routing_embedding_pre_vote() {
+        let pv = PreVote {
+            term: 1,
+            candidate_id: "node1".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(4),
+        };
+        let msg = Message::PreVote(pv);
+        assert!(msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_routing_embedding_append_entries_none() {
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        };
+        let msg = Message::AppendEntries(ae);
+        assert!(!msg.has_routing_embedding());
+        assert!(msg.routing_embedding().is_none());
+    }
+
+    #[test]
+    fn test_routing_embedding_ping_none() {
+        let msg = Message::Ping { term: 1 };
+        assert!(!msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_joint_config_has_joint_quorum_overlap() {
+        let config = JointConfig::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        );
+
+        let mut votes = HashSet::new();
+        votes.insert("b".to_string());
+        votes.insert("c".to_string());
+
+        // b,c: majority of old (a,b,c) = 2 >= 2, majority of new (b,c,d) = 2 >= 2
+        assert!(config.has_joint_quorum(&votes));
+    }
+
+    #[test]
+    fn test_joint_config_no_joint_quorum() {
+        let config = JointConfig::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["d".to_string(), "e".to_string(), "f".to_string()],
+        );
+
+        let mut votes = HashSet::new();
+        votes.insert("a".to_string());
+        votes.insert("b".to_string());
+
+        // Has old majority but no new majority
+        assert!(!config.has_joint_quorum(&votes));
+    }
+
+    #[test]
+    fn test_joint_config_all_voters() {
+        let config = JointConfig::new(
+            vec!["a".to_string(), "b".to_string()],
+            vec!["b".to_string(), "c".to_string()],
+        );
+
+        let all = config.all_voters();
+        assert_eq!(all.len(), 3); // a, b, c (b deduplicated)
+        assert!(all.contains(&"a".to_string()));
+        assert!(all.contains(&"b".to_string()));
+        assert!(all.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_membership_config_in_joint_consensus() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string()]);
+        assert!(!config.in_joint_consensus());
+
+        config.joint = Some(JointConfig::new(
+            vec!["a".to_string()],
+            vec!["a".to_string(), "b".to_string()],
+        ));
+        assert!(config.in_joint_consensus());
+    }
+
+    #[test]
+    fn test_membership_config_replication_targets_with_joint() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string(), "b".to_string()]);
+        config.learners = vec!["l1".to_string()];
+        config.joint = Some(JointConfig::new(
+            vec!["a".to_string()],
+            vec!["a".to_string(), "c".to_string()],
+        ));
+
+        let targets = config.replication_targets();
+        assert!(targets.contains(&"a".to_string()));
+        assert!(targets.contains(&"b".to_string()));
+        assert!(targets.contains(&"l1".to_string()));
+        assert!(targets.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_log_entry_codebook_replace() {
+        use crate::codebook::GlobalCodebookSnapshot;
+        let change = CodebookChange::Replace {
+            snapshot: GlobalCodebookSnapshot::default(),
+        };
+        let entry = LogEntry::codebook(1, 1, change);
+        assert!(entry.is_codebook_change());
+        assert!(!entry.is_config_change());
+    }
+
+    #[test]
+    fn test_log_entry_with_codebook_change_replace() {
+        use crate::codebook::GlobalCodebookSnapshot;
+        let entry = LogEntry::new(1, 1, Block::default());
+        assert!(!entry.is_codebook_change());
+
+        let entry = entry.with_codebook_change(CodebookChange::Replace {
+            snapshot: GlobalCodebookSnapshot::default(),
+        });
+        assert!(entry.is_codebook_change());
+    }
+
+    #[test]
+    fn test_merge_delta_entry_construction() {
+        let entry = MergeDeltaEntry {
+            key: "test_key".to_string(),
+            log_index: 42,
+            log_term: 5,
+            op_type: MergeOpType::Put,
+            data_hash: [0xabu8; 32],
+        };
+        assert_eq!(entry.key, "test_key");
+        assert_eq!(entry.log_index, 42);
+        assert_eq!(entry.log_term, 5);
+        assert_eq!(entry.op_type, MergeOpType::Put);
+    }
+
+    #[test]
+    fn test_merge_op_type_all_variants() {
+        let put = MergeOpType::Put;
+        let delete = MergeOpType::Delete;
+        let update = MergeOpType::Update;
+        assert_ne!(put, delete);
+        assert_ne!(delete, update);
+        assert_ne!(put, update);
+    }
+
+    #[tokio::test]
+    async fn test_dropped_message_count_increments() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.partition(&"node2".to_string());
+
+        assert_eq!(t1.dropped_message_count(), 0);
+
+        let _ = t1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert_eq!(t1.dropped_message_count(), 1);
+
+        let _ = t1
+            .send(&"node2".to_string(), Message::Ping { term: 2 })
+            .await;
+        assert_eq!(t1.dropped_message_count(), 2);
+    }
+
+    #[test]
+    fn test_membership_config_add_remove_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string()]);
+        config.add_learner("l1".to_string());
+        assert!(config.is_learner(&"l1".to_string()));
+        assert!(!config.is_voter(&"l1".to_string()));
+
+        let promoted = config.promote_learner(&"l1".to_string());
+        assert!(promoted);
+        assert!(config.is_voter(&"l1".to_string()));
+        assert!(!config.is_learner(&"l1".to_string()));
+    }
+
+    #[test]
+    fn test_membership_config_remove_node() {
+        let mut config = RaftMembershipConfig::new(vec!["a".to_string(), "b".to_string()]);
+        config.add_learner("l1".to_string());
+
+        assert!(config.remove_node(&"a".to_string()));
+        assert!(!config.is_voter(&"a".to_string()));
+
+        assert!(config.remove_node(&"l1".to_string()));
+        assert!(!config.is_learner(&"l1".to_string()));
+
+        assert!(!config.remove_node(&"nonexistent".to_string()));
+    }
+
+    #[test]
+    fn test_membership_has_quorum_with_joint() {
+        let mut config =
+            RaftMembershipConfig::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        config.joint = Some(JointConfig::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        ));
+
+        let mut votes = HashSet::new();
+        votes.insert("b".to_string());
+        votes.insert("c".to_string());
+
+        assert!(config.has_quorum(&votes));
+    }
+
+    // =========================================================================
+    // Chaos Injection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_set_latency_global() {
+        let t = MemoryTransport::new("node1".to_string());
+
+        // Initially no latency
+        assert!(t.latency_ms.read().is_none());
+
+        // Set latency range
+        t.set_latency(Some((10, 50)));
+        let latency = *t.latency_ms.read();
+        assert_eq!(latency, Some((10, 50)));
+
+        // Clear latency
+        t.set_latency(None);
+        assert!(t.latency_ms.read().is_none());
+    }
+
+    #[test]
+    fn test_set_peer_latency_and_clear() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Initially empty
+        assert!(t.peer_latency_ms.read().is_empty());
+
+        // Set peer-specific latency
+        t.set_peer_latency(&peer, (5, 20));
+        assert_eq!(t.peer_latency_ms.read().get(&peer), Some(&(5, 20)));
+
+        // Clear peer-specific latency
+        t.clear_peer_latency(&peer);
+        assert!(t.peer_latency_ms.read().get(&peer).is_none());
+    }
+
+    #[test]
+    fn test_enable_disable_reordering() {
+        let t = MemoryTransport::new("node1".to_string());
+
+        // Initially disabled
+        assert!((*t.reorder_probability.read() - 0.0).abs() < f32::EPSILON);
+        assert_eq!(*t.max_reorder_delay_ms.read(), 0);
+        assert_eq!(t.reordered_message_count(), 0);
+
+        // Enable reordering
+        t.enable_reordering(0.5, 100);
+        assert!((*t.reorder_probability.read() - 0.5).abs() < f32::EPSILON);
+        assert_eq!(*t.max_reorder_delay_ms.read(), 100);
+
+        // Counter still zero since no messages sent
+        assert_eq!(t.reordered_message_count(), 0);
+
+        // Disable reordering
+        t.disable_reordering();
+        assert!((*t.reorder_probability.read() - 0.0).abs() < f32::EPSILON);
+        assert_eq!(*t.max_reorder_delay_ms.read(), 0);
+    }
+
+    #[test]
+    fn test_set_corruption_rate() {
+        let t = MemoryTransport::new("node1".to_string());
+
+        // Initially zero
+        assert!((*t.corruption_rate.read() - 0.0).abs() < f32::EPSILON);
+
+        // Set corruption rate
+        t.set_corruption_rate(0.3);
+        assert!((*t.corruption_rate.read() - 0.3).abs() < f32::EPSILON);
+
+        // Set to 1.0 (always corrupt)
+        t.set_corruption_rate(1.0);
+        assert!((*t.corruption_rate.read() - 1.0).abs() < f32::EPSILON);
+
+        // Set back to 0
+        t.set_corruption_rate(0.0);
+        assert!((*t.corruption_rate.read() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_corrupted_message_count_starts_zero() {
+        let t = MemoryTransport::new("node1".to_string());
+        assert_eq!(t.corrupted_message_count(), 0);
+    }
+
+    #[test]
+    fn test_set_link_quality_and_clear() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Initially 0.0 drop rate
+        assert!((t.link_drop_rate(&peer) - 0.0).abs() < f32::EPSILON);
+
+        // Set link quality (50% drop rate)
+        t.set_link_quality(&peer, 0.5);
+        assert!((t.link_drop_rate(&peer) - 0.5).abs() < f32::EPSILON);
+
+        // Clear link quality
+        t.clear_link_quality(&peer);
+        assert!((t.link_drop_rate(&peer) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_chaos_stats_initial() {
+        let t = MemoryTransport::new("node1".to_string());
+        let stats = t.chaos_stats();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.reordered_messages, 0);
+        assert_eq!(stats.corrupted_messages, 0);
+    }
+
+    #[tokio::test]
+    async fn test_reset_chaos_counters() {
+        let t = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t.connect_to("node2".to_string(), t2.sender());
+
+        // Generate some dropped messages via partition
+        t.partition(&"node2".to_string());
+        let _ = t
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        let _ = t
+            .send(&"node2".to_string(), Message::Ping { term: 2 })
+            .await;
+
+        // Verify counters are non-zero
+        let stats = t.chaos_stats();
+        assert_eq!(stats.dropped_messages, 2);
+
+        // Reset counters
+        t.reset_chaos_counters();
+
+        // Verify all counters are zero
+        let stats = t.chaos_stats();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.reordered_messages, 0);
+        assert_eq!(stats.corrupted_messages, 0);
+    }
+
+    #[test]
+    fn test_link_quality_multiple_peers() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer_a = "nodeA".to_string();
+        let peer_b = "nodeB".to_string();
+
+        t.set_link_quality(&peer_a, 0.2);
+        t.set_link_quality(&peer_b, 0.8);
+
+        assert!((t.link_drop_rate(&peer_a) - 0.2).abs() < f32::EPSILON);
+        assert!((t.link_drop_rate(&peer_b) - 0.8).abs() < f32::EPSILON);
+
+        // Clear one, other remains
+        t.clear_link_quality(&peer_a);
+        assert!((t.link_drop_rate(&peer_a) - 0.0).abs() < f32::EPSILON);
+        assert!((t.link_drop_rate(&peer_b) - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_peer_latency_overrides_global() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Set global latency
+        t.set_latency(Some((10, 50)));
+
+        // Set peer-specific latency (should override)
+        t.set_peer_latency(&peer, (1, 5));
+
+        // Peer-specific should be returned
+        let peer_latency = t.get_latency_for_peer(&peer);
+        assert_eq!(peer_latency, Some((1, 5)));
+
+        // Other peer falls back to global
+        let other_latency = t.get_latency_for_peer(&"node3".to_string());
+        assert_eq!(other_latency, Some((10, 50)));
+
+        // Clear peer-specific, should fall back to global
+        t.clear_peer_latency(&peer);
+        let fallback_latency = t.get_latency_for_peer(&peer);
+        assert_eq!(fallback_latency, Some((10, 50)));
+    }
+
+    #[test]
+    fn test_should_drop_for_link_quality_zero_rate() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // Zero drop rate should never drop
+        t.set_link_quality(&peer, 0.0);
+        assert!(!t.should_drop_for_link_quality(&peer));
+    }
+
+    #[test]
+    fn test_should_drop_for_link_quality_full_rate() {
+        let t = MemoryTransport::new("node1".to_string());
+        let peer = "node2".to_string();
+
+        // 100% drop rate should always drop
+        t.set_link_quality(&peer, 1.0);
+        assert!(t.should_drop_for_link_quality(&peer));
+    }
+
+    #[test]
+    fn test_should_drop_for_link_quality_no_setting() {
+        let t = MemoryTransport::new("node1".to_string());
+        // No link quality set, should never drop
+        assert!(!t.should_drop_for_link_quality(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_get_reorder_delay_disabled() {
+        let t = MemoryTransport::new("node1".to_string());
+        // Reordering disabled (probability 0), should return None
+        assert!(t.get_reorder_delay().is_none());
+    }
+
+    #[test]
+    fn test_get_reorder_delay_enabled_full_probability() {
+        let t = MemoryTransport::new("node1".to_string());
+        // Full probability, max delay 100
+        t.enable_reordering(1.0, 100);
+        let delay = t.get_reorder_delay();
+        assert!(delay.is_some());
+        // Delay should be in range [1, 100]
+        let d = delay.unwrap();
+        assert!(d >= 1 && d <= 100);
+    }
+
+    #[test]
+    fn test_get_reorder_delay_zero_max_delay() {
+        let t = MemoryTransport::new("node1".to_string());
+        // Full probability but zero max delay
+        t.enable_reordering(1.0, 0);
+        let delay = t.get_reorder_delay();
+        assert_eq!(delay, Some(0));
+    }
+
+    #[test]
+    fn test_should_corrupt_false_when_zero() {
+        let t = MemoryTransport::new("node1".to_string());
+        assert!(!t.should_corrupt());
+    }
+
+    #[test]
+    fn test_should_corrupt_true_when_full() {
+        let t = MemoryTransport::new("node1".to_string());
+        t.set_corruption_rate(1.0);
+        assert!(t.should_corrupt());
+    }
+
+    #[test]
+    fn test_corrupt_message_ping() {
+        let msg = Message::Ping { term: 5 };
+        let corrupted = corrupt_message(msg);
+        if let Message::Ping { term } = corrupted {
+            assert_eq!(term, 6); // term wrapping_add(1)
+        } else {
+            panic!("expected Ping");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_message_pong() {
+        let msg = Message::Pong { term: 10 };
+        let corrupted = corrupt_message(msg);
+        if let Message::Pong { term } = corrupted {
+            assert_eq!(term, 11); // term wrapping_add(1)
+        } else {
+            panic!("expected Pong");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_message_other_unchanged() {
+        let msg = Message::TxCommit(TxCommitMsg {
+            tx_id: 1,
+            shards: vec![0],
+        });
+        let corrupted = corrupt_message(msg);
+        if let Message::TxCommit(tc) = corrupted {
+            assert_eq!(tc.tx_id, 1); // Unchanged
+        } else {
+            panic!("expected TxCommit unchanged");
+        }
+    }
+
+    #[test]
+    fn test_corrupt_message_ping_wrapping() {
+        let msg = Message::Ping { term: u64::MAX };
+        let corrupted = corrupt_message(msg);
+        if let Message::Ping { term } = corrupted {
+            assert_eq!(term, 0); // Wraps around
+        } else {
+            panic!("expected Ping");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_link_quality_drops_messages() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Set 100% drop rate via link quality
+        t1.set_link_quality(&"node2".to_string(), 1.0);
+
+        let result = t1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert!(result.is_err());
+
+        let stats = t1.chaos_stats();
+        assert_eq!(stats.dropped_messages, 1);
+    }
+
+    #[tokio::test]
+    async fn test_corruption_increments_counter() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Set 100% corruption rate
+        t1.set_corruption_rate(1.0);
+
+        // Send a Ping message (corruptible type)
+        t1.send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await
+            .unwrap();
+
+        assert_eq!(t1.corrupted_message_count(), 1);
+
+        // Received message should have corrupted term
+        let (from, msg) = t2.recv().await.unwrap();
+        assert_eq!(from, "node1");
+        if let Message::Ping { term } = msg {
+            assert_eq!(term, 2); // 1 + 1
+        } else {
+            panic!("expected Ping");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_network_manager_process_messages_with_handler() {
+        struct EchoHandler;
+        impl MessageHandler for EchoHandler {
+            fn handle(&self, _from: &NodeId, msg: &Message) -> Option<Message> {
+                if let Message::Ping { term } = msg {
+                    Some(Message::Pong { term: *term })
+                } else {
+                    None
+                }
+            }
+        }
+
+        let t1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("node2".to_string()));
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t2.connect_to("node1".to_string(), t1.sender());
+
+        let manager = NetworkManager::new(t2.clone());
+        manager.add_handler(Box::new(EchoHandler));
+
+        // Send a ping from node1 to node2
+        t1.send(&"node2".to_string(), Message::Ping { term: 42 })
+            .await
+            .unwrap();
+
+        // Run process_messages for a bounded time
+        let handle = tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                manager.process_messages(),
+            )
+            .await;
+        });
+
+        // Wait for the response on node1
+        let result = tokio::time::timeout(std::time::Duration::from_millis(200), t1.recv()).await;
+        assert!(result.is_ok());
+        let (from, msg) = result.unwrap().unwrap();
+        assert_eq!(from, "node2");
+        assert!(matches!(msg, Message::Pong { term: 42 }));
+
+        handle.await.unwrap();
     }
 }

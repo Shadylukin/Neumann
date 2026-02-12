@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Per-peer rate limiting using token bucket algorithm.
 
 use std::time::Instant;
@@ -22,7 +22,7 @@ pub struct RateLimitConfig {
     pub enabled: bool,
 }
 
-fn default_enabled() -> bool {
+const fn default_enabled() -> bool {
     true
 }
 
@@ -37,6 +37,7 @@ impl Default for RateLimitConfig {
 }
 
 impl RateLimitConfig {
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -44,7 +45,8 @@ impl RateLimitConfig {
         }
     }
 
-    pub fn aggressive() -> Self {
+    #[must_use]
+    pub const fn aggressive() -> Self {
         Self {
             bucket_size: 50,
             refill_rate: 25.0,
@@ -52,7 +54,8 @@ impl RateLimitConfig {
         }
     }
 
-    pub fn permissive() -> Self {
+    #[must_use]
+    pub const fn permissive() -> Self {
         Self {
             bucket_size: 200,
             refill_rate: 100.0,
@@ -60,17 +63,20 @@ impl RateLimitConfig {
         }
     }
 
-    pub fn with_bucket_size(mut self, size: u32) -> Self {
+    #[must_use]
+    pub const fn with_bucket_size(mut self, size: u32) -> Self {
         self.bucket_size = size;
         self
     }
 
-    pub fn with_refill_rate(mut self, rate: f64) -> Self {
+    #[must_use]
+    pub const fn with_refill_rate(mut self, rate: f64) -> Self {
         self.refill_rate = rate;
         self
     }
 
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
+    #[must_use]
+    pub const fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
@@ -85,7 +91,7 @@ struct TokenBucket {
 impl TokenBucket {
     fn new(bucket_size: u32) -> Self {
         Self {
-            tokens: bucket_size as f64,
+            tokens: f64::from(bucket_size),
             last_refill: Instant::now(),
         }
     }
@@ -93,7 +99,9 @@ impl TokenBucket {
     fn refill(&mut self, config: &RateLimitConfig) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * config.refill_rate).min(config.bucket_size as f64);
+        self.tokens = elapsed
+            .mul_add(config.refill_rate, self.tokens)
+            .min(f64::from(config.bucket_size));
         self.last_refill = now;
     }
 
@@ -109,7 +117,9 @@ impl TokenBucket {
 
     fn available(&mut self, config: &RateLimitConfig) -> u32 {
         self.refill(config);
-        self.tokens as u32
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let result = self.tokens as u32;
+        result
     }
 }
 
@@ -120,6 +130,7 @@ pub struct PeerRateLimiter {
 }
 
 impl PeerRateLimiter {
+    #[must_use]
     pub fn new(config: RateLimitConfig) -> Self {
         Self {
             config,
@@ -129,6 +140,7 @@ impl PeerRateLimiter {
 
     /// Check if a message can be sent to peer and consume a token if allowed.
     /// Returns true if the message is allowed, false if rate limited.
+    #[must_use]
     pub fn check(&self, peer: &NodeId) -> bool {
         if !self.config.enabled {
             return true;
@@ -140,6 +152,7 @@ impl PeerRateLimiter {
     }
 
     /// Get available tokens for a peer (for metrics/debugging).
+    #[must_use]
     pub fn available_tokens(&self, peer: &NodeId) -> u32 {
         if !self.config.enabled {
             return u32::MAX;
@@ -170,12 +183,57 @@ impl PeerRateLimiter {
         self.buckets.clear();
     }
 
+    #[must_use]
     pub fn peer_count(&self) -> usize {
         self.buckets.len()
     }
 
-    pub fn is_enabled(&self) -> bool {
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
         self.config.enabled
+    }
+
+    /// Handle peer connection event by resetting their rate limit bucket.
+    ///
+    /// Call this when a peer successfully reconnects so they start with a
+    /// fresh token budget rather than being immediately throttled by stale state.
+    pub fn on_peer_connected(&self, peer: &NodeId) {
+        self.reset_peer(peer);
+    }
+
+    /// Handle peer disconnection by removing their rate limit bucket.
+    ///
+    /// Call this when a peer is permanently removed from the cluster
+    /// to free memory. For temporary disconnections where reconnect is
+    /// expected, use `reset_peer()` instead.
+    pub fn on_peer_disconnected(&self, peer: &NodeId) {
+        self.remove_peer(peer);
+    }
+
+    /// Remove rate limit state for peers not in the given set of active peers.
+    ///
+    /// Call periodically to clean up stale entries for peers that have been
+    /// permanently removed. Returns the number of stale entries cleaned.
+    #[must_use]
+    pub fn cleanup_stale_peers(&self, active_peers: &[NodeId]) -> usize {
+        let stale: Vec<NodeId> = self
+            .buckets
+            .iter()
+            .filter(|entry| !active_peers.contains(entry.key()))
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = stale.len();
+        for peer in &stale {
+            self.buckets.remove(peer);
+        }
+        count
+    }
+
+    /// Get the current configuration.
+    #[must_use]
+    pub const fn config(&self) -> &RateLimitConfig {
+        &self.config
     }
 }
 
@@ -283,7 +341,7 @@ mod tests {
 
         // Consume all tokens
         for _ in 0..5 {
-            limiter.check(&peer);
+            let _ = limiter.check(&peer);
         }
 
         // Should be blocked
@@ -318,7 +376,7 @@ mod tests {
 
         // Consume all tokens
         for _ in 0..5 {
-            limiter.check(&peer);
+            let _ = limiter.check(&peer);
         }
         assert!(!limiter.check(&peer));
 
@@ -359,9 +417,9 @@ mod tests {
         let config = RateLimitConfig::default().with_bucket_size(3);
         let limiter = PeerRateLimiter::new(config);
 
-        limiter.check(&"node1".to_string());
-        limiter.check(&"node2".to_string());
-        limiter.check(&"node3".to_string());
+        let _ = limiter.check(&"node1".to_string());
+        let _ = limiter.check(&"node2".to_string());
+        let _ = limiter.check(&"node3".to_string());
 
         assert_eq!(limiter.peer_count(), 3);
 
@@ -380,11 +438,11 @@ mod tests {
 
         assert_eq!(limiter.available_tokens(&peer), 10);
 
-        limiter.check(&peer);
+        let _ = limiter.check(&peer);
         assert_eq!(limiter.available_tokens(&peer), 9);
 
         for _ in 0..5 {
-            limiter.check(&peer);
+            let _ = limiter.check(&peer);
         }
         assert_eq!(limiter.available_tokens(&peer), 4);
     }
@@ -411,7 +469,7 @@ mod tests {
                 let peer = format!("node{}", i);
                 thread::spawn(move || {
                     for _ in 0..100 {
-                        limiter.check(&peer);
+                        let _ = limiter.check(&peer);
                     }
                 })
             })
@@ -490,5 +548,84 @@ mod tests {
         assert_eq!(decoded.bucket_size, config.bucket_size);
         assert_eq!(decoded.refill_rate, config.refill_rate);
         assert_eq!(decoded.enabled, config.enabled);
+    }
+
+    #[test]
+    fn test_on_peer_connected_resets_tokens() {
+        let config = RateLimitConfig::default().with_bucket_size(3);
+        let limiter = PeerRateLimiter::new(config);
+        let peer = "node1".to_string();
+
+        // Consume all tokens
+        assert!(limiter.check(&peer));
+        assert!(limiter.check(&peer));
+        assert!(limiter.check(&peer));
+        assert!(!limiter.check(&peer));
+
+        // Simulate reconnect
+        limiter.on_peer_connected(&peer);
+
+        // Should have fresh tokens
+        assert!(limiter.check(&peer));
+        assert!(limiter.check(&peer));
+        assert!(limiter.check(&peer));
+    }
+
+    #[test]
+    fn test_on_peer_disconnected_removes_state() {
+        let config = RateLimitConfig::default().with_bucket_size(5);
+        let limiter = PeerRateLimiter::new(config);
+        let peer = "node1".to_string();
+
+        assert!(limiter.check(&peer));
+        assert_eq!(limiter.peer_count(), 1);
+
+        limiter.on_peer_disconnected(&peer);
+        assert_eq!(limiter.peer_count(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_stale_peers() {
+        let config = RateLimitConfig::default().with_bucket_size(5);
+        let limiter = PeerRateLimiter::new(config);
+
+        // Add some peers
+        assert!(limiter.check(&"node1".to_string()));
+        assert!(limiter.check(&"node2".to_string()));
+        assert!(limiter.check(&"node3".to_string()));
+
+        assert_eq!(limiter.peer_count(), 3);
+
+        // Only node1 and node3 are still active
+        let active = vec!["node1".to_string(), "node3".to_string()];
+        let cleaned = limiter.cleanup_stale_peers(&active);
+
+        assert_eq!(cleaned, 1); // node2 removed
+        assert_eq!(limiter.peer_count(), 2);
+
+        // node2 should be gone
+        assert!(limiter.check(&"node1".to_string())); // still there
+        assert!(limiter.check(&"node3".to_string())); // still there
+    }
+
+    #[test]
+    fn test_cleanup_stale_peers_empty_active() {
+        let config = RateLimitConfig::default().with_bucket_size(5);
+        let limiter = PeerRateLimiter::new(config);
+
+        assert!(limiter.check(&"node1".to_string()));
+        assert!(limiter.check(&"node2".to_string()));
+
+        let cleaned = limiter.cleanup_stale_peers(&[]);
+        assert_eq!(cleaned, 2);
+        assert_eq!(limiter.peer_count(), 0);
+    }
+
+    #[test]
+    fn test_config_accessor() {
+        let config = RateLimitConfig::aggressive();
+        let limiter = PeerRateLimiter::new(config);
+        assert_eq!(limiter.config().bucket_size, 50);
+        assert_eq!(limiter.config().refill_rate, 25.0);
     }
 }

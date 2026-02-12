@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Distributed query execution with semantic routing and scatter-gather.
 //!
 //! Routes queries to appropriate shards based on key or embedding similarity.
@@ -76,7 +76,7 @@ pub struct ShardResult {
 impl ShardResult {
     /// Create a successful shard result.
     #[must_use]
-    pub fn success(shard: ShardId, result: QueryResult, execution_time_us: u64) -> Self {
+    pub const fn success(shard: ShardId, result: QueryResult, execution_time_us: u64) -> Self {
         Self {
             shard,
             result,
@@ -87,7 +87,7 @@ impl ShardResult {
 
     /// Create an error shard result.
     #[must_use]
-    pub fn error(shard: ShardId, error: String) -> Self {
+    pub const fn error(shard: ShardId, error: String) -> Self {
         Self {
             shard,
             result: QueryResult::Empty,
@@ -516,7 +516,7 @@ pub struct DistributedQueryStats {
 
 impl DistributedQueryStats {
     /// Record a query execution.
-    pub fn record_query(&mut self, plan: &QueryPlan, latency_us: u64, errors: usize) {
+    pub const fn record_query(&mut self, plan: &QueryPlan, latency_us: u64, errors: usize) {
         self.queries_executed += 1;
 
         match plan {

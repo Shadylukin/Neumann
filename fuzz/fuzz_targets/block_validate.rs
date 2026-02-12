@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -89,7 +89,7 @@ fuzz_target!(|input: BlockValidateInput| {
         // Property 1: Empty transaction commits don't create blocks
         let tx = chain.begin();
         if let Ok(tx) = tx {
-            let result = chain.commit(tx);
+            let result = chain.commit(&tx);
             // Should succeed but not create a new block
             if result.is_ok() {
                 // Height should still be 0 (only genesis)
@@ -107,7 +107,7 @@ fuzz_target!(|input: BlockValidateInput| {
                 let _ = tx.add_operation(transaction.clone());
             }
             // Commit might fail or succeed depending on initialization state
-            let _ = chain.commit(tx);
+            let _ = chain.commit(&tx);
         }
         return;
     }
@@ -119,7 +119,7 @@ fuzz_target!(|input: BlockValidateInput| {
             for transaction in &transactions {
                 let _ = tx.add_operation(transaction.clone());
             }
-            let commit_result = chain.commit(tx);
+            let commit_result = chain.commit(&tx);
             if commit_result.is_ok() {
                 // Height should have increased
                 assert!(chain.height() >= 1);
@@ -169,7 +169,7 @@ fuzz_target!(|input: BlockValidateInput| {
                 data: vec![batch as u8],
             })
             .ok();
-            let _ = chain.commit(tx);
+            let _ = chain.commit(&tx);
         }
     }
 
@@ -180,7 +180,7 @@ fuzz_target!(|input: BlockValidateInput| {
             data: vec![1, 2, 3],
         })
         .ok();
-        let _ = chain.rollback(tx);
+        let _ = chain.rollback(&tx);
     }
 
     // Property 10: Concurrent begin should be safe
@@ -197,8 +197,8 @@ fuzz_target!(|input: BlockValidateInput| {
             data: vec![2],
         })
         .ok();
-        let _ = chain.commit(tx1);
-        let _ = chain.commit(tx2);
+        let _ = chain.commit(&tx1);
+        let _ = chain.commit(&tx2);
     }
 
     // Property 11: Store access should be safe

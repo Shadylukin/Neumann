@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Edge HMAC signing and verification for graph-based access control.
 //!
 //! Signs VAULT_ACCESS edges with HMAC-BLAKE2b to detect tampering.

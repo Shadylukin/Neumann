@@ -3,6 +3,7 @@
 The query router integrates all engines and routes queries based on parsed AST
 type.
 
+<!-- BENCH:START -->
 ## Relational Operations
 
 | Operation | Time |
@@ -44,6 +45,7 @@ type.
 | 100 | 29 ms | 3.4K/s |
 | 500 | 145 ms | 3.4K/s |
 | 1,000 | 290 ms | 3.4K/s |
+<!-- BENCH:END -->
 
 ## Analysis
 

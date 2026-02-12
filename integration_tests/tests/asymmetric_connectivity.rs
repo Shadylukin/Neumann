@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for asymmetric network partition detection.
 //!
 //! Validates that the system correctly handles scenarios where A can reach B

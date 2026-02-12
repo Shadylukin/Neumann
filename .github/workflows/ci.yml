@@ -68,41 +68,23 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-  check:
-    name: Check
+  bench-inventory:
+    name: Benchmark Inventory
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
       - name: Checkout
         # v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install Rust
-        # stable
-        uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
-        with:
-          toolchain: stable
-
-      - name: Cache Rust
-        # v2.7.8
-        uses: >-
-          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
-
-      - name: Install protoc
-        run: >-
-          sudo apt-get update &&
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Run cargo check
-        run: >-
-          cargo check --workspace
-          --exclude fuzz
-          --exclude neumann-native
-          --all-features
+      - name: Validate benchmark inventory
+        run: |
+          chmod +x scripts/validate-bench-inventory.sh
+          ./scripts/validate-bench-inventory.sh
 
   clippy:
     name: Clippy
+    needs: [fmt]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -123,23 +105,28 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install protoc
+      - name: Install protoc and mold linker
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Run clippy
-        run: >-
-          cargo clippy --workspace
-          --exclude fuzz
-          --exclude neumann-native
-          --all-features
-          -- -D warnings
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
+        run: |
+          cargo clippy --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
+            -- -D warnings
 
   test:
     name: Test
+    needs: [clippy]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout
         # v4.2.2
@@ -157,22 +144,35 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install protoc
+      - name: Install protoc and mold linker
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
+
+      - name: Install cargo-nextest
+        # v2.52.4
+        uses: >-
+          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+        with:
+          tool: cargo-nextest
 
       - name: Run tests
-        run: >-
-          cargo test --workspace
-          --exclude fuzz
-          --exclude neumann-native
-          --all-features
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
+        run: |
+          cargo nextest run --workspace \
+            --profile ci \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote
 
   coverage:
     name: Coverage
+    needs: [test]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - name: Checkout
         # v4.2.2
@@ -191,10 +191,10 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install protoc
+      - name: Install protoc and mold linker
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Install cargo-llvm-cov
         # v2.52.4
@@ -206,7 +206,10 @@ jobs:
       - name: Clean coverage artifacts
         run: cargo llvm-cov clean --workspace
 
-      - name: Generate and verify coverage (95% threshold)
+      - name: Generate coverage report
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
         run: |
           cargo llvm-cov --workspace \
             --exclude fuzz \
@@ -215,8 +218,8 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --all-features \
-            --fail-under-lines 95 \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
             --html --output-dir target/llvm-cov/html
 
       - name: Generate codecov report
@@ -228,11 +231,13 @@ jobs:
             --exclude stress_tests \
             --exclude examples \
             --exclude neumann_docs \
-            --all-features \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
             --no-run \
             --codecov --output-path codecov.json
 
       - name: Upload coverage HTML
+        if: always()
         # v4.6.2
         uses: >-
           actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -241,6 +246,7 @@ jobs:
           path: target/llvm-cov/html
 
       - name: Upload to Codecov
+        if: always()
         # v5.4.0
         uses: >-
           codecov/codecov-action@0565863a31f2c772f9f0395002a31e3f06189574
@@ -249,8 +255,23 @@ jobs:
           files: codecov.json
           fail_ci_if_error: false
 
+      - name: Verify coverage threshold (95%)
+        run: |
+          cargo llvm-cov --workspace \
+            --exclude fuzz \
+            --exclude neumann-native \
+            --exclude integration_tests \
+            --exclude stress_tests \
+            --exclude examples \
+            --exclude neumann_docs \
+            --features tls,metrics,full,graph,vector,\
+          fuzzing,test-internals,embedded,remote \
+            --no-run \
+            --fail-under-lines 95
+
   doc:
     name: Documentation
+    needs: [fmt]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -283,6 +304,41 @@ jobs:
           --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings
+
+  doc-coverage:
+    name: Doc Coverage
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust
+        # nightly
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install protoc and bc
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler bc
+
+      - name: Check doc coverage
+        run: |
+          chmod +x scripts/check-doc-coverage.sh
+          ./scripts/check-doc-coverage.sh
 
   security-audit:
     name: Security Audit
@@ -322,8 +378,14 @@ jobs:
 
   miri:
     name: Miri (undefined behavior)
+    needs: [changes, clippy]
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      MIRIFLAGS: -Zmiri-tree-borrows
     steps:
       - name: Checkout
         # v4.2.2
@@ -458,6 +520,10 @@ jobs:
 
   cross-platform:
     name: Cross-Platform
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -480,11 +546,11 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install protoc (Linux)
+      - name: Install protoc and mold (Linux)
         if: runner.os == 'Linux'
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
@@ -494,23 +560,51 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install protoc
 
+      - name: Install cargo-nextest
+        # v2.52.4
+        uses: >-
+          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+        with:
+          tool: cargo-nextest
+
       - name: Build workspace
         run: >-
           cargo build --workspace
           --exclude fuzz
           --exclude neumann-native
 
-      - name: Test core crates
+      - name: Test core crates (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
         run: |
-          cargo test -p tensor_store
-          cargo test -p relational_engine
-          cargo test -p graph_engine
-          cargo test -p vector_engine
-          cargo test -p neumann_parser
-          cargo test -p query_router
+          cargo nextest run --profile ci \
+            -p tensor_store \
+            -p relational_engine \
+            -p graph_engine \
+            -p vector_engine \
+            -p neumann_parser \
+            -p query_router
+
+      - name: Test core crates (non-Linux)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          cargo nextest run --profile ci \
+            -p tensor_store \
+            -p relational_engine \
+            -p graph_engine \
+            -p vector_engine \
+            -p neumann_parser \
+            -p query_router
 
   docker:
     name: Docker Build & Scan
+    needs: [changes, test]
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -570,6 +664,55 @@ jobs:
           exit-code: 1
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+
+  stress-pr:
+    name: Stress Tests (PR)
+    needs: [clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install protoc and mold linker
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler mold clang
+
+      - name: Install cargo-nextest
+        # v2.52.4
+        uses: >-
+          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+        with:
+          tool: cargo-nextest
+
+      - name: Run fast stress tests (Tier 1)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
+          STRESS_THREADS: "4"
+          STRESS_ENTITIES: "10000"
+          STRESS_DURATION: "10"
+        run: |
+          cargo nextest run \
+            --package stress_tests \
+            --profile stress-pr \
+            --run-ignored ignored-only \
+            -E 'binary(~crash_recovery) | (binary(~cache_stress) & not test(~eviction_performance) & not test(~semantic_throughput)) | binary(~clock_drift) | binary(~graph_algorithm_stress) | binary(~graph_index_stress) | binary(~graph_toctou) | binary(~partition_churn) | binary(~query_router_stress) | (binary(~slab_router) & not test(~throughput_stability))'
 
   pr-size:
     name: PR Size Check
@@ -698,11 +841,11 @@ jobs:
     name: CI Success
     needs:
       - fmt
-      - check
       - clippy
       - test
       - coverage
       - doc
+      - doc-coverage
       - security-audit
       - cargo-deny
       - miri
@@ -711,6 +854,8 @@ jobs:
       - python-sdk
       - docker
       - pr-size
+      - bench-inventory
+      - stress-pr
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -721,24 +866,25 @@ jobs:
           FAILED=false
 
           FMT="${{ needs.fmt.result }}"
-          CHECK="${{ needs.check.result }}"
           CLIPPY="${{ needs.clippy.result }}"
           TEST="${{ needs.test.result }}"
           COV="${{ needs.coverage.result }}"
           DOC="${{ needs.doc.result }}"
           AUDIT="${{ needs.security-audit.result }}"
           DENY="${{ needs.cargo-deny.result }}"
+          DOCCOV="${{ needs.doc-coverage.result }}"
           MIRI="${{ needs.miri.result }}"
           CROSS="${{ needs.cross-platform.result }}"
           DOCKER="${{ needs.docker.result }}"
           TS="${{ needs.typescript-sdk.result }}"
           PY="${{ needs.python-sdk.result }}"
           PR="${{ needs.pr-size.result }}"
+          BENCH="${{ needs.bench-inventory.result }}"
+          STRESS="${{ needs.stress-pr.result }}"
 
-          for job in fmt:$FMT check:$CHECK clippy:$CLIPPY \
+          for job in fmt:$FMT clippy:$CLIPPY \
                      test:$TEST coverage:$COV doc:$DOC \
-                     security-audit:$AUDIT cargo-deny:$DENY \
-                     miri:$MIRI cross-platform:$CROSS docker:$DOCKER; do
+                     security-audit:$AUDIT cargo-deny:$DENY; do
             name="${job%%:*}"
             result="${job##*:}"
             if [[ "$result" != "success" ]]; then
@@ -747,7 +893,10 @@ jobs:
             fi
           done
 
-          for job in typescript-sdk:$TS python-sdk:$PY pr-size:$PR; do
+          for job in doc-coverage:$DOCCOV miri:$MIRI \
+                     cross-platform:$CROSS docker:$DOCKER \
+                     typescript-sdk:$TS python-sdk:$PY pr-size:$PR \
+                     bench-inventory:$BENCH stress-pr:$STRESS; do
             name="${job%%:*}"
             result="${job##*:}"
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then

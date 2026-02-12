@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Activity pulse types for TRO WebSocket communication.
 //!
 //! Defines the message types sent from server to client to trigger
@@ -64,10 +64,9 @@ impl OpType {
         match self {
             Self::Get => 3,
             Self::Put => 5,
-            Self::Delete => 8,
+            Self::Delete | Self::VectorSearch => 8,
             Self::Scan => 10,
             Self::GraphTraversal => 12,
-            Self::VectorSearch => 8,
             Self::Error => 20,
             Self::Batch => 15,
         }

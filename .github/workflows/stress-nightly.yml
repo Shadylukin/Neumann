@@ -1,0 +1,78 @@
+---
+name: Stress Tests (Nightly)
+
+"on":
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+permissions:
+  contents: read
+
+jobs:
+  stress-nightly:
+    name: Nightly Stress Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install protoc and mold linker
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler mold clang
+
+      - name: Install cargo-nextest
+        # v2.52.4
+        uses: >-
+          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+        with:
+          tool: cargo-nextest
+
+      - name: Run Tier 1+2 stress tests
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
+          STRESS_THREADS: "4"
+          STRESS_ENTITIES: "50000"
+          STRESS_DURATION: "30"
+        run: |
+          cargo nextest run \
+            --package stress_tests \
+            --profile stress-nightly \
+            --run-ignored ignored-only \
+            -E 'not (binary(~tensor_store_stress) | binary(~tensor_chain_stress) | binary(~tensor_compress_stress) | binary(~duration_stress) | test(~1m_vectors))'
+
+      - name: Run Tier 3 stress tests (reduced scale)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
+          STRESS_THREADS: "4"
+          STRESS_ENTITIES: "50000"
+          STRESS_DURATION: "30"
+        run: |
+          cargo nextest run \
+            --package stress_tests \
+            --profile stress-nightly \
+            --run-ignored ignored-only \
+            -E 'binary(~tensor_store_stress) | binary(~tensor_chain_stress) | binary(~tensor_compress_stress) | (binary(~duration_stress) & not test(~1_hour))'

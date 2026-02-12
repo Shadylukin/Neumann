@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! REST API request and response types.
 
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ pub struct GetRequest {
     pub with_vector: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -73,7 +73,7 @@ pub struct DeleteResponse {
     pub deleted: usize,
 }
 
-fn default_limit() -> usize {
+const fn default_limit() -> usize {
     10
 }
 
@@ -123,7 +123,7 @@ pub struct QueryResponse {
     pub time: f64,
 }
 
-fn default_scroll_limit() -> usize {
+const fn default_scroll_limit() -> usize {
     100
 }
 

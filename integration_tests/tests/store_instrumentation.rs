@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TensorStore instrumentation integration tests.
 //!
 //! Tests access pattern tracking and shard instrumentation.

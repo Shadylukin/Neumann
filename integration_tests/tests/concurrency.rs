@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Concurrency and stress integration tests.
 //!
 //! Tests multi-threaded and async access patterns across all engines.

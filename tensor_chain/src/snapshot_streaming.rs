@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Memory-efficient streaming serialization for large Raft snapshots.
 //!
 //! # Overview
@@ -262,22 +262,22 @@ impl SnapshotWriter {
     }
 
     #[must_use]
-    pub fn entry_count(&self) -> u64 {
+    pub const fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
     #[must_use]
-    pub fn last_index(&self) -> u64 {
+    pub const fn last_index(&self) -> u64 {
         self.last_index
     }
 
     #[must_use]
-    pub fn last_term(&self) -> u64 {
+    pub const fn last_term(&self) -> u64 {
         self.last_term
     }
 
     #[must_use]
-    pub fn bytes_written(&self) -> u64 {
+    pub const fn bytes_written(&self) -> u64 {
         self.buffer.total_len()
     }
 
@@ -308,10 +308,9 @@ impl SnapshotWriter {
 
         // Copy existing data (skip placeholder header)
         if total_len > HEADER_SIZE as u64 {
-            let data = self.buffer.as_slice(
-                HEADER_SIZE as u64,
-                (total_len - HEADER_SIZE as u64) as usize,
-            )?;
+            #[allow(clippy::cast_possible_truncation)]
+            let data_len = (total_len - HEADER_SIZE as u64) as usize;
+            let data = self.buffer.as_slice(HEADER_SIZE as u64, data_len)?;
             new_buffer.write(data)?;
         }
 
@@ -370,17 +369,17 @@ impl<'a> SnapshotReader<'a> {
     }
 
     #[must_use]
-    pub fn entry_count(&self) -> u64 {
+    pub const fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
     #[must_use]
-    pub fn entries_read(&self) -> u64 {
+    pub const fn entries_read(&self) -> u64 {
         self.entries_read
     }
 
     #[must_use]
-    pub fn remaining(&self) -> u64 {
+    pub const fn remaining(&self) -> u64 {
         self.entry_count.saturating_sub(self.entries_read)
     }
 

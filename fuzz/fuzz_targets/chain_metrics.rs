@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -206,6 +206,10 @@ fn create_snapshot_from_input(input: &SnapshotInput) -> ChainMetricsSnapshot {
             heartbeat_failures: input.heartbeat_failures,
             fast_path_rate,
             heartbeat_success_rate,
+            backoff_events: 0,
+            backoff_skipped_entries: 0,
+            snapshot_transfer_timeouts: 0,
+            wal_persist_retries: 0,
         },
         dtx: DistributedTxStatsSnapshot {
             started: input.dtx_started,
@@ -220,6 +224,10 @@ fn create_snapshot_from_input(input: &SnapshotInput) -> ChainMetricsSnapshot {
             participation_timeouts: 0,
             commit_rate,
             conflict_rate,
+            lock_handle_current: 0,
+            lock_handle_high_water_warnings: 0,
+            abort_delivery_retries: 0,
+            abort_delivery_failures: 0,
         },
         membership: MembershipStatsSnapshot {
             health_checks: input.health_checks,

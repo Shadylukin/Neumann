@@ -4,6 +4,7 @@ The tensor_compress crate provides compression algorithms optimized for tensor
 data: Tensor Train decomposition, delta encoding, sparse vectors, and run-length
 encoding.
 
+<!-- BENCH:START -->
 ## Tensor Train Decomposition (primary compression method)
 
 | Operation | Time | Peak RAM |
@@ -38,6 +39,7 @@ encoding.
 | Sparse vectors | Native sparse | 3-32x | Yes |
 | Sequential IDs | Delta + varint | 4-8x | Yes |
 | Repeated values | RLE | 2-100x | Yes |
+<!-- BENCH:END -->
 
 ## Analysis
 

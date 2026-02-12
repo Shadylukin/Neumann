@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Append-only blob log with segment management.
 //!
 //! `BlobLog` provides content-addressable storage using append-only log segments.

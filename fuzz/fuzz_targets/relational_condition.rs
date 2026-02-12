@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -77,12 +77,14 @@ struct FuzzInput {
 }
 
 fuzz_target!(|input: FuzzInput| {
-    // Limit field count to avoid OOM
+    // Limit field count to avoid OOM and deduplicate by name
+    // (Row uses Vec with find-first, TensorData uses HashMap with last-wins)
+    let mut seen = std::collections::HashSet::new();
     let fields: Vec<_> = input
         .fields
         .into_iter()
         .take(20)
-        .filter(|f| !f.name.is_empty() && f.name.len() < 64)
+        .filter(|f| !f.name.is_empty() && f.name.len() < 64 && seen.insert(f.name.clone()))
         .collect();
 
     if fields.is_empty() {

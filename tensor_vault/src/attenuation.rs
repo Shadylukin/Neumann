@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Distance-based permission attenuation for graph-based access control.
 //!
 //! Permissions degrade with graph distance (hop count):

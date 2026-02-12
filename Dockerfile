@@ -4,7 +4,7 @@
 # ==============================================================================
 # Builder Stage
 # ==============================================================================
-FROM rust:latest AS builder
+FROM rust:1.88-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -162,5 +162,32 @@ EXPOSE 9200
 # Health check (30s start-period for Rust server warmup)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
     CMD curl -sf http://localhost:9200/health || exit 1
+
+ENTRYPOINT ["neumann_server"]
+
+# ==============================================================================
+# Jepsen Testing Stage
+# ==============================================================================
+FROM debian:bookworm-slim AS jepsen
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    iproute2 \
+    iptables \
+    procps \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/lib/neumann
+
+COPY --from=builder /build/target/release/neumann_server /usr/local/bin/neumann_server
+
+WORKDIR /var/lib/neumann
+
+# gRPC port + Raft TCP port
+EXPOSE 9200 9300
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=10 \
+    CMD bash -c 'echo > /dev/tcp/localhost/9200' || exit 1
 
 ENTRYPOINT ["neumann_server"]

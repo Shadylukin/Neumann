@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for SequenceTracker bounded growth and cleanup.
 //!
 //! Tests that the SequenceTracker prevents unbounded memory growth

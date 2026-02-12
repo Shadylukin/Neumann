@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Region-aware memory-mapped storage for geometric locality.
 //!
 //! `RegionalMmapStore` extends the base mmap storage with Voronoi-region-aware
@@ -541,7 +541,7 @@ pub struct RegionalMmapConfig {
 impl Default for RegionalMmapConfig {
     fn default() -> Self {
         Self {
-            run_dir: PathBuf::from("/tmp/regional_mmap"),
+            run_dir: std::env::temp_dir().join("regional_mmap"),
             max_entries_per_run: 100_000,
             compaction_threshold: 4,
         }

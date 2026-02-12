@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Example: Start the Neumann Web Admin UI with real documentation.
 //!
 //! This demonstrates Neumann's unified storage by loading the actual project

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Stress tests for repeated node crash and recovery cycles.
 //!
 //! Tests ChaosCluster behavior under crash/recovery scenarios:

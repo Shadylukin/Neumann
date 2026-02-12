@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 /**
  * Static TypeScript definitions for vector.proto
  *
@@ -112,6 +112,7 @@ export interface DeleteCollectionResponse {
   deleted: boolean;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface ListCollectionsRequest {}
 
 export interface ListCollectionsResponse {

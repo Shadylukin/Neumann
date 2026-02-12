@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! OpenTelemetry metrics integration.
 //!
 //! This module provides metrics collection using OpenTelemetry with OTLP export.
@@ -45,7 +45,7 @@ impl MetricsConfig {
 
     /// Enable or disable metrics collection.
     #[must_use]
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
+    pub const fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
@@ -66,7 +66,7 @@ impl MetricsConfig {
 
     /// Set the export interval in seconds.
     #[must_use]
-    pub fn with_export_interval(mut self, secs: u64) -> Self {
+    pub const fn with_export_interval(mut self, secs: u64) -> Self {
         self.export_interval_secs = secs;
         self
     }
@@ -210,7 +210,7 @@ impl ServerMetrics {
 
     /// Get the underlying meter for custom metrics.
     #[must_use]
-    pub fn meter(&self) -> &Meter {
+    pub const fn meter(&self) -> &Meter {
         &self.meter
     }
 }
@@ -224,11 +224,15 @@ pub struct MetricsHandle {
 impl MetricsHandle {
     /// Get a reference to the server metrics.
     #[must_use]
-    pub fn metrics(&self) -> &Arc<ServerMetrics> {
+    pub const fn metrics(&self) -> &Arc<ServerMetrics> {
         &self.metrics
     }
 
     /// Shutdown the metrics pipeline, flushing any pending data.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerError::Internal` if the metrics provider fails to shut down.
     pub fn shutdown(self) -> Result<()> {
         self.provider
             .shutdown()
@@ -239,6 +243,10 @@ impl MetricsHandle {
 /// Initialize the metrics pipeline.
 ///
 /// Returns a handle that must be kept alive for the duration of metrics collection.
+///
+/// # Errors
+///
+/// Returns `ServerError::Config` if the OTLP exporter cannot be created.
 pub fn init_metrics(config: &MetricsConfig) -> Result<MetricsHandle> {
     if !config.enabled {
         // Return a no-op metrics handle

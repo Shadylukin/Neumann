@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Styled help text formatting.
 
 use crate::style::{styled, Theme};
@@ -101,6 +101,25 @@ pub fn format_help(theme: &Theme) -> String {
         "Show table schema",
         theme,
     );
+    command(
+        &mut output,
+        "DESCRIBE NODE label",
+        "Show node label schema",
+        theme,
+    );
+    command(
+        &mut output,
+        "DESCRIBE EDGE type",
+        "Show edge type schema",
+        theme,
+    );
+    command(
+        &mut output,
+        "CREATE INDEX name ON table (cols)",
+        "Create an index",
+        theme,
+    );
+    command(&mut output, "DROP INDEX name", "Drop an index", theme);
     output.push('\n');
 
     // Graph
@@ -120,6 +139,8 @@ pub fn format_help(theme: &Theme) -> String {
         "Create an edge",
         theme,
     );
+    command(&mut output, "EDGE GET id", "Get edge by ID", theme);
+    command(&mut output, "EDGE DELETE id", "Delete edge", theme);
     command(&mut output, "EDGE LIST [type]", "List edges", theme);
     command(
         &mut output,
@@ -127,7 +148,12 @@ pub fn format_help(theme: &Theme) -> String {
         "Get neighbors",
         theme,
     );
-    command(&mut output, "PATH n1 -> n2 [LIMIT n]", "Find path", theme);
+    command(
+        &mut output,
+        "PATH SHORTEST|ALL|WEIGHTED n1 TO n2",
+        "Find path",
+        theme,
+    );
     output.push('\n');
 
     // Graph Algorithms
@@ -146,14 +172,56 @@ pub fn format_help(theme: &Theme) -> String {
     );
     command(
         &mut output,
+        "GRAPH ALGORITHM CLOSENESS",
+        "Closeness centrality",
+        theme,
+    );
+    command(
+        &mut output,
+        "GRAPH ALGORITHM EIGENVECTOR",
+        "Eigenvector centrality",
+        theme,
+    );
+    command(
+        &mut output,
         "GRAPH ALGORITHM LOUVAIN",
         "Detect communities",
         theme,
     );
     command(
         &mut output,
+        "GRAPH ALGORITHM LABEL_PROPAGATION",
+        "Label propagation communities",
+        theme,
+    );
+    command(
+        &mut output,
+        "GRAPH CONSTRAINT CREATE|DROP|LIST|GET",
+        "Manage graph constraints",
+        theme,
+    );
+    command(
+        &mut output,
+        "GRAPH INDEX CREATE|DROP|SHOW",
+        "Manage graph indexes",
+        theme,
+    );
+    command(
+        &mut output,
+        "GRAPH AGGREGATE COUNT|SUM|AVG NODES|EDGES",
+        "Graph aggregation",
+        theme,
+    );
+    command(
+        &mut output,
         "GRAPH PATTERN MATCH (a)-[r]->(b)",
         "Pattern matching",
+        theme,
+    );
+    command(
+        &mut output,
+        "GRAPH BATCH CREATE|DELETE|UPDATE",
+        "Batch graph operations",
         theme,
     );
     output.push('\n');
@@ -175,7 +243,25 @@ pub fn format_help(theme: &Theme) -> String {
         "Find similar vectors",
         theme,
     );
+    command(
+        &mut output,
+        "EMBED BATCH [('key', [vec]), ...]",
+        "Batch store embeddings",
+        theme,
+    );
     command(&mut output, "SHOW EMBEDDINGS", "List embeddings", theme);
+    command(
+        &mut output,
+        "SHOW VECTOR INDEX",
+        "Show HNSW index info",
+        theme,
+    );
+    command(
+        &mut output,
+        "COUNT EMBEDDINGS",
+        "Count stored embeddings",
+        theme,
+    );
     output.push('\n');
 
     // Entity
@@ -189,13 +275,26 @@ pub fn format_help(theme: &Theme) -> String {
     command(&mut output, "ENTITY GET 'key'", "Get entity", theme);
     command(
         &mut output,
+        "ENTITY UPDATE 'key' {props}",
+        "Update entity",
+        theme,
+    );
+    command(&mut output, "ENTITY DELETE 'key'", "Delete entity", theme);
+    command(
+        &mut output,
         "ENTITY CONNECT 'a' -> 'b' : type",
         "Connect entities",
         theme,
     );
     command(
         &mut output,
-        "FIND NODE [label] [WHERE ...] [LIMIT n]",
+        "ENTITY BATCH CREATE [{...}, ...]",
+        "Batch create entities",
+        theme,
+    );
+    command(
+        &mut output,
+        "FIND NODE|EDGE|ROWS|PATH [WHERE ...]",
         "Cross-engine search",
         theme,
     );
@@ -218,8 +317,58 @@ pub fn format_help(theme: &Theme) -> String {
     );
     command(&mut output, "BLOB DELETE 'id'", "Delete blob", theme);
     command(&mut output, "BLOB INFO 'id'", "Show blob metadata", theme);
-    command(&mut output, "BLOB GC", "Garbage collection", theme);
+    command(
+        &mut output,
+        "BLOB LINK 'id' TO entity",
+        "Link blob to entity",
+        theme,
+    );
+    command(
+        &mut output,
+        "BLOB UNLINK 'id' FROM entity",
+        "Unlink blob from entity",
+        theme,
+    );
+    command(
+        &mut output,
+        "BLOB LINKS 'id'",
+        "Show linked entities",
+        theme,
+    );
+    command(
+        &mut output,
+        "BLOB TAG|UNTAG 'id' 'tag'",
+        "Add or remove tag",
+        theme,
+    );
+    command(
+        &mut output,
+        "BLOB VERIFY 'id'",
+        "Verify blob integrity",
+        theme,
+    );
+    command(&mut output, "BLOB GC [FULL]", "Garbage collection", theme);
+    command(&mut output, "BLOB REPAIR", "Repair blob storage", theme);
+    command(&mut output, "BLOB STATS", "Show blob statistics", theme);
+    command(
+        &mut output,
+        "BLOB META SET|GET 'id' 'key' ['val']",
+        "Set or get metadata",
+        theme,
+    );
     command(&mut output, "BLOBS", "List all blobs", theme);
+    command(
+        &mut output,
+        "BLOBS FOR entity",
+        "List blobs for entity",
+        theme,
+    );
+    command(
+        &mut output,
+        "BLOBS BY TAG 'tag'",
+        "List blobs by tag",
+        theme,
+    );
     output.push('\n');
 
     // Vault
@@ -238,10 +387,24 @@ pub fn format_help(theme: &Theme) -> String {
         theme,
     );
     command(&mut output, "VAULT GET 'key'", "Retrieve secret", theme);
+    command(&mut output, "VAULT DELETE 'key'", "Delete secret", theme);
+    command(&mut output, "VAULT LIST [pattern]", "List secrets", theme);
+    command(
+        &mut output,
+        "VAULT ROTATE 'key' 'new_value'",
+        "Rotate secret",
+        theme,
+    );
     command(
         &mut output,
         "VAULT GRANT 'entity' ON 'key'",
         "Grant access",
+        theme,
+    );
+    command(
+        &mut output,
+        "VAULT REVOKE 'entity' ON 'key'",
+        "Revoke access",
         theme,
     );
     output.push('\n');
@@ -251,10 +414,24 @@ pub fn format_help(theme: &Theme) -> String {
     command(&mut output, "CACHE INIT", "Initialize cache", theme);
     command(&mut output, "CACHE STATS", "Show statistics", theme);
     command(&mut output, "CACHE CLEAR", "Clear all entries", theme);
+    command(&mut output, "CACHE EVICT [n]", "Evict LRU entries", theme);
+    command(&mut output, "CACHE GET 'key'", "Get cached response", theme);
     command(
         &mut output,
-        "CACHE SEMANTIC GET 'query'",
+        "CACHE PUT 'key' 'value'",
+        "Store cache entry",
+        theme,
+    );
+    command(
+        &mut output,
+        "CACHE SEMANTIC GET 'query' [THRESHOLD n]",
         "Semantic lookup",
+        theme,
+    );
+    command(
+        &mut output,
+        "CACHE SEMANTIC PUT 'q' 'r' EMBEDDING [v]",
+        "Store semantic entry",
         theme,
     );
     output.push('\n');
@@ -285,8 +462,51 @@ pub fn format_help(theme: &Theme) -> String {
         theme,
     );
     command(&mut output, "COMMIT CHAIN", "Commit transaction", theme);
+    command(
+        &mut output,
+        "ROLLBACK CHAIN TO height",
+        "Rollback chain",
+        theme,
+    );
     command(&mut output, "CHAIN HEIGHT", "Get chain height", theme);
+    command(&mut output, "CHAIN TIP", "Get latest block", theme);
+    command(
+        &mut output,
+        "CHAIN BLOCK height",
+        "Get block at height",
+        theme,
+    );
     command(&mut output, "CHAIN VERIFY", "Verify chain integrity", theme);
+    command(
+        &mut output,
+        "CHAIN HISTORY 'key'",
+        "Key history across blocks",
+        theme,
+    );
+    command(
+        &mut output,
+        "CHAIN SIMILAR [vec] LIMIT n",
+        "Search chain by similarity",
+        theme,
+    );
+    command(
+        &mut output,
+        "CHAIN DRIFT FROM h1 TO h2",
+        "Drift metrics between heights",
+        theme,
+    );
+    command(
+        &mut output,
+        "SHOW CODEBOOK GLOBAL|LOCAL 'domain'",
+        "Show codebook",
+        theme,
+    );
+    command(
+        &mut output,
+        "ANALYZE CODEBOOK TRANSITIONS",
+        "Analyze codebook transitions",
+        theme,
+    );
     output.push('\n');
 
     // Cluster
@@ -299,6 +519,30 @@ pub fn format_help(theme: &Theme) -> String {
     );
     command(&mut output, "CLUSTER DISCONNECT", "Leave cluster", theme);
     command(&mut output, "CLUSTER STATUS", "Show cluster status", theme);
+    command(&mut output, "CLUSTER NODES", "List cluster nodes", theme);
+    command(&mut output, "CLUSTER LEADER", "Show current leader", theme);
+    output.push('\n');
+
+    // Cypher (experimental)
+    section(&mut output, "Cypher (Experimental)", theme);
+    command(
+        &mut output,
+        "MATCH (a:Label)-[:TYPE]->(b) RETURN ...",
+        "Pattern matching query",
+        theme,
+    );
+    command(
+        &mut output,
+        "CREATE (n:Label {props})",
+        "Create nodes/edges",
+        theme,
+    );
+    command(
+        &mut output,
+        "MERGE (n:Label {props})",
+        "Upsert pattern",
+        theme,
+    );
     output.push('\n');
 
     // Examples
@@ -357,6 +601,12 @@ mod tests {
         assert!(result.contains("Relational"));
         assert!(result.contains("Graph"));
         assert!(result.contains("Vector"));
+        assert!(result.contains("Blob Storage"));
+        assert!(result.contains("Vault"));
+        assert!(result.contains("Cache"));
+        assert!(result.contains("Chain"));
+        assert!(result.contains("Cluster"));
+        assert!(result.contains("Cypher"));
         assert!(result.contains("Examples"));
     }
 
@@ -369,6 +619,38 @@ mod tests {
         assert!(result.contains("SELECT"));
         assert!(result.contains("NODE CREATE"));
         assert!(result.contains("EMBED STORE"));
+        assert!(result.contains("VAULT DELETE"));
+        assert!(result.contains("VAULT ROTATE"));
+        assert!(result.contains("VAULT REVOKE"));
+        assert!(result.contains("CACHE EVICT"));
+        assert!(result.contains("CACHE GET"));
+        assert!(result.contains("CACHE PUT"));
+        assert!(result.contains("EMBED BATCH"));
+        assert!(result.contains("SHOW VECTOR INDEX"));
+        assert!(result.contains("COUNT EMBEDDINGS"));
+        assert!(result.contains("BLOB LINK"));
+        assert!(result.contains("BLOB TAG"));
+        assert!(result.contains("BLOB STATS"));
+        assert!(result.contains("BLOB META"));
+        assert!(result.contains("BLOBS FOR"));
+        assert!(result.contains("BLOBS BY TAG"));
+        assert!(result.contains("CHAIN HISTORY"));
+        assert!(result.contains("CHAIN TIP"));
+        assert!(result.contains("CHAIN DRIFT"));
+        assert!(result.contains("SHOW CODEBOOK"));
+        assert!(result.contains("CLUSTER NODES"));
+        assert!(result.contains("CLUSTER LEADER"));
+        assert!(result.contains("ENTITY UPDATE"));
+        assert!(result.contains("ENTITY DELETE"));
+        assert!(result.contains("ENTITY BATCH"));
+        assert!(result.contains("DESCRIBE NODE"));
+        assert!(result.contains("CREATE INDEX"));
+        assert!(result.contains("GRAPH CONSTRAINT"));
+        assert!(result.contains("GRAPH INDEX"));
+        assert!(result.contains("GRAPH AGGREGATE"));
+        assert!(result.contains("GRAPH BATCH"));
+        assert!(result.contains("MATCH"));
+        assert!(result.contains("MERGE"));
     }
 
     #[test]

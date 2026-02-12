@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Server configuration types.
 
 use std::net::SocketAddr;
@@ -60,6 +60,14 @@ pub const ENV_REQUEST_TIMEOUT_SECS: &str = "NEUMANN_REQUEST_TIMEOUT_SECS";
 pub const ENV_MEMORY_BUDGET_MAX_BYTES: &str = "NEUMANN_MEMORY_BUDGET_MAX_BYTES";
 /// Memory budget enable load shedding environment variable.
 pub const ENV_MEMORY_BUDGET_LOAD_SHEDDING: &str = "NEUMANN_MEMORY_BUDGET_LOAD_SHEDDING";
+/// Cluster node ID environment variable.
+pub const ENV_CLUSTER_NODE_ID: &str = "NEUMANN_CLUSTER_NODE_ID";
+/// Cluster Raft bind address environment variable.
+pub const ENV_CLUSTER_BIND_ADDR: &str = "NEUMANN_CLUSTER_BIND_ADDR";
+/// Cluster peers environment variable (comma-separated `id=addr` pairs).
+pub const ENV_CLUSTER_PEERS: &str = "NEUMANN_CLUSTER_PEERS";
+/// Data directory for WAL and crash recovery.
+pub const ENV_DATA_DIR: &str = "NEUMANN_DATA_DIR";
 
 /// Environment variable parsing helpers.
 mod env_parse {
@@ -123,6 +131,65 @@ mod env_parse {
     }
 }
 
+/// Cluster configuration for distributed mode.
+#[derive(Debug, Clone)]
+pub struct ClusterConfig {
+    /// Unique node identifier.
+    pub node_id: String,
+    /// Address to bind for Raft TCP connections.
+    pub raft_bind_addr: SocketAddr,
+    /// Peer nodes as (`node_id`, address) pairs.
+    pub peers: Vec<(String, SocketAddr)>,
+    /// Data directory for WAL persistence and crash recovery.
+    pub data_dir: PathBuf,
+}
+
+impl ClusterConfig {
+    fn from_env() -> Result<Option<Self>> {
+        let Ok(node_id) = std::env::var(ENV_CLUSTER_NODE_ID) else {
+            return Ok(None);
+        };
+
+        let raft_bind_addr =
+            env_parse::parse_socket_addr(ENV_CLUSTER_BIND_ADDR).ok_or_else(|| {
+                ServerError::Config(format!(
+                    "{ENV_CLUSTER_BIND_ADDR} required when {ENV_CLUSTER_NODE_ID} is set"
+                ))
+            })??;
+
+        let peers_str = std::env::var(ENV_CLUSTER_PEERS).unwrap_or_default();
+        let mut peers = Vec::new();
+        for entry in peers_str.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let (id, addr_str) = entry.split_once('=').ok_or_else(|| {
+                ServerError::Config(format!(
+                    "invalid peer format '{entry}', expected 'node_id=addr'"
+                ))
+            })?;
+            let addr: SocketAddr = addr_str.parse().map_err(|e| {
+                ServerError::Config(format!("invalid peer address '{addr_str}': {e}"))
+            })?;
+            peers.push((id.to_string(), addr));
+        }
+
+        let data_dir = env_parse::parse_path(ENV_DATA_DIR).ok_or_else(|| {
+            ServerError::Config(format!(
+                "{ENV_DATA_DIR} required when {ENV_CLUSTER_NODE_ID} is set"
+            ))
+        })?;
+
+        Ok(Some(Self {
+            node_id,
+            raft_bind_addr,
+            peers,
+            data_dir,
+        }))
+    }
+}
+
 /// Server configuration.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -170,6 +237,8 @@ pub struct ServerConfig {
     pub web_addr: Option<SocketAddr>,
     /// Enhanced streaming configuration (optional).
     pub streaming: Option<StreamingConfig>,
+    /// Cluster configuration for distributed mode (optional).
+    pub cluster: Option<ClusterConfig>,
 }
 
 impl Default for ServerConfig {
@@ -200,6 +269,7 @@ impl Default for ServerConfig {
             rest_addr: None,
             web_addr: None,
             streaming: None,
+            cluster: None,
         }
     }
 }
@@ -239,6 +309,10 @@ impl ServerConfig {
     /// - `NEUMANN_REQUEST_TIMEOUT_SECS` - Request timeout in seconds
     /// - `NEUMANN_MEMORY_BUDGET_MAX_BYTES` - Memory budget in bytes
     /// - `NEUMANN_MEMORY_BUDGET_LOAD_SHEDDING` - Enable load shedding (true/false)
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerError::Config` if any environment variable has an invalid value.
     pub fn from_env() -> Result<Self> {
         let mut config = Self::default();
 
@@ -345,12 +419,15 @@ impl ServerConfig {
             config.memory_budget = Some(memory);
         }
 
+        // Cluster configuration (optional)
+        config.cluster = ClusterConfig::from_env()?;
+
         Ok(config)
     }
 
     /// Set the bind address.
     #[must_use]
-    pub fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
+    pub const fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
         self.bind_addr = addr;
         self
     }
@@ -371,35 +448,35 @@ impl ServerConfig {
 
     /// Set maximum message size.
     #[must_use]
-    pub fn with_max_message_size(mut self, size: usize) -> Self {
+    pub const fn with_max_message_size(mut self, size: usize) -> Self {
         self.max_message_size = size;
         self
     }
 
     /// Enable or disable gRPC-web support.
     #[must_use]
-    pub fn with_grpc_web(mut self, enabled: bool) -> Self {
+    pub const fn with_grpc_web(mut self, enabled: bool) -> Self {
         self.enable_grpc_web = enabled;
         self
     }
 
     /// Enable or disable reflection service.
     #[must_use]
-    pub fn with_reflection(mut self, enabled: bool) -> Self {
+    pub const fn with_reflection(mut self, enabled: bool) -> Self {
         self.enable_reflection = enabled;
         self
     }
 
     /// Set blob streaming chunk size.
     #[must_use]
-    pub fn with_blob_chunk_size(mut self, size: usize) -> Self {
+    pub const fn with_blob_chunk_size(mut self, size: usize) -> Self {
         self.blob_chunk_size = size;
         self
     }
 
     /// Set the maximum upload size for blob service.
     #[must_use]
-    pub fn with_max_upload_size(mut self, size: usize) -> Self {
+    pub const fn with_max_upload_size(mut self, size: usize) -> Self {
         self.max_upload_size = size;
         self
     }
@@ -409,28 +486,28 @@ impl ServerConfig {
     /// Lower values provide better backpressure at the cost of throughput.
     /// Higher values allow more buffering but may use more memory.
     #[must_use]
-    pub fn with_stream_channel_capacity(mut self, capacity: usize) -> Self {
+    pub const fn with_stream_channel_capacity(mut self, capacity: usize) -> Self {
         self.stream_channel_capacity = capacity;
         self
     }
 
     /// Set rate limiting configuration.
     #[must_use]
-    pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
+    pub const fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
         self.rate_limit = Some(config);
         self
     }
 
     /// Set audit logging configuration.
     #[must_use]
-    pub fn with_audit(mut self, config: AuditConfig) -> Self {
+    pub const fn with_audit(mut self, config: AuditConfig) -> Self {
         self.audit = Some(config);
         self
     }
 
     /// Set graceful shutdown configuration.
     #[must_use]
-    pub fn with_shutdown(mut self, config: ShutdownConfig) -> Self {
+    pub const fn with_shutdown(mut self, config: ShutdownConfig) -> Self {
         self.shutdown = Some(config);
         self
     }
@@ -479,33 +556,37 @@ impl ServerConfig {
 
     /// Set memory budget configuration.
     #[must_use]
-    pub fn with_memory_budget(mut self, config: MemoryBudgetConfig) -> Self {
+    pub const fn with_memory_budget(mut self, config: MemoryBudgetConfig) -> Self {
         self.memory_budget = Some(config);
         self
     }
 
     /// Set REST API bind address.
     #[must_use]
-    pub fn with_rest_addr(mut self, addr: SocketAddr) -> Self {
+    pub const fn with_rest_addr(mut self, addr: SocketAddr) -> Self {
         self.rest_addr = Some(addr);
         self
     }
 
     /// Set Web admin UI bind address.
     #[must_use]
-    pub fn with_web_addr(mut self, addr: SocketAddr) -> Self {
+    pub const fn with_web_addr(mut self, addr: SocketAddr) -> Self {
         self.web_addr = Some(addr);
         self
     }
 
     /// Set streaming configuration.
     #[must_use]
-    pub fn with_streaming(mut self, config: StreamingConfig) -> Self {
+    pub const fn with_streaming(mut self, config: StreamingConfig) -> Self {
         self.streaming = Some(config);
         self
     }
 
     /// Validate the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerError::Config` if any configuration value is invalid.
     pub fn validate(&self) -> Result<()> {
         if self.max_message_size == 0 {
             return Err(ServerError::Config(
@@ -603,7 +684,7 @@ pub struct TlsConfig {
 impl TlsConfig {
     /// Create a new TLS configuration.
     #[must_use]
-    pub fn new(cert_path: PathBuf, key_path: PathBuf) -> Self {
+    pub const fn new(cert_path: PathBuf, key_path: PathBuf) -> Self {
         Self {
             cert_path,
             key_path,
@@ -621,12 +702,16 @@ impl TlsConfig {
 
     /// Require client certificates.
     #[must_use]
-    pub fn with_required_client_cert(mut self, required: bool) -> Self {
+    pub const fn with_required_client_cert(mut self, required: bool) -> Self {
         self.require_client_cert = required;
         self
     }
 
     /// Validate the TLS configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerError::Config` if certificate or key files are missing.
     pub fn validate(&self) -> Result<()> {
         if !self.cert_path.exists() {
             return Err(ServerError::Config(format!(
@@ -707,12 +792,16 @@ impl AuthConfig {
 
     /// Allow anonymous access.
     #[must_use]
-    pub fn with_anonymous(mut self, allowed: bool) -> Self {
+    pub const fn with_anonymous(mut self, allowed: bool) -> Self {
         self.allow_anonymous = allowed;
         self
     }
 
     /// Validate the authentication configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerError::Config` if the auth configuration is invalid.
     pub fn validate(&self) -> Result<()> {
         if self.api_key_header.is_empty() {
             return Err(ServerError::Config(
@@ -797,7 +886,7 @@ pub struct ApiKey {
 impl ApiKey {
     /// Create a new API key.
     #[must_use]
-    pub fn new(key: String, identity: String) -> Self {
+    pub const fn new(key: String, identity: String) -> Self {
         Self {
             key,
             identity,
@@ -813,6 +902,10 @@ impl ApiKey {
     }
 
     /// Validate the API key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerError::Config` if the key is empty, too short, or has no identity.
     pub fn validate(&self) -> Result<()> {
         if self.key.is_empty() {
             return Err(ServerError::Config("API key cannot be empty".to_string()));

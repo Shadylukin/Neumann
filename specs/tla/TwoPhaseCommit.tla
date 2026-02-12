@@ -37,8 +37,12 @@ CONSTANT Participants
 \* Nil sentinel
 CONSTANT Nil
 
+\* Upper bound on in-flight messages for model checking
+CONSTANT MessageBound
+
 ASSUME Transactions /= {}
 ASSUME Participants /= {}
+ASSUME MessageBound \in Nat /\ MessageBound >= 1
 
 \* ========================================================================
 \* Variables
@@ -62,6 +66,9 @@ VARIABLES
 \* All variables
 vars == <<txPhase, coordinatorDecision, participantVote, participantState,
           locks, messages>>
+
+\* State-space bound: cap in-flight messages for tractable model checking
+StateConstraint == Cardinality(messages) <= MessageBound
 
 \* ========================================================================
 \* Message Types
@@ -306,12 +313,45 @@ Timeout(tx) ==
                    \cup {AbortMsg(tx, p) : p \in Participants}
     /\ UNCHANGED <<participantVote, participantState, locks>>
 
+\* --- Drop Message (network fault model) ---
+\*
+\* Any in-flight message can be lost. This models network partitions,
+\* packet loss, and transient failures. Liveness requires fairness
+\* assumptions that enough messages eventually get through.
+
+DropMessage(m) ==
+    /\ m \in messages
+    /\ messages' = messages \ {m}
+    /\ UNCHANGED <<txPhase, coordinatorDecision, participantVote,
+                   participantState, locks>>
+
+\* --- Participant Restart (crash/recovery model) ---
+\*
+\* A participant crashes and restarts. WAL-backed locks survive the
+\* crash, so prepared transactions retain their vote and locks.
+\* Non-prepared participants lose volatile state and reset to working.
+\* Already committed/aborted participants retain their terminal state.
+\*
+\* Ref: distributed_tx.rs -- crash recovery via WAL replay
+
+ParticipantRestart(p) ==
+    /\ participantVote' = [tx \in Transactions |->
+        [participantVote[tx] EXCEPT ![p] =
+            IF tx \in locks[p] THEN "yes" ELSE "pending"]]
+    /\ participantState' = [tx \in Transactions |->
+        [participantState[tx] EXCEPT ![p] =
+            IF tx \in locks[p] THEN "prepared"
+            ELSE IF participantState[tx][p] \in {"committed", "aborted"}
+                 THEN participantState[tx][p]
+                 ELSE "working"]]
+    /\ UNCHANGED <<txPhase, coordinatorDecision, locks, messages>>
+
 \* ========================================================================
 \* Next-State Relation
 \* ========================================================================
 
 Next ==
-    \E tx \in Transactions :
+    \/ \E tx \in Transactions :
         \/ CoordinatorPrepare(tx)
         \/ CoordinatorDecideCommit(tx)
         \/ CoordinatorDecideAbort(tx)
@@ -322,10 +362,25 @@ Next ==
             \/ ParticipantVoteNo(tx, p)
             \/ ParticipantCommit(tx, p)
             \/ ParticipantAbort(tx, p)
+    \/ \E m \in messages : DropMessage(m)
+    \/ \E p \in Participants : ParticipantRestart(p)
 
 Spec == Init /\ [][Next]_vars
 
-FairSpec == Spec /\ WF_vars(Next)
+\* Per-action fairness: ensures progress without hiding liveness bugs.
+\* WF on message-processing actions; coordinator/timeout get WF too.
+Fairness ==
+    /\ \A tx \in Transactions :
+        /\ WF_vars(CoordinatorPrepare(tx))
+        /\ WF_vars(CoordinatorDecideCommit(tx))
+        /\ WF_vars(CoordinatorDecideAbort(tx))
+        /\ WF_vars(CoordinatorFinalize(tx))
+        /\ \A p \in Participants :
+            /\ WF_vars(ParticipantVoteYes(tx, p))
+            /\ WF_vars(ParticipantCommit(tx, p))
+            /\ WF_vars(ParticipantAbort(tx, p))
+
+FairSpec == Spec /\ Fairness
 
 \* ========================================================================
 \* Safety Properties (Invariants)
@@ -373,18 +428,18 @@ ConsistentDecision ==
                 participantState[tx][p] = "committed")
 
 \* --- VoteIrrevocability ---
-\* Once a participant has voted YES and is in "prepared" state,
-\* it cannot unilaterally abort. It must wait for the coordinator.
-\*
-\* Ref: distributed_tx.rs -- prepared participants only transition
-\* on receiving Commit or Abort from coordinator
+\* Once a participant votes YES, it cannot unilaterally abort without
+\* receiving an Abort from the coordinator. The vote is durable (WAL).
+\* Temporal: if a participant is prepared, it stays prepared until it
+\* receives a Commit or Abort message.
 
 VoteIrrevocability ==
-    \A tx \in Transactions :
+    [][\A tx \in Transactions :
         \A p \in Participants :
-            (participantState[tx][p] = "prepared" /\
-             participantVote[tx][p] = "yes")
-            => participantState[tx][p] \in {"prepared", "committed", "aborted"}
+            (participantVote[tx][p] = "yes" /\
+             participantState[tx][p] = "prepared")
+            => (participantState'[tx][p] \in {"prepared", "committed", "aborted"})
+    ]_vars
 
 \* --- DecisionStability ---
 \* Once the coordinator has made a decision, it never changes.

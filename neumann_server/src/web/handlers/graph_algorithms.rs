@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Handlers for graph algorithm execution with dystopian terminal styling.
 //!
 //! Exposes all 17 graph algorithms with configurable parameters and result visualization.
@@ -449,7 +449,7 @@ pub struct ExecuteParams {
     /// Edge direction for traversal.
     #[serde(default)]
     pub direction: Option<String>,
-    /// PageRank damping factor.
+    /// `PageRank` damping factor.
     #[serde(default)]
     pub damping: Option<f64>,
     /// Louvain resolution parameter.
@@ -643,6 +643,7 @@ pub async fn dashboard(
 }
 
 /// Execute algorithm page with form.
+#[allow(clippy::option_if_let_else)]
 pub async fn execute_form(
     State(_ctx): State<Arc<AdminContext>>,
     Query(params): Query<ExecuteParams>,
@@ -811,6 +812,7 @@ fn parse_similarity_metric(s: &str) -> SimilarityMetric {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmResult {
     let algorithm = params.algorithm.clone();
 
@@ -1516,6 +1518,7 @@ fn render_algorithm_card(algo: &AlgorithmDef) -> Markup {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_result(result: &AlgorithmResult) -> Markup {
     match &result.data {
         ResultData::Scores(scores) => html! {

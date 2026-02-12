@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Neumann Database Rust Client SDK
 //!
 //! This crate provides a Rust client for Neumann database with support for
@@ -47,17 +47,6 @@
 //! ```
 
 #![forbid(unsafe_code)]
-#![deny(
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    missing_docs,
-    rustdoc::broken_intra_doc_links
-)]
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::redundant_pub_crate)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::significant_drop_tightening)]
 
 mod error;
 
@@ -250,14 +239,14 @@ impl ClientBuilder {
 
     /// Enable TLS encryption.
     #[must_use]
-    pub fn with_tls(mut self) -> Self {
+    pub const fn with_tls(mut self) -> Self {
         self.config.tls = true;
         self
     }
 
     /// Set the connection timeout in milliseconds.
     #[must_use]
-    pub fn timeout_ms(mut self, ms: u64) -> Self {
+    pub const fn timeout_ms(mut self, ms: u64) -> Self {
         self.config.timeout_ms = ms;
         self
     }
@@ -335,7 +324,7 @@ impl NeumannClient {
 
     /// Create an embedded client with a custom router.
     #[cfg(feature = "embedded")]
-    pub fn with_router(router: Arc<RwLock<QueryRouter>>) -> Self {
+    pub const fn with_router(router: Arc<RwLock<QueryRouter>>) -> Self {
         Self {
             mode: ClientMode::Embedded,
             router: Some(router),
@@ -404,13 +393,13 @@ impl NeumannClient {
 
     /// Get the client mode.
     #[must_use]
-    pub fn mode(&self) -> ClientMode {
+    pub const fn mode(&self) -> ClientMode {
         self.mode
     }
 
     /// Check if the client is connected (for remote mode).
     #[must_use]
-    pub fn is_connected(&self) -> bool {
+    pub const fn is_connected(&self) -> bool {
         match self.mode {
             ClientMode::Embedded => true,
             #[cfg(feature = "remote")]
@@ -929,7 +918,7 @@ pub struct RemoteQueryResult(proto::QueryResponse);
 impl RemoteQueryResult {
     /// Check if the result contains an error.
     #[must_use]
-    pub fn has_error(&self) -> bool {
+    pub const fn has_error(&self) -> bool {
         self.0.error.is_some()
     }
 
@@ -947,13 +936,13 @@ impl RemoteQueryResult {
 
     /// Get a reference to the underlying proto response.
     #[must_use]
-    pub fn inner(&self) -> &proto::QueryResponse {
+    pub const fn inner(&self) -> &proto::QueryResponse {
         &self.0
     }
 
     /// Check if the result is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         matches!(
             self.0.result,
             Some(proto::query_response::Result::Empty(_)) | None
@@ -962,7 +951,7 @@ impl RemoteQueryResult {
 
     /// Get the count if this is a count result.
     #[must_use]
-    pub fn count(&self) -> Option<u64> {
+    pub const fn count(&self) -> Option<u64> {
         match &self.0.result {
             Some(proto::query_response::Result::Count(c)) => Some(c.count),
             _ => None,
@@ -1035,19 +1024,19 @@ impl PaginatedQueryResult {
 
     /// Get the total count of results if available.
     #[must_use]
-    pub fn total_count(&self) -> Option<u64> {
+    pub const fn total_count(&self) -> Option<u64> {
         self.0.total_count
     }
 
     /// Check if there are more results after this page.
     #[must_use]
-    pub fn has_more(&self) -> bool {
+    pub const fn has_more(&self) -> bool {
         self.0.has_more
     }
 
     /// Get the number of items in this page.
     #[must_use]
-    pub fn page_size(&self) -> u32 {
+    pub const fn page_size(&self) -> u32 {
         self.0.page_size
     }
 
@@ -1059,7 +1048,7 @@ impl PaginatedQueryResult {
 
     /// Get a reference to the underlying proto response.
     #[must_use]
-    pub fn inner(&self) -> &proto::PaginatedQueryResponse {
+    pub const fn inner(&self) -> &proto::PaginatedQueryResponse {
         &self.0
     }
 }

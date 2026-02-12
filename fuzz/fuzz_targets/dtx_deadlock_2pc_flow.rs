@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 #![no_main]
 
 //! Fuzz test for 2PC flow with deadlock detection.
@@ -109,7 +109,7 @@ fuzz_target!(|input: FuzzInput| {
                 let count = (*participant_count as usize % 5).max(1);
                 let participants: Vec<usize> = (0..count).collect();
 
-                if let Ok(tx) = coordinator.begin(node, participants) {
+                if let Ok(tx) = coordinator.begin(&node, &participants) {
                     active_tx_ids.insert(tx.tx_id);
                 }
             },
@@ -138,7 +138,7 @@ fuzz_target!(|input: FuzzInput| {
                     timeout_ms: 5000,
                 };
 
-                let _ = coordinator.handle_prepare(request);
+                let _ = coordinator.handle_prepare(&request);
             },
 
             FuzzOp::RecordVote {

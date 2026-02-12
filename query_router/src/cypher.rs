@@ -207,8 +207,8 @@ fn match_pattern(
 ) -> Result<Vec<BindingContext>> {
     let mut result_bindings = Vec::new();
 
-    for mut ctx in existing_bindings {
-        let pattern_bindings = match_pattern_elements(graph, &pattern.elements, &mut ctx)?;
+    for ctx in existing_bindings {
+        let pattern_bindings = match_pattern_elements(graph, &pattern.elements, &ctx)?;
         result_bindings.extend(pattern_bindings);
     }
 
@@ -218,7 +218,7 @@ fn match_pattern(
 fn match_pattern_elements(
     graph: &GraphEngine,
     elements: &[CypherElement],
-    ctx: &mut BindingContext,
+    ctx: &BindingContext,
 ) -> Result<Vec<BindingContext>> {
     if elements.is_empty() {
         return Ok(vec![ctx.clone()]);
@@ -240,7 +240,7 @@ fn match_pattern_elements(
             if elements.len() > 1 {
                 let remaining = &elements[1..];
                 let sub_results =
-                    match_relationship_chain(graph, matched_node.id, remaining, &mut new_ctx)?;
+                    match_relationship_chain(graph, matched_node.id, remaining, &new_ctx)?;
                 results.extend(sub_results);
             } else {
                 results.push(new_ctx);
@@ -255,7 +255,7 @@ fn match_relationship_chain(
     graph: &GraphEngine,
     current_node_id: u64,
     elements: &[CypherElement],
-    ctx: &mut BindingContext,
+    ctx: &BindingContext,
 ) -> Result<Vec<BindingContext>> {
     if elements.len() < 2 {
         return Ok(vec![ctx.clone()]);
@@ -271,10 +271,10 @@ fn match_relationship_chain(
         let edge_type = rel.rel_types.first().map(|t| t.name.as_str());
 
         // Handle variable-length relationships
-        let (min_hops, max_hops) = match &rel.var_length {
-            Some(vl) => (vl.min.unwrap_or(1), vl.max.unwrap_or(10)),
-            None => (1, 1),
-        };
+        let (min_hops, max_hops) = rel
+            .var_length
+            .as_ref()
+            .map_or((1, 1), |vl| (vl.min.unwrap_or(1), vl.max.unwrap_or(10)));
 
         // Find neighbors within the hop range
         let neighbors = find_neighbors_in_range(
@@ -303,7 +303,7 @@ fn match_relationship_chain(
                     if elements.len() > 2 {
                         let remaining = &elements[2..];
                         let sub_results =
-                            match_relationship_chain(graph, neighbor_id, remaining, &mut new_ctx)?;
+                            match_relationship_chain(graph, neighbor_id, remaining, &new_ctx)?;
                         results.extend(sub_results);
                     } else {
                         results.push(new_ctx);
@@ -658,11 +658,11 @@ fn eval_expr_value(graph: &GraphEngine, expr: &Expr, ctx: &BindingContext) -> Pr
         },
         ExprKind::Ident(ident) => {
             // Identifier alone - might be a node reference
-            if let Some(node_id) = ctx.nodes.get(&ident.name) {
-                PropertyValue::Int((*node_id).cast_signed())
-            } else {
-                PropertyValue::Null
-            }
+            ctx.nodes
+                .get(&ident.name)
+                .map_or(PropertyValue::Null, |node_id| {
+                    PropertyValue::Int((*node_id).cast_signed())
+                })
         },
         _ => PropertyValue::Null,
     }
@@ -684,7 +684,7 @@ fn apply_set_item(
                 if let Some(val) = expr_to_property_value(&set_item.value) {
                     // Get current node, update properties, and save
                     let node = graph.get_node(*node_id)?;
-                    let mut props = node.properties.clone();
+                    let mut props = node.properties;
                     props.insert(field.name.clone(), val);
                     graph.update_node(*node_id, None, props)?;
                 }
@@ -698,7 +698,7 @@ fn apply_set_item(
 // Utility Functions
 // =============================================================================
 
-fn cypher_direction_to_engine(dir: CypherDirection) -> Direction {
+const fn cypher_direction_to_engine(dir: CypherDirection) -> Direction {
     match dir {
         CypherDirection::Outgoing => Direction::Outgoing,
         CypherDirection::Incoming => Direction::Incoming,
@@ -760,7 +760,7 @@ fn compare_values(a: &PropertyValue, b: &PropertyValue) -> Option<std::cmp::Orde
     }
 }
 
-fn eval_int_expr(expr: &Expr) -> Option<i64> {
+const fn eval_int_expr(expr: &Expr) -> Option<i64> {
     if let ExprKind::Literal(Literal::Integer(n)) = &expr.kind {
         Some(*n)
     } else {
@@ -861,15 +861,15 @@ mod tests {
     #[test]
     fn test_cypher_direction_conversion() {
         assert!(matches!(
-            cypher_direction_to_engine(&CypherDirection::Outgoing),
+            cypher_direction_to_engine(CypherDirection::Outgoing),
             Direction::Outgoing
         ));
         assert!(matches!(
-            cypher_direction_to_engine(&CypherDirection::Incoming),
+            cypher_direction_to_engine(CypherDirection::Incoming),
             Direction::Incoming
         ));
         assert!(matches!(
-            cypher_direction_to_engine(&CypherDirection::Undirected),
+            cypher_direction_to_engine(CypherDirection::Undirected),
             Direction::Both
         ));
     }
@@ -2270,8 +2270,7 @@ mod tests {
         let expr = make_expr_ident("unknown");
 
         let result = eval_expr_value(&graph, &expr, &ctx);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), PropertyValue::Null));
+        assert!(matches!(result, PropertyValue::Null));
     }
 
     #[test]
@@ -2281,8 +2280,7 @@ mod tests {
         let expr = make_expr_qualified("unknown", "prop");
 
         let result = eval_expr_value(&graph, &expr, &ctx);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), PropertyValue::Null));
+        assert!(matches!(result, PropertyValue::Null));
     }
 
     #[test]
@@ -2292,8 +2290,7 @@ mod tests {
         let expr = make_binary_expr(make_expr_int(1), BinaryOp::Add, make_expr_int(2));
 
         let result = eval_expr_value(&graph, &expr, &ctx);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), PropertyValue::Null));
+        assert!(matches!(result, PropertyValue::Null));
     }
 
     #[test]

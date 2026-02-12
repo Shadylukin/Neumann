@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 /**
  * Retry logic with exponential backoff for transient failures.
  */
@@ -109,7 +109,7 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   config: RetryConfig = DEFAULT_RETRY_CONFIG
 ): Promise<T> {
-  let lastError: unknown = null;
+  let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < config.maxAttempts; attempt++) {
     try {
@@ -119,7 +119,7 @@ export async function withRetry<T>(
         throw error;
       }
 
-      lastError = error;
+      lastError = error instanceof Error ? error : new Error(String(error));
 
       if (attempt < config.maxAttempts - 1) {
         const backoffMs = calculateBackoff(

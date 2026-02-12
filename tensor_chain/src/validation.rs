@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Codebook-based transition validation for the tensor chain.
 //!
 //! Validates state transitions to ensure they stay within the
@@ -109,6 +109,7 @@ impl TransitionValidator {
     /// Execute a closure with a mutable reference to the local codebook for a domain.
     ///
     /// The local codebook is created if it doesn't exist and persisted across calls.
+    #[allow(clippy::significant_drop_tightening)] // Entry borrows from write guard
     pub fn with_local<F, R>(&self, domain: &str, f: F) -> R
     where
         F: FnOnce(&mut LocalCodebook) -> R,
@@ -130,6 +131,7 @@ impl TransitionValidator {
     /// Note: Returns a new `LocalCodebook` initialized with the same config for backwards
     /// compatibility. Prefer `with_local()` for operations that need persistence.
     #[deprecated(note = "Use with_local() for operations that need persistence")]
+    #[allow(clippy::significant_drop_tightening)] // Entry borrows from write guard
     pub fn get_or_create_local(&self, domain: &str) -> LocalCodebook {
         let mut locals = self.locals.write();
         let local = locals.entry(domain.to_string()).or_insert_with(|| {
@@ -166,11 +168,9 @@ impl TransitionValidator {
         // Check local codebook if exists
         let (local_entry, local_similarity) = {
             let locals = self.locals.read();
-            if let Some(local) = locals.get(domain) {
-                local.quantize(state).unwrap_or((0, 0.0))
-            } else {
-                (0, 0.0)
-            }
+            locals
+                .get(domain)
+                .map_or((0, 0.0), |local| local.quantize(state).unwrap_or((0, 0.0)))
         };
 
         // Valid if either global or local similarity meets threshold
@@ -324,6 +324,7 @@ impl TransitionValidator {
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Entry borrows from write guard
     pub fn learn_from_states(&self, domain: &str, states: &[Vec<f32>], threshold: f32) {
         let mut locals = self.locals.write();
         let local = locals.entry(domain.to_string()).or_insert_with(|| {
@@ -370,7 +371,7 @@ pub struct FastPathResult {
 
 impl FastPathResult {
     #[must_use]
-    pub fn accept(similarity: f32, blocks_checked: usize) -> Self {
+    pub const fn accept(similarity: f32, blocks_checked: usize) -> Self {
         Self {
             can_use_fast_path: true,
             similarity,
@@ -415,7 +416,7 @@ impl Default for FastPathValidator {
 
 impl FastPathValidator {
     #[must_use]
-    pub fn new(similarity_threshold: f32, min_leader_history: usize) -> Self {
+    pub const fn new(similarity_threshold: f32, min_leader_history: usize) -> Self {
         Self {
             similarity_threshold,
             min_leader_history,

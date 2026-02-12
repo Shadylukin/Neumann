@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Tensor compression stress tests.
 
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     io::Cursor,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -24,7 +24,7 @@ use tensor_compress::{
 fn make_test_entry(key: &str, value: i64) -> CompressedEntry {
     CompressedEntry {
         key: key.to_string(),
-        fields: HashMap::from([(
+        fields: BTreeMap::from([(
             "value".to_string(),
             CompressedValue::Scalar(CompressedScalar::Int(value)),
         )]),

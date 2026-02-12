@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! gRPC integration tests for `PointsService`.
 //!
 //! These tests verify actual gRPC behavior for vector point operations by starting

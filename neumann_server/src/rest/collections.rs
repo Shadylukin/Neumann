@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! REST API handlers for collection operations.
 
 use std::sync::Arc;
@@ -44,10 +44,10 @@ fn validate_auth(
                 Err(ApiError::unauthorized("API key required"))
             }
         },
-        (Some(config), Some(key)) => match config.validate_key(&key) {
-            Some(identity) => Ok(Some(identity.to_string())),
-            None => Err(ApiError::unauthorized("Invalid API key")),
-        },
+        (Some(config), Some(key)) => config.validate_key(&key).map_or_else(
+            || Err(ApiError::unauthorized("Invalid API key")),
+            |identity| Ok(Some(identity.to_string())),
+        ),
     }
 }
 
@@ -78,7 +78,7 @@ fn parse_distance_metric(distance: &str) -> Result<DistanceMetric, ApiError> {
     }
 }
 
-fn metric_to_string(metric: DistanceMetric) -> &'static str {
+const fn metric_to_string(metric: DistanceMetric) -> &'static str {
     match metric {
         DistanceMetric::Cosine => "cosine",
         DistanceMetric::Euclidean => "euclidean",
@@ -87,6 +87,10 @@ fn metric_to_string(metric: DistanceMetric) -> &'static str {
 }
 
 /// Create a new collection.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails, rate limited, or the collection already exists.
 pub async fn create(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(name): Path<String>,
@@ -141,6 +145,10 @@ pub async fn create(
 }
 
 /// Get collection information.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails or the collection is not found.
 pub async fn get(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(name): Path<String>,
@@ -173,6 +181,10 @@ pub async fn get(
 }
 
 /// Delete a collection.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails or the collection is not found.
 pub async fn delete(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(name): Path<String>,
@@ -220,6 +232,10 @@ pub async fn delete(
 }
 
 /// List all collections.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails.
 pub async fn list(
     State(ctx): State<Arc<VectorApiContext>>,
     headers: HeaderMap,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Fuzz semantic conflict detection with arbitrary transaction deltas.
 //!
 //! Tests that:
@@ -41,14 +41,14 @@ fn make_delta(op: &TxOp, keys: &[String], tx_id: u64) -> DeltaVector {
             let vector: Vec<f32> = (0..len).map(|i| (i as f32 + 1.0) / len as f32).collect();
             let mut affected = HashSet::new();
             affected.insert(key);
-            DeltaVector::new(vector, affected, tx_id)
+            DeltaVector::new(&vector, affected, tx_id)
         }
         TxOp::Delete { key_idx } => {
             let key = keys[(*key_idx as usize) % keys.len()].clone();
             let vector = vec![-1.0, 0.0, 0.0, 0.0];
             let mut affected = HashSet::new();
             affected.insert(key);
-            DeltaVector::new(vector, affected, tx_id)
+            DeltaVector::new(&vector, affected, tx_id)
         }
         TxOp::Embed { key_idx, dim } => {
             let key = keys[(*key_idx as usize) % keys.len()].clone();
@@ -56,7 +56,7 @@ fn make_delta(op: &TxOp, keys: &[String], tx_id: u64) -> DeltaVector {
             let vector: Vec<f32> = (0..d).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
             let mut affected = HashSet::new();
             affected.insert(key);
-            DeltaVector::new(vector, affected, tx_id)
+            DeltaVector::new(&vector, affected, tx_id)
         }
     }
 }
@@ -143,7 +143,8 @@ fuzz_target!(|data: &[u8]| {
                 assert!(result.merged_delta.is_some());
                 assert!(result.error.is_none());
             } else {
-                assert!(result.merged_delta.is_none());
+                assert!(result.merged_delta.is_none(), "Failed merge must not produce a delta");
+                assert!(result.error.is_some(), "Failed merge must have an error reason");
             }
         }
     }

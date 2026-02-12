@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Connection management for TCP transport.
 //!
 //! Provides connection pooling and state management for peer connections.
@@ -58,6 +58,7 @@ pub struct ConnectionStats {
 }
 
 impl ConnectionStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -80,6 +81,7 @@ impl ConnectionStats {
     }
 
     fn touch(&self) {
+        #[allow(clippy::cast_possible_truncation)]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -134,6 +136,7 @@ impl Connection {
     }
 
     /// Create a connection in connecting state (before handshake).
+    #[must_use]
     pub fn connecting(
         peer_id: NodeId,
         address: SocketAddr,
@@ -166,6 +169,7 @@ impl Connection {
     /// holding their write locks simultaneously. This prevents a concurrent
     /// observer from seeing a partially-updated connection (e.g. new reader
     /// but stale writer) during the handshake-to-connected transition.
+    #[allow(clippy::significant_drop_tightening)] // Guards held simultaneously for atomicity
     pub fn set_stream<S>(&self, stream: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -180,6 +184,7 @@ impl Connection {
         *state_guard = ConnectionState::Connected;
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Guards held simultaneously for atomicity
     pub fn mark_disconnected(&self) {
         let mut state_guard = self.state.write();
         let mut reader_guard = self.reader.write();
@@ -189,6 +194,7 @@ impl Connection {
         *writer_guard = None;
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Guards held simultaneously for atomicity
     pub fn mark_reconnecting(&self, attempt: usize, next_retry: Instant) {
         let mut state_guard = self.state.write();
         let mut reader_guard = self.reader.write();
@@ -210,7 +216,7 @@ impl Connection {
         self.writer.write().take()
     }
 
-    pub fn codec(&self) -> &LengthDelimitedCodec {
+    pub const fn codec(&self) -> &LengthDelimitedCodec {
         &self.codec
     }
 }
@@ -238,6 +244,7 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
+    #[must_use]
     pub fn new(peer_id: NodeId, address: SocketAddr, config: &TcpTransportConfig) -> Self {
         let (tx, rx) = mpsc::channel(config.max_pending_messages);
         Self {
@@ -293,6 +300,7 @@ impl ConnectionPool {
 
         // Find connected connections
         let connected: Vec<_> = conns.iter().filter(|c| c.is_connected()).cloned().collect();
+        drop(conns);
 
         if connected.is_empty() {
             return None;
@@ -318,6 +326,8 @@ impl ConnectionPool {
         self.connections.read().len()
     }
 
+    /// # Errors
+    /// Returns an error if the outbound queue is full or the connection is closed.
     pub fn queue_message(&self, msg: Message) -> TcpResult<()> {
         self.outbound_tx.try_send(msg).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => TcpError::BackpressureFull {
@@ -336,9 +346,88 @@ impl ConnectionPool {
         self.active_count() < self.pool_size
     }
 
-    pub fn target_size(&self) -> usize {
+    pub const fn target_size(&self) -> usize {
         self.pool_size
     }
+
+    /// Get a connection or return a `PoolExhausted` error.
+    ///
+    /// Unlike `get_connection()` which returns `None`, this returns a typed
+    /// error with diagnostic information about pool state.
+    ///
+    /// # Errors
+    /// Returns a `PoolExhausted` error if no healthy connections are available.
+    pub fn get_connection_or_error(&self) -> TcpResult<Arc<Connection>> {
+        self.get_connection()
+            .ok_or_else(|| TcpError::PoolExhausted {
+                peer: self.peer_id.clone(),
+                active: self.active_count(),
+                target: self.pool_size,
+            })
+    }
+
+    /// Sweep the pool for unhealthy connections and remove them.
+    ///
+    /// Removes connections in `Disconnected` state and stale connections
+    /// that have had no activity beyond the given inactivity timeout.
+    /// Returns pool health status with reconnection needs.
+    pub fn health_sweep(&self, inactivity_timeout: std::time::Duration) -> PoolHealthStatus {
+        let mut conns = self.connections.write();
+        let before = conns.len();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let timeout_ms = inactivity_timeout.as_millis() as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        conns.retain(|conn| {
+            match conn.state() {
+                ConnectionState::Disconnected => false,
+                ConnectionState::Connecting | ConnectionState::Reconnecting { .. } => {
+                    // Keep connecting/reconnecting unless inactive too long
+                    let last = conn.stats.last_activity.load(Ordering::Relaxed);
+                    if last == 0 {
+                        // Never had activity - keep it (still trying to connect)
+                        true
+                    } else {
+                        // Had activity before - check for staleness
+                        now_ms.saturating_sub(last) < timeout_ms
+                    }
+                },
+                ConnectionState::Connected => true,
+            }
+        });
+
+        let after = conns.len();
+        let active = conns.iter().filter(|c| c.is_connected()).count();
+        drop(conns);
+
+        PoolHealthStatus {
+            removed: before - after,
+            active,
+            total: after,
+            target: self.pool_size,
+            needs_reconnect: active < self.pool_size,
+        }
+    }
+}
+
+/// Result of a connection pool health sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolHealthStatus {
+    /// Number of dead connections removed.
+    pub removed: usize,
+    /// Number of currently active (connected) connections.
+    pub active: usize,
+    /// Total connections remaining after sweep.
+    pub total: usize,
+    /// Target pool size.
+    pub target: usize,
+    /// Whether the pool needs new connections to reach target.
+    pub needs_reconnect: bool,
 }
 
 /// Manages all peer connections.
@@ -354,6 +443,7 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
+    #[must_use]
     pub fn new(config: TcpTransportConfig) -> Self {
         Self {
             local_id: config.node_id.clone(),
@@ -391,16 +481,46 @@ impl ConnectionManager {
         self.pools.read().keys().cloned().collect()
     }
 
-    pub fn local_id(&self) -> &NodeId {
+    pub const fn local_id(&self) -> &NodeId {
         &self.local_id
     }
 
-    pub fn config(&self) -> &TcpTransportConfig {
+    pub const fn config(&self) -> &TcpTransportConfig {
         &self.config
     }
 
     pub fn peer_address(&self, peer_id: &NodeId) -> Option<SocketAddr> {
         self.peer_configs.read().get(peer_id).copied()
+    }
+
+    /// Run a health sweep across all connection pools.
+    ///
+    /// Removes dead connections and returns a list of peer IDs whose pools
+    /// need reconnection (below target size). Intended to be called
+    /// periodically (e.g., every 10 seconds).
+    #[allow(clippy::significant_drop_tightening)] // Read guard needed throughout iteration
+    pub fn health_sweep_all(
+        &self,
+        stale_timeout: std::time::Duration,
+    ) -> Vec<(NodeId, PoolHealthStatus)> {
+        let pools = self.pools.read();
+        let mut results = Vec::new();
+
+        for (peer_id, pool) in pools.iter() {
+            let status = pool.health_sweep(stale_timeout);
+            if status.removed > 0 || status.needs_reconnect {
+                tracing::debug!(
+                    peer = %peer_id,
+                    removed = status.removed,
+                    active = status.active,
+                    target = status.target,
+                    "Pool health sweep"
+                );
+            }
+            results.push((peer_id.clone(), status));
+        }
+
+        results
     }
 }
 
@@ -636,5 +756,128 @@ mod tests {
 
         let conn = pool.add_connecting();
         assert_eq!(conn.codec().max_frame_length(), 1024);
+    }
+
+    #[test]
+    fn test_health_sweep_removes_disconnected() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9200".parse().unwrap());
+        let pool = ConnectionPool::new(
+            "peer1".to_string(),
+            "127.0.0.1:9201".parse().unwrap(),
+            &config,
+        );
+
+        // Add connections in various states
+        let conn1 = pool.add_connecting();
+        let conn2 = pool.add_connecting();
+        conn2.mark_disconnected();
+
+        assert_eq!(pool.total_count(), 2);
+
+        let status = pool.health_sweep(Duration::from_secs(30));
+
+        // Disconnected connection should be removed
+        assert_eq!(status.removed, 1);
+        assert_eq!(status.total, 1);
+        assert_eq!(pool.total_count(), 1);
+        // conn1 is still Connecting, not active
+        assert_eq!(status.active, 0);
+        assert!(status.needs_reconnect);
+        let _ = conn1; // keep alive
+    }
+
+    #[test]
+    fn test_health_sweep_empty_pool() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9202".parse().unwrap());
+        let pool = ConnectionPool::new(
+            "peer1".to_string(),
+            "127.0.0.1:9203".parse().unwrap(),
+            &config,
+        );
+
+        let status = pool.health_sweep(Duration::from_secs(10));
+        assert_eq!(status.removed, 0);
+        assert_eq!(status.active, 0);
+        assert!(status.needs_reconnect);
+    }
+
+    #[test]
+    fn test_get_connection_or_error() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9204".parse().unwrap());
+        let pool = ConnectionPool::new(
+            "peer1".to_string(),
+            "127.0.0.1:9205".parse().unwrap(),
+            &config,
+        );
+
+        // Empty pool should return PoolExhausted error
+        let result = pool.get_connection_or_error();
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match err {
+            TcpError::PoolExhausted {
+                peer,
+                active,
+                target,
+            } => {
+                assert_eq!(peer, "peer1");
+                assert_eq!(active, 0);
+                assert_eq!(target, config.pool_size);
+            },
+            other => panic!("Expected PoolExhausted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pool_health_status_fields() {
+        let status = PoolHealthStatus {
+            removed: 2,
+            active: 3,
+            total: 5,
+            target: 4,
+            needs_reconnect: false,
+        };
+        assert_eq!(status.removed, 2);
+        assert_eq!(status.active, 3);
+        assert_eq!(status.total, 5);
+        assert_eq!(status.target, 4);
+        assert!(!status.needs_reconnect);
+
+        // Debug and Clone
+        let debug = format!("{status:?}");
+        assert!(debug.contains("PoolHealthStatus"));
+        let cloned = status;
+        assert_eq!(cloned, status);
+    }
+
+    #[test]
+    fn test_pool_exhausted_error_display() {
+        let err = TcpError::PoolExhausted {
+            peer: "node2".to_string(),
+            active: 0,
+            target: 3,
+        };
+        let display = err.to_string();
+        assert!(display.contains("pool exhausted"));
+        assert!(display.contains("node2"));
+        assert!(display.contains("0/3"));
+    }
+
+    #[test]
+    fn test_health_sweep_all_on_manager() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9206".parse().unwrap());
+        let manager = ConnectionManager::new(config);
+
+        let pool =
+            manager.get_or_create_pool(&"peer1".to_string(), "127.0.0.1:9207".parse().unwrap());
+
+        // Add and disconnect a connection
+        let conn = pool.add_connecting();
+        conn.mark_disconnected();
+
+        let results = manager.health_sweep_all(Duration::from_secs(10));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "peer1");
+        assert_eq!(results[0].1.removed, 1);
     }
 }

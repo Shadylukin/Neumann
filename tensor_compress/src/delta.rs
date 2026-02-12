@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Delta encoding with variable-length integers for sorted ID sequences.
 
 /// Delta-encode a sorted list of IDs.

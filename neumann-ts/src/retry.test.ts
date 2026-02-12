@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BSL-1.1
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   withRetry,
@@ -153,9 +153,20 @@ describe('retry', () => {
         maxBackoffMs: 1,
       };
 
-      await expect(withRetry(fn, config)).rejects.toEqual(error);
+      await expect(withRetry(fn, config)).rejects.toThrow('[object Object]');
       expect(fn).toHaveBeenCalledTimes(2);
       vi.useFakeTimers(); // Restore fake timers
+    });
+
+    it('throws fallback error when maxAttempts is 0', async () => {
+      const fn = vi.fn().mockResolvedValue('success');
+      const config: RetryConfig = {
+        ...DEFAULT_RETRY_CONFIG,
+        maxAttempts: 0,
+      };
+
+      await expect(withRetry(fn, config)).rejects.toThrow('Retry loop completed without result');
+      expect(fn).toHaveBeenCalledTimes(0);
     });
 
     it('uses default config when not provided', async () => {

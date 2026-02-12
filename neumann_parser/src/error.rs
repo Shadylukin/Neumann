@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Error types and diagnostics for the Neumann parser.
 //!
 //! Provides rich error messages with source context, including:

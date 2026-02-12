@@ -1,15 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Incremental (append-only) snapshot format.
 //!
 //! Supports delta snapshots that only contain changes since a base snapshot.
 //! Enables efficient incremental backups and replication.
-
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::use_self)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::map_unwrap_or)]
-#![allow(clippy::return_self_not_must_use)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,7 +32,7 @@ pub enum DeltaError {
 
 impl From<FormatError> for DeltaError {
     fn from(e: FormatError) -> Self {
-        DeltaError::Format(e.to_string())
+        Self::Format(e.to_string())
     }
 }
 
@@ -104,11 +97,17 @@ pub struct DeltaSnapshot {
 
 impl DeltaSnapshot {
     /// Serialize to bytes.
+    ///
+    /// # Errors
+    /// Returns error if serialization fails.
     pub fn serialize(&self) -> Result<Vec<u8>, DeltaError> {
         bitcode::serialize(self).map_err(|e| DeltaError::Format(e.to_string()))
     }
 
     /// Deserialize from bytes.
+    ///
+    /// # Errors
+    /// Returns error if deserialization or validation fails.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, DeltaError> {
         let delta: Self =
             bitcode::deserialize(bytes).map_err(|e| DeltaError::Format(e.to_string()))?;
@@ -159,7 +158,7 @@ impl DeltaBuilder {
     }
 
     #[must_use]
-    pub fn change_count(&self) -> usize {
+    pub const fn change_count(&self) -> usize {
         self.entries.len()
     }
 
@@ -190,6 +189,9 @@ impl DeltaBuilder {
 }
 
 /// Apply a delta to a base snapshot, producing a new full snapshot.
+///
+/// # Errors
+/// This function is infallible for valid inputs, but returns `Result` for API consistency.
 pub fn apply_delta(
     base: &CompressedSnapshot,
     delta: &DeltaSnapshot,
@@ -226,6 +228,9 @@ pub fn apply_delta(
 
 /// Merge multiple deltas into a single delta.
 /// Deltas must be in sequence order.
+///
+/// # Errors
+/// Returns error if the delta slice is empty.
 pub fn merge_deltas(deltas: &[DeltaSnapshot]) -> Result<DeltaSnapshot, DeltaError> {
     if deltas.is_empty() {
         return Err(DeltaError::Format("no deltas to merge".into()));
@@ -247,7 +252,7 @@ pub fn merge_deltas(deltas: &[DeltaSnapshot]) -> Result<DeltaSnapshot, DeltaErro
     let mut entries: Vec<_> = latest.into_values().collect();
     entries.sort_by_key(|e| e.sequence);
 
-    let end_sequence = entries.last().map(|e| e.sequence).unwrap_or(start_sequence);
+    let end_sequence = entries.last().map_or(start_sequence, |e| e.sequence);
 
     Ok(DeltaSnapshot {
         header: DeltaHeader {
@@ -267,7 +272,8 @@ pub fn merge_deltas(deltas: &[DeltaSnapshot]) -> Result<DeltaSnapshot, DeltaErro
 
 /// Create a delta by comparing two snapshots.
 ///
-/// Returns an error if an internal inconsistency is detected (a key appears
+/// # Errors
+/// Returns error if an internal inconsistency is detected (a key appears
 /// in neither snapshot despite being in the union of keys).
 pub fn diff_snapshots(
     old: &CompressedSnapshot,
@@ -320,8 +326,8 @@ pub struct DeltaChain {
 }
 
 impl DeltaChain {
-    /// Create a new chain with a base snapshot.
-    pub fn new(base: CompressedSnapshot) -> Self {
+    #[must_use]
+    pub const fn new(base: CompressedSnapshot) -> Self {
         Self {
             base,
             deltas: Vec::new(),
@@ -329,13 +335,16 @@ impl DeltaChain {
         }
     }
 
-    /// Set maximum chain length.
-    pub fn with_max_chain_len(mut self, len: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_chain_len(mut self, len: usize) -> Self {
         self.max_chain_len = len;
         self
     }
 
     /// Add a delta to the chain.
+    ///
+    /// # Errors
+    /// Returns error if the chain exceeds maximum length.
     pub fn push(&mut self, delta: DeltaSnapshot) -> Result<(), DeltaError> {
         if self.deltas.len() >= self.max_chain_len {
             return Err(DeltaError::ChainTooLong {
@@ -367,6 +376,9 @@ impl DeltaChain {
     }
 
     /// Compact all deltas into a new base snapshot.
+    ///
+    /// # Errors
+    /// Returns error if applying a delta fails.
     pub fn compact(&self) -> Result<CompressedSnapshot, DeltaError> {
         let mut current = self.base.clone();
         for delta in &self.deltas {
@@ -376,24 +388,26 @@ impl DeltaChain {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.deltas.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.deltas.is_empty()
     }
 
     /// Check if compaction is recommended.
     #[must_use]
-    pub fn should_compact(&self, threshold: usize) -> bool {
+    pub const fn should_compact(&self, threshold: usize) -> bool {
         self.deltas.len() >= threshold
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::{
         format::{CompressedScalar, CompressedValue},
@@ -403,7 +417,7 @@ mod tests {
     fn make_entry(key: &str, value: i64) -> CompressedEntry {
         CompressedEntry {
             key: key.to_string(),
-            fields: HashMap::from([(
+            fields: BTreeMap::from([(
                 "value".to_string(),
                 CompressedValue::Scalar(CompressedScalar::Int(value)),
             )]),

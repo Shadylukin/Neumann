@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TCP transport implementation for distributed consensus.
 //!
 //! This module provides a production-ready TCP transport that implements

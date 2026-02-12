@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Delta-compressed replication for bandwidth-efficient state transfer.
 //!
 //! This module implements archetype-based delta encoding to reduce replication
@@ -235,10 +235,8 @@ impl DeltaUpdate {
     /// Verify integrity checksum. Returns true if checksum is None (legacy).
     #[must_use]
     pub fn verify_checksum(&self) -> bool {
-        match self.checksum {
-            Some(stored) => stored == self.compute_checksum(),
-            None => true, // Legacy updates without checksum are accepted
-        }
+        self.checksum
+            .map_or(true, |stored| stored == self.compute_checksum())
     }
 
     /// Add checksum to this update.
@@ -249,7 +247,7 @@ impl DeltaUpdate {
     }
 
     #[must_use]
-    pub fn is_full_update(&self) -> bool {
+    pub const fn is_full_update(&self) -> bool {
         self.archetype_id == u32::MAX
     }
 
@@ -324,7 +322,7 @@ pub struct DeltaBatch {
 
 impl DeltaBatch {
     #[must_use]
-    pub fn new(source: NodeId, sequence: u64) -> Self {
+    pub const fn new(source: NodeId, sequence: u64) -> Self {
         Self {
             updates: Vec::new(),
             source,
@@ -339,7 +337,7 @@ impl DeltaBatch {
     }
 
     #[must_use]
-    pub fn finalize(mut self) -> Self {
+    pub const fn finalize(mut self) -> Self {
         self.is_final = true;
         self
     }
@@ -920,6 +918,7 @@ impl DeltaReplicationManager {
     }
 
     /// Create a batch from pending updates.
+    #[allow(clippy::significant_drop_tightening)] // Lock held for recv loop + is_empty check
     pub fn create_batch(&self, is_final: bool) -> Option<DeltaBatch> {
         let mut rx = self.pending_rx.lock();
 
@@ -948,6 +947,7 @@ impl DeltaReplicationManager {
 
         // Check if queue is now empty
         let is_empty = rx.is_empty();
+        drop(rx);
         if is_final || is_empty {
             batch = batch.finalize();
         }
@@ -2206,6 +2206,150 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_stats_queue_depth_operations() {
+        let stats = ReplicationStats::new();
+
+        assert_eq!(stats.queue_depth(), 0);
+
+        let depth = stats.increment_queue_depth();
+        assert_eq!(depth, 1);
+        assert_eq!(stats.queue_depth(), 1);
+
+        stats.increment_queue_depth();
+        assert_eq!(stats.queue_depth(), 2);
+
+        stats.decrement_queue_depth();
+        assert_eq!(stats.queue_depth(), 1);
+
+        stats.set_queue_depth(10);
+        assert_eq!(stats.queue_depth(), 10);
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.queue_depth, 10);
+        assert_eq!(snap.peak_queue_depth, 10);
+    }
+
+    #[test]
+    fn test_stats_peak_queue_depth_tracking() {
+        let stats = ReplicationStats::new();
+
+        stats.set_queue_depth(5);
+        stats.set_queue_depth(10);
+        stats.set_queue_depth(3);
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.queue_depth, 3);
+        assert_eq!(snap.peak_queue_depth, 10);
+    }
+
+    #[test]
+    fn test_stats_record_auto_drain_count() {
+        let stats = ReplicationStats::new();
+        stats.record_auto_drain();
+        stats.record_auto_drain();
+        let snap = stats.snapshot();
+        assert_eq!(snap.auto_drains, 2);
+    }
+
+    #[test]
+    fn test_stats_record_backpressure() {
+        let stats = ReplicationStats::new();
+        stats.record_backpressure();
+        let snap = stats.snapshot();
+        assert_eq!(snap.backpressure_events, 1);
+    }
+
+    #[test]
+    fn test_stats_effective_compression_no_data() {
+        let stats = ReplicationStats::new();
+        let ratio = stats.effective_compression();
+        assert!((ratio - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_manager_stats_accessor() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+        let stats = manager.stats();
+        assert_eq!(stats.bytes_sent, 0);
+        assert_eq!(stats.updates_sent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_auto_drain_shutdown() {
+        let config = DeltaReplicationConfig {
+            auto_drain_interval_ms: 10,
+            ..Default::default()
+        };
+        let manager = Arc::new(DeltaReplicationManager::new("node1".to_string(), config));
+
+        let transport = Arc::new(crate::network::MemoryTransport::new("node1".to_string()));
+        let peer_transport = Arc::new(crate::network::MemoryTransport::new("peer1".to_string()));
+        transport.connect_to("peer1".to_string(), peer_transport.sender());
+
+        let handle = manager.start_auto_drain(transport, "peer1".to_string());
+        assert!(handle.is_running());
+
+        // Shutdown
+        handle.shutdown().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!handle.is_running());
+    }
+
+    #[test]
+    fn test_queue_update_increments_depth() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        manager
+            .queue_update("key1".to_string(), &[1.0, 2.0], 1)
+            .unwrap();
+        manager
+            .queue_update("key2".to_string(), &[3.0, 4.0], 2)
+            .unwrap();
+
+        let stats = manager.stats();
+        assert_eq!(stats.queue_depth, 2);
+    }
+
+    #[test]
+    fn test_archetype_registry_initialize() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let samples = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![1.0, 1.0, 0.0],
+        ];
+
+        let count = manager.initialize_archetypes(&samples, 2);
+        assert!(count > 0);
+        assert!(count <= 2);
+    }
+
+    #[test]
+    fn test_archetype_sync_roundtrip() {
+        let config = DeltaReplicationConfig::default();
+        let manager1 = DeltaReplicationManager::new("node1".to_string(), config.clone());
+
+        let samples = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        manager1.initialize_archetypes(&samples, 2);
+
+        let archetypes = manager1.get_archetype_sync();
+        assert!(!archetypes.is_empty());
+
+        let manager2 = DeltaReplicationManager::new("node2".to_string(), config);
+        let added = manager2.apply_archetype_sync(archetypes);
+        assert!(added > 0);
+    }
+
     #[tokio::test]
     async fn test_queue_update_async_channel_closed() {
         let config = DeltaReplicationConfig::default();
@@ -2222,5 +2366,672 @@ mod tests {
             },
             other => panic!("Expected NetworkError, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_config_default_all_fields() {
+        let config = DeltaReplicationConfig::default();
+        assert_eq!(config.max_pending, 1000);
+        assert!(approx_eq(config.min_archetype_similarity, 0.5, 0.001));
+        assert_eq!(config.auto_drain_interval_ms, 100);
+        assert_eq!(config.max_batch_size, 100);
+        assert!(approx_eq(config.delta_threshold, 0.01, 0.001));
+    }
+
+    #[test]
+    fn test_replication_stats_snapshot_default() {
+        let snap = ReplicationStatsSnapshot::default();
+        assert_eq!(snap.bytes_sent, 0);
+        assert_eq!(snap.bytes_saved, 0);
+        assert_eq!(snap.updates_sent, 0);
+        assert_eq!(snap.batches_sent, 0);
+        assert!(approx_eq(snap.avg_compression_ratio, 0.0, 0.001));
+        assert_eq!(snap.full_updates, 0);
+        assert_eq!(snap.queue_depth, 0);
+        assert_eq!(snap.backpressure_events, 0);
+        assert_eq!(snap.auto_drains, 0);
+        assert_eq!(snap.peak_queue_depth, 0);
+    }
+
+    #[test]
+    fn test_replication_stats_snapshot_fields() {
+        let snap = ReplicationStatsSnapshot {
+            bytes_sent: 100,
+            bytes_saved: 50,
+            updates_sent: 10,
+            batches_sent: 2,
+            avg_compression_ratio: 2.5,
+            full_updates: 3,
+            queue_depth: 5,
+            backpressure_events: 1,
+            auto_drains: 4,
+            peak_queue_depth: 8,
+        };
+        assert_eq!(snap.bytes_sent, 100);
+        assert_eq!(snap.bytes_saved, 50);
+        assert_eq!(snap.updates_sent, 10);
+        assert_eq!(snap.batches_sent, 2);
+        assert!(approx_eq(snap.avg_compression_ratio, 2.5, 0.001));
+        assert_eq!(snap.full_updates, 3);
+        assert_eq!(snap.queue_depth, 5);
+        assert_eq!(snap.backpressure_events, 1);
+        assert_eq!(snap.auto_drains, 4);
+        assert_eq!(snap.peak_queue_depth, 8);
+    }
+
+    #[test]
+    fn test_replication_stats_snapshot_debug_clone() {
+        let snap = ReplicationStatsSnapshot::default();
+        let cloned = snap.clone();
+        assert_eq!(cloned.bytes_sent, 0);
+        let debug = format!("{snap:?}");
+        assert!(debug.contains("ReplicationStatsSnapshot"));
+    }
+
+    #[test]
+    fn test_with_store_no_existing_data() {
+        let store = TensorStore::new();
+        let config = DeltaReplicationConfig::default();
+        // No data in store -- should create empty registry
+        let manager = DeltaReplicationManager::with_store("node1".to_string(), config, &store);
+        assert!(manager.registry().read().is_empty());
+    }
+
+    #[test]
+    fn test_with_store_loads_persisted_registry() {
+        let store = TensorStore::new();
+        // Persist some archetypes
+        {
+            let config = DeltaReplicationConfig::default();
+            let m1 = DeltaReplicationManager::new("node1".to_string(), config);
+            let samples = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+            m1.initialize_archetypes(&samples, 2);
+            m1.persist_registry(&store).unwrap();
+        }
+        // Load from store
+        let config = DeltaReplicationConfig::default();
+        let m2 = DeltaReplicationManager::with_store("node2".to_string(), config, &store);
+        assert!(!m2.registry().read().is_empty());
+    }
+
+    #[test]
+    fn test_apply_batch_apply_fn_error() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let mut batch = DeltaBatch::new("node2".to_string(), 0);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1));
+        batch.add(DeltaUpdate::full("key2".to_string(), &[3.0, 4.0], 2));
+
+        // apply_fn that fails on second key
+        let result = manager.apply_batch(&batch, |key, _embedding| {
+            if key == "key2" {
+                Err(ChainError::ValidationFailed("apply failed".to_string()))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ChainError::ValidationFailed(_)
+        ));
+    }
+
+    #[test]
+    fn test_batch_verify_no_checksum_passes() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 0);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        // No checksum on batch or updates -- should pass (legacy)
+        assert!(batch.verify().is_ok());
+    }
+
+    #[test]
+    fn test_batch_compute_checksum_with_mixed_updates() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 5);
+        // One update with checksum, one without
+        let update_with = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1).with_checksum();
+        let update_without = DeltaUpdate::full("key2".to_string(), &[3.0, 4.0], 2);
+        batch.add(update_with);
+        batch.add(update_without);
+
+        let checksum = batch.compute_checksum();
+        // Should be deterministic
+        assert_eq!(checksum, batch.compute_checksum());
+        // Should not be zero
+        assert_ne!(checksum, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_batch_finalize_returns_final() {
+        let batch = DeltaBatch::new("node1".to_string(), 0);
+        assert!(!batch.is_final);
+        let batch = batch.finalize();
+        assert!(batch.is_final);
+    }
+
+    #[test]
+    fn test_batch_memory_bytes_multiple_updates() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 0);
+        let base_bytes = batch.memory_bytes();
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 1));
+        let one_update_bytes = batch.memory_bytes();
+        assert!(one_update_bytes > base_bytes);
+        batch.add(DeltaUpdate::full("key2".to_string(), &[4.0, 5.0, 6.0], 2));
+        let two_update_bytes = batch.memory_bytes();
+        assert!(two_update_bytes > one_update_bytes);
+    }
+
+    #[test]
+    fn test_batch_avg_compression_ratio_multiple() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 0);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0; 64], 1));
+        batch.add(DeltaUpdate::full("key2".to_string(), &[2.0; 128], 2));
+        let ratio = batch.avg_compression_ratio();
+        assert!(ratio > 0.0);
+    }
+
+    #[test]
+    fn test_stats_record_batch_non_full_updates() {
+        let stats = ReplicationStats::new();
+        let mut batch = DeltaBatch::new("node1".to_string(), 0);
+        // Add a delta (non-full) update
+        let update = DeltaUpdate {
+            key: "key1".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![0],
+            delta_values: vec![0.1],
+            version: 1,
+            dimension: 64,
+            checksum: None,
+        };
+        batch.add(update);
+        stats.record_batch(&batch, 256);
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.full_updates, 0);
+        assert_eq!(snap.updates_sent, 1);
+        assert!(snap.bytes_sent > 0);
+    }
+
+    #[test]
+    fn test_stats_record_batch_bytes_saved() {
+        let stats = ReplicationStats::new();
+        let mut batch = DeltaBatch::new("node1".to_string(), 0);
+        // Small update vs large full_bytes should show savings
+        let update = DeltaUpdate {
+            key: "k".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![0],
+            delta_values: vec![0.1],
+            version: 1,
+            dimension: 256,
+            checksum: None,
+        };
+        batch.add(update);
+        let full_bytes = 256 * std::mem::size_of::<f32>(); // 1024 bytes
+        stats.record_batch(&batch, full_bytes);
+
+        let snap = stats.snapshot();
+        assert!(snap.bytes_saved > 0);
+        assert!(snap.bytes_sent < full_bytes as u64);
+    }
+
+    #[test]
+    fn test_stats_effective_compression_with_savings() {
+        let stats = ReplicationStats::new();
+        let mut batch = DeltaBatch::new("node1".to_string(), 0);
+        let update = DeltaUpdate {
+            key: "k".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![0],
+            delta_values: vec![0.1],
+            version: 1,
+            dimension: 256,
+            checksum: None,
+        };
+        batch.add(update);
+        // Set full_bytes much larger than batch size
+        stats.record_batch(&batch, 4096);
+
+        let compression = stats.effective_compression();
+        assert!(compression > 1.0);
+    }
+
+    #[test]
+    fn test_compression_ratio_normal_update() {
+        let update = DeltaUpdate {
+            key: "key1".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![0],
+            delta_values: vec![0.1],
+            version: 1,
+            dimension: 128, // 128 floats = 512 bytes full
+            checksum: None,
+        };
+        let ratio = update.compression_ratio();
+        // delta is small, full is large, ratio should be > 1
+        assert!(ratio > 1.0);
+    }
+
+    #[test]
+    fn test_encode_update_fallback_to_full() {
+        let config = DeltaReplicationConfig {
+            min_archetype_similarity: 0.999,
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+        // Register an archetype that is dissimilar to the embedding
+        {
+            let reg = manager.registry();
+            let mut guard = reg.write();
+            guard.register(vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        }
+        // Queue an embedding very different from archetype -- should fall back to full
+        manager
+            .queue_update("key1".to_string(), &[0.0, 0.0, 0.0, 1.0], 1)
+            .unwrap();
+        let batch = manager.create_batch(true).unwrap();
+        assert!(batch.updates[0].is_full_update());
+    }
+
+    #[test]
+    fn test_encode_update_no_archetypes() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+        // No archetypes registered -- should always produce full update
+        manager
+            .queue_update("key1".to_string(), &[1.0, 2.0, 3.0], 1)
+            .unwrap();
+        let batch = manager.create_batch(true).unwrap();
+        assert!(batch.updates[0].is_full_update());
+    }
+
+    #[test]
+    fn test_create_batch_decrements_depth() {
+        let config = DeltaReplicationConfig {
+            max_batch_size: 10,
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        for i in 0..3 {
+            manager
+                .queue_update(format!("key{i}"), &[i as f32], i as u64)
+                .unwrap();
+        }
+        assert_eq!(manager.pending_count(), 3);
+
+        let batch = manager.create_batch(true).unwrap();
+        assert_eq!(batch.len(), 3);
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_flush_multiple_batches_sequence() {
+        let config = DeltaReplicationConfig {
+            max_batch_size: 2,
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        for i in 0..7 {
+            manager
+                .queue_update(format!("key{i}"), &[i as f32], i as u64)
+                .unwrap();
+        }
+
+        let batches = manager.flush();
+        // 7 updates with batch size 2 => 4 batches (2+2+2+1)
+        assert_eq!(batches.len(), 4);
+        // Sequence numbers should be increasing
+        for (i, batch) in batches.iter().enumerate() {
+            assert_eq!(batch.sequence, i as u64);
+        }
+        // Last batch should be marked final
+        assert!(batches.last().unwrap().is_final);
+    }
+
+    #[tokio::test]
+    async fn test_auto_drain_final_flush_on_shutdown() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig {
+            auto_drain_interval_ms: 1000, // Long interval so tick won't fire
+            max_batch_size: 10,
+            ..Default::default()
+        };
+        let manager = Arc::new(DeltaReplicationManager::new("node1".to_string(), config));
+
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        // Start auto drain
+        let handle = manager.start_auto_drain(node1.clone(), "node2".to_string());
+
+        // Queue updates
+        for i in 0..5 {
+            manager
+                .queue_update(format!("key{i}"), &[i as f32, (i + 1) as f32], i as u64)
+                .unwrap();
+        }
+
+        // Immediately shutdown -- triggers final drain in shutdown handler
+        handle.shutdown().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_running());
+
+        // Queue should be drained by the final flush
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_to_peer_empty_queue() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        // Send with empty queue
+        let sent = manager
+            .send_to_peer(node1.as_ref(), &"node2".to_string())
+            .await
+            .unwrap();
+        assert_eq!(sent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_to_peer_large_embeddings() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig {
+            max_batch_size: 5,
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Queue updates with 256-dim embeddings
+        for i in 0..8 {
+            let embedding: Vec<f32> = (0..256).map(|j| (i * 256 + j) as f32 * 0.001).collect();
+            manager
+                .queue_update(format!("key{i}"), &embedding, i as u64)
+                .unwrap();
+        }
+
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        let sent = manager
+            .send_to_peer(node1.as_ref(), &"node2".to_string())
+            .await
+            .unwrap();
+        assert_eq!(sent, 8);
+
+        let stats = manager.stats();
+        assert!(stats.bytes_sent > 0);
+        assert!(stats.batches_sent >= 2); // 8 updates, batch size 5 => 2 batches
+    }
+
+    #[test]
+    fn test_decode_full_update_preserves_values() {
+        let registry = ArchetypeRegistry::new(10);
+        let embedding = vec![0.5, -1.0, 3.14, 0.0, 99.9];
+        let update = DeltaUpdate::full("key1".to_string(), &embedding, 7);
+
+        let decoded = update.decode(&registry).unwrap();
+        assert_eq!(decoded.len(), 5);
+        for (orig, dec) in embedding.iter().zip(decoded.iter()) {
+            assert!(approx_eq(*orig, *dec, 0.001));
+        }
+    }
+
+    #[test]
+    fn test_decode_delta_with_missing_archetype() {
+        let registry = ArchetypeRegistry::new(10);
+        // Delta update referencing nonexistent archetype
+        let update = DeltaUpdate {
+            key: "key1".to_string(),
+            archetype_id: 42,
+            delta_indices: vec![0],
+            delta_values: vec![0.5],
+            version: 1,
+            dimension: 4,
+            checksum: None,
+        };
+        assert!(update.decode(&registry).is_none());
+    }
+
+    #[test]
+    fn test_delta_update_nnz_empty() {
+        let update = DeltaUpdate {
+            key: "k".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![],
+            delta_values: vec![],
+            version: 1,
+            dimension: 4,
+            checksum: None,
+        };
+        assert_eq!(update.nnz(), 0);
+    }
+
+    #[test]
+    fn test_delta_update_memory_bytes_large() {
+        // Larger update should have more memory bytes
+        let small = DeltaUpdate::full("k".to_string(), &[1.0], 1);
+        let large = DeltaUpdate::full("k".to_string(), &[1.0; 1000], 1);
+        assert!(large.memory_bytes() > small.memory_bytes());
+    }
+
+    #[test]
+    fn test_batch_with_checksum_verify_roundtrip() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 10);
+        for i in 0..5 {
+            batch.add(DeltaUpdate::full(
+                format!("key{i}"),
+                &[i as f32; 4],
+                i as u64,
+            ));
+        }
+        let batch = batch.with_checksum();
+
+        // All updates should have checksums
+        for u in &batch.updates {
+            assert!(u.checksum.is_some());
+            assert!(u.verify_checksum());
+        }
+        // Batch checksum should be present and valid
+        assert!(batch.checksum.is_some());
+        assert!(batch.verify().is_ok());
+    }
+
+    #[test]
+    fn test_manager_with_registry_queue_and_batch() {
+        let registry = Arc::new(RwLock::new(ArchetypeRegistry::new(10)));
+        registry.write().register(vec![1.0; 8]).unwrap();
+
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::with_registry("node1".to_string(), config, registry);
+
+        // Queue an embedding close to the archetype
+        let mut emb = vec![1.0; 8];
+        emb[0] = 0.95;
+        manager.queue_update("key1".to_string(), &emb, 1).unwrap();
+
+        let batch = manager.create_batch(true).unwrap();
+        assert_eq!(batch.len(), 1);
+        // Should be delta-compressed (not full)
+        assert!(!batch.updates[0].is_full_update());
+    }
+
+    #[test]
+    fn test_stats_record_batch_running_average() {
+        let stats = ReplicationStats::new();
+
+        // Record 3 batches to test running average logic
+        for i in 0..3_u64 {
+            let mut batch = DeltaBatch::new("n".to_string(), i);
+            batch.add(DeltaUpdate::full(format!("k{i}"), &[i as f32; 16], i));
+            stats.record_batch(&batch, 128);
+        }
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.batches_sent, 3);
+        assert!(snap.avg_compression_ratio > 0.0);
+        assert_eq!(snap.full_updates, 3);
+    }
+
+    #[test]
+    fn test_drain_handle_is_running_before_shutdown() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            use crate::network::MemoryTransport;
+
+            let config = DeltaReplicationConfig {
+                auto_drain_interval_ms: 50,
+                ..Default::default()
+            };
+            let manager = Arc::new(DeltaReplicationManager::new("n1".to_string(), config));
+            let t1 = Arc::new(MemoryTransport::new("n1".to_string()));
+            let t2 = Arc::new(MemoryTransport::new("n2".to_string()));
+            t1.connect_to("n2".to_string(), t2.sender());
+
+            let handle = manager.start_auto_drain(t1, "n2".to_string());
+            assert!(handle.is_running());
+
+            handle.shutdown().await;
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert!(!handle.is_running());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_queue_update_async_multiple_then_flush() {
+        let config = DeltaReplicationConfig {
+            max_batch_size: 3,
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        for i in 0..5 {
+            manager
+                .queue_update_async(format!("key{i}"), &[i as f32; 8], i as u64)
+                .await
+                .unwrap();
+        }
+        assert_eq!(manager.pending_count(), 5);
+
+        let batches = manager.flush();
+        assert_eq!(batches.len(), 2); // 3 + 2
+        assert!(batches.last().unwrap().is_final);
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_batch_checksum_in_message() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Queue updates with checksums
+        manager
+            .queue_update("key1".to_string(), &[1.0, 2.0, 3.0, 4.0], 1)
+            .unwrap();
+        manager
+            .queue_update("key2".to_string(), &[5.0, 6.0, 7.0, 8.0], 2)
+            .unwrap();
+
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        let sent = manager
+            .send_to_peer(node1.as_ref(), &"node2".to_string())
+            .await
+            .unwrap();
+        assert_eq!(sent, 2);
+
+        // Stats should reflect sent data
+        let stats = manager.stats();
+        assert!(stats.bytes_sent > 0);
+        assert_eq!(stats.updates_sent, 2);
+    }
+
+    #[test]
+    fn test_delta_update_from_embedding_with_registry() {
+        let mut registry = ArchetypeRegistry::new(10);
+        registry.register(vec![1.0; 16]).unwrap();
+
+        // Create embedding close to archetype
+        let mut embedding = vec![1.0; 16];
+        embedding[0] = 0.9;
+        embedding[5] = 1.05;
+
+        let update =
+            DeltaUpdate::from_embedding("test".to_string(), &embedding, &registry, 0.001, 42);
+        assert!(update.is_some());
+        let update = update.unwrap();
+        assert_eq!(update.archetype_id, 0);
+        assert_eq!(update.version, 42);
+        assert_eq!(update.dimension, 16);
+        assert!(!update.is_full_update());
+        // nnz should be small since embedding is close to archetype
+        assert!(update.nnz() < 16);
+    }
+
+    #[test]
+    fn test_delta_update_with_checksum_then_modify_invalidates() {
+        let mut update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 1).with_checksum();
+        assert!(update.verify_checksum());
+
+        // Modify data after checksum -- should invalidate
+        update.delta_values[0] = 999.0;
+        assert!(!update.verify_checksum());
+    }
+
+    #[test]
+    fn test_batch_add_multiple_and_len() {
+        let mut batch = DeltaBatch::new("n".to_string(), 0);
+        assert_eq!(batch.len(), 0);
+        assert!(batch.is_empty());
+
+        for i in 0..10 {
+            batch.add(DeltaUpdate::full(format!("k{i}"), &[i as f32], i as u64));
+        }
+        assert_eq!(batch.len(), 10);
+        assert!(!batch.is_empty());
+    }
+
+    #[test]
+    fn test_apply_batch_with_checksummed_full_updates() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let mut batch = DeltaBatch::new("node2".to_string(), 0);
+        batch.add(DeltaUpdate::full("k1".to_string(), &[1.0, 2.0, 3.0], 1));
+        batch.add(DeltaUpdate::full("k2".to_string(), &[4.0, 5.0, 6.0], 2));
+        let batch = batch.with_checksum();
+
+        let mut results: Vec<(String, Vec<f32>)> = Vec::new();
+        let applied = manager
+            .apply_batch(&batch, |key, emb| {
+                results.push((key.to_string(), emb));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(applied, 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "k1");
+        assert_eq!(results[1].0, "k2");
     }
 }

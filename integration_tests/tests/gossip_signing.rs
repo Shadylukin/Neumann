@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Integration tests for gossip message signing.
 
 use std::sync::Arc;
@@ -79,11 +79,11 @@ async fn test_multi_node_signed_gossip() {
     let signed = SignedGossipMessage::new(&identity1, &msg, 1).unwrap();
 
     // Node 2 should be able to verify
-    assert!(gossip2.handle_signed_gossip(signed.clone()).is_ok());
+    assert!(gossip2.handle_signed_gossip(&signed).is_ok());
 
     // Node 3 should also be able to verify (with different sequence tracking)
     let signed2 = SignedGossipMessage::new(&identity1, &msg, 2).unwrap();
-    assert!(gossip3.handle_signed_gossip(signed2).is_ok());
+    assert!(gossip3.handle_signed_gossip(&signed2).is_ok());
 }
 
 #[tokio::test]
@@ -127,7 +127,7 @@ async fn test_mixed_mode_compatibility() {
         incarnation: 2,
     };
     let signed = SignedGossipMessage::new(&identity, &signed_msg, 1).unwrap();
-    assert!(gossip1.handle_signed_gossip(signed).is_ok());
+    assert!(gossip1.handle_signed_gossip(&signed).is_ok());
 }
 
 #[tokio::test]
@@ -168,7 +168,7 @@ async fn test_malicious_node_rejected() {
     };
 
     let signed = SignedGossipMessage::new(&malicious, &malicious_msg, 1).unwrap();
-    let result = gossip.handle_signed_gossip(signed);
+    let result = gossip.handle_signed_gossip(&signed);
     assert!(result.is_err());
     assert!(result
         .unwrap_err()

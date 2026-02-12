@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Conversion between Neumann types and protobuf messages.
 
 use query_router::{
@@ -74,7 +74,7 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
         },
 
         QueryResult::BlobStats(stats) => {
-            proto::query_response::Result::BlobStats(blob_stats_to_proto(stats))
+            proto::query_response::Result::BlobStats(blob_stats_to_proto(&stats))
         },
 
         QueryResult::CheckpointList(checkpoints) => {
@@ -88,11 +88,11 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
         },
 
         QueryResult::PageRank(result) => {
-            proto::query_response::Result::PageRank(pagerank_result_to_proto(result))
+            proto::query_response::Result::PageRank(pagerank_result_to_proto(&result))
         },
 
         QueryResult::Centrality(result) => {
-            proto::query_response::Result::Centrality(centrality_result_to_proto(result))
+            proto::query_response::Result::Centrality(centrality_result_to_proto(&result))
         },
 
         QueryResult::Communities(result) => {
@@ -110,7 +110,7 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
         },
 
         QueryResult::Aggregate(agg) => {
-            proto::query_response::Result::Aggregate(aggregate_to_proto(agg))
+            proto::query_response::Result::Aggregate(aggregate_to_proto(&agg))
         },
 
         QueryResult::BatchResult(batch) => {
@@ -161,7 +161,6 @@ pub fn row_to_proto(row: RelationalRow) -> proto::Row {
 #[must_use]
 pub fn value_to_proto(value: RelationalValue) -> proto::Value {
     let kind = match value {
-        RelationalValue::Null => proto::value::Kind::Null(true),
         RelationalValue::Int(i) => proto::value::Kind::IntValue(i),
         RelationalValue::Float(f) => proto::value::Kind::FloatValue(f),
         RelationalValue::String(s) => proto::value::Kind::StringValue(s),
@@ -213,7 +212,7 @@ pub fn similar_to_proto(item: RouterSimilarResult) -> proto::SimilarItem {
 
 /// Convert a `PageRankItem` to protobuf.
 #[must_use]
-pub fn pagerank_item_to_proto(item: PageRankItem) -> proto::PageRankItem {
+pub const fn pagerank_item_to_proto(item: &PageRankItem) -> proto::PageRankItem {
     proto::PageRankItem {
         node_id: item.node_id,
         score: item.score,
@@ -222,13 +221,9 @@ pub fn pagerank_item_to_proto(item: PageRankItem) -> proto::PageRankItem {
 
 /// Convert a `PageRankResult` to protobuf with full metadata.
 #[must_use]
-pub fn pagerank_result_to_proto(result: PageRankResult) -> proto::PageRankResult {
+pub fn pagerank_result_to_proto(result: &PageRankResult) -> proto::PageRankResult {
     proto::PageRankResult {
-        items: result
-            .items
-            .into_iter()
-            .map(pagerank_item_to_proto)
-            .collect(),
+        items: result.items.iter().map(pagerank_item_to_proto).collect(),
         iterations: Some(u32::try_from(result.iterations).unwrap_or(u32::MAX)),
         convergence: Some(result.convergence),
         converged: Some(result.converged),
@@ -237,7 +232,7 @@ pub fn pagerank_result_to_proto(result: PageRankResult) -> proto::PageRankResult
 
 /// Convert a `CentralityItem` to protobuf.
 #[must_use]
-pub fn centrality_item_to_proto(item: CentralityItem) -> proto::CentralityItem {
+pub const fn centrality_item_to_proto(item: &CentralityItem) -> proto::CentralityItem {
     proto::CentralityItem {
         node_id: item.node_id,
         score: item.score,
@@ -246,7 +241,7 @@ pub fn centrality_item_to_proto(item: CentralityItem) -> proto::CentralityItem {
 
 /// Convert a `CentralityType` to protobuf.
 #[must_use]
-pub fn centrality_type_to_proto(centrality_type: CentralityType) -> i32 {
+pub const fn centrality_type_to_proto(centrality_type: CentralityType) -> i32 {
     match centrality_type {
         CentralityType::Betweenness => proto::CentralityType::Betweenness as i32,
         CentralityType::Closeness => proto::CentralityType::Closeness as i32,
@@ -256,13 +251,9 @@ pub fn centrality_type_to_proto(centrality_type: CentralityType) -> i32 {
 
 /// Convert a `CentralityResult` to protobuf with full metadata.
 #[must_use]
-pub fn centrality_result_to_proto(result: CentralityResult) -> proto::CentralityResult {
+pub fn centrality_result_to_proto(result: &CentralityResult) -> proto::CentralityResult {
     proto::CentralityResult {
-        items: result
-            .items
-            .into_iter()
-            .map(centrality_item_to_proto)
-            .collect(),
+        items: result.items.iter().map(centrality_item_to_proto).collect(),
         centrality_type: Some(centrality_type_to_proto(result.centrality_type)),
         iterations: result
             .iterations
@@ -276,7 +267,7 @@ pub fn centrality_result_to_proto(result: CentralityResult) -> proto::Centrality
 
 /// Convert a `CommunityItem` to protobuf.
 #[must_use]
-pub fn community_item_to_proto(item: CommunityItem) -> proto::CommunityItem {
+pub const fn community_item_to_proto(item: &CommunityItem) -> proto::CommunityItem {
     proto::CommunityItem {
         node_id: item.node_id,
         community_id: item.community_id,
@@ -298,11 +289,7 @@ pub fn communities_result_to_proto(result: CommunityResult) -> proto::Communitie
         .collect();
 
     proto::CommunitiesResult {
-        items: result
-            .items
-            .into_iter()
-            .map(community_item_to_proto)
-            .collect(),
+        items: result.items.iter().map(community_item_to_proto).collect(),
         community_count: Some(u32::try_from(result.community_count).unwrap_or(u32::MAX)),
         modularity: result.modularity,
         passes: result.passes.map(|p| u32::try_from(p).unwrap_or(u32::MAX)),
@@ -326,8 +313,8 @@ pub fn constraint_to_proto(item: ConstraintInfo) -> proto::ConstraintItem {
 
 /// Convert an `AggregateResultValue` to protobuf.
 #[must_use]
-pub fn aggregate_to_proto(agg: AggregateResultValue) -> proto::AggregateResult {
-    let value = match agg {
+pub const fn aggregate_to_proto(agg: &AggregateResultValue) -> proto::AggregateResult {
+    let value = match *agg {
         AggregateResultValue::Count(n) => proto::aggregate_result::Value::Count(n),
         AggregateResultValue::Sum(v) => proto::aggregate_result::Value::Sum(v),
         AggregateResultValue::Avg(v) => proto::aggregate_result::Value::Avg(v),
@@ -356,7 +343,7 @@ pub fn pattern_match_to_proto(pm: PatternMatchResultValue) -> proto::PatternMatc
             .into_iter()
             .map(pattern_binding_to_proto)
             .collect(),
-        stats: Some(pattern_stats_to_proto(pm.stats)),
+        stats: Some(pattern_stats_to_proto(&pm.stats)),
     }
 }
 
@@ -408,7 +395,7 @@ pub fn binding_value_to_proto(val: RouterBindingValue) -> proto::BindingValue {
 
 /// Convert a `PatternMatchStatsValue` to protobuf.
 #[must_use]
-pub fn pattern_stats_to_proto(stats: PatternMatchStatsValue) -> proto::PatternMatchStats {
+pub const fn pattern_stats_to_proto(stats: &PatternMatchStatsValue) -> proto::PatternMatchStats {
     proto::PatternMatchStats {
         matches_found: stats.matches_found as u64,
         nodes_evaluated: stats.nodes_evaluated as u64,
@@ -456,7 +443,7 @@ pub fn artifact_info_to_proto(info: ArtifactInfoResult) -> proto::ArtifactInfo {
 
 /// Convert a `BlobStatsResult` to protobuf.
 #[must_use]
-pub fn blob_stats_to_proto(stats: BlobStatsResult) -> proto::BlobStatsResult {
+pub const fn blob_stats_to_proto(stats: &BlobStatsResult) -> proto::BlobStatsResult {
     proto::BlobStatsResult {
         artifact_count: stats.artifact_count as u64,
         chunk_count: stats.chunk_count as u64,
@@ -507,12 +494,12 @@ pub fn chain_result_to_proto(result: ChainResult) -> proto::ChainQueryResult {
 
         ChainResult::Similar(items) => {
             proto::chain_query_result::Result::Similar(proto::ChainSimilar {
-                items: items.into_iter().map(chain_similar_to_proto).collect(),
+                items: items.iter().map(chain_similar_to_proto).collect(),
             })
         },
 
         ChainResult::Drift(drift) => {
-            proto::chain_query_result::Result::Drift(chain_drift_to_proto(drift))
+            proto::chain_query_result::Result::Drift(chain_drift_to_proto(&drift))
         },
 
         ChainResult::Height(h) => {
@@ -543,7 +530,7 @@ pub fn chain_result_to_proto(result: ChainResult) -> proto::ChainQueryResult {
 
         ChainResult::TransitionAnalysis(analysis) => {
             proto::chain_query_result::Result::TransitionAnalysis(transition_analysis_to_proto(
-                analysis,
+                &analysis,
             ))
         },
     };
@@ -555,8 +542,8 @@ pub fn chain_result_to_proto(result: ChainResult) -> proto::ChainQueryResult {
 
 /// Convert a `ChainTransitionAnalysis` to protobuf.
 #[must_use]
-pub fn transition_analysis_to_proto(
-    analysis: ChainTransitionAnalysis,
+pub const fn transition_analysis_to_proto(
+    analysis: &ChainTransitionAnalysis,
 ) -> proto::ChainTransitionAnalysis {
     proto::ChainTransitionAnalysis {
         total_transitions: analysis.total_transitions as u64,
@@ -578,9 +565,9 @@ pub fn chain_history_to_proto(entry: ChainHistoryEntry) -> proto::ChainHistoryEn
 
 /// Convert a `ChainSimilarResult` to protobuf.
 #[must_use]
-pub fn chain_similar_to_proto(item: ChainSimilarResult) -> proto::ChainSimilarItem {
+pub fn chain_similar_to_proto(item: &ChainSimilarResult) -> proto::ChainSimilarItem {
     proto::ChainSimilarItem {
-        block_hash: item.block_hash,
+        block_hash: item.block_hash.clone(),
         height: item.height,
         similarity: item.similarity,
     }
@@ -588,7 +575,7 @@ pub fn chain_similar_to_proto(item: ChainSimilarResult) -> proto::ChainSimilarIt
 
 /// Convert a `ChainDriftResult` to protobuf.
 #[must_use]
-pub fn chain_drift_to_proto(drift: ChainDriftResult) -> proto::ChainDrift {
+pub const fn chain_drift_to_proto(drift: &ChainDriftResult) -> proto::ChainDrift {
     proto::ChainDrift {
         from_height: drift.from_height,
         to_height: drift.to_height,
@@ -637,7 +624,7 @@ pub fn error_to_proto(err: &query_router::RouterError) -> proto::QueryResponse {
 }
 
 /// Map a `RouterError` to an error code.
-fn error_code_from_router_error(err: &query_router::RouterError) -> proto::ErrorCode {
+const fn error_code_from_router_error(err: &query_router::RouterError) -> proto::ErrorCode {
     use query_router::RouterError;
 
     match err {
@@ -1658,7 +1645,7 @@ mod tests {
             node_id: 42,
             score: 0.123_456,
         };
-        let proto = pagerank_item_to_proto(item);
+        let proto = pagerank_item_to_proto(&item);
         assert_eq!(proto.node_id, 42);
         assert!((proto.score - 0.123_456).abs() < 0.000_001);
     }
@@ -1669,7 +1656,7 @@ mod tests {
             node_id: 99,
             score: 0.999,
         };
-        let proto = centrality_item_to_proto(item);
+        let proto = centrality_item_to_proto(&item);
         assert_eq!(proto.node_id, 99);
         assert!((proto.score - 0.999).abs() < 0.001);
     }
@@ -1794,7 +1781,7 @@ mod tests {
             node_id: 42,
             community_id: 7,
         };
-        let proto = community_item_to_proto(item);
+        let proto = community_item_to_proto(&item);
         assert_eq!(proto.node_id, 42);
         assert_eq!(proto.community_id, 7);
     }
@@ -1957,14 +1944,14 @@ mod tests {
     #[test]
     fn test_aggregate_to_proto_all_variants() {
         // Count
-        let proto = aggregate_to_proto(AggregateResultValue::Count(10));
+        let proto = aggregate_to_proto(&AggregateResultValue::Count(10));
         assert!(matches!(
             proto.value,
             Some(proto::aggregate_result::Value::Count(10))
         ));
 
         // Sum
-        let proto = aggregate_to_proto(AggregateResultValue::Sum(20.0));
+        let proto = aggregate_to_proto(&AggregateResultValue::Sum(20.0));
         assert!(matches!(
             proto.value,
             Some(proto::aggregate_result::Value::Sum(_))
@@ -2171,7 +2158,7 @@ mod tests {
             edges_evaluated: 200,
             truncated: true,
         };
-        let proto = pattern_stats_to_proto(stats);
+        let proto = pattern_stats_to_proto(&stats);
         assert_eq!(proto.matches_found, 5);
         assert_eq!(proto.nodes_evaluated, 100);
         assert_eq!(proto.edges_evaluated, 200);

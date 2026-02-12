@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Centralized metrics infrastructure for `tensor_chain` observability.
 //!
 //! Provides thread-safe timing statistics using atomics, following the same
@@ -27,7 +27,7 @@ impl Default for TimingStats {
 
 impl TimingStats {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
             total_us: AtomicU64::new(0),
@@ -137,7 +137,7 @@ pub struct TimingSnapshot {
 impl TimingSnapshot {
     /// Check if any operations were recorded.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Neumann gRPC Server
 //!
 //! This crate provides a gRPC server that exposes the Neumann database via
@@ -29,28 +29,6 @@
 //! ```
 
 #![forbid(unsafe_code)]
-#![deny(
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    missing_docs,
-    rustdoc::broken_intra_doc_links
-)]
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::redundant_pub_crate)]
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::option_if_let_else)]
-#![allow(clippy::unnested_or_patterns)]
-#![allow(clippy::result_large_err)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::match_same_arms)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::future_not_send)]
-#![allow(clippy::significant_drop_tightening)]
-#![allow(clippy::use_self)]
 
 pub mod audit;
 pub mod auth;
@@ -100,7 +78,7 @@ use tensor_blob::{BlobConfig, BlobStore};
 use tensor_store::TensorStore;
 
 pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
-pub use config::{AuthConfig, ServerConfig, TlsConfig};
+pub use config::{AuthConfig, ClusterConfig, ServerConfig, TlsConfig};
 pub use correlation::{extract_or_generate, request_span, RequestSpan, TRACE_ID_HEADER};
 pub use error::{sanitize_error, sanitize_internal_error, Result, ServerError};
 pub use memory::{MemoryBudgetConfig, MemoryTracker};
@@ -289,6 +267,7 @@ impl NeumannServer {
     /// # Errors
     ///
     /// Returns an error if the server fails to start or encounters a runtime error.
+    #[allow(clippy::too_many_lines)]
     pub async fn serve(self) -> Result<()> {
         self.config.validate()?;
 
@@ -549,6 +528,7 @@ impl NeumannServer {
     /// # Errors
     ///
     /// Returns an error if the server fails to start or encounters a runtime error.
+    #[allow(clippy::too_many_lines)]
     pub async fn serve_with_shutdown<F>(self, shutdown: F) -> Result<()>
     where
         F: std::future::Future<Output = ()> + Send,

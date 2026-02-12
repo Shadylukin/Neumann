@@ -21,12 +21,16 @@ cargo bench --package tensor_compress
 cargo bench --package tensor_vault
 cargo bench --package tensor_cache
 cargo bench --package tensor_chain
+cargo bench --package tensor_checkpoint
+cargo bench --package tensor_unified
+cargo bench --package neumann_server
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 
 ## Performance Summary
 
+<!-- BENCH:START -->
 ### In-Memory Operations
 
 | Component | Key Metric | Performance |
@@ -48,6 +52,7 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 | --- | --- | --- |
 | WAL writes | Durable PUT (128d embeddings) | 1.4M ops/sec |
 | WAL recovery | Replay 10K records | ~400us (25M records/sec) |
+<!-- BENCH:END -->
 
 All engines (`RelationalEngine`, `GraphEngine`, `VectorEngine`) support
 optional durability via `open_durable()` with full crash consistency.
@@ -90,6 +95,8 @@ cargo bench -- --noplot  # Skip HTML report generation for faster runs
 - [tensor_vault](tensor-vault.md) - Encrypted storage, access control
 - [tensor_cache](tensor-cache.md) - LLM response caching, semantic search
 - [tensor_blob](tensor-blob.md) - Blob storage operations
+- [tensor_checkpoint](tensor-checkpoint.md) - Snapshot create, rollback, retention
+- [tensor_unified](tensor-unified.md) - Cross-engine unified entity operations
 
 ### Distributed Systems
 
@@ -99,3 +106,5 @@ cargo bench -- --noplot  # Skip HTML report generation for faster runs
 
 - [neumann_parser](neumann-parser.md) - Tokenization, parsing, expressions
 - [query_router](query-router.md) - Cross-engine query routing
+- [neumann_shell](neumann-shell.md) - Interactive CLI, WAL, snapshots
+- [neumann_server](neumann-server.md) - gRPC server, request routing

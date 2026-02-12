@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Document indexer that stores documents across all three engines.
 
 use std::collections::HashMap;
@@ -58,7 +58,7 @@ impl DocIndexer {
 
     /// Create an indexer with an existing client.
     #[must_use]
-    pub fn with_client(client: NeumannClient) -> Self {
+    pub const fn with_client(client: NeumannClient) -> Self {
         Self { client }
     }
 
@@ -225,10 +225,10 @@ impl DocIndexer {
 
     /// List all indexed documents.
     pub fn list_documents(&self, category: Option<&str>) -> Result<Vec<DocumentInfo>> {
-        let query = match category {
-            Some(cat) => format!("SELECT docs WHERE category = '{cat}'"),
-            None => "SELECT docs".to_string(),
-        };
+        let query = category.map_or_else(
+            || "SELECT docs".to_string(),
+            |cat| format!("SELECT docs WHERE category = '{cat}'"),
+        );
 
         let result = self
             .client
@@ -392,7 +392,7 @@ impl DocIndexer {
 
     /// Get direct access to the client for advanced queries.
     #[must_use]
-    pub fn client(&self) -> &NeumannClient {
+    pub const fn client(&self) -> &NeumannClient {
         &self.client
     }
 }

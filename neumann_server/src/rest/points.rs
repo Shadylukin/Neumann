@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! REST API handlers for point operations.
 
 use std::sync::Arc;
@@ -44,10 +44,10 @@ fn validate_auth(
                 Err(ApiError::unauthorized("API key required"))
             }
         },
-        (Some(config), Some(key)) => match config.validate_key(&key) {
-            Some(identity) => Ok(Some(identity.to_string())),
-            None => Err(ApiError::unauthorized("Invalid API key")),
-        },
+        (Some(config), Some(key)) => config.validate_key(&key).map_or_else(
+            || Err(ApiError::unauthorized("Invalid API key")),
+            |identity| Ok(Some(identity.to_string())),
+        ),
     }
 }
 
@@ -71,15 +71,15 @@ fn json_to_tensor_value(value: &serde_json::Value) -> TensorValue {
     match value {
         serde_json::Value::Null => TensorValue::Scalar(ScalarValue::Null),
         serde_json::Value::Bool(b) => TensorValue::Scalar(ScalarValue::Bool(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                TensorValue::Scalar(ScalarValue::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                TensorValue::Scalar(ScalarValue::Float(f))
-            } else {
-                TensorValue::Scalar(ScalarValue::Null)
-            }
-        },
+        serde_json::Value::Number(n) => n.as_i64().map_or_else(
+            || {
+                n.as_f64()
+                    .map_or(TensorValue::Scalar(ScalarValue::Null), |f| {
+                        TensorValue::Scalar(ScalarValue::Float(f))
+                    })
+            },
+            |i| TensorValue::Scalar(ScalarValue::Int(i)),
+        ),
         serde_json::Value::String(s) => TensorValue::Scalar(ScalarValue::String(s.clone())),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
             TensorValue::Scalar(ScalarValue::String(value.to_string()))
@@ -97,6 +97,10 @@ fn convert_metadata(
 }
 
 /// Upsert points into a collection.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails, rate limited, or the operation fails.
 pub async fn upsert(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(collection): Path<String>,
@@ -163,6 +167,10 @@ pub async fn upsert(
 }
 
 /// Get points by IDs.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails or rate limited.
 pub async fn get(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(collection): Path<String>,
@@ -197,6 +205,10 @@ pub async fn get(
 }
 
 /// Delete points by IDs.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails, rate limited, or deletion fails.
 pub async fn delete(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(collection): Path<String>,
@@ -246,6 +258,10 @@ pub async fn delete(
 }
 
 /// Query similar points.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails, rate limited, or the query fails.
 pub async fn query(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(collection): Path<String>,
@@ -325,6 +341,10 @@ pub async fn query(
 }
 
 /// Scroll through points in a collection.
+///
+/// # Errors
+///
+/// Returns `ApiError` if authentication fails or rate limited.
 pub async fn scroll(
     State(ctx): State<Arc<VectorApiContext>>,
     Path(collection): Path<String>,
@@ -344,13 +364,11 @@ pub async fn scroll(
     let keys = ctx.engine.list_collection_keys(&collection);
 
     // Find the starting position
-    let start_idx = if let Some(ref offset_id) = request.offset_id {
+    let start_idx = request.offset_id.as_ref().map_or(0, |offset_id| {
         keys.iter()
             .position(|k| k > offset_id)
             .unwrap_or(keys.len())
-    } else {
-        0
-    };
+    });
 
     // Get the page of keys
     let page_keys: Vec<_> = keys.iter().skip(start_idx).take(limit + 1).collect();

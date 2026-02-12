@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Gamification system for the Neumann admin UI.
 //!
 //! Provides XP/leveling, achievements, streaks, and progress tracking
@@ -119,7 +119,7 @@ impl XpReward {
 
 /// Title earned at each level.
 #[must_use]
-pub fn level_title(level: u32) -> &'static str {
+pub const fn level_title(level: u32) -> &'static str {
     match level {
         1 => "Novice Operator",
         2 => "Data Apprentice",

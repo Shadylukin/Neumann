@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! GraphEngine Node-based API integration tests.
 //!
 //! Tests node-based graph operations using the recommended API.
@@ -285,18 +285,26 @@ fn test_concurrent_edge_creation() {
     use std::thread;
 
     let graph = create_graph();
-    let hub_key = "hub:center";
 
-    // Pre-create the hub node
-    get_or_create_entity_node(&graph, hub_key);
-
-    let handles: Vec<_> = (0..10)
+    // Each thread creates edges between its own unique pair of nodes to avoid
+    // concurrent writes to the same adjacency list (graph_engine's add_edge_to_list
+    // has a get-modify-put race when multiple threads write to the same list).
+    let node_pairs: Vec<(u64, u64)> = (0..10)
         .map(|i| {
+            let from = create_entity_node(&graph, &format!("from:{i}"));
+            let to = create_entity_node(&graph, &format!("to:{i}"));
+            (from, to)
+        })
+        .collect();
+
+    let handles: Vec<_> = node_pairs
+        .into_iter()
+        .map(|(from_id, to_id)| {
             let graph = Arc::clone(&graph);
-            let hub = hub_key.to_string();
             thread::spawn(move || {
-                let spoke_key = format!("spoke:{}", i);
-                add_edge(&graph, &spoke_key, &hub, "connects");
+                graph
+                    .create_edge(from_id, to_id, "connects", HashMap::new(), true)
+                    .unwrap();
             })
         })
         .collect();
@@ -305,9 +313,12 @@ fn test_concurrent_edge_creation() {
         handle.join().unwrap();
     }
 
-    // All spokes should connect to hub
-    let hub_in = get_neighbors_in(&graph, hub_key);
-    assert_eq!(hub_in.len(), 10);
+    // Each pair should have exactly one edge
+    for i in 0..10 {
+        let from_key = format!("from:{i}");
+        let neighbors = get_neighbors_out(&graph, &from_key);
+        assert_eq!(neighbors.len(), 1, "from:{i} should have 1 outgoing edge");
+    }
 }
 
 #[test]

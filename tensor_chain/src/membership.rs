@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Cluster membership management with health checking.
 //!
 //! Provides:
@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 use crate::{
     block::NodeId,
     error::Result,
+    hlc::HLCTimestamp,
     network::{Message, Transport},
 };
 
@@ -77,6 +78,7 @@ pub struct MembershipStats {
 }
 
 impl MembershipStats {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -127,6 +129,12 @@ pub struct NodeStatus {
     /// confirming that *both* sides agree the partition ended), use HLC
     /// timestamps from [`crate::hlc::HybridLogicalClock`] instead.
     pub partition_start: Option<Instant>,
+    /// HLC timestamp when the partition started, for cross-node ordering.
+    ///
+    /// Unlike `partition_start` (monotonic clock, local-only), this value
+    /// can be compared across nodes to determine a global order of heal events,
+    /// even in the presence of clock skew.
+    pub partition_start_hlc: Option<HLCTimestamp>,
     /// Total successful pings.
     pub total_pings: u64,
     /// Total failed pings.
@@ -138,7 +146,7 @@ pub struct NodeStatus {
 }
 
 impl NodeStatus {
-    fn new(node_id: NodeId, address: SocketAddr) -> Self {
+    const fn new(node_id: NodeId, address: SocketAddr) -> Self {
         Self {
             node_id,
             address,
@@ -148,6 +156,7 @@ impl NodeStatus {
             consecutive_failures: 0,
             consecutive_successes: 0,
             partition_start: None,
+            partition_start_hlc: None,
             total_pings: 0,
             total_failures: 0,
             state_embedding: None,
@@ -187,6 +196,13 @@ impl NodeStatus {
             // Track when node first entered Failed state
             if was_not_failed && self.partition_start.is_none() {
                 self.partition_start = Some(Instant::now());
+                let wall_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                #[allow(clippy::cast_possible_truncation)]
+                let wall_ms = wall_ms as u64;
+                self.partition_start_hlc = Some(HLCTimestamp::new(wall_ms, 0, 0));
             }
         } else if self.consecutive_failures > 0 {
             self.health = NodeHealth::Degraded;
@@ -244,14 +260,17 @@ impl ClusterView {
         }
     }
 
+    #[must_use]
     pub fn is_healthy(&self, node_id: &NodeId) -> bool {
         self.healthy_nodes.contains(node_id)
     }
 
+    #[must_use]
     pub fn healthy_count(&self) -> usize {
         self.healthy_nodes.len()
     }
 
+    #[must_use]
     pub fn total_count(&self) -> usize {
         self.nodes.len()
     }
@@ -286,16 +305,16 @@ pub struct HealthConfig {
     pub startup_grace_ms: u64,
 }
 
-fn default_ping_interval() -> u64 {
+const fn default_ping_interval() -> u64 {
     1000
 }
-fn default_failure_threshold() -> usize {
+const fn default_failure_threshold() -> usize {
     3
 }
-fn default_ping_timeout() -> u64 {
+const fn default_ping_timeout() -> u64 {
     500
 }
-fn default_startup_grace() -> u64 {
+const fn default_startup_grace() -> u64 {
     5000
 }
 
@@ -347,6 +366,7 @@ impl ClusterConfig {
         }
     }
 
+    #[must_use]
     pub fn with_peer(mut self, node_id: impl Into<NodeId>, address: SocketAddr) -> Self {
         self.peers.push(PeerNodeConfig {
             node_id: node_id.into(),
@@ -355,7 +375,8 @@ impl ClusterConfig {
         self
     }
 
-    pub fn with_health(mut self, health: HealthConfig) -> Self {
+    #[must_use]
+    pub const fn with_health(mut self, health: HealthConfig) -> Self {
         self.health = health;
         self
     }
@@ -471,8 +492,7 @@ impl MembershipManager {
     }
 
     pub fn view(&self) -> ClusterView {
-        let nodes = self.nodes.read();
-        let statuses: Vec<NodeStatus> = nodes.values().cloned().collect();
+        let statuses: Vec<NodeStatus> = self.nodes.read().values().cloned().collect();
         let partition_status = self.compute_partition_status_inner(&statuses);
         ClusterView::with_partition_status(
             statuses,
@@ -486,8 +506,7 @@ impl MembershipManager {
             return PartitionStatus::Unknown;
         }
 
-        let nodes = self.nodes.read();
-        let statuses: Vec<NodeStatus> = nodes.values().cloned().collect();
+        let statuses: Vec<NodeStatus> = self.nodes.read().values().cloned().collect();
         self.compute_partition_status_inner(&statuses)
     }
 
@@ -533,7 +552,7 @@ impl MembershipManager {
         self.start_time.elapsed() < Duration::from_millis(self.config.health.startup_grace_ms)
     }
 
-    pub fn local_id(&self) -> &NodeId {
+    pub const fn local_id(&self) -> &NodeId {
         &self.config.local.node_id
     }
 
@@ -553,8 +572,8 @@ impl MembershipManager {
 
     /// Detect nodes that have healed from partition.
     ///
-    /// Returns a list of (node_id, partition_duration_ms) for nodes that:
-    /// 1. Were previously in Failed state (have partition_start set)
+    /// Returns a list of (`node_id`, `partition_duration_ms`) for nodes that:
+    /// 1. Were previously in Failed state (have `partition_start` set)
     /// 2. Are now Healthy
     /// 3. Have achieved the required consecutive successes threshold
     ///
@@ -579,10 +598,10 @@ impl MembershipManager {
                 && status.partition_start.is_some()
                 && status.consecutive_successes >= threshold
             {
+                #[allow(clippy::cast_possible_truncation)]
                 let partition_duration_ms = status
                     .partition_start
-                    .map(|start| start.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
+                    .map_or(0, |start| start.elapsed().as_millis() as u64);
 
                 tracing::info!(
                     node_id = %node_id,
@@ -595,6 +614,49 @@ impl MembershipManager {
             }
         }
 
+        drop(nodes);
+        healed
+    }
+
+    /// Detect healed nodes with HLC timestamps for cross-node ordering.
+    ///
+    /// Returns `(node_id, partition_duration_ms, partition_start_hlc)` tuples.
+    /// The HLC timestamp enables skew-tolerant ordering of heal events across
+    /// different cluster nodes.
+    pub fn detect_healed_nodes_with_hlc(
+        &self,
+        threshold: u32,
+    ) -> Vec<(NodeId, u64, Option<HLCTimestamp>)> {
+        let nodes = self.nodes.read();
+        let mut healed = Vec::new();
+
+        for (node_id, status) in nodes.iter() {
+            if status.health == NodeHealth::Healthy
+                && status.partition_start.is_some()
+                && status.consecutive_successes >= threshold
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                let partition_duration_ms = status
+                    .partition_start
+                    .map_or(0, |start| start.elapsed().as_millis() as u64);
+
+                tracing::info!(
+                    node_id = %node_id,
+                    partition_duration_ms,
+                    hlc_timestamp = ?status.partition_start_hlc,
+                    consecutive_successes = status.consecutive_successes,
+                    "Node healed from partition (HLC-aware)"
+                );
+
+                healed.push((
+                    node_id.clone(),
+                    partition_duration_ms,
+                    status.partition_start_hlc,
+                ));
+            }
+        }
+
+        drop(nodes);
         healed
     }
 
@@ -605,6 +667,7 @@ impl MembershipManager {
         let mut nodes = self.nodes.write();
         if let Some(status) = nodes.get_mut(node_id) {
             status.partition_start = None;
+            status.partition_start_hlc = None;
             status.consecutive_successes = 0;
         }
     }
@@ -615,11 +678,15 @@ impl MembershipManager {
         for node_id in node_ids {
             if let Some(status) = nodes.get_mut(node_id) {
                 status.partition_start = None;
+                status.partition_start_hlc = None;
                 status.consecutive_successes = 0;
             }
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if connecting to peers fails during bootstrap.
     pub async fn start(&self) -> Result<()> {
         {
             let mut running = self.running.write();
@@ -651,6 +718,9 @@ impl MembershipManager {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if health check processing fails.
     pub async fn check_health(&self) -> Result<()> {
         let peer_ids = self.peer_ids();
         self.stats.health_checks.fetch_add(1, Ordering::Relaxed);
@@ -670,47 +740,43 @@ impl MembershipManager {
                 .nodes
                 .read()
                 .get(&peer_id)
-                .map(|n| n.health)
-                .unwrap_or(NodeHealth::Unknown);
+                .map_or(NodeHealth::Unknown, |n| n.health);
 
-            match ping_result {
-                Ok(Ok(())) => {
-                    let rtt = start.elapsed().as_millis() as u64;
-                    self.stats.ping_timing.record(rtt);
-                    tracing::debug!(
-                        peer_id = %peer_id,
-                        rtt_ms = rtt,
-                        "Health check succeeded"
-                    );
+            if matches!(ping_result, Ok(Ok(()))) {
+                #[allow(clippy::cast_possible_truncation)]
+                let rtt = start.elapsed().as_millis() as u64;
+                self.stats.ping_timing.record(rtt);
+                tracing::debug!(
+                    peer_id = %peer_id,
+                    rtt_ms = rtt,
+                    "Health check succeeded"
+                );
+                let mut nodes = self.nodes.write();
+                if let Some(status) = nodes.get_mut(&peer_id) {
+                    status.record_success(rtt);
+                }
+            } else {
+                // Timeout or send error
+                self.stats
+                    .health_check_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    peer_id = %peer_id,
+                    "Health check failed"
+                );
+                if !self.in_grace_period() {
                     let mut nodes = self.nodes.write();
                     if let Some(status) = nodes.get_mut(&peer_id) {
-                        status.record_success(rtt);
+                        status.record_failure(self.config.health.failure_threshold);
                     }
-                },
-                _ => {
-                    // Timeout or send error
-                    self.stats
-                        .health_check_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    tracing::debug!(
-                        peer_id = %peer_id,
-                        "Health check failed"
-                    );
-                    if !self.in_grace_period() {
-                        let mut nodes = self.nodes.write();
-                        if let Some(status) = nodes.get_mut(&peer_id) {
-                            status.record_failure(self.config.health.failure_threshold);
-                        }
-                    }
-                },
+                }
             }
 
             let new_health = self
                 .nodes
                 .read()
                 .get(&peer_id)
-                .map(|n| n.health)
-                .unwrap_or(NodeHealth::Unknown);
+                .map_or(NodeHealth::Unknown, |n| n.health);
 
             // Notify callbacks on health change
             if old_health != new_health {
@@ -748,10 +814,14 @@ impl MembershipManager {
         for callback in callbacks.iter() {
             callback.on_view_change(&view);
         }
+        drop(callbacks);
 
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if starting the manager fails.
     pub async fn run(&self) -> Result<()> {
         self.start().await?;
 
@@ -763,7 +833,7 @@ impl MembershipManager {
                 _ = shutdown_rx.recv() => {
                     break;
                 }
-                _ = tokio::time::sleep(interval) => {
+                () = tokio::time::sleep(interval) => {
                     let _ = self.check_health().await;
                 }
             }
@@ -2275,5 +2345,205 @@ mod tests {
 
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.partition_events, 6);
+    }
+
+    #[test]
+    fn test_partition_start_hlc_set_on_failure() {
+        let mut status = NodeStatus::new("node1".to_string(), "127.0.0.1:9100".parse().unwrap());
+        assert!(status.partition_start_hlc.is_none());
+
+        // Fail enough times to trigger Failed state (threshold 3)
+        status.record_failure(3);
+        status.record_failure(3);
+        status.record_failure(3);
+
+        assert_eq!(status.health, NodeHealth::Failed);
+        assert!(status.partition_start_hlc.is_some());
+
+        let hlc = status.partition_start_hlc.unwrap();
+        // wall_ms should be a reasonable value (after year 2020)
+        assert!(hlc.wall_ms() > 1_577_836_800_000);
+        assert_eq!(hlc.logical(), 0);
+        assert_eq!(hlc.node_id_hash(), 0);
+    }
+
+    #[test]
+    fn test_partition_start_hlc_not_overwritten_on_repeated_failure() {
+        let mut status = NodeStatus::new("node1".to_string(), "127.0.0.1:9100".parse().unwrap());
+
+        // Fail to trigger Failed state
+        status.record_failure(3);
+        status.record_failure(3);
+        status.record_failure(3);
+
+        let first_hlc = status.partition_start_hlc.unwrap();
+
+        // Additional failures should not overwrite the HLC
+        std::thread::sleep(Duration::from_millis(2));
+        status.record_failure(3);
+        status.record_failure(3);
+
+        let second_hlc = status.partition_start_hlc.unwrap();
+        assert_eq!(first_hlc, second_hlc);
+    }
+
+    #[test]
+    fn test_detect_healed_nodes_with_hlc_returns_timestamp() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9950".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9951".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        let hlc_ts = HLCTimestamp::new(1_700_000_000_000, 42, 7);
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.health = NodeHealth::Healthy;
+            status.partition_start = Some(Instant::now() - Duration::from_secs(5));
+            status.partition_start_hlc = Some(hlc_ts);
+            status.consecutive_successes = 5;
+        }
+
+        let healed = manager.detect_healed_nodes_with_hlc(3);
+        assert_eq!(healed.len(), 1);
+        assert_eq!(healed[0].0, "node2");
+        assert!(healed[0].1 >= 5000);
+        assert_eq!(healed[0].2, Some(hlc_ts));
+    }
+
+    #[test]
+    fn test_detect_healed_nodes_with_hlc_none_when_no_hlc() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9952".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9953".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.health = NodeHealth::Healthy;
+            status.partition_start = Some(Instant::now() - Duration::from_secs(1));
+            // partition_start_hlc is None (backward compatibility)
+            status.consecutive_successes = 5;
+        }
+
+        let healed = manager.detect_healed_nodes_with_hlc(3);
+        assert_eq!(healed.len(), 1);
+        assert!(healed[0].2.is_none());
+    }
+
+    #[test]
+    fn test_clear_partition_state_clears_hlc() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9954".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9955".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.partition_start = Some(Instant::now());
+            status.partition_start_hlc = Some(HLCTimestamp::new(1_700_000_000_000, 0, 0));
+            status.consecutive_successes = 10;
+        }
+
+        manager.clear_partition_state(&"node2".to_string());
+
+        let nodes = manager.nodes.read();
+        let status = nodes.get(&"node2".to_string()).unwrap();
+        assert!(status.partition_start.is_none());
+        assert!(status.partition_start_hlc.is_none());
+        assert_eq!(status.consecutive_successes, 0);
+    }
+
+    #[test]
+    fn test_clear_partition_states_clears_hlc_for_multiple() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9956".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9957".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9958".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            for nid in &["node2", "node3"] {
+                let status = nodes.get_mut(&nid.to_string()).unwrap();
+                status.partition_start = Some(Instant::now());
+                status.partition_start_hlc = Some(HLCTimestamp::new(1_700_000_000_000, 0, 0));
+                status.consecutive_successes = 5;
+            }
+        }
+
+        manager.clear_partition_states(&["node2".to_string(), "node3".to_string()]);
+
+        let nodes = manager.nodes.read();
+        for nid in &["node2", "node3"] {
+            let status = nodes.get(&nid.to_string()).unwrap();
+            assert!(status.partition_start.is_none());
+            assert!(status.partition_start_hlc.is_none());
+            assert_eq!(status.consecutive_successes, 0);
+        }
+    }
+
+    #[test]
+    fn test_hlc_timestamps_enable_cross_node_ordering() {
+        // Simulate two nodes detecting partition heal at different wall clock times
+        // but HLC timestamps provide a definitive ordering
+        let hlc_a = HLCTimestamp::new(1_700_000_001_000, 0, 1); // Node A healed at t+1s
+        let hlc_b = HLCTimestamp::new(1_700_000_000_500, 5, 2); // Node B healed at t+0.5s
+
+        // HLC ordering should put B before A
+        assert!(hlc_b < hlc_a, "Node B healed first by HLC ordering");
+
+        // Even with logical counter, wall time dominates
+        let hlc_c = HLCTimestamp::new(1_700_000_000_500, 100, 3);
+        assert!(
+            hlc_c < hlc_a,
+            "Same wall time but lower wall ms still ordered before"
+        );
     }
 }

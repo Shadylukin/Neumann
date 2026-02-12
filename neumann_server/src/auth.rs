@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Authentication middleware for API key validation.
 
 use tonic::{Request, Status};
@@ -14,6 +14,10 @@ pub struct AuthenticatedIdentity(pub Option<String>);
 /// Validate an incoming request against the authentication configuration.
 ///
 /// Returns the authenticated identity if valid, or an error status if not.
+///
+/// # Errors
+///
+/// Returns `Status::unauthenticated` if the API key is missing or invalid.
 pub fn validate_request<T>(
     request: &Request<T>,
     config: &Option<AuthConfig>,
@@ -29,27 +33,28 @@ pub fn validate_request<T>(
         .get(&auth_config.api_key_header)
         .and_then(|v| v.to_str().ok());
 
-    match api_key {
-        Some(key) => {
-            // Validate the key
-            if let Some(identity) = auth_config.validate_key(key) {
-                Ok(Some(identity.to_string()))
-            } else {
-                Err(Status::unauthenticated("invalid API key"))
-            }
-        },
-        None => {
-            // No API key provided
+    api_key.map_or_else(
+        || {
             if auth_config.allow_anonymous {
                 Ok(None)
             } else {
                 Err(Status::unauthenticated("API key required"))
             }
         },
-    }
+        |key| {
+            auth_config.validate_key(key).map_or_else(
+                || Err(Status::unauthenticated("invalid API key")),
+                |identity| Ok(Some(identity.to_string())),
+            )
+        },
+    )
 }
 
 /// Extract identity from request, falling back to query-level identity if available.
+///
+/// # Errors
+///
+/// Returns `Status::unauthenticated` if authentication fails.
 pub fn extract_identity<T>(
     request: &Request<T>,
     query_identity: Option<&str>,
@@ -66,6 +71,11 @@ pub fn extract_identity<T>(
 ///
 /// This function combines authentication validation with rate limiting and audit logging.
 /// It returns the authenticated identity if successful.
+///
+/// # Errors
+///
+/// Returns `Status::unauthenticated` if authentication fails, or
+/// `Status::resource_exhausted` if the rate limit is exceeded.
 pub fn validate_request_with_audit<T>(
     request: &Request<T>,
     auth_config: &Option<AuthConfig>,

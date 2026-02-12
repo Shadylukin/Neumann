@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Achievements page handlers for the admin UI.
 //!
 //! Displays user progress, achievements, XP, levels, and daily goals.
@@ -260,7 +260,7 @@ fn achievement_card(achievement: &Achievement, unlocked: bool) -> Markup {
 }
 
 /// Returns the color class for a tier.
-fn tier_color(tier: AchievementTier) -> &'static str {
+const fn tier_color(tier: AchievementTier) -> &'static str {
     match tier {
         AchievementTier::Bronze => "text-amber-dim",
         AchievementTier::Silver => "text-phosphor-dim",

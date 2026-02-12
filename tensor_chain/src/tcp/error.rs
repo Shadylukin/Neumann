@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! TCP transport error types.
 
 use std::fmt;
@@ -55,7 +55,7 @@ pub enum TcpError {
         claimed_node_id: String,
     },
 
-    /// Certificate NodeId does not match claimed NodeId.
+    /// Certificate `NodeId` does not match claimed `NodeId`.
     CertificateNodeIdMismatch {
         cert_node_id: String,
         claimed_node_id: String,
@@ -73,13 +73,20 @@ pub enum TcpError {
     /// Rate limited: peer is being sent messages too fast.
     RateLimited { peer: String, available: u32 },
 
+    /// Connection pool exhausted: no healthy connections available.
+    PoolExhausted {
+        peer: String,
+        active: usize,
+        target: usize,
+    },
+
     /// TLS is required by security mode but not configured.
     TlsRequired { mode: SecurityMode, reason: String },
 
     /// Mutual TLS (client auth) is required by security mode.
     MtlsRequired { mode: SecurityMode, reason: String },
 
-    /// NodeId verification is required by security mode.
+    /// `NodeId` verification is required by security mode.
     NodeIdVerificationRequired { mode: SecurityMode, reason: String },
 
     /// Connection rejected: plaintext connection when TLS is required.
@@ -93,95 +100,88 @@ impl fmt::Display for TcpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ConnectionFailed { peer, reason } => {
-                write!(f, "connection to {} failed: {}", peer, reason)
+                write!(f, "connection to {peer} failed: {reason}")
             },
             Self::ConnectionClosed => write!(f, "connection closed by peer"),
             Self::Timeout {
                 operation,
                 timeout_ms,
             } => {
-                write!(f, "{} timed out after {}ms", operation, timeout_ms)
+                write!(f, "{operation} timed out after {timeout_ms}ms")
             },
             Self::MessageTooLarge { size, max_size } => {
-                write!(f, "message too large: {} bytes (max {})", size, max_size)
+                write!(f, "message too large: {size} bytes (max {max_size})")
             },
-            Self::Serialization(msg) => write!(f, "serialization error: {}", msg),
-            Self::Io(err) => write!(f, "io error: {}", err),
-            Self::PeerNotFound(peer) => write!(f, "peer not found: {}", peer),
+            Self::Serialization(msg) => write!(f, "serialization error: {msg}"),
+            Self::Io(err) => write!(f, "io error: {err}"),
+            Self::PeerNotFound(peer) => write!(f, "peer not found: {peer}"),
             Self::BackpressureFull { peer, queue_size } => {
                 write!(
                     f,
-                    "backpressure: queue full for {} ({} pending)",
-                    peer, queue_size
+                    "backpressure: queue full for {peer} ({queue_size} pending)"
                 )
             },
-            Self::TlsError(msg) => write!(f, "TLS error: {}", msg),
+            Self::TlsError(msg) => write!(f, "TLS error: {msg}"),
             Self::Shutdown => write!(f, "transport is shutting down"),
-            Self::InvalidFrame(msg) => write!(f, "invalid frame: {}", msg),
-            Self::HandshakeFailed(msg) => write!(f, "handshake failed: {}", msg),
+            Self::InvalidFrame(msg) => write!(f, "invalid frame: {msg}"),
+            Self::HandshakeFailed(msg) => write!(f, "handshake failed: {msg}"),
             Self::IdentityVerificationFailed {
                 reason,
                 claimed_node_id,
             } => {
                 write!(
                     f,
-                    "identity verification failed for node '{}': {}",
-                    claimed_node_id, reason
+                    "identity verification failed for node '{claimed_node_id}': {reason}"
                 )
             },
             Self::CertificateNodeIdMismatch {
                 cert_node_id,
                 claimed_node_id,
             } => {
-                write!(
-                    f,
-                    "certificate NodeId mismatch: cert='{}', claimed='{}'",
-                    cert_node_id, claimed_node_id
-                )
+                write!(f, "certificate NodeId mismatch: cert='{cert_node_id}', claimed='{claimed_node_id}'")
             },
             Self::ClientCertificateRequired => {
                 write!(f, "client certificate required but not provided")
             },
             Self::Compression { operation, message } => {
-                write!(f, "compression {} error: {}", operation, message)
+                write!(f, "compression {operation} error: {message}")
             },
             Self::RateLimited { peer, available } => {
                 write!(
                     f,
-                    "rate limited: peer {} (available tokens: {})",
-                    peer, available
+                    "rate limited: peer {peer} (available tokens: {available})"
+                )
+            },
+            Self::PoolExhausted {
+                peer,
+                active,
+                target,
+            } => {
+                write!(
+                    f,
+                    "pool exhausted for {peer}: {active}/{target} active connections"
                 )
             },
             Self::TlsRequired { mode, reason } => {
-                write!(f, "TLS required by security mode {:?}: {}", mode, reason)
+                write!(f, "TLS required by security mode {mode:?}: {reason}")
             },
             Self::MtlsRequired { mode, reason } => {
-                write!(
-                    f,
-                    "mutual TLS required by security mode {:?}: {}",
-                    mode, reason
-                )
+                write!(f, "mutual TLS required by security mode {mode:?}: {reason}")
             },
             Self::NodeIdVerificationRequired { mode, reason } => {
                 write!(
                     f,
-                    "NodeId verification required by security mode {:?}: {}",
-                    mode, reason
+                    "NodeId verification required by security mode {mode:?}: {reason}"
                 )
             },
             Self::PlaintextRejected { remote_addr } => {
                 write!(
                     f,
-                    "plaintext connection rejected from {}: TLS is required",
-                    remote_addr
+                    "plaintext connection rejected from {remote_addr}: TLS is required"
                 )
             },
             Self::ClientCertMissing { remote_addr } => {
-                write!(
-                    f,
-                    "connection from {} rejected: client certificate required but not provided",
-                    remote_addr
-                )
+                write!(f, "connection from {remote_addr} rejected: client certificate required but not provided")
             },
         }
     }
@@ -210,7 +210,7 @@ impl From<bitcode::Error> for TcpError {
 
 impl From<TcpError> for ChainError {
     fn from(err: TcpError) -> Self {
-        ChainError::NetworkError(err.to_string())
+        Self::NetworkError(err.to_string())
     }
 }
 

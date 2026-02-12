@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Defense-in-depth validation layer for all cluster messages.
 //!
 //! # Overview
@@ -43,9 +43,9 @@
 //!
 //! | Field | Constraint | Purpose |
 //! |-------|------------|---------|
-//! | `term` | > 0, < max_term | Prevent overflow in Raft term arithmetic |
-//! | `shard_id` | < max_shard_id | Prevent out-of-bounds shard access |
-//! | `timeout_ms` | > 0, < max_tx_timeout | Prevent infinite waits or resource exhaustion |
+//! | `term` | > 0, < `max_term` | Prevent overflow in Raft term arithmetic |
+//! | `shard_id` | < `max_shard_id` | Prevent out-of-bounds shard access |
+//! | `timeout_ms` | > 0, < `max_tx_timeout` | Prevent infinite waits or resource exhaustion |
 //! | `tx_id` | > 0 | Distinguish valid transactions from uninitialized state |
 //! | `query_id` | > 0 | Distinguish valid queries from uninitialized state |
 //!
@@ -105,7 +105,7 @@
 //! // }
 //! ```
 //!
-//! # Trait: MessageValidator
+//! # Trait: `MessageValidator`
 //!
 //! The [`MessageValidator`] trait enables pluggable validation strategies:
 //!
@@ -131,7 +131,7 @@
 //! - All limits are configurable to balance security vs. functionality
 //! - Embedding validation prevents floating-point exploits (NaN, Inf)
 //! - Timestamp checks prevent replay attacks on signed messages
-//! - Block request limits prevent DoS via huge range requests
+//! - Block request limits prevent `DoS` via huge range requests
 //!
 //! # Error Handling
 //!
@@ -180,9 +180,9 @@ pub struct MessageValidationConfig {
     pub max_query_len: usize,
     /// Maximum age for signed messages in milliseconds.
     pub max_message_age_ms: u64,
-    /// Maximum blocks per BlockRequest (default: 1000).
+    /// Maximum blocks per `BlockRequest` (default: 1000).
     pub max_blocks_per_request: u64,
-    /// Maximum chunk size for SnapshotRequest in bytes (default: 10MB).
+    /// Maximum chunk size for `SnapshotRequest` in bytes (default: 10MB).
     pub max_snapshot_chunk_size: u64,
 }
 
@@ -206,6 +206,7 @@ impl Default for MessageValidationConfig {
 }
 
 impl MessageValidationConfig {
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -216,6 +217,8 @@ impl MessageValidationConfig {
 
 /// Trait for message validators.
 pub trait MessageValidator: Send + Sync {
+    /// # Errors
+    /// Returns an error if the message fails validation.
     fn validate(&self, msg: &Message, from: &NodeId) -> Result<()>;
 }
 
@@ -226,13 +229,16 @@ pub struct EmbeddingValidator {
 }
 
 impl EmbeddingValidator {
-    pub fn new(max_dimension: usize, max_magnitude: f32) -> Self {
+    #[must_use]
+    pub const fn new(max_dimension: usize, max_magnitude: f32) -> Self {
         Self {
             max_dimension,
             max_magnitude,
         }
     }
 
+    /// # Errors
+    /// Returns an error if the embedding has invalid dimensions, NaN/Inf values, or excessive magnitude.
     pub fn validate(&self, embedding: &SparseVector, field: &str) -> Result<()> {
         let dim = embedding.dimension();
 
@@ -240,7 +246,7 @@ impl EmbeddingValidator {
         if dim == 0 {
             return Err(ChainError::InvalidEmbedding {
                 dimension: dim,
-                reason: format!("{}: dimension cannot be zero", field),
+                reason: format!("{field}: dimension cannot be zero"),
             });
         }
 
@@ -248,8 +254,8 @@ impl EmbeddingValidator {
             return Err(ChainError::InvalidEmbedding {
                 dimension: dim,
                 reason: format!(
-                    "{}: dimension {} exceeds maximum {}",
-                    field, dim, self.max_dimension
+                    "{field}: dimension {dim} exceeds maximum {}",
+                    self.max_dimension
                 ),
             });
         }
@@ -259,13 +265,13 @@ impl EmbeddingValidator {
             if value.is_nan() {
                 return Err(ChainError::InvalidEmbedding {
                     dimension: dim,
-                    reason: format!("{}: NaN value at position {}", field, i),
+                    reason: format!("{field}: NaN value at position {i}"),
                 });
             }
             if value.is_infinite() {
                 return Err(ChainError::InvalidEmbedding {
                     dimension: dim,
-                    reason: format!("{}: infinite value at position {}", field, i),
+                    reason: format!("{field}: infinite value at position {i}"),
                 });
             }
         }
@@ -276,8 +282,8 @@ impl EmbeddingValidator {
             return Err(ChainError::InvalidEmbedding {
                 dimension: dim,
                 reason: format!(
-                    "{}: magnitude {:.2} exceeds maximum {:.2}",
-                    field, magnitude, self.max_magnitude
+                    "{field}: magnitude {magnitude:.2} exceeds maximum {:.2}",
+                    self.max_magnitude
                 ),
             });
         }
@@ -288,16 +294,13 @@ impl EmbeddingValidator {
             if pos as usize >= dim {
                 return Err(ChainError::InvalidEmbedding {
                     dimension: dim,
-                    reason: format!(
-                        "{}: position {} out of bounds for dimension {}",
-                        field, pos, dim
-                    ),
+                    reason: format!("{field}: position {pos} out of bounds for dimension {dim}"),
                 });
             }
             if i > 0 && positions[i - 1] >= pos {
                 return Err(ChainError::InvalidEmbedding {
                     dimension: dim,
-                    reason: format!("{}: positions not strictly sorted", field),
+                    reason: format!("{field}: positions not strictly sorted"),
                 });
             }
         }
@@ -313,7 +316,8 @@ pub struct CompositeValidator {
 }
 
 impl CompositeValidator {
-    pub fn new(config: MessageValidationConfig) -> Self {
+    #[must_use]
+    pub const fn new(config: MessageValidationConfig) -> Self {
         let embedding_validator = EmbeddingValidator::new(
             config.max_embedding_dimension,
             config.max_embedding_magnitude,
@@ -328,7 +332,7 @@ impl CompositeValidator {
         if node_id.is_empty() {
             return Err(ChainError::MessageValidationFailed {
                 message_type: "NodeId",
-                reason: format!("{}: node ID cannot be empty", field),
+                reason: format!("{field}: node ID cannot be empty"),
             });
         }
         if node_id.len() > self.config.max_node_id_len {
@@ -577,6 +581,7 @@ impl CompositeValidator {
         self.validate_node_id(&msg.envelope.sender, "sender")?;
 
         // Timestamp freshness check (reject messages too far in the future)
+        #[allow(clippy::cast_possible_truncation)]
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -671,11 +676,8 @@ impl MessageValidator for CompositeValidator {
             Message::PreVoteResponse(m) => self.validate_pre_vote_response(m),
             Message::AppendEntries(m) => self.validate_append_entries(m),
             Message::AppendEntriesResponse(m) => self.validate_append_entries_response(m),
-            Message::TimeoutNow(_) => Ok(()),
             Message::BlockRequest(m) => self.validate_block_request(m),
-            Message::BlockResponse(_) => Ok(()),
             Message::SnapshotRequest(m) => self.validate_snapshot_request(m),
-            Message::SnapshotResponse(_) => Ok(()),
             Message::Ping { term } => self.validate_ping_pong(*term, "Ping"),
             Message::Pong { term } => self.validate_ping_pong(*term, "Pong"),
             Message::TxPrepare(m) => self.validate_tx_prepare(m),
@@ -685,16 +687,20 @@ impl MessageValidator for CompositeValidator {
             Message::TxAck(m) => self.validate_tx_ack(m),
             Message::QueryRequest(m) => self.validate_query_request(m),
             Message::QueryResponse(m) => self.validate_query_response(m),
-            Message::Gossip(_) => Ok(()), // Gossip has its own validation
             Message::SignedGossip(m) => self.validate_signed_gossip(m),
-            Message::MergeInit(_) => Ok(()),
-            Message::MergeAck(_) => Ok(()),
-            Message::ViewExchange(_) => Ok(()),
-            Message::DataMergeRequest(_) => Ok(()),
-            Message::DataMergeResponse(_) => Ok(()),
-            Message::TxReconcileRequest(_) => Ok(()),
-            Message::TxReconcileResponse(_) => Ok(()),
-            Message::MergeFinalize(_) => Ok(()),
+            // These message types are validated elsewhere or have no additional constraints
+            Message::TimeoutNow(_)
+            | Message::BlockResponse(_)
+            | Message::SnapshotResponse(_)
+            | Message::Gossip(_)
+            | Message::MergeInit(_)
+            | Message::MergeAck(_)
+            | Message::ViewExchange(_)
+            | Message::DataMergeRequest(_)
+            | Message::DataMergeResponse(_)
+            | Message::TxReconcileRequest(_)
+            | Message::TxReconcileResponse(_)
+            | Message::MergeFinalize(_) => Ok(()),
         }
     }
 }

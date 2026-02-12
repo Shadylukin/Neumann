@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Base layout template for the dystopian terminal admin UI.
 //!
 //! Features ASCII art logo, CRT effects, phosphor-styled navigation,
@@ -20,6 +20,7 @@ const ASCII_LOGO: &str = "
 
 /// Render the base HTML layout with dystopian terminal styling.
 #[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -640,6 +641,7 @@ pub fn stat_card(label: &str, value: &str, subtitle: &str, engine: &str) -> Mark
 
 /// Render a terminal panel with ASCII box decorations.
 #[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn terminal_panel(title: &str, content: Markup) -> Markup {
     html! {
         div class="terminal-panel" {
@@ -653,6 +655,7 @@ pub fn terminal_panel(title: &str, content: Markup) -> Markup {
 
 /// Render a terminal panel with rust accent.
 #[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn terminal_panel_rust(title: &str, content: Markup) -> Markup {
     html! {
         div class="terminal-panel terminal-panel-rust" {
@@ -747,15 +750,18 @@ pub fn breadcrumb(items: &[(&str, &str)]) -> Markup {
 /// Render a terminal-styled button.
 #[must_use]
 pub fn btn_terminal(label: &str, href: Option<&str>) -> Markup {
-    if let Some(h) = href {
-        html! {
-            a href=(h) class="btn-terminal inline-block" { (label) }
-        }
-    } else {
-        html! {
-            button type="submit" class="btn-terminal" { (label) }
-        }
-    }
+    href.map_or_else(
+        || {
+            html! {
+                button type="submit" class="btn-terminal" { (label) }
+            }
+        },
+        |h| {
+            html! {
+                a href=(h) class="btn-terminal inline-block" { (label) }
+            }
+        },
+    )
 }
 
 /// Render a terminal-styled table.

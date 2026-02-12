@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
-//! QueryService implementation for executing Neumann queries.
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+//! `QueryService` implementation for executing Neumann queries.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -35,7 +35,7 @@ const DEFAULT_STREAM_CHANNEL_CAPACITY: usize = 32;
 /// Threshold for consecutive failures before marking unhealthy.
 const FAILURE_THRESHOLD: u32 = 5;
 
-/// Implementation of the QueryService gRPC service.
+/// Implementation of the `QueryService` gRPC service.
 pub struct QueryServiceImpl {
     router: Arc<RwLock<QueryRouter>>,
     auth_config: Option<AuthConfig>,
@@ -50,7 +50,7 @@ pub struct QueryServiceImpl {
 impl QueryServiceImpl {
     /// Create a new query service.
     #[must_use]
-    pub fn new(router: Arc<RwLock<QueryRouter>>) -> Self {
+    pub const fn new(router: Arc<RwLock<QueryRouter>>) -> Self {
         Self {
             router,
             auth_config: None,
@@ -65,7 +65,7 @@ impl QueryServiceImpl {
 
     /// Create a new query service with authentication.
     #[must_use]
-    pub fn with_auth(router: Arc<RwLock<QueryRouter>>, auth_config: AuthConfig) -> Self {
+    pub const fn with_auth(router: Arc<RwLock<QueryRouter>>, auth_config: AuthConfig) -> Self {
         Self {
             router,
             auth_config: Some(auth_config),
@@ -80,7 +80,7 @@ impl QueryServiceImpl {
 
     /// Create a new query service with full configuration.
     #[must_use]
-    pub fn with_config(
+    pub const fn with_config(
         router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         stream_channel_capacity: usize,
@@ -99,7 +99,7 @@ impl QueryServiceImpl {
 
     /// Create a new query service with health state monitoring.
     #[must_use]
-    pub fn with_health_state(
+    pub const fn with_health_state(
         router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         stream_channel_capacity: usize,
@@ -119,7 +119,7 @@ impl QueryServiceImpl {
 
     /// Create a new query service with all options including rate limiting, audit logging, and metrics.
     #[must_use]
-    pub fn with_full_config(
+    pub const fn with_full_config(
         router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         stream_channel_capacity: usize,
@@ -185,6 +185,7 @@ impl QueryServiceImpl {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[tonic::async_trait]
 impl QueryService for QueryServiceImpl {
     async fn execute(
@@ -737,7 +738,7 @@ impl QueryService for QueryServiceImpl {
     }
 }
 
-/// Convert tonic Status to ErrorCode.
+/// Convert tonic `Status` to `ErrorCode`.
 fn status_to_error_code(status: &Status) -> proto::ErrorCode {
     match status.code() {
         tonic::Code::InvalidArgument => proto::ErrorCode::InvalidArgument,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Batch operations integration tests.
 //!
 //! Tests bulk embedding ingestion and batch processing operations.

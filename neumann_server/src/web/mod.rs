@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Web UI for Neumann Server administration.
 //!
 //! Provides a modern, dark-mode admin interface for browsing and managing
@@ -40,7 +40,7 @@ pub struct AdminContext {
 impl AdminContext {
     /// Create a new admin context with all three engines.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         relational: Arc<RelationalEngine>,
         vector: Arc<VectorEngine>,
         graph: Arc<GraphEngine>,

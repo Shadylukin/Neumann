@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Durable blob log with WAL-based crash recovery.
 //!
 //! `DurableBlobLog` provides persistent, content-addressable chunk storage
@@ -217,7 +217,7 @@ pub struct DurableBlobLogConfig {
 impl Default for DurableBlobLogConfig {
     fn default() -> Self {
         Self {
-            segment_dir: PathBuf::from("/tmp/durable_blob"),
+            segment_dir: std::env::temp_dir().join("durable_blob"),
             segment_size: DEFAULT_SEGMENT_SIZE,
             enable_fsync: true,
             cache_size: LOCATION_CACHE_SIZE,
@@ -1207,5 +1207,318 @@ mod tests {
 
         // Should have sealed at least one segment
         assert!(log.segment_count() >= 1);
+    }
+
+    #[test]
+    fn test_chunk_hash_from_hex_invalid() {
+        // Too short
+        assert!(DurableChunkHash::from_hex("abcd").is_none());
+        // Not hex
+        assert!(DurableChunkHash::from_hex("zzzz").is_none());
+        // Empty
+        assert!(DurableChunkHash::from_hex("").is_none());
+        // Wrong length (31 bytes)
+        let short = "ab".repeat(31);
+        assert!(DurableChunkHash::from_hex(&short).is_none());
+        // Wrong length (33 bytes)
+        let long = "ab".repeat(33);
+        assert!(DurableChunkHash::from_hex(&long).is_none());
+    }
+
+    #[test]
+    fn test_chunk_hash_roundtrip() {
+        let data = b"test data for hashing";
+        let hash = DurableChunkHash::from_data(data);
+        let hex = hash.to_hex();
+        assert_eq!(hex.len(), 64); // 32 bytes -> 64 hex chars
+        let recovered = DurableChunkHash::from_hex(&hex).unwrap();
+        assert_eq!(hash, recovered);
+    }
+
+    #[test]
+    fn test_chunk_hash_deterministic() {
+        let data = b"same data";
+        let h1 = DurableChunkHash::from_data(data);
+        let h2 = DurableChunkHash::from_data(data);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_chunk_hash_different_data() {
+        let h1 = DurableChunkHash::from_data(b"data1");
+        let h2 = DurableChunkHash::from_data(b"data2");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_stats_tracking() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        assert_eq!(log.chunk_count(), 0);
+        assert_eq!(log.total_bytes(), 0);
+
+        let data = b"test data";
+        log.append(data).unwrap();
+
+        assert_eq!(log.chunk_count(), 1);
+        assert!(log.total_bytes() > 0);
+    }
+
+    #[test]
+    fn test_contains_after_delete() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        let hash = log.append(b"deletable").unwrap();
+        assert!(log.contains(&hash));
+
+        log.delete(&hash).unwrap();
+        assert!(!log.contains(&hash));
+
+        // tombstoned should include it
+        let tombstones = log.tombstoned();
+        assert!(tombstones.contains(&hash));
+    }
+
+    #[test]
+    fn test_gc_candidates() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        // Initially empty
+        assert!(log.gc_candidates().is_empty());
+    }
+
+    #[test]
+    fn test_get_nonexistent_chunk() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        let fake_hash = DurableChunkHash::from_data(b"never stored");
+        let result = log.get(&fake_hash);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_tombstoned_chunk() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        let hash = log.append(b"will delete").unwrap();
+        log.delete(&hash).unwrap();
+
+        let result = log.get(&hash);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_flush_empty_log() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        log.flush().unwrap();
+    }
+
+    #[test]
+    fn test_sync_after_writes() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        log.append(b"data to sync").unwrap();
+        log.sync().unwrap();
+    }
+
+    #[test]
+    fn test_recovery_after_multiple_operations() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+
+        let (hash1, hash3);
+        {
+            let log = DurableBlobLog::open(config.clone()).unwrap();
+            hash1 = log.append(b"persistent1").unwrap();
+            let hash2 = log.append(b"to_delete").unwrap();
+            hash3 = log.append(b"persistent2").unwrap();
+            log.delete(&hash2).unwrap();
+            log.sync().unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let log = DurableBlobLog::open(config).unwrap();
+            assert_eq!(log.get(&hash1).unwrap(), b"persistent1");
+            assert_eq!(log.get(&hash3).unwrap(), b"persistent2");
+            assert_eq!(log.chunk_count(), 2);
+        }
+    }
+
+    #[test]
+    fn test_recovery_preserves_dedup() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+
+        let hash;
+        {
+            let log = DurableBlobLog::open(config.clone()).unwrap();
+            hash = log.append(b"duplicate").unwrap();
+            let hash2 = log.append(b"duplicate").unwrap();
+            assert_eq!(hash, hash2);
+            log.sync().unwrap();
+        }
+
+        // Reopen
+        {
+            let log = DurableBlobLog::open(config).unwrap();
+            assert_eq!(log.get(&hash).unwrap(), b"duplicate");
+            assert_eq!(log.chunk_count(), 1);
+        }
+    }
+
+    #[test]
+    fn test_recovery_with_sealed_segments() {
+        let dir = tempdir().unwrap();
+        let mut config = test_config(dir.path());
+        config.segment_size = 128; // Very small to force sealing
+
+        let mut hashes = Vec::new();
+        {
+            let log = DurableBlobLog::open(config.clone()).unwrap();
+            for i in 0..15 {
+                let data = format!("segment test data {i:04}");
+                hashes.push(log.append(data.as_bytes()).unwrap());
+            }
+            log.sync().unwrap();
+            assert!(log.segment_count() >= 1);
+        }
+
+        // Reopen and verify all chunks survive recovery
+        {
+            let log = DurableBlobLog::open(config).unwrap();
+            for (i, hash) in hashes.iter().enumerate() {
+                let data = log.get(hash).unwrap();
+                assert_eq!(data, format!("segment test data {i:04}").as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = DurableBlobLogConfig::default();
+        assert_eq!(config.segment_size, DEFAULT_SEGMENT_SIZE);
+        assert!(config.enable_fsync);
+        assert_eq!(config.cache_size, LOCATION_CACHE_SIZE);
+    }
+
+    #[test]
+    fn test_error_display() {
+        let io_err =
+            DurableBlobLogError::Io(io::Error::new(io::ErrorKind::NotFound, "file missing"));
+        assert!(io_err.to_string().contains("file missing"));
+
+        let ser_err = DurableBlobLogError::Serialization("bad format".to_string());
+        assert!(ser_err.to_string().contains("bad format"));
+
+        let footer_err = DurableBlobLogError::InvalidFooter("magic mismatch".to_string());
+        assert!(footer_err.to_string().contains("magic mismatch"));
+
+        let not_found = DurableBlobLogError::ChunkNotFound {
+            hash: "abc123".to_string(),
+        };
+        assert!(not_found.to_string().contains("abc123"));
+
+        let crc_err = DurableBlobLogError::CrcMismatch {
+            hash: "abc".to_string(),
+            expected: 0x1234,
+            actual: 0x5678,
+        };
+        assert!(crc_err.to_string().contains("CRC32 mismatch"));
+
+        let config_err = DurableBlobLogError::Config("bad value".to_string());
+        assert!(config_err.to_string().contains("bad value"));
+    }
+
+    #[test]
+    fn test_delete_nonexistent_chunk() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        let fake_hash = DurableChunkHash::from_data(b"never stored");
+        // Delete of non-existent chunk should succeed (idempotent)
+        let result = log.delete(&fake_hash);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_large_data_chunks() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        // Write data larger than segment (4096 bytes)
+        let data = vec![42u8; 8192];
+        let hash = log.append(&data).unwrap();
+
+        let retrieved = log.get(&hash).unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[test]
+    fn test_empty_data_chunk() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let log = DurableBlobLog::open(config).unwrap();
+
+        let hash = log.append(b"").unwrap();
+        let retrieved = log.get(&hash).unwrap();
+        assert!(retrieved.is_empty());
+    }
+
+    #[test]
+    fn test_cache_eviction() {
+        let dir = tempdir().unwrap();
+        let mut config = test_config(dir.path());
+        config.cache_size = 3; // Very small cache
+
+        let log = DurableBlobLog::open(config).unwrap();
+
+        // Write more chunks than cache can hold
+        let mut hashes = Vec::new();
+        for i in 0..10 {
+            let data = format!("cache test {i}");
+            hashes.push(log.append(data.as_bytes()).unwrap());
+        }
+
+        // All chunks should still be retrievable even with eviction
+        for (i, hash) in hashes.iter().enumerate() {
+            let data = log.get(hash).unwrap();
+            assert_eq!(data, format!("cache test {i}").as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_segment_count_increases() {
+        let dir = tempdir().unwrap();
+        let mut config = test_config(dir.path());
+        config.segment_size = 64; // Very small
+
+        let log = DurableBlobLog::open(config).unwrap();
+        let initial = log.segment_count();
+
+        // Write enough to seal multiple segments
+        for i in 0..50 {
+            let data = format!("fill segment {i:04}");
+            log.append(data.as_bytes()).unwrap();
+        }
+
+        assert!(log.segment_count() > initial);
     }
 }

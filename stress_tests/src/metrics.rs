@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Latency and throughput metrics for stress tests.
 
 use std::{
@@ -14,6 +14,11 @@ pub struct LatencyHistogram {
 }
 
 impl LatencyHistogram {
+    /// # Panics
+    ///
+    /// Panics if the histogram cannot be created (should not happen with
+    /// sigfig=3).
+    #[must_use]
     pub fn new() -> Self {
         Self {
             histogram: Histogram::new(3).expect("histogram creation"),
@@ -22,24 +27,28 @@ impl LatencyHistogram {
 
     /// Record a latency measurement.
     pub fn record(&mut self, duration: Duration) {
+        #[allow(clippy::cast_possible_truncation)]
         let micros = duration.as_micros() as u64;
         let _ = self.histogram.record(micros);
     }
 
     /// Get a snapshot of the current statistics.
+    #[must_use]
     pub fn snapshot(&self) -> LatencySnapshot {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mean_micros = self.histogram.mean() as u64;
         LatencySnapshot {
             count: self.histogram.len(),
             p50: Duration::from_micros(self.histogram.value_at_quantile(0.5)),
             p99: Duration::from_micros(self.histogram.value_at_quantile(0.99)),
             p999: Duration::from_micros(self.histogram.value_at_quantile(0.999)),
             max: Duration::from_micros(self.histogram.max()),
-            mean: Duration::from_micros(self.histogram.mean() as u64),
+            mean: Duration::from_micros(mean_micros),
         }
     }
 
     /// Merge another histogram into this one.
-    pub fn merge(&mut self, other: &LatencyHistogram) {
+    pub fn merge(&mut self, other: &Self) {
         let _ = self.histogram.add(&other.histogram);
     }
 }
@@ -78,6 +87,7 @@ pub struct ThroughputCounter {
 }
 
 impl ThroughputCounter {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
@@ -96,20 +106,25 @@ impl ThroughputCounter {
     }
 
     /// Get the current count.
+    #[must_use]
     pub fn count(&self) -> u64 {
         self.count.load(Ordering::Relaxed)
     }
 
     /// Get the elapsed time since creation.
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
 
     /// Calculate throughput as ops/sec.
+    #[must_use]
     pub fn throughput(&self) -> f64 {
         let elapsed = self.elapsed().as_secs_f64();
         if elapsed > 0.0 {
-            self.count() as f64 / elapsed
+            #[allow(clippy::cast_precision_loss)]
+            let ops = self.count() as f64;
+            ops / elapsed
         } else {
             0.0
         }

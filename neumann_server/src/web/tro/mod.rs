@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Tensor Rust Organism (TRO) - Web Living Border
 //!
 //! Web-based implementation of the TRO living border system, providing
@@ -47,7 +47,7 @@ impl Default for TroConfig {
 impl TroConfig {
     /// Creates a minimal config for low-resource environments.
     #[must_use]
-    pub fn minimal() -> Self {
+    pub const fn minimal() -> Self {
         Self {
             enabled: true,
             fps: 15,
@@ -61,7 +61,7 @@ impl TroConfig {
 
     /// Creates a high-performance config for powerful devices.
     #[must_use]
-    pub fn high_performance() -> Self {
+    pub const fn high_performance() -> Self {
         Self {
             enabled: true,
             fps: 60,

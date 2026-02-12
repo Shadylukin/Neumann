@@ -1052,6 +1052,23 @@ Runs on every PR:
 | Chaos engineering | Not started | High |
 | Performance profiling | Not started | Medium |
 
+### Formal Verification (TLA+)
+
+The three core distributed protocols are formally specified in TLA+
+and exhaustively model-checked with the TLC model checker:
+
+| Spec | Distinct States | Depth | Properties |
+|------|----------------|-------|------------|
+| Raft.tla | 18,268,659 | 54 | ElectionSafety, LogMatching, StateMachineSafety, LeaderCompleteness, VoteIntegrity, TermMonotonicity |
+| TwoPhaseCommit.tla | 2,264,939 | 21 | Atomicity, NoOrphanedLocks, ConsistentDecision, VoteIrrevocability, DecisionStability |
+| Membership.tla | 54,148 | 17 | NoFalsePositivesSafety, MonotonicEpochs, MonotonicIncarnations |
+
+All three pass with zero errors. TLC output saved in
+`specs/tla/tlc-results/`. Model checking found and led to fixes for
+protocol-level bugs in Raft log replication (out-of-order message
+handling, self-message processing) and the SWIM gossip fairness
+specification. See `specs/tla/README.md` for details.
+
 ### Honest Assessment
 
 Neumann has **production-ready distributed infrastructure** with all critical

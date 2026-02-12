@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! Benchmarks for tensor_chain blockchain operations.
 //!
 //! Covers:
@@ -103,7 +103,7 @@ fn bench_transaction_commit(c: &mut Criterion) {
                     data: vec![1, 2, 3, 4],
                 })
                 .unwrap();
-                black_box(chain.commit(tx).unwrap())
+                black_box(chain.commit(&tx).unwrap())
             },
             criterion::BatchSize::SmallInput,
         )
@@ -126,7 +126,7 @@ fn bench_transaction_commit(c: &mut Criterion) {
                     })
                     .unwrap();
                 }
-                black_box(chain.commit(tx).unwrap())
+                black_box(chain.commit(&tx).unwrap())
             },
             criterion::BatchSize::SmallInput,
         )
@@ -161,7 +161,7 @@ fn bench_batch_transactions(c: &mut Criterion) {
                             data: vec![i as u8; 32],
                         })
                         .unwrap();
-                        chain.commit(tx).unwrap();
+                        chain.commit(&tx).unwrap();
                     }
                     black_box(chain.height())
                 },
@@ -197,7 +197,7 @@ fn bench_consensus_validation(c: &mut Criterion) {
             let vector: Vec<f32> = (0..128)
                 .map(|j| ((i * 17 + j) as f32 / 1000.0).sin())
                 .collect();
-            DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+            DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
         })
         .collect();
 
@@ -306,8 +306,8 @@ fn bench_delta_vector(c: &mut Criterion) {
     let v1: Vec<f32> = (0..128).map(|i| (i as f32 / 100.0).sin()).collect();
     let v2: Vec<f32> = (0..128).map(|i| (i as f32 / 100.0).cos()).collect();
 
-    let d1 = DeltaVector::new(v1.clone(), HashSet::from(["key1".to_string()]), 1);
-    let d2 = DeltaVector::new(v2.clone(), HashSet::from(["key2".to_string()]), 2);
+    let d1 = DeltaVector::new(&v1, HashSet::from(["key1".to_string()]), 1);
+    let d2 = DeltaVector::new(&v2, HashSet::from(["key2".to_string()]), 2);
 
     group.bench_function("cosine_similarity_128d", |b| {
         b.iter(|| black_box(d1.cosine_similarity(&d2)))
@@ -328,8 +328,8 @@ fn bench_delta_vector(c: &mut Criterion) {
     // Larger dimension benchmark
     let v3: Vec<f32> = (0..768).map(|i| (i as f32 / 100.0).sin()).collect();
     let v4: Vec<f32> = (0..768).map(|i| (i as f32 / 100.0).cos()).collect();
-    let d3 = DeltaVector::new(v3, HashSet::from(["key3".to_string()]), 3);
-    let d4 = DeltaVector::new(v4, HashSet::from(["key4".to_string()]), 4);
+    let d3 = DeltaVector::new(&v3, HashSet::from(["key3".to_string()]), 3);
+    let d4 = DeltaVector::new(&v4, HashSet::from(["key4".to_string()]), 4);
 
     group.bench_function("cosine_similarity_768d", |b| {
         b.iter(|| black_box(d3.cosine_similarity(&d4)))
@@ -360,7 +360,7 @@ fn bench_chain_query(c: &mut Criterion) {
             data: vec![i as u8; 32],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
     }
 
     group.bench_function("get_block_by_height", |b| {
@@ -412,7 +412,7 @@ fn bench_chain_iteration(c: &mut Criterion) {
             data: vec![i as u8; 64],
         })
         .unwrap();
-        chain.commit(tx).unwrap();
+        chain.commit(&tx).unwrap();
     }
 
     group.bench_function("iterate_50_blocks", |b| {
@@ -455,7 +455,7 @@ fn bench_conflict_detection_scaling(c: &mut Criterion) {
                 let vector: Vec<f32> = (0..128)
                     .map(|j| ((i * 17 + j) as f32 / 1000.0).sin())
                     .collect();
-                DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+                DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
             })
             .collect();
 
@@ -512,7 +512,7 @@ fn bench_sparsity_comparison(c: &mut Criterion) {
                     }
                 })
                 .collect();
-            DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+            DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
         })
         .collect();
 
@@ -528,7 +528,7 @@ fn bench_sparsity_comparison(c: &mut Criterion) {
                     }
                 })
                 .collect();
-            DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+            DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
         })
         .collect();
 
@@ -544,7 +544,7 @@ fn bench_sparsity_comparison(c: &mut Criterion) {
                     }
                 })
                 .collect();
-            DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+            DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
         })
         .collect();
 
@@ -560,7 +560,7 @@ fn bench_sparsity_comparison(c: &mut Criterion) {
                     }
                 })
                 .collect();
-            DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+            DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
         })
         .collect();
 
@@ -613,7 +613,7 @@ fn bench_conflict_operation_breakdown(c: &mut Criterion) {
             })
             .collect();
         DeltaVector::new(
-            vector,
+            &vector,
             HashSet::from([format!("key_{}", i), format!("key_{}", i + 1)]),
             i as u64,
         )
@@ -694,7 +694,7 @@ fn bench_high_dimension_sparse(c: &mut Criterion) {
                         }
                     })
                     .collect();
-                DeltaVector::new(vector, HashSet::from([format!("key_{}", i)]), i as u64)
+                DeltaVector::new(&vector, HashSet::from([format!("key_{}", i)]), i as u64)
             })
             .collect();
 
@@ -1337,6 +1337,7 @@ fn bench_snapshot_operations(c: &mut Criterion) {
             created_at: 1_700_000_000,
             size: 1024,
             codebook: None,
+            compaction_epoch: 0,
         }
     }
 

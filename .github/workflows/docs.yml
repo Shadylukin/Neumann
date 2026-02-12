@@ -74,12 +74,23 @@ jobs:
 
   mdbook:
     name: Build Book
+    needs: [benchmarks]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
         # v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Download bench-docs
+        # v4.3.0
+        uses: >-
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: bench-docs
+          path: docs/book/src/benchmarks/
 
       - name: Install mdBook
         run: |
@@ -112,39 +123,10 @@ jobs:
           path: docs/book-output
           retention-days: 7
 
-  doc-coverage:
-    name: Documentation Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Install Rust
-        # nightly
-        uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
-        with:
-          toolchain: nightly
-
-      - name: Cache cargo
-        # v2.7.8
-        uses: >-
-          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
-
-      - name: Check doc coverage
-        run: |
-          cargo +nightly rustdoc -p tensor_chain \
-            -- -Z unstable-options --show-coverage 2>&1 \
-            | tee coverage.txt
-          grep -oP '\d+\.\d+%' coverage.txt | head -1 \
-            || echo "Coverage check complete"
-
   benchmarks:
     name: Generate Benchmark Docs
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout
@@ -163,19 +145,37 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install jq and protoc
+      - name: Install jq, bc, protoc, mold, and clang
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y jq protobuf-compiler
+          sudo apt-get install -y jq bc protobuf-compiler mold clang
 
       - name: Run benchmarks (quick mode)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
         run: |
-          cargo bench --workspace --bench '*' -- --noplot
+          cargo bench --workspace --bench '*' -- \
+            --noplot \
+            --warm-up-time 1 \
+            --measurement-time 2 \
+            --sample-size 10 \
+            --nresamples 1000
 
       - name: Generate benchmark summary
         run: |
           chmod +x scripts/generate-bench-docs.sh
           ./scripts/generate-bench-docs.sh
+
+      - name: Upload updated benchmark docs
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bench-docs
+          path: docs/book/src/benchmarks/
+          retention-days: 7
 
       - name: Upload Criterion reports
         # v4.6.2
@@ -186,9 +186,18 @@ jobs:
           path: target/criterion
           retention-days: 7
 
+      - name: Upload baseline for PR comparisons
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: criterion-baseline
+          path: target/criterion/**/new/estimates.json
+          retention-days: 30
+
   deploy:
     name: Deploy to GitHub Pages
-    needs: [rustdoc, mdbook]
+    needs: [rustdoc, mdbook, benchmarks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -214,6 +223,15 @@ jobs:
         with:
           name: rustdoc
           path: public/api/
+
+      - name: Download Criterion HTML reports
+        # v4.3.0
+        uses: >-
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: criterion-reports
+          path: public/benchmarks/
 
       - name: Setup Pages
         # v5.0.0

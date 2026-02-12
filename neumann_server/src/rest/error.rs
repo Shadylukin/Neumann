@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 //! REST API error types.
 
 use axum::http::StatusCode;
@@ -73,7 +73,6 @@ impl IntoResponse for ApiError {
             404 => StatusCode::NOT_FOUND,
             409 => StatusCode::CONFLICT,
             429 => StatusCode::TOO_MANY_REQUESTS,
-            500 => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
