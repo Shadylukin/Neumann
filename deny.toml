@@ -64,16 +64,14 @@ deny = []
 # -----------------------------------------------------------------------------
 skip = [
     # --- Encoding ---
-    { crate = "base64@0.21", reason = "tiktoken-rs requires 0.21, tonic requires 0.22" },
-
-    # --- Concurrency ---
-    { crate = "dashmap@5", reason = "tensor_chain uses 5.x, opentelemetry uses 6.x" },
+    { crate = "base64@0.21", reason = "hdrhistogram requires 0.21, tonic requires 0.22" },
 
     # --- Crypto/Random ---
-    { crate = "getrandom@0.2", reason = "crypto crates use 0.2, uuid uses 0.3" },
+    { crate = "getrandom@0.2", reason = "crypto crates use 0.2, rand uses 0.3" },
+    { crate = "getrandom@0.3", reason = "rand 0.9 uses 0.3, tempfile uses 0.4" },
 
     # --- Collections ---
-    { crate = "hashbrown@0.14", reason = "dashmap 5.x requires 0.14" },
+    { crate = "hashbrown@0.14", reason = "dashmap 6.x requires 0.14" },
     { crate = "hashbrown@0.15", reason = "petgraph (via prost-build) uses 0.15, other crates use 0.16" },
     { crate = "rustc-hash@1", reason = "tiktoken-rs uses 1.x, tensor_store uses 2.x" },
 
