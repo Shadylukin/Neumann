@@ -66,7 +66,7 @@ jobs:
       - name: Upload rustdoc
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: rustdoc
           path: target/doc
@@ -117,7 +117,7 @@ jobs:
       - name: Upload book
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: book
           path: docs/book-output
@@ -171,7 +171,7 @@ jobs:
       - name: Upload updated benchmark docs
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: bench-docs
           path: docs/book/src/benchmarks/
@@ -180,7 +180,7 @@ jobs:
       - name: Upload Criterion reports
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: criterion-reports
           path: target/criterion
@@ -189,7 +189,7 @@ jobs:
       - name: Upload baseline for PR comparisons
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: criterion-baseline
           path: target/criterion/**/new/estimates.json
