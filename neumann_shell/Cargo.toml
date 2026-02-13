@@ -35,13 +35,13 @@ console = "0.15"
 # TRO (Tensor Rust Organism) border animation
 crossbeam-channel = "0.5"
 smallvec = "1.11"
-rand = "0.8"
+rand = "0.9"
 
 # System info for doctor diagnostics
 sys-info = "0.9"
 
 # TLS certificate parsing for doctor diagnostics
-x509-parser = "0.16"
+x509-parser = "0.18"
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }

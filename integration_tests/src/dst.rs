@@ -265,7 +265,7 @@ impl DSTHarness {
         use rand::Rng;
 
         // Probabilistic message drop
-        if self.message_drop_rate > 0.0 && self.rng.gen::<f64>() < self.message_drop_rate {
+        if self.message_drop_rate > 0.0 && self.rng.random::<f64>() < self.message_drop_rate {
             return;
         }
 
@@ -277,7 +277,7 @@ impl DSTHarness {
 
         // Random jitter when reordering is enabled (0..=2 ticks)
         if self.reorder_messages {
-            effective_delay += self.rng.gen_range(0..=2);
+            effective_delay += self.rng.random_range(0..=2);
         }
 
         let seq = self.next_seq();

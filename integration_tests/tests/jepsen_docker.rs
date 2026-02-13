@@ -37,7 +37,7 @@ async fn register_workload(client: Arc<JepsenClient>, key: String, duration: Dur
     let mut write_counter = 0i64;
 
     while Instant::now() < deadline {
-        let do_write: bool = rng.gen_bool(0.5);
+        let do_write: bool = rng.random_bool(0.5);
 
         if do_write {
             write_counter += 1;
@@ -46,7 +46,7 @@ async fn register_workload(client: Arc<JepsenClient>, key: String, duration: Dur
             let _ = client.read(&key).await;
         }
 
-        tokio::time::sleep(Duration::from_millis(rng.gen_range(10..50))).await;
+        tokio::time::sleep(Duration::from_millis(rng.random_range(10..50))).await;
     }
 }
 
@@ -249,9 +249,9 @@ async fn test_docker_bank_transfer_atomicity() {
             let deadline = Instant::now() + dur;
 
             while Instant::now() < deadline {
-                let from = rng.gen_range(0..na);
-                let to = (from + rng.gen_range(1..na)) % na;
-                let amount = rng.gen_range(1..=10);
+                let from = rng.random_range(0..na);
+                let to = (from + rng.random_range(1..na)) % na;
+                let amount = rng.random_range(1..=10);
 
                 let _op_id = hist.invoke(
                     worker,
@@ -279,7 +279,7 @@ async fn test_docker_bank_transfer_atomicity() {
                 }
 
                 hist.complete(_op_id, if success { Value::Int(1) } else { Value::None });
-                tokio::time::sleep(Duration::from_millis(rng.gen_range(20..80))).await;
+                tokio::time::sleep(Duration::from_millis(rng.random_range(20..80))).await;
             }
         });
         handles.push(h);

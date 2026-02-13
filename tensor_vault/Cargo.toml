@@ -22,7 +22,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 blake2 = "0.10"
 hkdf = "0.12"
-rand = "0.8"
+rand = "0.9"
 sha2 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"

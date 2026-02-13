@@ -31,12 +31,13 @@ bitcode = { version = "0.6", features = ["serde"] }
 # Crypto
 sha2 = "0.10"
 blake2 = "0.10"
-rand = "0.8"
+rand = "0.9"
+rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 zeroize = { version = "1", features = ["derive"] }
 
 # Concurrency
-dashmap = "5"
+dashmap = "6"
 parking_lot = "0.12"
 
 # Utilities
@@ -56,7 +57,7 @@ lz4_flex = "0.12"
 # Optional TLS support
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
-x509-parser = { version = "0.16", optional = true }
+x509-parser = { version = "0.18", optional = true }
 
 [features]
 default = ["tls"]

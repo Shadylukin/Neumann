@@ -18,7 +18,7 @@ tensor_store = { path = "../tensor_store" }
 tokio = { version = "1", features = ["full"] }
 
 # Token counting
-tiktoken-rs = "0.6"
+tiktoken-rs = "0.9"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

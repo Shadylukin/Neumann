@@ -154,8 +154,8 @@ fn chaos_schedule(seed: u64, node_count: usize, duration_secs: u64) -> NemesisSc
     let mut paused = vec![false; node_count];
 
     while t < duration_secs.saturating_sub(5) {
-        let action_type = rng.gen_range(0..6);
-        let node = rng.gen_range(0..node_count);
+        let action_type = rng.random_range(0..6);
+        let node = rng.random_range(0..node_count);
 
         let action = match action_type {
             0 if !killed[node] && !paused[node] => {
@@ -182,7 +182,7 @@ fn chaos_schedule(seed: u64, node_count: usize, duration_secs: u64) -> NemesisSc
         };
 
         schedule = schedule.add(Duration::from_secs(t), action);
-        t += rng.gen_range(2..6);
+        t += rng.random_range(2..6);
     }
 
     // Heal and restart everything before the end
@@ -219,7 +219,7 @@ async fn register_workload(client: Arc<JepsenClient>, key: String, duration: Dur
     let mut write_counter = 0i64;
 
     while Instant::now() < deadline {
-        let do_write: bool = rng.gen_bool(0.5);
+        let do_write: bool = rng.random_bool(0.5);
 
         if do_write {
             write_counter += 1;
@@ -229,7 +229,7 @@ async fn register_workload(client: Arc<JepsenClient>, key: String, duration: Dur
         }
 
         // Small delay between operations
-        tokio::time::sleep(Duration::from_millis(rng.gen_range(10..50))).await;
+        tokio::time::sleep(Duration::from_millis(rng.random_range(10..50))).await;
     }
 }
 
@@ -493,9 +493,9 @@ async fn test_bank_transfer_atomicity() {
             let deadline = Instant::now() + dur;
 
             while Instant::now() < deadline {
-                let from = rng.gen_range(0..na);
-                let to = (from + rng.gen_range(1..na)) % na;
-                let amount = rng.gen_range(1..=10);
+                let from = rng.random_range(0..na);
+                let to = (from + rng.random_range(1..na)) % na;
+                let amount = rng.random_range(1..=10);
 
                 let _op_id = hist.invoke(
                     worker,
@@ -527,7 +527,7 @@ async fn test_bank_transfer_atomicity() {
                 }
 
                 hist.complete(_op_id, if success { Value::Int(1) } else { Value::None });
-                tokio::time::sleep(Duration::from_millis(rng.gen_range(20..80))).await;
+                tokio::time::sleep(Duration::from_millis(rng.random_range(20..80))).await;
             }
         });
         handles.push(h);
