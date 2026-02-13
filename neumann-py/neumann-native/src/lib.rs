@@ -122,7 +122,7 @@ impl QueryRouter {
 /// Convert a `QueryResult` to a Python object.
 #[allow(clippy::too_many_lines)]
 fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyObject> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
 
     match result {
         QueryResult::Empty => {
@@ -138,9 +138,9 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Rows(rows) => {
             dict.set_item("type", "rows")?;
-            let py_rows = PyList::empty_bound(py);
+            let py_rows = PyList::empty(py);
             for row in rows {
-                let row_dict = PyDict::new_bound(py);
+                let row_dict = PyDict::new(py);
                 for (k, v) in &row.values {
                     row_dict.set_item(k, convert_value_to_python(py, v))?;
                 }
@@ -150,12 +150,12 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Nodes(nodes) => {
             dict.set_item("type", "nodes")?;
-            let py_nodes = PyList::empty_bound(py);
+            let py_nodes = PyList::empty(py);
             for node in nodes {
-                let node_dict = PyDict::new_bound(py);
+                let node_dict = PyDict::new(py);
                 node_dict.set_item("id", node.id)?;
                 node_dict.set_item("label", &node.label)?;
-                let props = PyDict::new_bound(py);
+                let props = PyDict::new(py);
                 for (k, v) in &node.properties {
                     props.set_item(k, v)?;
                 }
@@ -166,9 +166,9 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Edges(edges) => {
             dict.set_item("type", "edges")?;
-            let py_edges = PyList::empty_bound(py);
+            let py_edges = PyList::empty(py);
             for edge in edges {
-                let edge_dict = PyDict::new_bound(py);
+                let edge_dict = PyDict::new(py);
                 edge_dict.set_item("id", edge.id)?;
                 edge_dict.set_item("type", &edge.label)?;
                 edge_dict.set_item("source", edge.from)?;
@@ -179,9 +179,9 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Similar(items) => {
             dict.set_item("type", "similar")?;
-            let py_items = PyList::empty_bound(py);
+            let py_items = PyList::empty(py);
             for item in items {
-                let item_dict = PyDict::new_bound(py);
+                let item_dict = PyDict::new(py);
                 item_dict.set_item("key", &item.key)?;
                 item_dict.set_item("score", item.score)?;
                 py_items.append(item_dict)?;
@@ -190,26 +190,26 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Ids(ids) => {
             dict.set_item("type", "ids")?;
-            let py_ids = PyList::new_bound(py, &ids);
+            let py_ids = PyList::new(py, &ids)?;
             dict.set_item("data", py_ids)?;
         },
         QueryResult::TableList(tables) => {
             dict.set_item("type", "table_list")?;
-            let py_tables = PyList::new_bound(py, &tables);
+            let py_tables = PyList::new(py, &tables)?;
             dict.set_item("data", py_tables)?;
         },
         QueryResult::Blob(data) => {
             dict.set_item("type", "blob")?;
-            dict.set_item("data", PyBytes::new_bound(py, &data))?;
+            dict.set_item("data", PyBytes::new(py, &data))?;
         },
         QueryResult::Path(node_ids) => {
             dict.set_item("type", "path")?;
-            let py_ids = PyList::new_bound(py, &node_ids);
+            let py_ids = PyList::new(py, &node_ids)?;
             dict.set_item("data", py_ids)?;
         },
         QueryResult::ArtifactList(ids) => {
             dict.set_item("type", "artifact_list")?;
-            let py_ids = PyList::new_bound(py, &ids);
+            let py_ids = PyList::new(py, &ids)?;
             dict.set_item("data", py_ids)?;
         },
         QueryResult::ArtifactInfo(info) => {
@@ -222,7 +222,7 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::CheckpointList(checkpoints) => {
             dict.set_item("type", "checkpoint_list")?;
-            let py_list = PyList::empty_bound(py);
+            let py_list = PyList::empty(py);
             for cp in checkpoints {
                 py_list.append(convert_checkpoint_to_python(py, &cp)?)?;
             }
@@ -238,9 +238,9 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Constraints(constraints) => {
             dict.set_item("type", "constraints")?;
-            let py_list = PyList::empty_bound(py);
+            let py_list = PyList::empty(py);
             for c in constraints {
-                let constraint_dict = PyDict::new_bound(py);
+                let constraint_dict = PyDict::new(py);
                 constraint_dict.set_item("name", &c.name)?;
                 constraint_dict.set_item("target", &c.target)?;
                 constraint_dict.set_item("property", &c.property)?;
@@ -251,13 +251,13 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::GraphIndexes(indexes) => {
             dict.set_item("type", "graph_indexes")?;
-            dict.set_item("data", PyList::new_bound(py, &indexes))?;
+            dict.set_item("data", PyList::new(py, &indexes)?)?;
         },
         QueryResult::PageRank(result) => {
             dict.set_item("type", "pagerank")?;
-            let py_list = PyList::empty_bound(py);
+            let py_list = PyList::empty(py);
             for item in &result.items {
-                let item_dict = PyDict::new_bound(py);
+                let item_dict = PyDict::new(py);
                 item_dict.set_item("node_id", item.node_id)?;
                 item_dict.set_item("score", item.score)?;
                 py_list.append(item_dict)?;
@@ -269,9 +269,9 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Centrality(result) => {
             dict.set_item("type", "centrality")?;
-            let py_list = PyList::empty_bound(py);
+            let py_list = PyList::empty(py);
             for item in &result.items {
-                let item_dict = PyDict::new_bound(py);
+                let item_dict = PyDict::new(py);
                 item_dict.set_item("node_id", item.node_id)?;
                 item_dict.set_item("score", item.score)?;
                 py_list.append(item_dict)?;
@@ -280,9 +280,9 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::Communities(result) => {
             dict.set_item("type", "communities")?;
-            let py_list = PyList::empty_bound(py);
+            let py_list = PyList::empty(py);
             for item in &result.items {
-                let item_dict = PyDict::new_bound(py);
+                let item_dict = PyDict::new(py);
                 item_dict.set_item("node_id", item.node_id)?;
                 item_dict.set_item("community_id", item.community_id)?;
                 py_list.append(item_dict)?;
@@ -303,20 +303,20 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
         },
         QueryResult::BatchResult(result) => {
             dict.set_item("type", "batch")?;
-            let result_dict = PyDict::new_bound(py);
+            let result_dict = PyDict::new(py);
             result_dict.set_item("operation", &result.operation)?;
             result_dict.set_item("affected_count", result.affected_count)?;
             if let Some(ref ids) = result.created_ids {
-                result_dict.set_item("created_ids", PyList::new_bound(py, ids))?;
+                result_dict.set_item("created_ids", PyList::new(py, ids)?)?;
             }
             dict.set_item("data", result_dict)?;
         },
         QueryResult::PatternMatch(result) => {
             dict.set_item("type", "pattern_match")?;
-            let py_list = PyList::empty_bound(py);
+            let py_list = PyList::empty(py);
             for matched in &result.matches {
-                let bindings_dict = PyDict::new_bound(py);
-                for (name, _binding) in &matched.bindings {
+                let bindings_dict = PyDict::new(py);
+                for name in matched.bindings.keys() {
                     bindings_dict.set_item(name, name)?;
                 }
                 py_list.append(bindings_dict)?;
@@ -330,17 +330,31 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
 
 /// Convert a `relational_engine::Value` to a Python object.
 fn convert_value_to_python(py: Python<'_>, value: &relational_engine::Value) -> PyObject {
-    use pyo3::IntoPy;
+    use pyo3::IntoPyObject;
     use relational_engine::Value;
 
     match value {
         Value::Null => py.None(),
-        Value::Int(i) => (*i).into_py(py),
-        Value::Float(f) => (*f).into_py(py),
-        Value::String(s) => s.clone().into_py(py),
-        Value::Bool(b) => (*b).into_py(py),
-        Value::Bytes(b) => b.clone().into_py(py),
-        Value::Json(j) => j.to_string().into_py(py),
+        Value::Int(i) => i
+            .into_pyobject(py)
+            .map_or_else(|_| py.None(), |v| v.into_any().unbind()),
+        Value::Float(f) => f
+            .into_pyobject(py)
+            .map_or_else(|_| py.None(), |v| v.into_any().unbind()),
+        Value::String(s) => s
+            .into_pyobject(py)
+            .map_or_else(|_| py.None(), |v| v.into_any().unbind()),
+        Value::Bool(b) => b
+            .into_pyobject(py)
+            .map_or_else(|_| py.None(), |v| v.to_owned().into_any().unbind()),
+        Value::Bytes(b) => b
+            .as_slice()
+            .into_pyobject(py)
+            .map_or_else(|_| py.None(), |v| v.into_any().unbind()),
+        Value::Json(j) => j
+            .to_string()
+            .into_pyobject(py)
+            .map_or_else(|_| py.None(), |v| v.into_any().unbind()),
         _ => py.None(),
     }
 }
@@ -349,7 +363,7 @@ fn convert_artifact_info_to_python<'py>(
     py: Python<'py>,
     info: &ArtifactInfoResult,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("id", &info.id)?;
     dict.set_item("filename", &info.filename)?;
     dict.set_item("content_type", &info.content_type)?;
@@ -359,9 +373,9 @@ fn convert_artifact_info_to_python<'py>(
     dict.set_item("created", info.created)?;
     dict.set_item("modified", info.modified)?;
     dict.set_item("created_by", &info.created_by)?;
-    dict.set_item("tags", PyList::new_bound(py, &info.tags))?;
-    dict.set_item("linked_to", PyList::new_bound(py, &info.linked_to))?;
-    let custom = PyDict::new_bound(py);
+    dict.set_item("tags", PyList::new(py, &info.tags)?)?;
+    dict.set_item("linked_to", PyList::new(py, &info.linked_to)?)?;
+    let custom = PyDict::new(py);
     for (k, v) in &info.custom {
         custom.set_item(k, v)?;
     }
@@ -373,7 +387,7 @@ fn convert_blob_stats_to_python<'py>(
     py: Python<'py>,
     stats: &BlobStatsResult,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("artifact_count", stats.artifact_count)?;
     dict.set_item("chunk_count", stats.chunk_count)?;
     dict.set_item("total_bytes", stats.total_bytes)?;
@@ -387,7 +401,7 @@ fn convert_checkpoint_to_python<'py>(
     py: Python<'py>,
     cp: &CheckpointInfo,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("id", &cp.id)?;
     dict.set_item("name", &cp.name)?;
     dict.set_item("created_at", cp.created_at)?;
@@ -399,16 +413,16 @@ fn convert_unified_item_to_python<'py>(
     py: Python<'py>,
     item: &UnifiedItem,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let item_dict = PyDict::new_bound(py);
+    let item_dict = PyDict::new(py);
     item_dict.set_item("source", &item.source)?;
     item_dict.set_item("id", &item.id)?;
-    let data = PyDict::new_bound(py);
+    let data = PyDict::new(py);
     for (k, v) in &item.data {
         data.set_item(k, v)?;
     }
     item_dict.set_item("data", data)?;
     if let Some(ref emb) = item.embedding {
-        item_dict.set_item("embedding", PyList::new_bound(py, emb))?;
+        item_dict.set_item("embedding", PyList::new(py, emb)?)?;
     }
     if let Some(score) = item.score {
         item_dict.set_item("score", score)?;
@@ -420,9 +434,9 @@ fn convert_unified_to_python<'py>(
     py: Python<'py>,
     unified: &UnifiedResult,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("description", &unified.description)?;
-    let items = PyList::empty_bound(py);
+    let items = PyList::empty(py);
     for item in &unified.items {
         items.append(convert_unified_item_to_python(py, item)?)?;
     }
@@ -435,7 +449,7 @@ fn convert_chain_result_to_python<'py>(
     py: Python<'py>,
     result: &ChainResult,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     match result {
         ChainResult::TransactionBegun { tx_id } => {
             dict.set_item("chain_type", "transaction_begun")?;
@@ -452,7 +466,7 @@ fn convert_chain_result_to_python<'py>(
         },
         ChainResult::History(entries) => {
             dict.set_item("chain_type", "history")?;
-            let py_entries = PyList::empty_bound(py);
+            let py_entries = PyList::empty(py);
             for entry in entries {
                 py_entries.append(convert_chain_history_entry_to_python(py, entry)?)?;
             }
@@ -460,7 +474,7 @@ fn convert_chain_result_to_python<'py>(
         },
         ChainResult::Similar(items) => {
             dict.set_item("chain_type", "similar")?;
-            let py_items = PyList::empty_bound(py);
+            let py_items = PyList::empty(py);
             for item in items {
                 py_items.append(convert_chain_similar_to_python(py, item)?)?;
             }
@@ -504,7 +518,7 @@ fn convert_chain_result_to_python<'py>(
         ChainResult::Verified { ok, errors } => {
             dict.set_item("chain_type", "verified")?;
             dict.set_item("ok", *ok)?;
-            dict.set_item("errors", PyList::new_bound(py, errors))?;
+            dict.set_item("errors", PyList::new(py, errors)?)?;
         },
         ChainResult::TransitionAnalysis(analysis) => {
             dict.set_item("chain_type", "transition_analysis")?;
@@ -521,11 +535,11 @@ fn convert_chain_history_entry_to_python<'py>(
     py: Python<'py>,
     entry: &ChainHistoryEntry,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let e = PyDict::new_bound(py);
+    let e = PyDict::new(py);
     e.set_item("height", entry.height)?;
     e.set_item("transaction_type", &entry.transaction_type)?;
     if let Some(ref data) = entry.data {
-        e.set_item("data", PyBytes::new_bound(py, data))?;
+        e.set_item("data", PyBytes::new(py, data))?;
     }
     Ok(e)
 }
@@ -534,7 +548,7 @@ fn convert_chain_similar_to_python<'py>(
     py: Python<'py>,
     item: &ChainSimilarResult,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let i = PyDict::new_bound(py);
+    let i = PyDict::new(py);
     i.set_item("block_hash", &item.block_hash)?;
     i.set_item("height", item.height)?;
     i.set_item("similarity", item.similarity)?;

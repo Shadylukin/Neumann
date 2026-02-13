@@ -10,7 +10,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.24", features = ["extension-module"] }
 query_router = { path = "../../query_router" }
 relational_engine = { path = "../../relational_engine" }
 parking_lot = "0.12"
@@ -22,4 +22,4 @@ tensor_unified = { path = "../../tensor_unified" }
 tempfile = "3"
 
 [build-dependencies]
-pyo3-build-config = "0.22"
+pyo3-build-config = "0.24"
