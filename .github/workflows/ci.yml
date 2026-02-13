@@ -152,7 +152,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-nextest
 
@@ -199,7 +199,7 @@ jobs:
       - name: Install cargo-llvm-cov
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-llvm-cov
 
@@ -563,7 +563,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-nextest
 
@@ -695,7 +695,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-nextest
 
