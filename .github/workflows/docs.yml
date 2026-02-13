@@ -126,7 +126,7 @@ jobs:
   benchmarks:
     name: Generate Benchmark Docs
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout
@@ -161,7 +161,7 @@ jobs:
             --warm-up-time 1 \
             --measurement-time 2 \
             --sample-size 10 \
-            --nresamples 1000
+            --nresamples 500
 
       - name: Generate benchmark summary
         run: |
