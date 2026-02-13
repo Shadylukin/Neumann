@@ -268,7 +268,7 @@ fn test_e2e_concurrent_multi_key_4_threads() {
         .unwrap_or_else(|_| panic!("all refs should be dropped"))
         .into_inner();
     let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(30));
-    let result = checker.check(recorder.operations());
+    let result = checker.check_per_key(recorder.operations());
     assert!(
         matches!(result, LinearizabilityResult::Ok),
         "concurrent multi-key should be linearizable: {result:?}"
@@ -410,7 +410,7 @@ fn test_e2e_write_heavy_workload() {
         .unwrap_or_else(|_| panic!("all refs should be dropped"))
         .into_inner();
     let checker = LinearizabilityChecker::with_timeout(RegisterModel, Duration::from_secs(30));
-    let result = checker.check(recorder.operations());
+    let result = checker.check_per_key(recorder.operations());
     assert!(
         matches!(result, LinearizabilityResult::Ok),
         "write-heavy should be linearizable: {result:?}"

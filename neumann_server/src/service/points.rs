@@ -556,7 +556,8 @@ impl PointsService for PointsServiceImpl {
         let req = request.into_inner();
         let limit = usize::try_from(req.limit.max(1)).unwrap_or(usize::MAX);
 
-        let keys = self.engine.list_collection_keys(&req.collection);
+        let mut keys = self.engine.list_collection_keys(&req.collection);
+        keys.sort();
 
         // Find the starting position
         let start_idx = req.offset_id.as_ref().map_or(0, |offset_id| {

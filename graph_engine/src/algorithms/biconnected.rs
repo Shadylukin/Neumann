@@ -181,7 +181,8 @@ impl GraphEngine {
         state.time += 1;
 
         let mut children = 0;
-        let neighbors = self.get_undirected_neighbors(u, config)?;
+        let mut neighbors = self.get_undirected_neighbors(u, config)?;
+        neighbors.sort_unstable();
 
         for v in neighbors {
             if !state.discovery.contains_key(&v) {
@@ -203,13 +204,24 @@ impl GraphEngine {
                 // u is an articulation point if:
                 // 1. u is root and has multiple children, or
                 // 2. u is not root and low[v] >= disc[u]
-                if parent_u.is_none() && children > 1 {
+                let should_pop = if parent_u.is_none() {
+                    if children > 1 {
+                        state.articulation_points.insert(u);
+                        // Root with 2+ children: pop component for each
+                        // child after the first (last child's edges stay
+                        // on the stack and are collected at cleanup).
+                        true
+                    } else {
+                        false
+                    }
+                } else if low_v >= disc_u {
                     state.articulation_points.insert(u);
-                }
-                if parent_u.is_some() && low_v >= disc_u {
-                    state.articulation_points.insert(u);
+                    true
+                } else {
+                    false
+                };
 
-                    // Pop component from stack
+                if should_pop {
                     let mut component = HashSet::new();
                     let edge = (u.min(v), u.max(v));
                     while let Some(e) = state.edge_stack.pop() {
