@@ -83,12 +83,19 @@ impl RateLimitConfig {
 /// Operation types that can be rate limited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
+    /// Read a secret value.
     Get,
+    /// List secret keys matching a pattern.
     List,
+    /// Store or update a secret value.
     Set,
+    /// Grant access to a secret.
     Grant,
+    /// Emergency break-glass access bypass.
     BreakGlass,
+    /// Wrap a secret behind a single-use token.
     Wrap,
+    /// Generate a dynamic (short-lived) secret.
     DynamicGenerate,
 }
 

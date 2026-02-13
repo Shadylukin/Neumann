@@ -41,18 +41,26 @@ pub struct AccessTopology {
 /// Result of a batch permission check.
 #[derive(Debug, Clone)]
 pub struct BatchPermissionResult {
+    /// Entity that was checked.
     pub entity: String,
+    /// Secret that was checked.
     pub secret: String,
+    /// Whether the entity has read access.
     pub has_read: bool,
+    /// Whether the entity has write access.
     pub has_write: bool,
+    /// Whether the entity has admin access.
     pub has_admin: bool,
 }
 
 /// Report on policy redundancy and merge opportunities.
 #[derive(Debug, Clone)]
 pub struct PolicyRedundancyReport {
+    /// Groups of policies with similar match patterns that could be merged.
     pub mergeable_groups: Vec<Vec<String>>,
+    /// Ratio of original policy count to count after merging.
     pub compression_ratio: f32,
+    /// Total number of policies analyzed.
     pub total_policies: usize,
 }
 

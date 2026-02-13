@@ -31,8 +31,11 @@ const NONCE_SIZE: usize = 12;
 /// Optional context for audit entries (IP, session, correlation ID).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditContext {
+    /// IP address that originated the request.
     pub source_ip: Option<String>,
+    /// Session identifier for the requesting client.
     pub session_id: Option<String>,
+    /// Correlation identifier for tracing across services.
     pub correlation_id: Option<String>,
 }
 
@@ -54,78 +57,139 @@ pub struct AuditEntry {
 /// Types of auditable operations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AuditOperation {
+    /// Read a secret value.
     Get,
+    /// Write or create a secret value.
     Set,
+    /// Delete a secret.
     Delete,
+    /// Rotate a secret to a new version.
     Rotate,
+    /// Grant access to another entity.
     Grant {
+        /// Entity receiving the permission.
         to: String,
+        /// Permission level granted (e.g. "read", "write", "admin").
         permission: String,
     },
+    /// Revoke access from an entity.
     Revoke {
+        /// Entity whose access is being revoked.
         from: String,
     },
+    /// List available secrets.
     List,
+    /// Rotate the master encryption key, re-encrypting all secrets.
     RotateMasterKey {
+        /// Number of secrets re-encrypted during rotation.
         secrets_count: usize,
     },
+    /// Encrypt data via the transit engine.
     TransitEncrypt,
+    /// Decrypt data via the transit engine.
     TransitDecrypt,
+    /// Emergency break-glass access bypassing normal ACLs.
     BreakGlass {
+        /// Human-readable reason for the emergency access.
         justification: String,
+        /// Duration in seconds the break-glass window remains open.
         duration_secs: u64,
     },
+    /// Batch retrieval of multiple secrets.
     BatchGet {
+        /// Number of secrets retrieved.
         count: usize,
     },
+    /// Batch write of multiple secrets.
     BatchSet {
+        /// Number of secrets written.
         count: usize,
     },
+    /// Generate a dynamic (short-lived) secret.
     DynamicGenerate,
+    /// Wrap (envelope-encrypt) a key.
     Wrap,
+    /// Unwrap (envelope-decrypt) a key.
     Unwrap,
+    /// Add a dependency edge between secrets.
     AddDependency,
+    /// Remove a dependency edge between secrets.
     RemoveDependency,
+    /// Analyze the impact of rotating or revoking a secret.
     ImpactAnalysis,
+    /// Automatically rotate a secret based on policy.
     AutoRotate,
+    /// Set a rate-limit or storage quota on a secret path.
     SetQuota,
+    /// Remove a quota from a secret path.
     RemoveQuota,
+    /// Attach an access-control policy.
     AddPolicy,
+    /// Remove an access-control policy.
     RemovePolicy,
+    /// Seal the vault, preventing further operations until unseal.
     Seal,
+    /// Unseal the vault, resuming normal operations.
     Unseal,
+    /// Create a point-in-time snapshot of vault state.
     CreateSnapshot,
+    /// Restore vault state from a snapshot.
     RestoreSnapshot,
+    /// Generate credentials via a secrets engine backend.
     EngineGenerate,
+    /// Revoke credentials via a secrets engine backend.
     EngineRevoke,
+    /// Issue a PKI certificate.
     IssueCertificate,
+    /// Revoke a PKI certificate.
     RevokeCertificate,
+    /// Push vault state to a replication peer.
     SyncPush,
+    /// Subscribe to replication updates from a peer.
     SyncSubscribe,
+    /// Decrypt a secret stored in a legacy format.
     LegacyDecrypt,
+    /// Compare two versions of a secret.
     DiffVersions {
+        /// First version number to compare.
         version_a: u32,
+        /// Second version number to compare.
         version_b: u32,
     },
+    /// Save a secret template for reuse.
     SaveTemplate {
+        /// Name identifying the template.
         template_name: String,
     },
+    /// Delete a previously saved secret template.
     DeleteTemplate {
+        /// Name of the template to remove.
         template_name: String,
     },
+    /// Find secrets with similar embeddings via k-NN search.
     FindSimilar {
+        /// Number of nearest neighbors to return.
         k: usize,
     },
+    /// Compute heat-kernel trust scores over the access graph.
     HeatKernelTrust {
+        /// Diffusion time parameter controlling trust propagation depth.
         diffusion_time: f64,
     },
+    /// Build a temporal access tensor for pattern analysis.
     BuildAccessTensor {
+        /// Number of time buckets in the tensor.
         num_buckets: usize,
     },
+    /// Analyze temporal access patterns for anomaly detection.
     AnalyzeTemporalPatterns,
+    /// Run weighted impact analysis on secret dependencies.
     WeightedImpactAnalysis,
+    /// Generate a recommended rotation plan for secrets.
     RotationPlan,
+    /// Recommend geographic placement for a secret.
     RecommendPlacement {
+        /// Target cloud region (e.g. "us-east-1").
         region: String,
     },
 }
@@ -391,6 +455,11 @@ pub struct AuditLog<'a> {
 const AUDIT_PREFIX: &str = "_va:";
 
 impl<'a> AuditLog<'a> {
+    /// Create a new audit log backed by the given store.
+    ///
+    /// When `audit_key` is provided, entity names are AEAD-encrypted and
+    /// entries are protected with HMAC integrity tags. Without a key,
+    /// entries are stored in plaintext with no integrity protection.
     pub fn new(store: &'a TensorStore, audit_key: Option<[u8; 32]>) -> Self {
         Self { store, audit_key }
     }
@@ -1593,18 +1662,14 @@ mod tests {
 
         let entries = log.scan();
         assert_eq!(entries.len(), 2);
-        match &entries[0].operation {
-            AuditOperation::SaveTemplate { template_name } => {
-                assert_eq!(template_name, "tmpl_a");
-            },
-            other => panic!("Expected SaveTemplate, got {other:?}"),
-        }
-        match &entries[1].operation {
-            AuditOperation::DeleteTemplate { template_name } => {
-                assert_eq!(template_name, "tmpl_a");
-            },
-            other => panic!("Expected DeleteTemplate, got {other:?}"),
-        }
+        let has_save = entries.iter().any(|e| {
+            matches!(&e.operation, AuditOperation::SaveTemplate { template_name } if template_name == "tmpl_a")
+        });
+        let has_delete = entries.iter().any(|e| {
+            matches!(&e.operation, AuditOperation::DeleteTemplate { template_name } if template_name == "tmpl_a")
+        });
+        assert!(has_save, "expected SaveTemplate entry");
+        assert!(has_delete, "expected DeleteTemplate entry");
     }
 
     #[test]

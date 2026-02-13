@@ -13,18 +13,26 @@ const DYN_PREFIX: &str = "_vdyn:";
 /// Template for generating dynamic secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SecretTemplate {
+    /// Generate a random password with character-class constraints.
     Password(PasswordConfig),
+    /// Generate a random token in hex or base64 encoding.
     Token(TokenConfig),
+    /// Generate a prefixed API key with a random suffix.
     ApiKey(ApiKeyConfig),
 }
 
 /// Configuration for password generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasswordConfig {
+    /// Desired password length (minimum 4 is enforced).
     pub length: usize,
+    /// Character set to draw from.
     pub charset: PasswordCharset,
+    /// Whether at least one uppercase letter is required.
     pub require_uppercase: bool,
+    /// Whether at least one digit is required.
     pub require_digit: bool,
+    /// Whether at least one special character is required.
     pub require_special: bool,
 }
 
@@ -43,15 +51,20 @@ impl Default for PasswordConfig {
 /// Character sets for password generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PasswordCharset {
+    /// Letters (a-z, A-Z) and digits (0-9).
     Alphanumeric,
+    /// Letters, digits, and special characters (!@#$%^&*()-_=+).
     AlphanumericSpecial,
+    /// Hexadecimal characters (0-9, a-f).
     Hex,
 }
 
 /// Configuration for token generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenConfig {
+    /// Number of random bytes to generate.
     pub length: usize,
+    /// Encoding used for the output string.
     pub encoding: TokenEncoding,
 }
 
@@ -67,14 +80,18 @@ impl Default for TokenConfig {
 /// Encoding format for tokens.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TokenEncoding {
+    /// Lowercase hexadecimal encoding (2 characters per byte).
     Hex,
+    /// URL-safe base64 encoding without padding.
     Base64,
 }
 
 /// Configuration for API key generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKeyConfig {
+    /// Static prefix prepended to the key (e.g. "nk").
     pub prefix: String,
+    /// Number of random bytes for the hex-encoded suffix.
     pub random_length: usize,
 }
 
@@ -90,11 +107,17 @@ impl Default for ApiKeyConfig {
 /// Metadata for a generated dynamic secret.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicSecretMetadata {
+    /// Unique identifier for this dynamic secret.
     pub secret_id: String,
+    /// Template type used to generate the secret ("password", "token", or "api_key").
     pub template_type: String,
+    /// Identity of the entity that requested this secret.
     pub requester: String,
+    /// Expiration timestamp in milliseconds since epoch.
     pub expires_at_ms: i64,
+    /// Whether the secret can only be read once before invalidation.
     pub one_time: bool,
+    /// Whether the secret has already been consumed.
     pub consumed: bool,
 }
 

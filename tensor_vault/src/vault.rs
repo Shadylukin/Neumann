@@ -43,13 +43,16 @@ use crate::{
 /// Per-entry outcome from a batch set operation.
 #[derive(Debug, Clone)]
 pub struct BatchSetResult {
+    /// Number of entries successfully stored.
     pub succeeded: usize,
+    /// Per-key errors for entries that failed.
     pub failed: Vec<(String, VaultError)>,
 }
 
 /// Secure secret storage with graph-based access control.
 pub struct Vault {
     pub(crate) store: TensorStore,
+    /// Graph engine backing the vault's access control model.
     pub graph: std::sync::Arc<GraphEngine>,
     pub(crate) cipher: Cipher,
     pub(crate) obfuscator: Obfuscator,
@@ -1282,6 +1285,7 @@ impl Vault {
 
     // ========== Graph Intelligence API ==========
 
+    /// Explain why an entity does or does not have access to a secret.
     pub fn explain_access(
         &self,
         entity: &str,
@@ -1290,10 +1294,12 @@ impl Vault {
         crate::graph_intel::explain_access(self, entity, secret)
     }
 
+    /// Compute the blast radius if an entity were compromised.
     pub fn blast_radius(&self, entity: &str) -> crate::graph_intel::BlastRadius {
         crate::graph_intel::blast_radius(self, entity)
     }
 
+    /// Simulate granting a permission and report the resulting access changes.
     pub fn simulate_grant(
         &self,
         entity: &str,
@@ -1303,36 +1309,44 @@ impl Vault {
         crate::graph_intel::simulate_grant(self, entity, secret, permission)
     }
 
+    /// Run a comprehensive security audit of the vault access graph.
     pub fn security_audit(&self) -> crate::graph_intel::SecurityAuditReport {
         crate::graph_intel::security_audit(self)
     }
 
+    /// Identify entities with disproportionately high access or connectivity.
     pub fn find_critical_entities(&self) -> Vec<crate::graph_intel::CriticalEntity> {
         crate::graph_intel::find_critical_entities(self)
     }
 
+    /// Analyze privilege distribution across entities.
     pub fn privilege_analysis(&self) -> crate::graph_intel::PrivilegeAnalysisReport {
         crate::graph_intel::privilege_analysis(self)
     }
 
+    /// Score delegation chains for anomalous depth or breadth.
     pub fn delegation_anomaly_scores(&self) -> Vec<crate::graph_intel::DelegationAnomalyScore> {
         crate::graph_intel::delegation_anomaly_scores(self)
     }
 
+    /// Infer role groupings from observed access patterns.
     pub fn infer_roles(&self) -> crate::graph_intel::RoleInferenceResult {
         crate::graph_intel::infer_roles(self)
     }
 
+    /// Analyze transitive trust relationships in the access graph.
     pub fn trust_transitivity(&self) -> crate::graph_intel::TrustTransitivityReport {
         crate::graph_intel::trust_transitivity(self)
     }
 
+    /// Compute risk propagation across the access graph.
     pub fn risk_propagation(&self) -> crate::graph_intel::RiskPropagationReport {
         crate::graph_intel::risk_propagation(self)
     }
 
     // ========== Behavior Embeddings & Anomaly Detection ==========
 
+    /// Compute behavior embedding vectors for all entities in the access graph.
     pub fn compute_behavior_embeddings(
         &self,
         config: crate::graph_intel::BehaviorEmbeddingConfig,
@@ -1340,6 +1354,7 @@ impl Vault {
         crate::graph_intel::compute_behavior_embeddings(self, config)
     }
 
+    /// Detect geometrically anomalous entities using k-NN distance analysis.
     pub fn detect_geometric_anomalies(
         &self,
         k: usize,
@@ -1350,6 +1365,7 @@ impl Vault {
         crate::graph_intel::detect_geometric_anomalies(&embeddings, k, threshold_multiplier)
     }
 
+    /// Cluster entities by their access patterns.
     pub fn cluster_entities(&self) -> crate::graph_intel::ClusteringResult {
         crate::graph_intel::cluster_entities(self)
     }

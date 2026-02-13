@@ -33,47 +33,110 @@ impl<'a> ScopedVault<'a> {
         }
     }
 
+    /// Store a secret at the given key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks write permission.
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
         self.vault.set(&self.entity, key, value)
     }
 
+    /// Retrieve the current version of a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity lacks
+    /// read permission.
     pub fn get(&self, key: &str) -> Result<String> {
         self.vault.get(&self.entity, key)
     }
 
+    /// Delete a secret and all its versions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission.
     pub fn delete(&self, key: &str) -> Result<()> {
         self.vault.delete(&self.entity, key)
     }
 
+    /// List secret keys matching the given glob pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks read permission.
     pub fn list(&self, pattern: &str) -> Result<Vec<String>> {
         self.vault.list(&self.entity, pattern)
     }
 
+    /// Rotate a secret to a new value, preserving the previous version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity lacks
+    /// write permission.
     pub fn rotate(&self, key: &str, new_value: &str) -> Result<()> {
         self.vault.rotate(&self.entity, key, new_value)
     }
 
+    /// Retrieve a specific version of a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version does not exist or the scoped entity
+    /// lacks read permission.
     pub fn get_version(&self, key: &str, version: u32) -> Result<String> {
         self.vault.get_version(&self.entity, key, version)
     }
 
+    /// List all versions of a secret with their metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks read permission.
     pub fn list_versions(&self, key: &str) -> Result<Vec<VersionInfo>> {
         self.vault.list_versions(&self.entity, key)
     }
 
+    /// Return the current (latest) version number for a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks read permission.
     pub fn current_version(&self, key: &str) -> Result<u32> {
         self.vault.current_version(&self.entity, key)
     }
 
+    /// Roll back a secret to a previous version, making it the current value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version does not exist or the scoped entity
+    /// lacks write permission.
     pub fn rollback(&self, key: &str, version: u32) -> Result<()> {
         self.vault.rollback(&self.entity, key, version)
     }
 
+    /// Grant access to another entity with a specific permission level.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission on the key.
     pub fn grant_with_permission(&self, entity: &str, key: &str, level: Permission) -> Result<()> {
         self.vault
             .grant_with_permission(&self.entity, entity, key, level)
     }
 
+    /// Grant time-limited access to another entity with a specific permission level.
+    ///
+    /// The grant automatically expires after the given TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission on the key.
     pub fn grant_with_ttl(
         &self,
         entity: &str,
@@ -85,22 +148,46 @@ impl<'a> ScopedVault<'a> {
             .grant_with_ttl(&self.entity, entity, key, level, ttl)
     }
 
+    /// Revoke another entity's access to a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission on the key.
     pub fn revoke(&self, entity: &str, key: &str) -> Result<()> {
         self.vault.revoke(&self.entity, entity, key)
     }
 
+    /// Retrieve the audit log for a specific secret key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no audit entries exist for the key.
     pub fn audit_log(&self, key: &str) -> Result<Vec<AuditEntry>> {
         self.vault.audit_log(key)
     }
 
+    /// Return the permission level the scoped entity holds on a secret, if any.
     pub fn get_permission(&self, key: &str) -> Option<Permission> {
         self.vault.get_permission(&self.entity, key)
     }
 
+    /// Grant default (read) access to another entity on a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission on the key.
     pub fn grant(&self, entity: &str, key: &str) -> Result<()> {
         self.vault.grant(&self.entity, entity, key)
     }
 
+    /// Delegate access to secrets to a child entity.
+    ///
+    /// The child receives the specified permission on all listed secrets.
+    /// An optional TTL limits how long the delegation remains active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks permission to delegate.
     pub fn delegate(
         &self,
         child: &str,
@@ -112,26 +199,44 @@ impl<'a> ScopedVault<'a> {
             .delegate(&self.entity, child, secrets, permission, ttl)
     }
 
+    /// Revoke all delegated access from a child entity.
+    ///
+    /// Returns the list of secret keys whose access was revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delegation does not exist or the scoped entity
+    /// is not the delegator.
     pub fn revoke_delegation(&self, child: &str) -> Result<Vec<String>> {
         self.vault.revoke_delegation(&self.entity, child)
     }
 
+    /// Revoke delegated access from a child entity and all its transitive delegates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delegation does not exist or the scoped entity
+    /// is not the delegator.
     pub fn revoke_delegation_cascading(&self, child: &str) -> Result<Vec<DelegationRecord>> {
         self.vault.revoke_delegation_cascading(&self.entity, child)
     }
 
+    /// Return the anomaly detection profile for the scoped entity, if one exists.
     pub fn anomaly_profile(&self) -> Option<AgentProfile> {
         self.vault.anomaly_monitor().get_profile(&self.entity)
     }
 
+    /// Explain how the scoped entity can access a secret through the access graph.
     pub fn explain_access(&self, secret: &str) -> crate::graph_intel::AccessExplanation {
         self.vault.explain_access(&self.entity, secret)
     }
 
+    /// Compute the blast radius if the scoped entity were compromised.
     pub fn blast_radius(&self) -> crate::graph_intel::BlastRadius {
         self.vault.blast_radius(&self.entity)
     }
 
+    /// Simulate granting an entity access and report the resulting access changes.
     pub fn simulate_grant(
         &self,
         entity: &str,
@@ -141,46 +246,85 @@ impl<'a> ScopedVault<'a> {
         self.vault.simulate_grant(entity, secret, permission)
     }
 
+    /// Analyze privilege distribution across the vault's access graph.
     pub fn privilege_analysis(&self) -> crate::graph_intel::PrivilegeAnalysisReport {
         self.vault.privilege_analysis()
     }
 
+    /// Score all delegation relationships for anomalous patterns.
     pub fn delegation_anomaly_scores(&self) -> Vec<crate::graph_intel::DelegationAnomalyScore> {
         self.vault.delegation_anomaly_scores()
     }
 
+    /// Infer roles from access patterns in the vault's access graph.
     pub fn infer_roles(&self) -> crate::graph_intel::RoleInferenceResult {
         self.vault.infer_roles()
     }
 
+    /// Analyze transitive trust relationships in the access graph.
     pub fn trust_transitivity(&self) -> crate::graph_intel::TrustTransitivityReport {
         self.vault.trust_transitivity()
     }
 
+    /// Analyze how risk propagates through the access graph.
     pub fn risk_propagation(&self) -> crate::graph_intel::RiskPropagationReport {
         self.vault.risk_propagation()
     }
 
+    /// Store a secret with a time-to-live. After the TTL elapses the secret expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks write permission.
     pub fn set_with_ttl(&self, key: &str, value: &str, ttl: Duration) -> Result<()> {
         self.vault.set_with_ttl(&self.entity, key, value, ttl)
     }
 
+    /// Remove the expiration from a secret, making it permanent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks write permission.
     pub fn clear_expiration(&self, key: &str) -> Result<()> {
         self.vault.clear_expiration(&self.entity, key)
     }
 
+    /// Return the expiration timestamp (epoch millis) for a secret, if set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks read permission.
     pub fn get_expiration(&self, key: &str) -> Result<Option<i64>> {
         self.vault.get_expiration(&self.entity, key)
     }
 
+    /// Encrypt plaintext using the transit cipher associated with a secret key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks read permission or encryption fails.
     pub fn encrypt_for(&self, key: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
         self.vault.encrypt_for(&self.entity, key, plaintext)
     }
 
+    /// Decrypt ciphertext using the transit cipher associated with a secret key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks read permission or decryption fails.
     pub fn decrypt_as(&self, key: &str, sealed: &[u8]) -> Result<Vec<u8>> {
         self.vault.decrypt_as(&self.entity, key, sealed)
     }
 
+    /// Request emergency (break-glass) access to a secret.
+    ///
+    /// The access is time-limited and logged with the provided justification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if emergency access is denied or the secret does not exist.
     pub fn emergency_access(
         &self,
         key: &str,
@@ -191,64 +335,139 @@ impl<'a> ScopedVault<'a> {
             .emergency_access(&self.entity, key, justification, duration)
     }
 
+    /// Retrieve multiple secrets in a single operation.
+    ///
+    /// Returns a vec of `(key, result)` pairs; individual keys may fail independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the batch operation itself fails.
     pub fn batch_get(&self, keys: &[&str]) -> Result<Vec<(String, Result<String>)>> {
         self.vault.batch_get(&self.entity, keys)
     }
 
+    /// Store multiple secrets in a single operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks write permission on any key.
     pub fn batch_set(&self, entries: &[(&str, &str)]) -> Result<()> {
         self.vault.batch_set(&self.entity, entries)
     }
 
+    /// Retrieve audit entries filtered by a specific entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the audit log cannot be queried.
     pub fn audit_by_entity(&self, entity: &str) -> Result<Vec<AuditEntry>> {
         self.vault.audit_by_entity(entity)
     }
 
+    /// Retrieve audit entries created after the given timestamp (epoch milliseconds).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the audit log cannot be queried.
     pub fn audit_since(&self, since_millis: i64) -> Result<Vec<AuditEntry>> {
         self.vault.audit_since(since_millis)
     }
 
+    /// Retrieve the most recent audit entries, up to `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the audit log cannot be queried.
     pub fn audit_recent(&self, limit: usize) -> Result<Vec<AuditEntry>> {
         self.vault.audit_recent(limit)
     }
 
     // ========== Wrapping ==========
 
+    /// Wrap a secret into a single-use token with a time-to-live in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks read permission.
     pub fn wrap_secret(&self, key: &str, ttl_ms: i64) -> Result<String> {
         self.vault.wrap_secret(&self.entity, key, ttl_ms)
     }
 
+    /// Unwrap a wrapping token to retrieve the secret value (single-use).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token is invalid, expired, or already consumed.
     pub fn unwrap_secret(&self, token: &str) -> Result<String> {
         self.vault.unwrap_secret(token)
     }
 
+    /// Look up metadata for a wrapping token without consuming it.
     pub fn wrapping_token_info(&self, token: &str) -> Option<WrappingToken> {
         self.vault.wrapping_token_info(token)
     }
 
     // ========== Dependencies ==========
 
+    /// Register a dependency relationship between two secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn add_dependency(&self, parent_key: &str, child_key: &str) -> Result<()> {
         self.vault
             .add_dependency(&self.entity, parent_key, child_key)
     }
 
+    /// Remove a dependency relationship between two secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dependency does not exist or the scoped entity
+    /// lacks permission.
     pub fn remove_dependency(&self, parent_key: &str, child_key: &str) -> Result<()> {
         self.vault
             .remove_dependency(&self.entity, parent_key, child_key)
     }
 
+    /// List the secrets that the given secret depends on (children).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn get_dependencies(&self, key: &str) -> Result<Vec<String>> {
         self.vault.get_dependencies(&self.entity, key)
     }
 
+    /// List the secrets that depend on the given secret (parents).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn get_dependents(&self, key: &str) -> Result<Vec<String>> {
         self.vault.get_dependents(&self.entity, key)
     }
 
+    /// Perform impact analysis on a secret, reporting all transitively affected secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn impact_analysis(&self, key: &str) -> Result<ImpactReport> {
         self.vault.impact_analysis(&self.entity, key)
     }
 
+    /// Register a weighted dependency between two secrets with an optional description.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn add_weighted_dependency(
         &self,
         parent_key: &str,
@@ -260,6 +479,12 @@ impl<'a> ScopedVault<'a> {
             .add_weighted_dependency(&self.entity, parent_key, child_key, weight, description)
     }
 
+    /// Perform weighted impact analysis, factoring in dependency criticality levels.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn weighted_impact_analysis(
         &self,
         key: &str,
@@ -267,30 +492,56 @@ impl<'a> ScopedVault<'a> {
         self.vault.weighted_impact_analysis(&self.entity, key)
     }
 
+    /// Generate a rotation plan for a secret and its dependency chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn rotation_plan(&self, key: &str) -> Result<crate::dependency::RotationPlan> {
         self.vault.rotation_plan(&self.entity, key)
     }
 
     // ========== Quotas ==========
 
+    /// Set a resource quota for a namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission.
     pub fn set_quota(&self, namespace: &str, quota: ResourceQuota) -> Result<()> {
         self.vault.set_quota(&self.entity, namespace, quota)
     }
 
+    /// Retrieve the resource quota for a namespace, if one is set.
     pub fn get_quota(&self, namespace: &str) -> Option<ResourceQuota> {
         self.vault.get_quota(namespace)
     }
 
+    /// Return current resource usage for a namespace.
     pub fn get_usage(&self, namespace: &str) -> ResourceUsage {
         self.vault.get_usage(namespace)
     }
 
+    /// Remove the resource quota for a namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission.
     pub fn remove_quota(&self, namespace: &str) -> Result<()> {
         self.vault.remove_quota(&self.entity, namespace)
     }
 
     // ========== Dynamic Secrets ==========
 
+    /// Generate a dynamic secret from a template with a TTL.
+    ///
+    /// Returns `(secret_id, secret_value)`. If `one_time` is true, the secret
+    /// can only be retrieved once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks permission or generation fails.
     pub fn generate_dynamic_secret(
         &self,
         template: &SecretTemplate,
@@ -301,83 +552,161 @@ impl<'a> ScopedVault<'a> {
             .generate_dynamic_secret(&self.entity, template, ttl_ms, one_time)
     }
 
+    /// Retrieve a dynamic secret by its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret has expired, been revoked, or the scoped
+    /// entity lacks permission.
     pub fn get_dynamic_secret(&self, secret_id: &str) -> Result<String> {
         self.vault.get_dynamic_secret(&self.entity, secret_id)
     }
 
+    /// List all dynamic secrets created by the scoped entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
     pub fn list_dynamic_secrets(&self) -> Result<Vec<DynamicSecretMetadata>> {
         self.vault.list_dynamic_secrets(&self.entity)
     }
 
+    /// Revoke a dynamic secret, making it permanently inaccessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn revoke_dynamic_secret(&self, secret_id: &str) -> Result<()> {
         self.vault.revoke_dynamic_secret(&self.entity, secret_id)
     }
 
     // ========== Policies ==========
 
+    /// Add a policy-based access control template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission.
     pub fn add_policy(&self, template: PolicyTemplate) -> Result<()> {
         self.vault.add_policy(&self.entity, template)
     }
 
+    /// Remove a policy template by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the policy does not exist or the scoped entity
+    /// lacks admin permission.
     pub fn remove_policy(&self, name: &str) -> Result<()> {
         self.vault.remove_policy(&self.entity, name)
     }
 
+    /// List all registered policy templates.
     pub fn list_policies(&self) -> Vec<PolicyTemplate> {
         self.vault.list_policies()
     }
 
+    /// Evaluate all policies against the scoped entity and return matches.
     pub fn evaluate_policies(&self) -> Vec<PolicyMatch> {
         self.vault.evaluate_policies(&self.entity)
     }
 
     // ========== PITR ==========
 
+    /// Create a point-in-time snapshot of the vault with the given label.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks admin permission or
+    /// snapshot creation fails.
     pub fn create_snapshot(&self, label: &str) -> Result<VaultSnapshot> {
         self.vault.create_snapshot(&self.entity, label)
     }
 
+    /// Restore the vault to a previous snapshot, returning the number of secrets restored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot does not exist or the scoped entity
+    /// lacks admin permission.
     pub fn restore_snapshot(&self, snapshot_id: &str) -> Result<usize> {
         self.vault.restore_snapshot(&self.entity, snapshot_id)
     }
 
+    /// List all available vault snapshots.
     pub fn list_snapshots(&self) -> Vec<VaultSnapshot> {
         self.vault.list_snapshots()
     }
 
+    /// Delete a vault snapshot by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot does not exist or the scoped entity
+    /// lacks admin permission.
     pub fn delete_snapshot(&self, snapshot_id: &str) -> Result<()> {
         self.vault.delete_snapshot(&self.entity, snapshot_id)
     }
 
     // ========== Rotation ==========
 
+    /// Set an automated rotation policy for a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks admin permission.
     pub fn set_rotation_policy(&self, key: &str, policy: RotationPolicy) -> Result<()> {
         self.vault.set_rotation_policy(&self.entity, key, policy)
     }
 
+    /// Retrieve the rotation policy for a secret, if one is set.
     pub fn get_rotation_policy(&self, key: &str) -> Option<RotationPolicy> {
         self.vault.get_rotation_policy(&self.entity, key)
     }
 
+    /// Remove the rotation policy for a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no policy exists or the scoped entity lacks admin permission.
     pub fn remove_rotation_policy(&self, key: &str) -> Result<()> {
         self.vault.remove_rotation_policy(&self.entity, key)
     }
 
+    /// Return all secrets with rotation policies that are due for rotation.
     pub fn check_pending_rotations(&self) -> Vec<PendingRotation> {
         self.vault.check_pending_rotations()
     }
 
+    /// Execute the rotation policy for a secret, returning the new generated value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no rotation policy exists, the generator fails, or
+    /// the scoped entity lacks permission.
     pub fn execute_rotation(&self, key: &str) -> Result<String> {
         self.vault.execute_rotation(&self.entity, key)
     }
 
     // ========== Engine ==========
 
+    /// Generate a secret using a registered secret engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine is not registered or generation fails.
     pub fn engine_generate(&self, engine_name: &str, params: &serde_json::Value) -> Result<String> {
         self.vault
             .engine_generate(&self.entity, engine_name, params)
     }
 
+    /// Revoke a secret through its originating engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine is not registered or revocation fails.
     pub fn engine_revoke(&self, engine_name: &str, secret_id: &str) -> Result<()> {
         self.vault
             .engine_revoke(&self.entity, engine_name, secret_id)
@@ -385,20 +714,43 @@ impl<'a> ScopedVault<'a> {
 
     // ========== Sync ==========
 
+    /// Subscribe a sync target to receive updates when a secret changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target is not registered or the scoped entity
+    /// lacks permission.
     pub fn subscribe_sync(&self, key: &str, target_name: &str) -> Result<()> {
         self.vault.subscribe_sync(&self.entity, key, target_name)
     }
 
+    /// Remove a sync subscription for a secret and target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription does not exist or the scoped entity
+    /// lacks permission.
     pub fn unsubscribe_sync(&self, key: &str, target_name: &str) -> Result<()> {
         self.vault.unsubscribe_sync(&self.entity, key, target_name)
     }
 
+    /// Manually trigger sync for a secret, returning the number of targets notified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks permission.
     pub fn trigger_sync(&self, key: &str) -> Result<usize> {
         self.vault.trigger_sync(&self.entity, key)
     }
 
     // ========== Developer Experience ==========
 
+    /// List secrets matching a pattern with pagination support.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks read permission.
     pub fn list_paginated(
         &self,
         pattern: &str,
@@ -409,10 +761,21 @@ impl<'a> ScopedVault<'a> {
             .list_paginated(&self.entity, pattern, offset, limit)
     }
 
+    /// List secrets matching a pattern with summary metadata for each entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scoped entity lacks read permission.
     pub fn list_with_metadata(&self, pattern: &str) -> Result<Vec<crate::SecretSummary>> {
         self.vault.list_with_metadata(&self.entity, pattern)
     }
 
+    /// Compare two versions of a secret and return their differences.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either version does not exist or the scoped entity
+    /// lacks read permission.
     pub fn diff_versions(
         &self,
         key: &str,
@@ -423,12 +786,24 @@ impl<'a> ScopedVault<'a> {
             .diff_versions(&self.entity, key, version_a, version_b)
     }
 
+    /// Return the full changelog for a secret across all versions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks read permission.
     pub fn changelog(&self, key: &str) -> Result<Vec<crate::ChangelogEntry>> {
         self.vault.changelog(&self.entity, key)
     }
 
     // ========== Similarity ==========
 
+    /// Find the `k` most similar secrets to the given key based on name embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the secret does not exist or the scoped entity
+    /// lacks read permission.
     pub fn find_similar(
         &self,
         key: &str,
@@ -439,6 +814,7 @@ impl<'a> ScopedVault<'a> {
 
     // ========== Graph Intelligence (Tier 4) ==========
 
+    /// Compute behavior embeddings for all entities using the given configuration.
     pub fn compute_behavior_embeddings(
         &self,
         config: crate::graph_intel::BehaviorEmbeddingConfig,
@@ -446,6 +822,7 @@ impl<'a> ScopedVault<'a> {
         self.vault.compute_behavior_embeddings(config)
     }
 
+    /// Detect anomalous entities using geometric distance analysis in embedding space.
     pub fn detect_geometric_anomalies(
         &self,
         k: usize,
@@ -455,6 +832,7 @@ impl<'a> ScopedVault<'a> {
             .detect_geometric_anomalies(k, threshold_multiplier)
     }
 
+    /// Cluster entities by behavioral similarity using access patterns.
     pub fn cluster_entities(&self) -> crate::graph_intel::ClusteringResult {
         self.vault.cluster_entities()
     }

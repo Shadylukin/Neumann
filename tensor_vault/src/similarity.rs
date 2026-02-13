@@ -13,12 +13,19 @@ const FEATURE_DIMS: usize = 6;
 /// Operational metadata features for a secret.
 #[derive(Debug, Clone)]
 pub struct SecretFeatures {
+    /// Unique identifier for the secret.
     pub key: String,
+    /// Age of the secret in days since creation.
     pub creation_age_days: f32,
+    /// Number of stored versions.
     pub version_count: f32,
+    /// Number of accesses within the observation period.
     pub access_frequency: f32,
+    /// Days elapsed since the last key rotation.
     pub days_since_rotation: f32,
+    /// Number of distinct entities with access.
     pub entity_count: f32,
+    /// Shannon entropy of permission levels across entities.
     pub permission_entropy: f32,
 }
 
@@ -47,7 +54,9 @@ impl SecretFeatures {
 /// A similar secret found by the similarity index.
 #[derive(Debug, Clone)]
 pub struct SimilarSecret {
+    /// Key of the similar secret.
     pub key: String,
+    /// Similarity score in (0, 1], where 1 is identical.
     pub similarity: f32,
 }
 
@@ -59,6 +68,7 @@ pub struct SimilarityIndex {
 }
 
 impl SimilarityIndex {
+    /// Create a new similarity index with default HNSW configuration.
     pub fn new() -> Self {
         let config = HNSWConfig {
             m: 8,
@@ -118,10 +128,12 @@ impl SimilarityIndex {
         }
     }
 
+    /// Return the number of secrets currently indexed.
     pub fn len(&self) -> usize {
         self.key_to_node.len()
     }
 
+    /// Return `true` if no secrets are indexed.
     pub fn is_empty(&self) -> bool {
         self.key_to_node.is_empty()
     }

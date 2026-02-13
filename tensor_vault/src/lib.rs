@@ -278,6 +278,7 @@ impl std::fmt::Display for VaultError {
 
 impl std::error::Error for VaultError {}
 
+/// A specialized `Result` type for vault operations.
 pub type Result<T> = std::result::Result<T, VaultError>;
 
 /// Configuration for the vault.
@@ -429,15 +430,29 @@ pub enum VaultEvent {
     /// Anomaly detected by the behavior monitor.
     Anomaly(anomaly::AnomalyEvent),
     /// A storage cleanup operation failed (non-fatal).
-    CleanupError { context: String, error: String },
+    CleanupError {
+        /// Description of the operation that failed.
+        context: String,
+        /// The error message.
+        error: String,
+    },
     /// A mutex was recovered from a poisoned state.
-    PoisonRecovery { context: String },
+    PoisonRecovery {
+        /// Description of the recovered mutex.
+        context: String,
+    },
     /// Legacy ciphertext decrypted (no version tag).
-    LegacyDecrypt { entity: String, key: String },
+    LegacyDecrypt {
+        /// Entity that triggered the decryption.
+        entity: String,
+        /// Secret key that was decrypted.
+        key: String,
+    },
 }
 
 /// Trait for handling vault events.
 pub trait VaultEventHandler: Send + Sync {
+    /// Called when a vault event occurs.
     fn on_event(&self, event: &VaultEvent);
 }
 
@@ -449,10 +464,15 @@ impl VaultEventHandler for NoopEventHandler {
 /// Comprehensive vault health and status information.
 #[derive(Debug, Clone)]
 pub struct VaultStatus {
+    /// Whether the vault is currently sealed.
     pub sealed: bool,
+    /// Total number of secrets stored.
     pub total_secrets: usize,
+    /// Health status of each sync target (name, reachable).
     pub sync_health: Vec<(String, bool)>,
+    /// Number of secrets with pending rotation.
     pub pending_rotations: usize,
+    /// Number of point-in-time recovery snapshots.
     pub snapshot_count: usize,
 }
 
@@ -468,41 +488,62 @@ pub struct VersionInfo {
 /// Paginated list of secret keys.
 #[derive(Debug, Clone)]
 pub struct PagedSecrets {
+    /// Secret keys in this page.
     pub secrets: Vec<String>,
+    /// Starting offset within the full list.
     pub offset: usize,
+    /// Maximum number of secrets per page.
     pub limit: usize,
+    /// Total number of secrets across all pages.
     pub total: usize,
+    /// Whether more secrets exist beyond this page.
     pub has_more: bool,
 }
 
 /// Summary metadata for a secret.
 #[derive(Debug, Clone)]
 pub struct SecretSummary {
+    /// Secret key name.
     pub key: String,
+    /// Number of stored versions.
     pub version_count: u32,
+    /// Unix timestamp in milliseconds when the secret was first created.
     pub created_at: i64,
+    /// Unix timestamp in milliseconds of the most recent access, if any.
     pub last_accessed: Option<i64>,
+    /// Number of entities with access to this secret.
     pub entity_count: usize,
 }
 
 /// Side-by-side comparison of two secret versions.
 #[derive(Debug, Clone)]
 pub struct VersionDiff {
+    /// Secret key name.
     pub key: String,
+    /// First version number being compared.
     pub version_a: u32,
+    /// Second version number being compared.
     pub version_b: u32,
+    /// Decrypted value of the first version.
     pub value_a: String,
+    /// Decrypted value of the second version.
     pub value_b: String,
+    /// Creation timestamp of the first version.
     pub timestamp_a: i64,
+    /// Creation timestamp of the second version.
     pub timestamp_b: i64,
 }
 
 /// A single entry in a secret's change history.
 #[derive(Debug, Clone)]
 pub struct ChangelogEntry {
+    /// Version number associated with this entry, if applicable.
     pub version: Option<u32>,
+    /// Operation performed (e.g., "set", "rotate", "delete").
     pub operation: String,
+    /// Entity that performed the operation.
     pub entity: String,
+    /// Unix timestamp in milliseconds when the operation occurred.
     pub timestamp: i64,
 }
 

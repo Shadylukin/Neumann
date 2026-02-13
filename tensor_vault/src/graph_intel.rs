@@ -44,25 +44,38 @@ fn is_allowed_edge_type(edge_type: &str) -> bool {
 /// A single hop in an access path explanation.
 #[derive(Debug, Clone)]
 pub struct AccessHop {
+    /// The entity key at this hop (e.g. `"user:alice"` or `"vault_secret:db/pass"`).
     pub entity: String,
+    /// The graph edge type traversed to reach this hop (e.g. `"MEMBER"` or `"VAULT_ACCESS_ADMIN"`).
     pub edge_type: String,
+    /// The permission level granted by this edge, if it is an access edge.
     pub permission: Option<Permission>,
+    /// Zero-based index of this hop in the path.
     pub hop_index: usize,
 }
 
 /// Why access was denied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DenialReason {
+    /// No graph path exists between the entity and the secret.
     NoPath,
+    /// A path exists but the highest permission is below what was required.
     InsufficientPermission {
+        /// The highest permission found along any path.
         highest: Permission,
+        /// The permission level that was required.
         required: Permission,
     },
+    /// Permission was attenuated below usable level by hop distance.
     AttenuatedBeyondThreshold {
+        /// The original (pre-attenuation) permission on the edge.
         original: Permission,
+        /// The permission after attenuation, if any remained.
         attenuated_to: Option<Permission>,
     },
+    /// An HMAC signature on an access edge failed verification.
     TamperedEdge {
+        /// The hop index where the tampered edge was detected.
         at_hop: usize,
     },
 }
@@ -70,90 +83,130 @@ pub enum DenialReason {
 /// Full explanation of how an entity accesses (or fails to access) a secret.
 #[derive(Debug, Clone)]
 pub struct AccessExplanation {
+    /// The entity whose access is being explained.
     pub entity: String,
+    /// The secret being accessed.
     pub secret: String,
+    /// Whether the entity has effective access to the secret.
     pub granted: bool,
+    /// The best effective permission across all paths, after attenuation.
     pub effective_permission: Option<Permission>,
+    /// All discovered paths from entity to secret through the access graph.
     pub paths: Vec<Vec<AccessHop>>,
+    /// The reason access was denied, if applicable.
     pub denial_reason: Option<DenialReason>,
 }
 
 /// A single secret reachable by an entity.
 #[derive(Debug, Clone)]
 pub struct ReachableSecret {
+    /// Plaintext name of the secret.
     pub secret_name: String,
+    /// Best effective permission to this secret.
     pub permission: Permission,
+    /// Shortest path length (in hops) to reach this secret.
     pub hop_count: usize,
+    /// Number of distinct paths that reach this secret at the shortest hop distance.
     pub path_count: usize,
 }
 
 /// All secrets reachable by an entity.
 #[derive(Debug, Clone)]
 pub struct BlastRadius {
+    /// The entity whose blast radius is being computed.
     pub entity: String,
+    /// All secrets reachable by this entity, sorted by permission then hop count.
     pub secrets: Vec<ReachableSecret>,
+    /// Total number of reachable secrets.
     pub total_secrets: usize,
 }
 
 /// A new access created by a simulated grant.
 #[derive(Debug, Clone)]
 pub struct NewAccess {
+    /// The entity that would gain new or upgraded access.
     pub entity: String,
+    /// The secret that would become accessible.
     pub secret: String,
+    /// The permission level that would be granted.
     pub permission: Permission,
 }
 
 /// Result of a simulated grant.
 #[derive(Debug, Clone)]
 pub struct SimulationResult {
+    /// The entity that would receive the direct grant.
     pub target_entity: String,
+    /// The secret the grant targets.
     pub secret: String,
+    /// The permission level requested in the simulation.
     pub requested_permission: Permission,
+    /// All entities that would gain new or upgraded access transitively.
     pub new_accesses: Vec<NewAccess>,
+    /// Total number of affected entities.
     pub total_affected: usize,
 }
 
 /// A cycle detected in the access graph.
 #[derive(Debug, Clone)]
 pub struct AccessCycle {
+    /// The entity keys forming the cycle (strongly connected component).
     pub entities: Vec<String>,
 }
 
 /// An entity whose removal would disconnect parts of the graph.
 #[derive(Debug, Clone)]
 pub struct SinglePointOfFailure {
+    /// The entity key that is a single point of failure.
     pub entity: String,
+    /// Number of secrets that become unreachable if this entity is removed.
     pub secrets_affected: usize,
+    /// Number of other entities that lose access to at least one secret.
     pub entities_affected: usize,
 }
 
 /// An entity with disproportionately high access.
 #[derive(Debug, Clone)]
 pub struct OverPrivilegedEntity {
+    /// The over-privileged entity key.
     pub entity: String,
+    /// PageRank score reflecting graph influence.
     pub pagerank_score: f64,
+    /// Total number of secrets reachable by this entity.
     pub reachable_secrets: usize,
+    /// Number of secrets accessible with admin permission.
     pub admin_count: usize,
 }
 
 /// Full security audit report.
 #[derive(Debug, Clone)]
 pub struct SecurityAuditReport {
+    /// All cycles (strongly connected components) found in the access graph.
     pub cycles: Vec<AccessCycle>,
+    /// Entities whose removal would disconnect secrets from the graph.
     pub single_points_of_failure: Vec<SinglePointOfFailure>,
+    /// Entities with disproportionately broad or elevated access.
     pub over_privileged: Vec<OverPrivilegedEntity>,
+    /// Total number of non-secret entity nodes in the graph.
     pub total_entities: usize,
+    /// Total number of vault secrets.
     pub total_secrets: usize,
+    /// Total number of edges in the access graph.
     pub total_edges: usize,
 }
 
 /// An entity identified as critical infrastructure.
 #[derive(Debug, Clone)]
 pub struct CriticalEntity {
+    /// The critical entity key.
     pub entity: String,
+    /// Whether removing this entity would disconnect secrets from the graph.
     pub is_single_point_of_failure: bool,
+    /// Number of secrets that depend solely on this entity for reachability.
     pub secrets_solely_dependent: usize,
+    /// Total number of secrets reachable from this entity.
     pub total_reachable_secrets: usize,
+    /// PageRank score reflecting graph influence.
     pub pagerank_score: f64,
 }
 
@@ -164,11 +217,17 @@ pub struct CriticalEntity {
 /// Individual entity privilege analysis.
 #[derive(Debug, Clone)]
 pub struct PrivilegeAnalysis {
+    /// The entity being analysed.
     pub entity: String,
+    /// PageRank score reflecting graph influence.
     pub pagerank_score: f64,
+    /// Total number of secrets reachable by this entity.
     pub reachable_secrets: usize,
+    /// Number of secrets reachable with admin permission.
     pub admin_count: usize,
+    /// Number of secrets reachable with write permission.
     pub write_count: usize,
+    /// Number of secrets reachable with read permission.
     pub read_count: usize,
     /// `pagerank * reachable_secrets` -- higher means more over-privileged.
     pub privilege_score: f64,
@@ -177,17 +236,24 @@ pub struct PrivilegeAnalysis {
 /// Full privilege analysis report.
 #[derive(Debug, Clone)]
 pub struct PrivilegeAnalysisReport {
+    /// Per-entity privilege analyses, sorted by privilege score descending.
     pub entities: Vec<PrivilegeAnalysis>,
+    /// Arithmetic mean of all privilege scores.
     pub mean_privilege_score: f64,
+    /// Highest privilege score across all entities.
     pub max_privilege_score: f64,
 }
 
 /// Anomaly score for a specific access grant.
 #[derive(Debug, Clone)]
 pub struct DelegationAnomalyScore {
+    /// The entity holding the grant.
     pub entity: String,
+    /// The secret targeted by the grant.
     pub secret: String,
+    /// Jaccard similarity between the entity and secret neighborhoods.
     pub jaccard: f64,
+    /// Adamic-Adar index between the entity and secret nodes.
     pub adamic_adar: f64,
     /// Combined score: `1.0 - jaccard` (low similarity = high anomaly).
     pub anomaly_score: f64,
@@ -196,24 +262,33 @@ pub struct DelegationAnomalyScore {
 /// An inferred role based on community detection.
 #[derive(Debug, Clone)]
 pub struct InferredRole {
+    /// Louvain community identifier for this role.
     pub role_id: u64,
+    /// Entity keys assigned to this role.
     pub members: Vec<String>,
+    /// Secrets reachable by every member of this role.
     pub common_secrets: Vec<String>,
 }
 
 /// Result of role inference.
 #[derive(Debug, Clone)]
 pub struct RoleInferenceResult {
+    /// Inferred roles sorted by member count descending.
     pub roles: Vec<InferredRole>,
+    /// Louvain modularity score of the community partition.
     pub modularity: f64,
+    /// Entities not assigned to any role (singleton communities).
     pub unassigned: Vec<String>,
 }
 
 /// Per-entity trust score based on triangle participation.
 #[derive(Debug, Clone)]
 pub struct EntityTrustScore {
+    /// The entity being scored.
     pub entity: String,
+    /// Number of triangles this entity participates in.
     pub triangle_count: usize,
+    /// Local clustering coefficient of this entity's neighborhood.
     pub clustering_coefficient: f64,
     /// Normalized trust: `clustering_coefficient * (1 + ln(1 + triangles))`.
     pub trust_score: f64,
@@ -222,25 +297,35 @@ pub struct EntityTrustScore {
 /// Full trust transitivity report.
 #[derive(Debug, Clone)]
 pub struct TrustTransitivityReport {
+    /// Per-entity trust scores sorted by trust score descending.
     pub entities: Vec<EntityTrustScore>,
+    /// Global clustering coefficient of the access graph.
     pub global_clustering: f64,
+    /// Total number of triangles found in the graph.
     pub total_triangles: usize,
 }
 
 /// Contributor to an entity's risk.
 #[derive(Debug, Clone)]
 pub struct RiskContributor {
+    /// The secret contributing to this entity's risk score.
     pub secret: String,
+    /// The permission level held on this secret.
     pub permission: Permission,
+    /// Number of hops to reach this secret from the entity.
     pub hop_count: usize,
 }
 
 /// Per-entity risk score.
 #[derive(Debug, Clone)]
 pub struct EntityRiskScore {
+    /// The entity being scored.
     pub entity: String,
+    /// Eigenvector centrality score reflecting structural importance.
     pub eigenvector_score: f64,
+    /// Number of secrets reachable with admin permission.
     pub reachable_admin_secrets: usize,
+    /// Admin-level secrets that contribute to the risk score.
     pub risk_contributors: Vec<RiskContributor>,
     /// `eigenvector * (1 + admin_count)` -- higher means more risk.
     pub risk_score: f64,
@@ -249,8 +334,11 @@ pub struct EntityRiskScore {
 /// Full risk propagation report.
 #[derive(Debug, Clone)]
 pub struct RiskPropagationReport {
+    /// Per-entity risk scores sorted by risk score descending.
     pub entities: Vec<EntityRiskScore>,
+    /// Arithmetic mean of all entity risk scores.
     pub mean_risk: f64,
+    /// Highest risk score across all entities.
     pub max_risk: f64,
 }
 
@@ -1394,7 +1482,9 @@ pub fn risk_propagation(vault: &Vault) -> RiskPropagationReport {
 /// Per-entity embedding vector derived from topology and access patterns.
 #[derive(Debug, Clone)]
 pub struct NodeEmbedding {
+    /// The entity key this embedding represents.
     pub entity: String,
+    /// L2-normalized feature vector combining topology and access pattern features.
     pub embedding: Vec<f32>,
 }
 
@@ -1419,34 +1509,48 @@ impl Default for BehaviorEmbeddingConfig {
 /// Anomaly result for a single entity.
 #[derive(Debug, Clone)]
 pub struct GeometricAnomalyResult {
+    /// The anomalous entity key.
     pub entity: String,
+    /// Z-score of this entity's k-NN distance relative to the population.
     pub anomaly_score: f64,
+    /// Entity keys of the k nearest neighbors in embedding space.
     pub nearest_neighbors: Vec<String>,
+    /// Euclidean distance to the k-th nearest neighbor.
     pub knn_distance: f64,
 }
 
 /// Report of geometric anomaly detection across all entities.
 #[derive(Debug, Clone)]
 pub struct GeometricAnomalyReport {
+    /// Entities flagged as anomalous, sorted by anomaly score descending.
     pub anomalies: Vec<GeometricAnomalyResult>,
+    /// Mean k-NN distance across all entities.
     pub mean_distance: f64,
+    /// Distance threshold used for anomaly detection (`mean + multiplier * stddev`).
     pub threshold: f64,
+    /// Total number of entities evaluated.
     pub total_entities: usize,
 }
 
 /// A cluster of entities with similar access patterns.
 #[derive(Debug, Clone)]
 pub struct SpectralCluster {
+    /// Numeric identifier for this cluster (derived from Louvain community ID).
     pub cluster_id: usize,
+    /// Entity keys belonging to this cluster.
     pub members: Vec<String>,
+    /// Centroid of the cluster in embedding space (empty if embeddings not computed).
     pub center: Vec<f32>,
 }
 
 /// Result of clustering entities by their access graph structure.
 #[derive(Debug, Clone)]
 pub struct ClusteringResult {
+    /// All discovered clusters.
     pub clusters: Vec<SpectralCluster>,
+    /// Map from entity key to its assigned cluster ID.
     pub assignments: HashMap<String, usize>,
+    /// Louvain modularity score of the partition.
     pub modularity: f64,
 }
 

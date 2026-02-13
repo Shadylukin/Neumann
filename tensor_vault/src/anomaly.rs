@@ -59,22 +59,35 @@ pub struct AgentProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnomalyEvent {
     /// Agent is accessing a secret for the first time.
-    FirstSecretAccess { entity: String, secret_key: String },
+    FirstSecretAccess {
+        /// Entity performing the access.
+        entity: String,
+        /// Obfuscated key of the secret being accessed.
+        secret_key: String,
+    },
     /// Agent operation rate exceeds the configured limit.
     FrequencySpike {
+        /// Entity whose rate spiked.
         entity: String,
+        /// Number of operations within the sliding window.
         ops_in_window: u64,
+        /// Configured spike limit that was exceeded.
         threshold: u64,
     },
     /// Agent performed a burst of operations.
     BulkOperation {
+        /// Entity performing the burst.
         entity: String,
+        /// Number of accesses to the same secret.
         operation_count: u64,
+        /// Configured bulk threshold that was reached.
         threshold: u64,
     },
     /// A previously dormant agent has resumed activity.
     InactiveAgentResumed {
+        /// Entity that resumed activity.
         entity: String,
+        /// Duration of inactivity in milliseconds before resumption.
         inactive_duration_ms: i64,
     },
 }
@@ -86,6 +99,7 @@ pub struct AnomalyMonitor {
 }
 
 impl AnomalyMonitor {
+    /// Create a new anomaly monitor with the given thresholds.
     pub fn new(thresholds: AnomalyThresholds) -> Self {
         Self {
             profiles: DashMap::new(),

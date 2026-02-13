@@ -13,23 +13,36 @@ use crate::manifold::GeoCoordinate;
 /// Health and location metadata for a sync target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetGeometry {
+    /// Unique name identifying this sync target.
     pub target_name: String,
+    /// Geographic coordinates of the target.
     pub location: GeoCoordinate,
+    /// Exponentially weighted average latency in milliseconds.
     pub avg_latency_ms: f64,
+    /// Exponentially weighted average throughput.
     pub avg_throughput: f64,
+    /// Exponentially weighted average failure rate (0.0 to 1.0).
     pub failure_rate: f64,
+    /// Timestamp of the last health check in milliseconds since epoch.
     pub last_health_check_ms: i64,
 }
 
 /// Tuning knobs for geometric routing decisions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
+    /// Maximum acceptable average latency in milliseconds; targets above are excluded.
     pub max_latency_ms: f64,
+    /// Maximum acceptable failure rate (0.0 to 1.0); targets above are excluded.
     pub max_failure_rate: f64,
+    /// Weight for the latency component in composite scoring.
     pub latency_weight: f64,
+    /// Weight for the geographic proximity component in composite scoring.
     pub proximity_weight: f64,
+    /// Weight for the reliability component in composite scoring.
     pub reliability_weight: f64,
+    /// Smoothing factor for exponential moving average updates (0.0 to 1.0).
     pub ema_alpha: f64,
+    /// Maximum number of targets to select per sync operation.
     pub sync_fanout: usize,
 }
 
@@ -50,31 +63,52 @@ impl Default for RoutingConfig {
 /// A target selected for sync with its composite score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutedTarget {
+    /// Name of the selected sync target.
     pub target_name: String,
+    /// Composite routing score (higher is better).
     pub routing_score: f64,
+    /// Expected latency in milliseconds based on EMA statistics.
     pub estimated_latency_ms: f64,
 }
 
 /// A target excluded from sync with the reason.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExcludedTarget {
+    /// Name of the excluded sync target.
     pub target_name: String,
+    /// Why this target was excluded from routing.
     pub reason: ExclusionReason,
 }
 
 /// Why a target was excluded from the routing decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExclusionReason {
-    HighLatency { latency_ms: f64, threshold: f64 },
-    HighFailureRate { rate: f64, threshold: f64 },
+    /// Average latency exceeds the configured maximum.
+    HighLatency {
+        /// Observed average latency in milliseconds.
+        latency_ms: f64,
+        /// Configured maximum latency threshold.
+        threshold: f64,
+    },
+    /// Failure rate exceeds the configured maximum.
+    HighFailureRate {
+        /// Observed failure rate (0.0 to 1.0).
+        rate: f64,
+        /// Configured maximum failure rate threshold.
+        threshold: f64,
+    },
+    /// Target has no registered geometry or is otherwise unhealthy.
     Unhealthy,
 }
 
 /// Routing outcome for a single secret sync operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingDecision {
+    /// Key of the secret being synced.
     pub secret_key: String,
+    /// Targets selected for sync, ordered by descending score.
     pub selected_targets: Vec<RoutedTarget>,
+    /// Targets excluded from sync with their reasons.
     pub excluded_targets: Vec<ExcludedTarget>,
 }
 
@@ -88,6 +122,7 @@ pub struct GeoRouter {
 }
 
 impl GeoRouter {
+    /// Create a new router with the given configuration.
     pub fn new(config: RoutingConfig) -> Self {
         Self {
             geometries: DashMap::new(),

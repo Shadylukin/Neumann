@@ -16,9 +16,13 @@ const TEMPLATE_PREFIX: &str = "_vtpl:";
 /// A persisted secret template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredTemplate {
+    /// Human-readable template name.
     pub name: String,
+    /// The secret generation template definition.
     pub template: SecretTemplate,
+    /// Entity that created this template.
     pub created_by: String,
+    /// Creation timestamp in Unix milliseconds.
     pub created_at: i64,
 }
 
@@ -36,6 +40,7 @@ impl Default for TemplateManager {
 }
 
 impl TemplateManager {
+    /// Create a new empty template manager.
     pub fn new() -> Self {
         Self::default()
     }

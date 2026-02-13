@@ -38,9 +38,13 @@ pub struct DependencyInfo {
 /// Weight classification for dependency edges.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DependencyWeight {
+    /// The dependency is critical -- failure cascades immediately.
     Critical,
+    /// High-severity dependency that should be rotated promptly.
     High,
+    /// Medium-severity dependency with moderate impact.
     Medium,
+    /// Low-severity dependency with minimal impact.
     Low,
 }
 
@@ -73,36 +77,52 @@ impl DependencyWeight {
 /// A downstream secret with weight and impact score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightedAffectedSecret {
+    /// The secret key affected by the root change.
     pub secret: String,
+    /// How many edges from the root to this secret.
     pub depth: usize,
+    /// Weight classification of the inbound dependency edge.
     pub edge_weight: DependencyWeight,
+    /// Computed impact score (weight / depth).
     pub impact_score: f64,
 }
 
 /// Weighted impact analysis report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightedImpactReport {
+    /// The root secret whose change was analyzed.
     pub root_secret: String,
+    /// All downstream secrets with weight and impact metadata.
     pub affected_secrets: Vec<WeightedAffectedSecret>,
+    /// Agents that have access to any affected secret.
     pub affected_agents: Vec<String>,
+    /// Maximum depth reached in the dependency graph.
     pub max_depth: usize,
+    /// Sum of all individual impact scores.
     pub total_impact_score: f64,
 }
 
 /// A step in a prioritized rotation plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotationStep {
+    /// The secret key to rotate at this step.
     pub secret: String,
+    /// Depth of this secret in the dependency chain.
     pub depth: usize,
+    /// Priority score (higher means rotate sooner).
     pub priority: f64,
+    /// Weight classification of the dependency edge.
     pub weight: DependencyWeight,
 }
 
 /// Prioritized rotation plan for cascading secret changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotationPlan {
+    /// The root secret that triggered the rotation cascade.
     pub root_secret: String,
+    /// Ordered list of rotation steps, highest priority first.
     pub rotation_order: Vec<RotationStep>,
+    /// Total number of secrets requiring rotation.
     pub total_secrets: usize,
 }
 
@@ -145,6 +165,11 @@ fn would_create_cycle(graph: &GraphEngine, parent_node: u64, child_node: u64) ->
 }
 
 /// Add a dependency: child depends on parent.
+///
+/// # Errors
+///
+/// Returns `VaultError::CyclicDependency` if the new edge would create a cycle,
+/// or `VaultError::GraphError` if the underlying graph operation fails.
 pub fn add_dependency(
     graph: &GraphEngine,
     parent_node_key: &str,
@@ -171,6 +196,10 @@ pub fn add_dependency(
 }
 
 /// Remove a dependency edge between parent and child.
+///
+/// # Errors
+///
+/// Returns `VaultError::GraphError` if deleting the edge fails.
 pub fn remove_dependency(
     graph: &GraphEngine,
     parent_node_key: &str,
@@ -322,6 +351,11 @@ pub fn impact_analysis(graph: &GraphEngine, node_key: &str) -> ImpactReport {
 }
 
 /// Add a weighted dependency: child depends on parent with a given weight.
+///
+/// # Errors
+///
+/// Returns `VaultError::CyclicDependency` if the new edge would create a cycle,
+/// or `VaultError::GraphError` if the underlying graph operation fails.
 pub fn add_weighted_dependency(
     graph: &GraphEngine,
     parent_key: &str,

@@ -28,9 +28,6 @@ sha2 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 
-# Shamir secret sharing
-sharks = "0.5"
-
 # X.509 certificate generation for PKI engine
 rcgen = "0.13"
 

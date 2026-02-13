@@ -13,17 +13,24 @@ use crate::{Result, VaultError};
 /// A point in 2D or 3D coordinate space representing a geographic location.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoCoordinate {
+    /// Longitude or horizontal coordinate.
     pub x: f64,
+    /// Latitude or vertical coordinate.
     pub y: f64,
+    /// Optional altitude or third-dimension coordinate.
     pub z: Option<f64>,
 }
 
 /// A vault deployment region with capacity and inter-region latency metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultRegion {
+    /// Human-readable region identifier (e.g. "us-east-1").
     pub name: String,
+    /// Geographic center of this region.
     pub center: GeoCoordinate,
+    /// Maximum number of secrets this region can hold.
     pub capacity: usize,
+    /// Current number of secrets stored in this region.
     pub current_load: usize,
     /// Inter-region latencies in milliseconds, keyed by region name.
     pub latencies: HashMap<String, f64>,
@@ -32,19 +39,28 @@ pub struct VaultRegion {
 /// Recommended placement for a single secret across available regions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlacementRecommendation {
+    /// The secret key this recommendation applies to.
     pub secret_key: String,
+    /// The best-scoring region for primary storage.
     pub primary_region: String,
+    /// Additional regions selected for replication.
     pub replica_regions: Vec<String>,
+    /// Composite score of the primary region (lower is better).
     pub placement_score: f64,
+    /// Geographic centroid of the secret's accessors.
     pub access_centroid: GeoCoordinate,
 }
 
 /// Tuning weights that control placement scoring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlacementConfig {
+    /// Weight given to geographic proximity in the placement score.
     pub locality_weight: f64,
+    /// Weight given to current load vs. capacity ratio.
     pub load_balance_weight: f64,
+    /// Weight given to average inter-region latency.
     pub replication_weight: f64,
+    /// Number of replica regions to select after the primary.
     pub replica_count: usize,
 }
 
@@ -72,6 +88,7 @@ impl Default for RegionRegistry {
 }
 
 impl RegionRegistry {
+    /// Create an empty region registry.
     pub fn new() -> Self {
         Self {
             regions: DashMap::new(),
@@ -79,18 +96,22 @@ impl RegionRegistry {
         }
     }
 
+    /// Register a deployment region, replacing any existing region with the same name.
     pub fn add_region(&self, region: VaultRegion) {
         self.regions.insert(region.name.clone(), region);
     }
 
+    /// Associate a geographic coordinate with the given entity identifier.
     pub fn set_entity_location(&self, entity: &str, coord: GeoCoordinate) {
         self.entity_locations.insert(entity.to_string(), coord);
     }
 
+    /// Return a snapshot of all registered regions.
     pub fn regions(&self) -> Vec<VaultRegion> {
         self.regions.iter().map(|r| r.value().clone()).collect()
     }
 
+    /// Look up the geographic coordinate for an entity, if registered.
     pub fn entity_location(&self, entity: &str) -> Option<GeoCoordinate> {
         self.entity_locations.get(entity).map(|r| r.value().clone())
     }
@@ -154,6 +175,8 @@ pub fn recommend_placement(
 }
 
 /// Recommend placement for every secret the vault root can list.
+///
+/// Secrets whose placement cannot be computed are silently skipped.
 pub fn batch_recommend_placement(
     vault: &Vault,
     registry: &RegionRegistry,
