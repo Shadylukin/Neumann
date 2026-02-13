@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 use crate::state::{DestructiveOp, OperationPreview};
 
+/// Generates human-readable previews for destructive operations.
 pub struct PreviewGenerator {
     sample_size: usize,
 }
 
 impl PreviewGenerator {
+    /// Create a preview generator that truncates sample data to `sample_size` items.
     pub fn new(sample_size: usize) -> Self {
         Self { sample_size }
     }
 
+    /// Build an `OperationPreview` from an operation and its sample data.
     pub fn generate(&self, op: &DestructiveOp, sample_data: Vec<String>) -> OperationPreview {
         let summary = self.format_summary(op);
         let affected_count = op.affected_count();
@@ -79,6 +82,7 @@ fn format_bytes(bytes: usize) -> String {
     }
 }
 
+/// Format a warning message for a destructive operation.
 pub fn format_warning(op: &DestructiveOp) -> String {
     match op {
         DestructiveOp::Delete { table, row_count } => {
@@ -115,6 +119,7 @@ pub fn format_warning(op: &DestructiveOp) -> String {
     }
 }
 
+/// Build a full confirmation prompt including warning, summary, sample data, and input prompt.
 pub fn format_confirmation_prompt(op: &DestructiveOp, preview: &OperationPreview) -> String {
     let mut output = String::new();
 

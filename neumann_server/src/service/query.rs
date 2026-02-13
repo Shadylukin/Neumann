@@ -35,6 +35,9 @@ const DEFAULT_STREAM_CHANNEL_CAPACITY: usize = 32;
 /// Threshold for consecutive failures before marking unhealthy.
 const FAILURE_THRESHOLD: u32 = 5;
 
+/// Maximum number of queries allowed in a single batch request.
+const MAX_BATCH_SIZE: usize = 100;
+
 /// Implementation of the `QueryService` gRPC service.
 pub struct QueryServiceImpl {
     router: Arc<RwLock<QueryRouter>>,
@@ -163,14 +166,27 @@ impl QueryServiceImpl {
     }
 
     /// Execute a query and return the result.
+    ///
+    /// Uses a read lock for queries without identity (the common case),
+    /// and a write lock only when identity must be set for vault access.
     fn execute_query(&self, query: &str, identity: Option<&str>) -> Result<QueryResult, Status> {
-        let mut router = self.router.write();
-
-        // Set identity for vault access if provided
         if let Some(id) = identity {
+            let mut router = self.router.write();
             router.set_identity(id);
+            match router.execute(query) {
+                Ok(result) => {
+                    self.record_success();
+                    return Ok(result);
+                },
+                Err(e) => {
+                    self.record_failure();
+                    tracing::error!("Query execution error: {}", e);
+                    return Err(crate::error::sanitize_internal_error(e));
+                },
+            }
         }
 
+        let router = self.router.read();
         match router.execute(query) {
             Ok(result) => {
                 self.record_success();
@@ -179,7 +195,7 @@ impl QueryServiceImpl {
             Err(e) => {
                 self.record_failure();
                 tracing::error!("Query execution error: {}", e);
-                Err(Status::internal(e.to_string()))
+                Err(crate::error::sanitize_internal_error(e))
             },
         }
     }
@@ -499,6 +515,12 @@ impl QueryService for QueryServiceImpl {
         };
 
         let batch = request.into_inner();
+        if batch.queries.len() > MAX_BATCH_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "Batch size {} exceeds maximum of {MAX_BATCH_SIZE}",
+                batch.queries.len()
+            )));
+        }
         let mut results = Vec::with_capacity(batch.queries.len());
         let mut all_succeeded = true;
 
@@ -671,7 +693,7 @@ impl QueryService for QueryServiceImpl {
             Err(e) => {
                 self.record_failure();
                 tracing::error!("Paginated query execution error: {}", e);
-                Err(Status::internal(e.to_string()))
+                Err(crate::error::sanitize_internal_error(e))
             },
         }
     }
@@ -1962,6 +1984,77 @@ mod tests {
             chunks.push(chunk.unwrap());
         }
 
+        assert!(!chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_identity_error_path() {
+        let router = create_test_router();
+        let service = QueryServiceImpl::new(router);
+
+        // Send an invalid query with identity to exercise the write-lock error path
+        let request = Request::new(QueryRequest {
+            query: "INVALID_COMMAND_THAT_DOES_NOT_EXIST".to_string(),
+            identity: Some("test-user".to_string()),
+        });
+
+        let response = service.execute(request).await;
+        assert!(response.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_stream_nodes() {
+        let router = create_test_router();
+
+        // Setup: create graph nodes via keyword routing
+        {
+            let r = router.write();
+            r.execute("NODE CREATE person{name:\"Alice\"}").unwrap();
+            r.execute("NODE CREATE person{name:\"Bob\"}").unwrap();
+        }
+
+        let service = QueryServiceImpl::with_config(router, None, 10);
+
+        let request = Request::new(QueryRequest {
+            query: "NODE LIST".to_string(),
+            identity: None,
+        });
+
+        let response = service.execute_stream(request).await.unwrap();
+        let mut stream = response.into_inner();
+        let mut chunks = vec![];
+        while let Some(chunk) = stream.next().await {
+            chunks.push(chunk.unwrap());
+        }
+        assert!(!chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_stream_edges() {
+        let router = create_test_router();
+
+        // Setup: create graph nodes and an edge
+        {
+            let r = router.write();
+            r.execute("NODE CREATE person{name:\"Alice\"}").unwrap();
+            r.execute("NODE CREATE person{name:\"Bob\"}").unwrap();
+            r.execute("EDGE CREATE 1 -> 2 knows").unwrap();
+        }
+
+        let service = QueryServiceImpl::with_config(router, None, 10);
+
+        // EDGE GET returns QueryResult::Edges
+        let request = Request::new(QueryRequest {
+            query: "EDGE GET 1".to_string(),
+            identity: None,
+        });
+
+        let response = service.execute_stream(request).await.unwrap();
+        let mut stream = response.into_inner();
+        let mut chunks = vec![];
+        while let Some(chunk) = stream.next().await {
+            chunks.push(chunk.unwrap());
+        }
         assert!(!chunks.is_empty());
     }
 

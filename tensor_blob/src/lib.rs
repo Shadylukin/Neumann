@@ -301,10 +301,20 @@ impl BlobStore {
             );
         }
         if let Some(content_type) = updates.content_type {
+            // Remove old content-type index entry
+            if let Some(old_ct) = get_string(&tensor, "_content_type") {
+                let old_idx = format!("_blob:idx:ct:{old_ct}:{artifact_id}");
+                let _ = self.store.delete(&old_idx);
+            }
             tensor.set(
                 "_content_type",
-                TensorValue::Scalar(ScalarValue::String(content_type)),
+                TensorValue::Scalar(ScalarValue::String(content_type.clone())),
             );
+            // Write new content-type index entry
+            if !content_type.is_empty() {
+                let new_idx = format!("_blob:idx:ct:{content_type}:{artifact_id}");
+                self.store.put(&new_idx, tensor_store::TensorData::new())?;
+            }
         }
 
         for (key, value) in updates.custom {
@@ -398,11 +408,31 @@ impl BlobStore {
 
     /// Get artifacts linked to entity.
     ///
+    /// Uses a secondary index for O(k) lookups instead of O(n) full scans,
+    /// with a fallback to full scan for pre-index data.
+    ///
     /// # Errors
     ///
     /// This method currently cannot fail, but returns `Result` for API consistency.
     #[allow(clippy::unused_async)]
     pub async fn artifacts_for(&self, entity: &str) -> Result<Vec<String>> {
+        let prefix = format!("_blob:idx:link:{entity}:");
+        let result: Vec<String> = self
+            .store
+            .scan(&prefix)
+            .into_iter()
+            .filter_map(|k| k.strip_prefix(&prefix).map(String::from))
+            .collect();
+        if !result.is_empty() {
+            return Ok(result);
+        }
+
+        // Fallback to full scan for pre-index data
+        Ok(self.artifacts_for_scan(entity))
+    }
+
+    /// Full-scan fallback for `artifacts_for` when no secondary index entries exist.
+    fn artifacts_for_scan(&self, entity: &str) -> Vec<String> {
         let mut result = Vec::new();
 
         for meta_key in self.store.scan("_blob:meta:") {
@@ -417,7 +447,7 @@ impl BlobStore {
             }
         }
 
-        Ok(result)
+        result
     }
 
     // === Tagging ===
@@ -444,11 +474,31 @@ impl BlobStore {
 
     /// Get artifacts by tag.
     ///
+    /// Uses a secondary index for O(k) lookups instead of O(n) full scans,
+    /// with a fallback to full scan for pre-index data.
+    ///
     /// # Errors
     ///
     /// This method currently cannot fail, but returns `Result` for API consistency.
     #[allow(clippy::unused_async)]
     pub async fn by_tag(&self, tag: &str) -> Result<Vec<String>> {
+        let prefix = format!("_blob:idx:tag:{tag}:");
+        let result: Vec<String> = self
+            .store
+            .scan(&prefix)
+            .into_iter()
+            .filter_map(|k| k.strip_prefix(&prefix).map(String::from))
+            .collect();
+        if !result.is_empty() {
+            return Ok(result);
+        }
+
+        // Fallback to full scan for pre-index data
+        Ok(self.by_tag_scan(tag))
+    }
+
+    /// Full-scan fallback for `by_tag` when no secondary index entries exist.
+    fn by_tag_scan(&self, tag: &str) -> Vec<String> {
         let tag_ref = format!("tag:{tag}");
         let mut result = Vec::new();
 
@@ -464,7 +514,7 @@ impl BlobStore {
             }
         }
 
-        Ok(result)
+        result
     }
 
     // === Semantic (if VectorEngine available) ===
@@ -604,11 +654,31 @@ impl BlobStore {
 
     /// List artifacts by content type.
     ///
+    /// Uses a secondary index for O(k) lookups instead of O(n) full scans,
+    /// with a fallback to full scan for pre-index data.
+    ///
     /// # Errors
     ///
     /// This method currently cannot fail, but returns `Result` for API consistency.
     #[allow(clippy::unused_async)]
     pub async fn by_content_type(&self, content_type: &str) -> Result<Vec<String>> {
+        let prefix = format!("_blob:idx:ct:{content_type}:");
+        let result: Vec<String> = self
+            .store
+            .scan(&prefix)
+            .into_iter()
+            .filter_map(|k| k.strip_prefix(&prefix).map(String::from))
+            .collect();
+        if !result.is_empty() {
+            return Ok(result);
+        }
+
+        // Fallback to full scan for pre-index data
+        Ok(self.by_content_type_scan(content_type))
+    }
+
+    /// Full-scan fallback for `by_content_type` when no secondary index entries exist.
+    fn by_content_type_scan(&self, content_type: &str) -> Vec<String> {
         let mut result = Vec::new();
 
         for meta_key in self.store.scan("_blob:meta:") {
@@ -623,7 +693,7 @@ impl BlobStore {
             }
         }
 
-        Ok(result)
+        result
     }
 
     /// List artifacts by creator.
@@ -1251,5 +1321,403 @@ mod tests {
 
         let results = blob_store.by_content_type("video/mp4").await.unwrap();
         assert!(results.is_empty());
+    }
+
+    // === Secondary index tests ===
+
+    #[tokio::test]
+    async fn test_index_tag_lookup_uses_index() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put("doc.txt", b"data", PutOptions::new().with_tag("release"))
+            .await
+            .unwrap();
+
+        // Verify index key was written
+        let prefix = format!("_blob:idx:tag:release:{id}");
+        assert!(store.exists(&prefix));
+
+        // by_tag should find it via index
+        let found = blob_store.by_tag("release").await.unwrap();
+        assert!(found.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_tag_removed_on_untag() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put("doc.txt", b"data", PutOptions::default())
+            .await
+            .unwrap();
+
+        blob_store.tag(&id, "temp").await.unwrap();
+        let idx_key = format!("_blob:idx:tag:temp:{id}");
+        assert!(store.exists(&idx_key));
+
+        blob_store.untag(&id, "temp").await.unwrap();
+        assert!(!store.exists(&idx_key));
+    }
+
+    #[tokio::test]
+    async fn test_index_link_lookup_uses_index() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put(
+                "report.pdf",
+                b"pdf data",
+                PutOptions::new().with_link("project:42"),
+            )
+            .await
+            .unwrap();
+
+        // Verify index key was written at creation time
+        let idx_key = format!("_blob:idx:link:project:42:{id}");
+        assert!(store.exists(&idx_key));
+
+        // artifacts_for should find it via index
+        let found = blob_store.artifacts_for("project:42").await.unwrap();
+        assert!(found.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_link_added_and_removed() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put("file.txt", b"content", PutOptions::default())
+            .await
+            .unwrap();
+
+        blob_store.link(&id, "user:bob").await.unwrap();
+        let idx_key = format!("_blob:idx:link:user:bob:{id}");
+        assert!(store.exists(&idx_key));
+
+        let found = blob_store.artifacts_for("user:bob").await.unwrap();
+        assert!(found.contains(&id));
+
+        blob_store.unlink(&id, "user:bob").await.unwrap();
+        assert!(!store.exists(&idx_key));
+    }
+
+    #[tokio::test]
+    async fn test_index_content_type_lookup_uses_index() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put(
+                "image.png",
+                b"png data",
+                PutOptions::new().with_content_type("image/png"),
+            )
+            .await
+            .unwrap();
+
+        // Verify index key was written at creation time
+        let idx_key = format!("_blob:idx:ct:image/png:{id}");
+        assert!(store.exists(&idx_key));
+
+        // by_content_type should find it via index
+        let found = blob_store.by_content_type("image/png").await.unwrap();
+        assert!(found.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_content_type_updated_on_metadata_change() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put(
+                "data.bin",
+                b"binary",
+                PutOptions::new().with_content_type("application/octet-stream"),
+            )
+            .await
+            .unwrap();
+
+        let old_idx = format!("_blob:idx:ct:application/octet-stream:{id}");
+        assert!(store.exists(&old_idx));
+
+        // Update content type via update_metadata
+        let updates = MetadataUpdates::new().with_content_type("application/json");
+        blob_store.update_metadata(&id, updates).await.unwrap();
+
+        // Old index entry should be gone, new one should exist
+        assert!(!store.exists(&old_idx));
+        let new_idx = format!("_blob:idx:ct:application/json:{id}");
+        assert!(store.exists(&new_idx));
+
+        // by_content_type should find it under new type
+        let found = blob_store
+            .by_content_type("application/json")
+            .await
+            .unwrap();
+        assert!(found.contains(&id));
+
+        // Should NOT find it under old type
+        let not_found = blob_store
+            .by_content_type("application/octet-stream")
+            .await
+            .unwrap();
+        assert!(!not_found.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_cleanup_on_delete() {
+        let store = TensorStore::new();
+        let config = BlobConfig::new().with_gc_min_age(std::time::Duration::from_secs(0));
+        let blob_store = BlobStore::new(store.clone(), config).await.unwrap();
+
+        let id = blob_store
+            .put(
+                "full.txt",
+                b"data",
+                PutOptions::new()
+                    .with_content_type("text/plain")
+                    .with_tag("archive")
+                    .with_link("entity:1"),
+            )
+            .await
+            .unwrap();
+
+        // Verify all index keys exist
+        assert!(store.exists(&format!("_blob:idx:ct:text/plain:{id}")));
+        assert!(store.exists(&format!("_blob:idx:tag:archive:{id}")));
+        assert!(store.exists(&format!("_blob:idx:link:entity:1:{id}")));
+
+        blob_store.delete(&id).await.unwrap();
+
+        // All index keys should be cleaned up
+        assert!(!store.exists(&format!("_blob:idx:ct:text/plain:{id}")));
+        assert!(!store.exists(&format!("_blob:idx:tag:archive:{id}")));
+        assert!(!store.exists(&format!("_blob:idx:link:entity:1:{id}")));
+    }
+
+    #[tokio::test]
+    async fn test_index_multiple_tags_multiple_links() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put(
+                "multi.txt",
+                b"data",
+                PutOptions::new()
+                    .with_tag("alpha")
+                    .with_tag("beta")
+                    .with_link("user:alice")
+                    .with_link("task:99"),
+            )
+            .await
+            .unwrap();
+
+        // All index entries should exist
+        assert!(store.exists(&format!("_blob:idx:tag:alpha:{id}")));
+        assert!(store.exists(&format!("_blob:idx:tag:beta:{id}")));
+        assert!(store.exists(&format!("_blob:idx:link:user:alice:{id}")));
+        assert!(store.exists(&format!("_blob:idx:link:task:99:{id}")));
+
+        // Lookups should work for each
+        let by_alpha = blob_store.by_tag("alpha").await.unwrap();
+        assert!(by_alpha.contains(&id));
+
+        let by_beta = blob_store.by_tag("beta").await.unwrap();
+        assert!(by_beta.contains(&id));
+
+        let for_alice = blob_store.artifacts_for("user:alice").await.unwrap();
+        assert!(for_alice.contains(&id));
+
+        let for_task = blob_store.artifacts_for("task:99").await.unwrap();
+        assert!(for_task.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_two_artifacts_same_tag() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id1 = blob_store
+            .put("a.txt", b"aaa", PutOptions::new().with_tag("shared"))
+            .await
+            .unwrap();
+        let id2 = blob_store
+            .put("b.txt", b"bbb", PutOptions::new().with_tag("shared"))
+            .await
+            .unwrap();
+
+        let found = blob_store.by_tag("shared").await.unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&id1));
+        assert!(found.contains(&id2));
+    }
+
+    #[tokio::test]
+    async fn test_index_two_artifacts_same_link() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id1 = blob_store
+            .put(
+                "a.txt",
+                b"aaa",
+                PutOptions::new().with_link("project:shared"),
+            )
+            .await
+            .unwrap();
+        let id2 = blob_store
+            .put(
+                "b.txt",
+                b"bbb",
+                PutOptions::new().with_link("project:shared"),
+            )
+            .await
+            .unwrap();
+
+        let found = blob_store.artifacts_for("project:shared").await.unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&id1));
+        assert!(found.contains(&id2));
+    }
+
+    #[tokio::test]
+    async fn test_index_tag_added_after_creation() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put("plain.txt", b"data", PutOptions::default())
+            .await
+            .unwrap();
+
+        // No tag index should exist yet
+        assert!(!store.exists(&format!("_blob:idx:tag:late:{id}")));
+
+        // Add tag after creation
+        blob_store.tag(&id, "late").await.unwrap();
+        assert!(store.exists(&format!("_blob:idx:tag:late:{id}")));
+
+        let found = blob_store.by_tag("late").await.unwrap();
+        assert!(found.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_link_added_after_creation() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        let id = blob_store
+            .put("plain.txt", b"data", PutOptions::default())
+            .await
+            .unwrap();
+
+        // No link index should exist yet
+        assert!(!store.exists(&format!("_blob:idx:link:late:entity:{id}")));
+
+        // Add link after creation
+        blob_store.link(&id, "late:entity").await.unwrap();
+        assert!(store.exists(&format!("_blob:idx:link:late:entity:{id}")));
+
+        let found = blob_store.artifacts_for("late:entity").await.unwrap();
+        assert!(found.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn test_index_by_creator_no_index() {
+        // by_creator still uses full scan (no index), just verify it works
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
+
+        let id = blob_store
+            .put(
+                "doc.txt",
+                b"data",
+                PutOptions::new().with_created_by("user:zara"),
+            )
+            .await
+            .unwrap();
+
+        let found = blob_store.by_creator("user:zara").await.unwrap();
+        assert!(found.contains(&id));
+
+        let not_found = blob_store.by_creator("user:nobody").await.unwrap();
+        assert!(not_found.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_index_delete_with_tags_and_links_added_later() {
+        let store = TensorStore::new();
+        let config = BlobConfig::new().with_gc_min_age(std::time::Duration::from_secs(0));
+        let blob_store = BlobStore::new(store.clone(), config).await.unwrap();
+
+        let id = blob_store
+            .put("later.txt", b"data", PutOptions::default())
+            .await
+            .unwrap();
+
+        // Add tags and links after creation
+        blob_store.tag(&id, "cleanup-test").await.unwrap();
+        blob_store.link(&id, "org:cleanup").await.unwrap();
+
+        assert!(store.exists(&format!("_blob:idx:tag:cleanup-test:{id}")));
+        assert!(store.exists(&format!("_blob:idx:link:org:cleanup:{id}")));
+
+        blob_store.delete(&id).await.unwrap();
+
+        // Index entries should be cleaned up
+        assert!(!store.exists(&format!("_blob:idx:tag:cleanup-test:{id}")));
+        assert!(!store.exists(&format!("_blob:idx:link:org:cleanup:{id}")));
+    }
+
+    #[tokio::test]
+    async fn test_index_default_content_type_indexed() {
+        let store = TensorStore::new();
+        let blob_store = BlobStore::new(store.clone(), BlobConfig::default())
+            .await
+            .unwrap();
+
+        // Default content type is "application/octet-stream"
+        let id = blob_store
+            .put("noct.bin", b"data", PutOptions::default())
+            .await
+            .unwrap();
+
+        let idx_key = format!("_blob:idx:ct:application/octet-stream:{id}");
+        assert!(store.exists(&idx_key));
+
+        let found = blob_store
+            .by_content_type("application/octet-stream")
+            .await
+            .unwrap();
+        assert!(found.contains(&id));
     }
 }

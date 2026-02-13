@@ -3,11 +3,13 @@ use tensor_blob::BlobStore;
 
 use crate::{error::Result, storage::CheckpointStorage};
 
+/// Enforces a count-based retention policy, deleting the oldest checkpoints beyond the limit.
 pub struct RetentionManager {
     max_checkpoints: usize,
 }
 
 impl RetentionManager {
+    /// Create a retention manager that keeps at most `max_checkpoints` checkpoints.
     pub fn new(max_checkpoints: usize) -> Self {
         Self { max_checkpoints }
     }
@@ -37,6 +39,7 @@ impl RetentionManager {
         Ok(removed)
     }
 
+    /// Returns the configured maximum number of checkpoints to retain.
     pub fn max_checkpoints(&self) -> usize {
         self.max_checkpoints
     }

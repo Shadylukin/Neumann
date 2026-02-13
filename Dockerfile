@@ -99,6 +99,7 @@ COPY tensor_compress/benches tensor_compress/benches
 COPY tensor_cache/benches tensor_cache/benches
 COPY tensor_vault/benches tensor_vault/benches
 COPY tensor_blob/benches tensor_blob/benches
+COPY tensor_checkpoint/benches tensor_checkpoint/benches
 COPY tensor_chain/benches tensor_chain/benches
 COPY tensor_unified/benches tensor_unified/benches
 COPY relational_engine/benches relational_engine/benches

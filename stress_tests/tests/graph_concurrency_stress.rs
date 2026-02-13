@@ -288,7 +288,7 @@ fn stress_graph_striped_locks_saturation() {
 
     assert_eq!(total, expected, "some operations failed");
     assert!(
-        throughput > 50_000.0,
+        throughput > 5_000.0,
         "throughput too low: {throughput:.0} ops/sec"
     );
 

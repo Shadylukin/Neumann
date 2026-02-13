@@ -291,7 +291,8 @@ impl BloomFilter {
     #[inline]
     #[allow(clippy::cast_possible_truncation)] // Hash modulo num_bits fits in usize
     fn hash_index<K: Hash>(&self, key: &K, seed: usize) -> usize {
-        let mut hasher = SipHasher::new_with_seed(seed as u64);
+        let mut hasher = std::hash::DefaultHasher::new();
+        seed.hash(&mut hasher);
         key.hash(&mut hasher);
         (hasher.finish() as usize) % self.num_bits
     }
@@ -315,34 +316,6 @@ impl std::fmt::Debug for BloomFilter {
             .field("num_bits", &self.num_bits)
             .field("num_hashes", &self.num_hashes)
             .finish_non_exhaustive()
-    }
-}
-
-// Simple SipHash-like hasher with configurable seed
-struct SipHasher {
-    state: u64,
-    seed: u64,
-}
-
-impl SipHasher {
-    const fn new_with_seed(seed: u64) -> Self {
-        Self {
-            state: seed ^ 0x736f_6d65_7073_6575,
-            seed,
-        }
-    }
-}
-
-impl Hasher for SipHasher {
-    fn finish(&self) -> u64 {
-        self.state
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.state = self.state.wrapping_mul(31).wrapping_add(u64::from(*byte));
-            self.state ^= self.seed;
-        }
     }
 }
 

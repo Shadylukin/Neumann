@@ -35,7 +35,8 @@ impl Wal {
     /// Returns an I/O error if writing or flushing the file fails.
     pub fn append(&mut self, cmd: &str) -> std::io::Result<()> {
         writeln!(self.file, "{cmd}")?;
-        self.file.flush()
+        self.file.flush()?;
+        self.file.sync_data()
     }
 
     /// Truncates the WAL (after a successful save).

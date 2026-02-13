@@ -1,47 +1,58 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
 use thiserror::Error;
 
+/// Errors that can occur during checkpoint operations.
 #[derive(Error, Debug)]
 pub enum CheckpointError {
+    /// The requested checkpoint was not found by ID or name.
     #[error("checkpoint not found: {0}")]
     NotFound(String),
 
+    /// An error occurred in the underlying storage layer.
     #[error("storage error: {0}")]
     Storage(String),
 
+    /// Failed to serialize checkpoint state to bytes.
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    /// Failed to deserialize checkpoint state from bytes.
     #[error("deserialization error: {0}")]
     Deserialization(String),
 
+    /// An error propagated from the blob store.
     #[error("blob error: {0}")]
     Blob(#[from] tensor_blob::BlobError),
 
+    /// Failed to create or restore a store snapshot.
     #[error("snapshot error: {0}")]
     Snapshot(String),
 
+    /// The user cancelled a destructive operation via the confirmation prompt.
     #[error("operation cancelled by user")]
     Cancelled,
 
+    /// The provided checkpoint identifier is malformed.
     #[error("invalid checkpoint id: {0}")]
     InvalidId(String),
 
+    /// An error occurred while enforcing the retention policy.
     #[error("retention error: {0}")]
     Retention(String),
 }
 
+/// Convenience alias for checkpoint operations.
 pub type Result<T> = std::result::Result<T, CheckpointError>;
 
 impl From<bitcode::Error> for CheckpointError {
     fn from(e: bitcode::Error) -> Self {
-        CheckpointError::Serialization(e.to_string())
+        Self::Serialization(e.to_string())
     }
 }
 
 impl From<tensor_store::SnapshotError> for CheckpointError {
     fn from(e: tensor_store::SnapshotError) -> Self {
-        CheckpointError::Snapshot(e.to_string())
+        Self::Snapshot(e.to_string())
     }
 }
 

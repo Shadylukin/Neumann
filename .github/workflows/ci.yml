@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Filter paths
         # v3.0.2
@@ -55,12 +55,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: rustfmt
@@ -75,7 +75,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Validate benchmark inventory
         run: |
@@ -90,12 +90,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: clippy
@@ -130,12 +130,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -152,7 +152,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-nextest
 
@@ -176,12 +176,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: llvm-tools-preview
@@ -199,7 +199,7 @@ jobs:
       - name: Install cargo-llvm-cov
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-llvm-cov
 
@@ -240,7 +240,7 @@ jobs:
         if: always()
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: coverage-report
           path: target/llvm-cov/html
@@ -277,12 +277,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -316,12 +316,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # nightly
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: nightly
 
@@ -350,7 +350,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Run audit
         # v2.0.0
@@ -366,7 +366,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Run cargo-deny
         # v2
@@ -389,29 +389,29 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
-        # nightly
+        # Pin nightly to avoid regressions in cargo-miri runner
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-02-01
           components: miri
 
       - name: Setup Miri
         working-directory: tensor_store
-        run: cargo miri setup
+        run: cargo +nightly-2026-02-01 miri setup
 
       - name: Run Miri on mmap module
         working-directory: tensor_store
         run: |
-          cargo miri test mmap:: --lib
+          cargo +nightly-2026-02-01 miri test mmap:: --lib
 
       - name: Run Miri on embedding_slab module
         working-directory: tensor_store
         run: |
-          cargo miri test embedding_slab:: --lib
+          cargo +nightly-2026-02-01 miri test embedding_slab:: --lib
 
   typescript-sdk:
     name: TypeScript SDK
@@ -427,7 +427,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Node.js
         # v4.1.0
@@ -458,7 +458,7 @@ jobs:
       - name: Upload coverage report
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: coverage-typescript-sdk
           path: neumann-ts/coverage
@@ -477,7 +477,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Python
         # v5.6.0
@@ -513,7 +513,7 @@ jobs:
       - name: Upload coverage report
         # v4.6.2
         uses: >-
-          actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: coverage-python-sdk
           path: neumann-py/htmlcov
@@ -532,12 +532,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -563,7 +563,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-nextest
 
@@ -610,7 +610,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Set up Docker Buildx
         # v3.10.0
@@ -673,12 +673,12 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Rust
         # stable
         uses: >-
-          dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
@@ -695,7 +695,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
         with:
           tool: cargo-nextest
 
@@ -725,7 +725,7 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
 

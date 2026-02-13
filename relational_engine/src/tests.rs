@@ -2075,7 +2075,10 @@ fn column_data_get_value_bool() {
         name: "active".into(),
         row_ids: vec![1, 2, 3],
         nulls: NullBitmap::None,
-        values: ColumnValues::Bool(values),
+        values: ColumnValues::Bool {
+            bitmap: values,
+            count: 3,
+        },
     };
     assert_eq!(col.get_value(0), Some(Value::Bool(true)));
     assert_eq!(col.get_value(1), Some(Value::Bool(false)));
@@ -2139,8 +2142,11 @@ fn column_values_len() {
     };
     assert_eq!(str_vals.len(), 3);
 
-    let bool_vals = ColumnValues::Bool(vec![0u64; 2]);
-    assert_eq!(bool_vals.len(), 128); // 2 * 64
+    let bool_vals = ColumnValues::Bool {
+        bitmap: vec![0u64; 2],
+        count: 100,
+    };
+    assert_eq!(bool_vals.len(), 100);
 }
 
 #[test]
@@ -4741,7 +4747,10 @@ fn test_column_data_get_value_bool() {
         name: "active".to_string(),
         row_ids: vec![1, 2, 3],
         nulls: NullBitmap::None,
-        values: ColumnValues::Bool(vec![0b101]), // true, false, true
+        values: ColumnValues::Bool {
+            bitmap: vec![0b101],
+            count: 3,
+        }, // true, false, true
     };
     assert_eq!(col.get_value(0), Some(Value::Bool(true)));
     assert_eq!(col.get_value(1), Some(Value::Bool(false)));
@@ -28911,4 +28920,159 @@ fn test_drop_constraint_updates_fk_references() {
     let c2 = engine.get_constraints("child2").unwrap();
     assert!(c1.is_empty());
     assert_eq!(c2.len(), 1);
+}
+
+// ============================================================================
+// Optimized count() / count_column() path coverage
+// ============================================================================
+
+#[test]
+fn test_count_index_accelerated_path() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("name", ColumnType::String),
+        Column::new("age", ColumnType::Int),
+    ]);
+    engine.create_table("cnt_idx", schema).unwrap();
+    engine.create_index("cnt_idx", "name").unwrap();
+
+    for i in 0..20 {
+        engine
+            .insert(
+                "cnt_idx",
+                HashMap::from([
+                    ("name".to_string(), Value::String(format!("user_{i}"))),
+                    ("age".to_string(), Value::Int(i)),
+                ]),
+            )
+            .unwrap();
+    }
+
+    // Eq condition on indexed column triggers index-accelerated path in count()
+    let count = engine
+        .count(
+            "cnt_idx",
+            Condition::Eq("name".to_string(), Value::String("user_5".to_string())),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+
+    // Non-matching value
+    let count = engine
+        .count(
+            "cnt_idx",
+            Condition::Eq("name".to_string(), Value::String("nonexistent".to_string())),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_count_column_filtered_full_scan() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("value", ColumnType::Int).nullable(),
+    ]);
+    engine.create_table("cnt_col_filt", schema).unwrap();
+
+    for i in 0..10 {
+        let val = if i % 3 == 0 {
+            Value::Null
+        } else {
+            Value::Int(i)
+        };
+        engine
+            .insert(
+                "cnt_col_filt",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(i)),
+                    ("value".to_string(), val),
+                ]),
+            )
+            .unwrap();
+    }
+
+    // Filtered count_column: rows where id > 3, excluding nulls in "value"
+    let count = engine
+        .count_column(
+            "cnt_col_filt",
+            "value",
+            Condition::Gt("id".to_string(), Value::Int(3)),
+        )
+        .unwrap();
+    // ids 4..9 match (6 rows). Of those, id=6 and id=9 have null value (i%3==0).
+    // Non-null: 4, 5, 7, 8 => 4
+    assert_eq!(count, 4);
+}
+
+#[test]
+fn test_count_column_index_accelerated_path() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![
+        Column::new("name", ColumnType::String),
+        Column::new("score", ColumnType::Int).nullable(),
+    ]);
+    engine.create_table("cnt_col_idx", schema).unwrap();
+    engine.create_index("cnt_col_idx", "name").unwrap();
+
+    // Insert rows with same name but some null scores
+    for i in 0..5 {
+        let score = if i % 2 == 0 {
+            Value::Int(i * 10)
+        } else {
+            Value::Null
+        };
+        engine
+            .insert(
+                "cnt_col_idx",
+                HashMap::from([
+                    ("name".to_string(), Value::String("alice".to_string())),
+                    ("score".to_string(), score),
+                ]),
+            )
+            .unwrap();
+    }
+    engine
+        .insert(
+            "cnt_col_idx",
+            HashMap::from([
+                ("name".to_string(), Value::String("bob".to_string())),
+                ("score".to_string(), Value::Int(99)),
+            ]),
+        )
+        .unwrap();
+
+    // Eq on indexed column triggers index path in count_column
+    let count = engine
+        .count_column(
+            "cnt_col_idx",
+            "score",
+            Condition::Eq("name".to_string(), Value::String("alice".to_string())),
+        )
+        .unwrap();
+    // 5 rows for alice, indices 0,2,4 have non-null scores => 3
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn test_count_column_nonexistent_column_error() {
+    let engine = RelationalEngine::new();
+    let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+    engine.create_table("cnt_err", schema).unwrap();
+
+    engine
+        .insert(
+            "cnt_err",
+            HashMap::from([("val".to_string(), Value::Int(1))]),
+        )
+        .unwrap();
+
+    let result = engine.count_column("cnt_err", "missing", Condition::True);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, RelationalError::ColumnNotFound(ref c) if c == "missing"),
+        "expected ColumnNotFound, got: {err:?}"
+    );
 }

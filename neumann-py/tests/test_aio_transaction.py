@@ -169,8 +169,9 @@ class TestAsyncTransaction:
             ),
         ]
 
+        tx = AsyncTransaction(mock_client)
         with pytest.raises(ValueError, match="test error"):
-            async with AsyncTransaction(mock_client) as tx:
+            async with tx:
                 raise ValueError("test error")
 
         assert tx.is_rolled_back

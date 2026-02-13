@@ -1668,7 +1668,10 @@ pub(crate) enum ColumnValues {
         dict: Vec<String>,
         indices: Vec<u32>,
     },
-    Bool(Vec<u64>),
+    Bool {
+        bitmap: Vec<u64>,
+        count: usize,
+    },
     Bytes {
         dict: Vec<Vec<u8>>,
         indices: Vec<u32>,
@@ -1688,7 +1691,7 @@ impl ColumnValues {
             Self::String { indices, .. }
             | Self::Bytes { indices, .. }
             | Self::Json { indices, .. } => indices.len(),
-            Self::Bool(v) => v.len() * 64, // approximate
+            Self::Bool { count, .. } => *count,
         }
     }
 
@@ -1757,10 +1760,14 @@ impl ColumnData {
             ColumnValues::String { dict, indices } => indices
                 .get(idx)
                 .and_then(|&i| dict.get(i as usize).map(|s| Value::String(s.clone()))),
-            ColumnValues::Bool(v) => {
+            ColumnValues::Bool { bitmap, count } => {
+                if idx >= *count {
+                    return None;
+                }
                 let word_idx = idx / 64;
                 let bit_idx = idx % 64;
-                v.get(word_idx)
+                bitmap
+                    .get(word_idx)
                     .map(|&word| Value::Bool((word & (1u64 << bit_idx)) != 0))
             },
             ColumnValues::Bytes { dict, indices } => indices
@@ -4404,26 +4411,136 @@ impl RelationalEngine {
 
     /// Counts rows matching the condition.
     ///
+    /// Optimized to avoid materializing full result rows: for unfiltered
+    /// counts delegates to [`row_count`](Self::row_count), and for filtered
+    /// counts scans rows without collecting them into a `Vec`.
+    ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[allow(clippy::cast_possible_truncation)] // Row IDs fit in usize on 64-bit platforms
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     #[instrument(skip(self, condition), fields(table = %table))]
     pub fn count(&self, table: &str, condition: Condition) -> Result<u64> {
-        let rows = self.select(table, condition)?;
-        Ok(rows.len() as u64)
+        // Fast path: unfiltered count uses the slab's live-row counter.
+        if matches!(condition, Condition::True) {
+            return self.row_count(table).map(|n| n as u64);
+        }
+
+        let schema = self.get_schema(table)?;
+        let max_depth = self.config.max_condition_depth;
+
+        // Index-accelerated path
+        if let Some(row_ids) = self.try_index_lookup(table, &condition)? {
+            let indices: Vec<usize> = row_ids
+                .iter()
+                .filter_map(|id| usize::try_from(id.saturating_sub(1)).ok())
+                .collect();
+            let slab_rows = self
+                .slab()
+                .get_rows_by_indices(table, &indices)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+            let mut count: u64 = 0;
+            for (row_id, slab_row) in slab_rows {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                if condition.evaluate_with_depth(&row, 0, max_depth)? {
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+
+        // Full scan path: count matching rows without collecting.
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let mut count: u64 = 0;
+        for (row_id, slab_row) in slab_rows {
+            let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+            if condition.evaluate_with_depth(&row, 0, max_depth)? {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     /// Counts non-null values in a column matching the condition.
     ///
+    /// Optimized to avoid materializing full result rows: scans slab data
+    /// directly and counts matching non-null values without collecting into
+    /// a `Vec`.
+    ///
     /// # Errors
-    /// Returns `TableNotFound` or `StorageError`.
+    /// Returns `TableNotFound`, `ColumnNotFound`, or `StorageError`.
+    #[allow(clippy::cast_possible_truncation)] // Row IDs fit in usize on 64-bit platforms
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     #[instrument(skip(self, condition), fields(table = %table, column = %column))]
     pub fn count_column(&self, table: &str, column: &str, condition: Condition) -> Result<u64> {
-        let rows = self.select(table, condition)?;
-        let count = rows
+        let schema = self.get_schema(table)?;
+        let col_idx = schema
+            .columns
             .iter()
-            .filter(|row| row.get(column).is_some_and(|v| !matches!(v, Value::Null)))
-            .count();
-        Ok(count as u64)
+            .position(|c| c.name == column)
+            .ok_or_else(|| RelationalError::ColumnNotFound(column.to_string()))?;
+        let max_depth = self.config.max_condition_depth;
+
+        // Fast path: no filter -- scan slab rows and check column directly.
+        if matches!(condition, Condition::True) {
+            let slab_rows = self
+                .slab()
+                .scan_all(table)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+            let mut count: u64 = 0;
+            for (_row_id, slab_row) in &slab_rows {
+                if !matches!(slab_row[col_idx], SlabColumnValue::Null) {
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+
+        // Index-accelerated path
+        if let Some(row_ids) = self.try_index_lookup(table, &condition)? {
+            let indices: Vec<usize> = row_ids
+                .iter()
+                .filter_map(|id| usize::try_from(id.saturating_sub(1)).ok())
+                .collect();
+            let slab_rows = self
+                .slab()
+                .get_rows_by_indices(table, &indices)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+            let mut count: u64 = 0;
+            for (row_id, slab_row) in slab_rows {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                if condition.evaluate_with_depth(&row, 0, max_depth)?
+                    && row.get(column).is_some_and(|v| !matches!(v, Value::Null))
+                {
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+
+        // Full scan path: count matching non-null values without collecting.
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let mut count: u64 = 0;
+        for (row_id, slab_row) in slab_rows {
+            let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+            if condition.evaluate_with_depth(&row, 0, max_depth)?
+                && row.get(column).is_some_and(|v| !matches!(v, Value::Null))
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     /// Sums numeric values in a column matching the condition.
@@ -5950,7 +6067,10 @@ impl RelationalEngine {
                         _ => {},
                     }
                 }
-                ColumnValues::Bool(bitmap)
+                ColumnValues::Bool {
+                    bitmap,
+                    count: row_count,
+                }
             },
             ColumnType::Bytes => {
                 let mut dict: Vec<Vec<u8>> = Vec::new();

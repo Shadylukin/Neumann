@@ -116,9 +116,17 @@ impl std::error::Error for ParseError {}
 #[derive(Clone, Debug)]
 pub enum ParseErrorKind {
     /// Unexpected token
-    UnexpectedToken { found: TokenKind, expected: String },
+    UnexpectedToken {
+        /// The token that was found.
+        found: TokenKind,
+        /// Description of what was expected.
+        expected: String,
+    },
     /// Unexpected end of input
-    UnexpectedEof { expected: String },
+    UnexpectedEof {
+        /// Description of what was expected.
+        expected: String,
+    },
     /// Invalid syntax
     InvalidSyntax(String),
     /// Invalid number

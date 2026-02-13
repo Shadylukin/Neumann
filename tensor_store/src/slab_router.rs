@@ -21,6 +21,7 @@
 //! Cache operations are never logged (cache is transient by design).
 
 use std::{
+    collections::HashSet,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -284,29 +285,23 @@ impl SlabRouter {
 
     /// Scan keys by prefix.
     pub fn scan(&self, prefix: &str) -> Vec<String> {
-        // Collect from metadata slab
-        let mut keys: Vec<String> = self
+        // Use HashSet for O(1) dedup instead of Vec::contains O(n)
+        let mut keys: HashSet<String> = self
             .metadata
             .scan(prefix)
             .into_iter()
             .map(|(k, _)| k)
             .collect();
 
-        // Add from entity index
         for (key, _) in self.index.scan_prefix(prefix) {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
+            keys.insert(key);
         }
 
-        // Add from cache ring
         for key in self.cache.scan_prefix(prefix) {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
+            keys.insert(key);
         }
 
-        keys
+        keys.into_iter().collect()
     }
 
     /// Count keys by prefix.
