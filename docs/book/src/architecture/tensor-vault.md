@@ -10,6 +10,19 @@ maintains a permanent audit trail of all operations and supports features like
 rate limiting, TTL-based grants, and namespace isolation for multi-tenant
 deployments.
 
+## When to Use Tensor Vault
+
+| Scenario | How Tensor Vault Helps |
+| --- | --- |
+| Multiple agents need access to shared secrets | Graph-based access control with per-agent permission levels |
+| You need to audit who accessed what and when | Tamper-evident audit log with HMAC integrity and AEAD encryption |
+| Temporary access to secrets | TTL-based grants and secret expiration auto-revoke access |
+| Agent delegation chains | Delegation with ceiling model, depth limits, and cascading revocation |
+| Security posture review | Graph intelligence: blast radius, privilege analysis, role inference |
+| Incident response | Break-glass emergency access with justification and auto-expiry |
+| Application-level encryption | Transit encryption lets agents encrypt data without holding keys |
+| Regulatory compliance | Immutable audit trail, key rotation, and anomaly detection |
+
 ## Design Principles
 
 | Principle | Description |
@@ -18,7 +31,11 @@ deployments.
 | Topological Access Control | Access determined by graph path, not ACLs |
 | Zero Trust | No bypass mode; `node:root` is the only universal accessor |
 | Memory Safety | Keys zeroized on drop via `zeroize` crate |
-| Permanent Audit Trail | All operations logged with queryable API |
+| Tamper-Evident Graph | All permission edges HMAC-signed; tampering detected on traversal |
+| Distance Attenuation | Permissions degrade with graph distance from the secret |
+| Least Privilege Delegation | Agents delegate subsets of their own access with ceiling model |
+| Behavioral Monitoring | Per-agent anomaly detection flags spikes, bulk ops, and dormancy |
+| Permanent Audit Trail | All operations logged with HMAC integrity and AEAD encryption |
 | Defense in Depth | Multiple obfuscation layers hide patterns |
 | Multi-Tenant Ready | Namespace isolation and rate limiting for agent systems |
 
@@ -54,27 +71,76 @@ deployments.
 | `RateLimiter` | Sliding window rate limiting per entity |
 | `RateLimitConfig` | Configurable limits per operation type |
 
+### Edge Signing Types
+
+| Type | Description |
+| --- | --- |
+| `EdgeSigner` | HMAC-BLAKE2b signer for graph edge integrity |
+
+### Attenuation Types
+
+| Type | Description |
+| --- | --- |
+| `AttenuationPolicy` | Distance-based permission degradation policy |
+
+### Delegation Types
+
+| Type | Description |
+| --- | --- |
+| `DelegationManager` | Agent-to-agent delegation with depth limits and ceiling model |
+| `DelegationRecord` | Single delegation grant (parent, child, secrets, ceiling, TTL) |
+
+### Anomaly Detection Types
+
+| Type | Description |
+| --- | --- |
+| `AnomalyMonitor` | Real-time per-agent behavioral anomaly tracker |
+| `AnomalyThresholds` | Configurable limits for spike, bulk, and inactivity detection |
+| `AgentProfile` | Per-agent access history (known secrets, counts, timestamps) |
+| `AnomalyEvent` | Event variants: FrequencySpike, BulkOperation, InactiveAgentResumed, FirstSecretAccess |
+
 ### Audit Types
 
 | Type | Description |
 | --- | --- |
-| `AuditLog` | Query interface for audit entries |
+| `AuditLog` | Query interface for audit entries with optional HMAC/AEAD protection |
 | `AuditEntry` | Single operation record (entity, key, operation, timestamp) |
 | `AuditOperation` | Operation types: Get, Set, Delete, Rotate, Grant, Revoke, List |
+
+### Graph Intelligence Types
+
+| Type | Description |
+| --- | --- |
+| `AccessExplanation` | Path-level explanation of why access was granted or denied |
+| `BlastRadius` | All secrets reachable by an entity with permission and hop detail |
+| `SimulationResult` | Dry-run impact analysis of a hypothetical grant |
+| `SecurityAuditReport` | SCC cycles, single points of failure, over-privileged entities |
+| `CriticalEntity` | Articulation-point analysis with PageRank and dependency counts |
+| `PrivilegeAnalysisReport` | PageRank-weighted reachability scores per entity |
+| `DelegationAnomalyScore` | Jaccard and Adamic-Adar similarity for delegation edges |
+| `RoleInferenceResult` | Louvain community detection mapped to inferred roles |
+| `TrustTransitivityReport` | Triangle counting and clustering coefficients |
+| `RiskPropagationReport` | Eigenvector centrality weighted by admin reachability |
 
 ## Architecture
 
 ```mermaid
-graph TB
+flowchart TB
     subgraph "Tensor Vault"
         API[Vault API]
         AC[AccessController]
         Cipher[Cipher<br/>AES-256-GCM]
         KDF[MasterKey<br/>Argon2id + HKDF]
         Obf[Obfuscator<br/>HMAC + Padding]
-        Audit[AuditLog]
+        Sign[EdgeSigner<br/>HMAC-BLAKE2b]
+        Atten[Attenuation<br/>Distance Policy]
+        Deleg[DelegationManager<br/>Ceiling Model]
+        Anomaly[AnomalyMonitor<br/>Behavior Tracking]
+        Transit[Transit Cipher<br/>Encrypt-as-a-Service]
+        Audit[AuditLog<br/>HMAC + AEAD]
         TTL[GrantTTLTracker]
         RL[RateLimiter]
+        GI[GraphIntel<br/>Security Analytics]
     end
 
     subgraph "Storage"
@@ -85,16 +151,28 @@ graph TB
     API --> AC
     API --> Cipher
     API --> Obf
+    API --> Sign
     API --> Audit
     API --> TTL
     API --> RL
+    API --> Deleg
+    API --> Anomaly
+    API --> Transit
+    API --> GI
 
     AC --> GE
+    AC --> Atten
+    AC --> Sign
     Cipher --> KDF
     Obf --> KDF
+    Transit --> KDF
+    Audit --> KDF
+    GI --> GE
 
     API --> TS
     Audit --> TS
+    Deleg --> TS
+    Anomaly --> TS
 ```
 
 ### Data Flow
@@ -293,6 +371,173 @@ flowchart TD
     CheckLevel -->|No| Insufficient([Insufficient Permission])
 ```
 
+## Edge Signing
+
+Every permission edge in the graph is signed with HMAC-BLAKE2b to
+prevent topology tampering. When the vault creates or modifies a
+`VAULT_ACCESS_*` edge, it computes a signature over the canonicalized
+tuple `(from, to, edge_type, timestamp)` and stores it as an edge
+property.
+
+```rust
+// From signing.rs
+impl EdgeSigner {
+    pub fn sign_edge(
+        &self,
+        from: &str,
+        to: &str,
+        edge_type: &str,
+        timestamp: i64,
+    ) -> Vec<u8> {
+        // HMAC-BLAKE2b over canonical representation
+        // from || ":" || to || ":" || edge_type || ":" || timestamp
+    }
+
+    pub fn verify_edge(
+        &self,
+        from: &str,
+        to: &str,
+        edge_type: &str,
+        timestamp: i64,
+        signature: &[u8],
+    ) -> bool {
+        // Constant-time comparison to prevent timing attacks
+    }
+}
+```
+
+Signature verification happens during BFS traversal. If a tampered
+edge is encountered, the `AccessController` skips it and the
+`explain_access` API reports a `TamperedEdge` denial reason.
+
+## Distance-Based Attenuation
+
+Permissions degrade as graph distance increases between an entity
+and a secret. This limits the blast radius of transitive access
+chains.
+
+### AttenuationPolicy
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `admin_limit` | `usize` | 1 | Maximum hops that preserve Admin |
+| `write_limit` | `usize` | 2 | Maximum hops that preserve Write |
+| `horizon` | `usize` | 10 | BFS cutoff; access denied beyond this |
+
+### Permission at Each Hop
+
+| Hops | Effective Permission |
+| --- | --- |
+| 1 | Admin (if granted Admin) |
+| 2 | Write (Admin attenuates to Write) |
+| 3-10 | Read (Write attenuates to Read) |
+| >10 | Denied (beyond horizon) |
+
+```rust
+// From attenuation.rs
+impl AttenuationPolicy {
+    pub fn attenuate(
+        &self,
+        perm: Permission,
+        hops: usize,
+    ) -> Option<Permission> {
+        if hops > self.horizon {
+            return None; // Beyond horizon
+        }
+        match perm {
+            Permission::Admin if hops > self.admin_limit =>
+                self.attenuate(Permission::Write, hops),
+            Permission::Write if hops > self.write_limit =>
+                Some(Permission::Read),
+            other => Some(other),
+        }
+    }
+}
+```
+
+Use `AttenuationPolicy::none()` to disable attenuation for backward
+compatibility with legacy deployments.
+
+## Delegation
+
+Agents can delegate subsets of their own access to child agents.
+Delegation follows a ceiling model: the child can never exceed the
+parent's permission level.
+
+### Key Properties
+
+- **Ceiling model**: `effective = min(parent_permission, requested)`
+- **Depth limits**: Configurable maximum chain depth (default 3)
+- **Cycle prevention**: A child cannot delegate back to an ancestor
+- **Cascading revocation**: Revoking a parent revokes all descendants
+- **TTL support**: Delegations can expire automatically
+
+### DelegationRecord Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `parent` | `String` | Delegating (parent) agent |
+| `child` | `String` | Receiving (child) agent |
+| `secrets` | `Vec<String>` | Secret names delegated |
+| `max_permission` | `Permission` | Ceiling permission level |
+| `ttl_ms` | `Option<i64>` | Optional TTL in milliseconds |
+| `created_at_ms` | `i64` | Creation timestamp (unix ms) |
+| `delegation_depth` | `u32` | Hops from root to this child |
+
+```rust
+// Delegation creates graph edges with ceiling enforcement
+vault.delegate(
+    "user:alice",   // parent
+    "agent:deploy", // child
+    &["db/password", "api/key"],
+    Permission::Read,
+    Some(3_600_000), // 1-hour TTL
+)?;
+
+// Cascading revocation removes agent:deploy and all its children
+vault.revoke_delegation_cascading("user:alice", "agent:deploy")?;
+```
+
+Delegation composes with attenuation: the effective permission is
+the minimum of the delegation ceiling and the attenuated permission
+at the child's graph distance.
+
+## Anomaly Detection
+
+The vault monitors per-agent behavior in real time and flags
+suspicious patterns. The `AnomalyMonitor` is non-blocking; it
+records events but does not deny access.
+
+### AnomalyThresholds
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `frequency_spike_limit` | `u64` | 50 | Ops per window that trigger a spike |
+| `frequency_window_ms` | `i64` | 60,000 | Sliding window size (1 minute) |
+| `bulk_operation_threshold` | `u64` | 10 | Burst size that triggers a bulk event |
+| `inactive_threshold_ms` | `i64` | 86,400,000 | Inactivity before resumption is flagged (24h) |
+
+### AnomalyEvent Variants
+
+| Event | Trigger |
+| --- | --- |
+| `FirstSecretAccess` | Entity accesses a secret it has never accessed before |
+| `FrequencySpike` | Operations in window exceed `frequency_spike_limit` |
+| `BulkOperation` | Burst of operations exceeds `bulk_operation_threshold` |
+| `InactiveAgentResumed` | Entity resumes after `inactive_threshold_ms` of silence |
+
+### AgentProfile
+
+Each entity accumulates an `AgentProfile` containing:
+
+- Set of known (obfuscated) secret keys accessed
+- Per-secret access counts
+- Timestamp of most recent operation
+- Total lifetime operation count
+- Recent timestamps for sliding-window frequency analysis
+
+Profiles are persisted to `TensorStore` and survive vault restarts.
+
 ## Storage Format
 
 Secrets use a two-tier storage model for security:
@@ -379,7 +624,8 @@ impl MasterKey {
     pub fn derive_subkey(&self, domain: &[u8]) -> [u8; KEY_SIZE] {
         let hk = Hkdf::<Sha256>::new(None, &self.bytes);
         let mut output = [0u8; KEY_SIZE];
-        hk.expand(domain, &mut output).expect("HKDF expand cannot fail for 32 bytes");
+        hk.expand(domain, &mut output)
+            .expect("HKDF expand cannot fail for 32 bytes");
         output
     }
 
@@ -394,6 +640,14 @@ impl MasterKey {
     pub fn metadata_key(&self) -> [u8; KEY_SIZE] {
         self.derive_subkey(b"neumann_vault_metadata_v1")
     }
+
+    pub fn audit_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_audit_v1")
+    }
+
+    pub fn transit_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_transit_v1")
+    }
 }
 ```
 
@@ -405,10 +659,15 @@ Master Password + Salt
         ▼ Argon2id
     MasterKey (32 bytes)
         │
-        ├──▶ HKDF("encryption_v1") ──▶ AES-256-GCM key
-        ├──▶ HKDF("obfuscation_v1") ──▶ HMAC key for obfuscation
-        └──▶ HKDF("metadata_v1") ──▶ AES-256-GCM key for metadata
+        ├──▶ HKDF("encryption_v1")  ──▶ AES-256-GCM key (secret data)
+        ├──▶ HKDF("obfuscation_v1") ──▶ HMAC-BLAKE2b key (key names)
+        ├──▶ HKDF("metadata_v1")    ──▶ AES-256-GCM key (metadata)
+        ├──▶ HKDF("audit_v1")       ──▶ HMAC + AES-256-GCM key (audit)
+        └──▶ HKDF("transit_v1")     ──▶ AES-256-GCM key (transit encryption)
 ```
+
+Each subkey is cryptographically independent via HKDF domain separation.
+Compromising one subkey does not reveal any other.
 
 ### Salt Persistence
 
@@ -857,6 +1116,26 @@ pub fn cleanup_expired_grants(&self) -> usize {
 
 ## Audit Logging
 
+### Keyed vs Legacy Mode
+
+The audit log supports two modes:
+
+| Mode | Audit Key | Entity/Target | Integrity |
+| --- | --- | --- | --- |
+| Legacy (unkeyed) | `None` | Plaintext | None |
+| Keyed | `Some([u8; 32])` | AEAD-encrypted | HMAC per entry |
+
+When an `audit_key` is provided (derived from `MasterKey::audit_key()`),
+each entry gets:
+
+- **`_entity_enc` / `_target_enc`**: AES-256-GCM encrypted entity and
+  target fields (nonce prepended). Prevents casual log readers from
+  learning who accessed what.
+- **`_hmac`**: HMAC-BLAKE2b over the full entry. Any modification
+  (timestamp, operation, entity) is detected on read.
+- **`_audit_epoch`**: Key rotation counter. Entries from a previous
+  epoch are still readable during transition but flagged as stale.
+
 ### Audit Entry Storage
 
 ```rust
@@ -864,14 +1143,19 @@ pub fn cleanup_expired_grants(&self) -> usize {
 const AUDIT_PREFIX: &str = "_va:";
 static AUDIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub fn record(&self, entity: &str, secret_key: &str, operation: &AuditOperation) {
+pub fn record(
+    &self,
+    entity: &str,
+    secret_key: &str,
+    operation: &AuditOperation,
+) {
     let timestamp = now_millis();
     let counter = AUDIT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let key = format!("{AUDIT_PREFIX}{timestamp}:{counter}");
 
     let mut tensor = TensorData::new();
     tensor.set("_entity", entity);
-    tensor.set("_secret", secret_key);  // Already obfuscated by caller
+    tensor.set("_secret", secret_key);
     tensor.set("_op", operation.as_str());
     tensor.set("_ts", timestamp);
 
@@ -880,14 +1164,16 @@ pub fn record(&self, entity: &str, secret_key: &str, operation: &AuditOperation)
         AuditOperation::Grant { to, permission } => {
             tensor.set("_target", to);
             tensor.set("_permission", permission);
-        },
+        }
         AuditOperation::Revoke { from } => {
             tensor.set("_target", from);
-        },
-        _ => {},
+        }
+        _ => {}
     }
 
-    // Best effort - audit failures don't block operations
+    // In keyed mode: encrypt entity/target with AEAD,
+    // compute HMAC over all fields, attach epoch counter
+
     let _ = self.store.put(&key, tensor);
 }
 ```
@@ -902,8 +1188,425 @@ pub fn record(&self, entity: &str, secret_key: &str, operation: &AuditOperation)
 | `between(start, end)` | Entries in time range | O(n) scan + filter |
 | `recent(limit)` | Last N entries | O(n log n) sort + truncate |
 
-**Note**: Secret keys are obfuscated in audit logs to prevent leaking plaintext
-names.
+**Note**: Secret keys are obfuscated in audit logs to prevent leaking
+plaintext names. In keyed mode, entity and target fields are
+additionally encrypted with AEAD.
+
+## Transit Encryption
+
+Transit encryption provides encrypt-as-a-service: agents can encrypt
+data using a vault-managed key without ever seeing the key material.
+
+```rust
+// Encrypt data for storage outside the vault
+let sealed = vault.encrypt_for("user:alice", "db/password", b"plaintext")?;
+
+// Later, decrypt it
+let plaintext = vault.decrypt_as("user:alice", "db/password", &sealed)?;
+```
+
+Transit encryption uses a dedicated `transit_key` subkey, separate
+from the secret-encryption key. The caller must have at least Read
+permission on the referenced secret. This enables use cases like
+encrypting application data at rest without storing it in the vault.
+
+## Secret Expiration
+
+Secrets themselves can have a TTL, distinct from grant TTLs. When a
+secret expires, any `get()` call returns `SecretExpired`.
+
+```rust
+use std::time::Duration;
+
+// Store a secret that expires in 24 hours
+vault.set_with_ttl(
+    Vault::ROOT,
+    "temp/token",
+    "abc123",
+    Duration::from_secs(86400),
+)?;
+
+// Check remaining lifetime
+let expires_at = vault.get_expiration(Vault::ROOT, "temp/token")?;
+
+// Remove expiration (make permanent)
+vault.clear_expiration(Vault::ROOT, "temp/token")?;
+```
+
+Secret expiration is enforced on read. The ciphertext remains in
+storage until explicitly deleted or overwritten.
+
+## Break-Glass Emergency Access
+
+Emergency access bypasses the normal graph-based access check for
+time-critical scenarios. It is rate-limited, heavily audited, and
+auto-expires.
+
+```rust
+// Break-glass: get a secret you don't normally have access to
+let value = vault.emergency_access(
+    "ops:oncall",
+    "prod/db_root",
+    "P1 incident INC-4521",
+    Duration::from_secs(1800), // 30-minute window
+)?;
+```
+
+**Constraints**:
+
+- Rate-limited to 1 emergency access per rate-limit window
+- The justification string is recorded in the audit log
+- Access auto-expires after the specified duration
+- All break-glass events generate a distinct audit operation
+
+## Batch Operations
+
+Batch operations reduce round-trip overhead for bulk reads and
+writes. Both methods acquire locks in sorted key order to prevent
+deadlocks.
+
+```rust
+// Read multiple secrets in one call
+let results = vault.batch_get("user:alice", &["db/pass", "api/key"])?;
+for (key, result) in &results {
+    match result {
+        Ok(value) => println!("{key}: {value}"),
+        Err(e) => println!("{key}: {e}"),
+    }
+}
+
+// Write multiple secrets atomically
+vault.batch_set(Vault::ROOT, &[
+    ("db/pass", "new_pass"),
+    ("api/key", "new_key"),
+])?;
+```
+
+`batch_set` is atomic: either all writes succeed or none are
+applied. `batch_get` returns per-key results so partial failures
+are visible.
+
+## Master Key Rotation
+
+`rotate_master_key()` re-derives all 5 subkeys from a new password
+and atomically re-encrypts all secrets, re-signs all graph edges,
+and increments the audit epoch.
+
+```rust
+// Rotate the master password
+let mut vault = Vault::new(b"old_password", graph, store, config)?;
+let secrets_rotated = vault.rotate_master_key(b"new_password")?;
+println!("Re-encrypted {secrets_rotated} secrets");
+```
+
+The rotation is atomic: if any re-encryption fails, the vault
+reverts to the old key. After rotation, all previously issued
+transit ciphertexts become undecryptable (forward secrecy for
+transit data).
+
+## Graph Intelligence
+
+The vault includes three tiers of graph-based security analysis,
+all operating on the live permission graph.
+
+### Tier 1 -- Graph-Native Features
+
+These features use the permission graph directly for access
+explanation, impact analysis, and structural auditing.
+
+#### explain_access
+
+Returns a path-level explanation of why access was granted or
+denied, including denial reasons (no path, insufficient permission,
+attenuation, tampered edge).
+
+```rust
+let explanation = vault.explain_access("user:bob", "db/password");
+if explanation.granted {
+    for path in &explanation.paths {
+        for hop in path {
+            println!("{} --{}-->", hop.entity, hop.edge_type);
+        }
+    }
+} else if let Some(reason) = &explanation.denial_reason {
+    println!("Denied: {reason:?}");
+}
+```
+
+#### blast_radius
+
+Computes all secrets reachable by an entity, with permission level
+and hop count for each.
+
+```rust
+let radius = vault.blast_radius("user:alice");
+println!("{} can reach {} secrets", radius.entity, radius.total_secrets);
+for secret in &radius.secrets {
+    println!(
+        "  {} ({:?}, {} hops)",
+        secret.secret_name, secret.permission, secret.hop_count
+    );
+}
+```
+
+#### simulate_grant
+
+Dry-run a hypothetical grant and see what new access it would
+create across the graph, without actually modifying anything.
+
+```rust
+let sim = vault.simulate_grant("user:bob", "db/password", Permission::Write);
+println!("{} entities would gain new access", sim.total_affected);
+for access in &sim.new_accesses {
+    println!("  {} gains {:?} on {}", access.entity, access.permission, access.secret);
+}
+```
+
+#### security_audit
+
+Runs a structural security audit detecting:
+
+- **Cycles**: Strongly connected components in the access graph
+- **Single points of failure**: Entities whose removal disconnects
+  secrets
+- **Over-privileged entities**: High PageRank with excessive
+  reachability
+
+```rust
+let report = vault.security_audit();
+println!("Cycles: {}", report.cycles.len());
+println!("SPOFs: {}", report.single_points_of_failure.len());
+println!("Over-privileged: {}", report.over_privileged.len());
+```
+
+#### find_critical_entities
+
+Identifies articulation points in the permission graph --
+entities whose removal would isolate secrets from all other
+accessors.
+
+```rust
+let critical = vault.find_critical_entities();
+for entity in &critical {
+    println!(
+        "{}: SPOF={}, {} secrets solely dependent, PageRank={:.4}",
+        entity.entity,
+        entity.is_single_point_of_failure,
+        entity.secrets_solely_dependent,
+        entity.pagerank_score,
+    );
+}
+```
+
+### Tier 2 -- Production Features
+
+Transit encryption, secret expiration, break-glass emergency access,
+batch operations, and master key rotation are covered in their own
+sections above.
+
+### Tier 3 -- Graph Analytics
+
+These features apply well-known graph algorithms to the permission
+topology for deeper security insights.
+
+#### privilege_analysis
+
+Uses PageRank to rank entities by influence, combined with
+reachability counts to produce a privilege score.
+
+```rust
+let report = vault.privilege_analysis();
+for entity in &report.entities {
+    println!(
+        "{}: PageRank={:.4}, reachable={}, privilege={:.4}",
+        entity.entity,
+        entity.pagerank_score,
+        entity.reachable_secrets,
+        entity.privilege_score,
+    );
+}
+```
+
+#### delegation_anomaly_scores
+
+Computes Jaccard similarity and Adamic-Adar scores for each
+entity-secret delegation edge. Low Jaccard scores indicate
+unusual delegations that may warrant review.
+
+```rust
+let scores = vault.delegation_anomaly_scores();
+for score in &scores {
+    println!(
+        "{} -> {}: Jaccard={:.3}, anomaly={:.3}",
+        score.entity, score.secret,
+        score.jaccard, score.anomaly_score,
+    );
+}
+```
+
+#### infer_roles
+
+Applies Louvain community detection to discover implicit role
+groupings among entities based on shared access patterns.
+
+```rust
+let roles = vault.infer_roles();
+println!("Modularity: {:.4}", roles.modularity);
+for role in &roles.roles {
+    println!(
+        "Role {}: {} members, {} common secrets",
+        role.role_id,
+        role.members.len(),
+        role.common_secrets.len(),
+    );
+}
+```
+
+#### trust_transitivity
+
+Counts triangles and computes clustering coefficients to
+measure how "tightly knit" trust relationships are. High
+clustering suggests robust mutual oversight.
+
+```rust
+let trust = vault.trust_transitivity();
+println!("Global clustering: {:.4}", trust.global_clustering);
+println!("Total triangles: {}", trust.total_triangles);
+for entity in &trust.entities {
+    println!(
+        "{}: triangles={}, clustering={:.4}, trust={:.4}",
+        entity.entity,
+        entity.triangle_count,
+        entity.clustering_coefficient,
+        entity.trust_score,
+    );
+}
+```
+
+#### risk_propagation
+
+Uses eigenvector centrality to model how risk propagates through
+the access graph, weighted by admin reachability.
+
+```rust
+let risk = vault.risk_propagation();
+println!("Max risk: {:.4}", risk.max_risk);
+for entity in &risk.entities {
+    println!(
+        "{}: eigenvector={:.4}, admin_secrets={}, risk={:.4}",
+        entity.entity,
+        entity.eigenvector_score,
+        entity.reachable_admin_secrets,
+        entity.risk_score,
+    );
+}
+```
+
+## Use Cases
+
+### Multi-Agent Secret Sharing
+
+A deployment pipeline has three agents: a CI runner, a deploy agent,
+and a monitoring agent. Each needs different access levels to database
+credentials.
+
+```rust
+// CI runner needs read-only access to run migrations
+vault.grant_with_permission(
+    Vault::ROOT, "agent:ci", "db/password", Permission::Read,
+)?;
+
+// Deploy agent needs write to rotate credentials
+vault.grant_with_permission(
+    Vault::ROOT, "agent:deploy", "db/password", Permission::Write,
+)?;
+
+// Monitoring agent gets temporary read access
+vault.grant_with_ttl(
+    Vault::ROOT, "agent:monitor", "db/password",
+    Permission::Read, Duration::from_secs(3600),
+)?;
+```
+
+### Agent Delegation Chains
+
+A team lead delegates a subset of secrets to a deploy agent, which
+further delegates to a canary agent. The ceiling model ensures no
+agent exceeds its parent's permissions.
+
+```rust
+// Team lead delegates read-only access to deploy agent
+vault.delegate(
+    "user:lead",
+    "agent:deploy",
+    &["prod/db", "prod/api_key"],
+    Permission::Read,
+    None, // no TTL
+)?;
+
+// Deploy agent delegates to canary (ceiling: Read)
+vault.delegate(
+    "agent:deploy",
+    "agent:canary",
+    &["prod/db"],
+    Permission::Read, // cannot exceed parent's Read
+    Some(Duration::from_secs(600)), // 10-minute window
+)?;
+
+// Revoking deploy agent cascades to canary
+vault.revoke_delegation_cascading("user:lead", "agent:deploy")?;
+```
+
+### Security Posture Review
+
+Run periodic security audits to detect over-privileged agents,
+single points of failure, and unusual delegation patterns.
+
+```rust
+// Find entities with excessive access
+let audit = vault.security_audit();
+for entity in &audit.over_privileged {
+    println!("Over-privileged: {} (PageRank {:.4}, {} secrets)",
+        entity.entity, entity.pagerank_score, entity.reachable_secrets);
+}
+
+// Detect unusual delegations via Jaccard similarity
+let anomalies = vault.delegation_anomaly_scores();
+for score in anomalies.iter().filter(|s| s.anomaly_score > 0.8) {
+    println!("Unusual delegation: {} -> {} (anomaly {:.2})",
+        score.entity, score.secret, score.anomaly_score);
+}
+```
+
+### Incident Response
+
+During a security incident, use break-glass access to retrieve a
+secret you don't normally have permission to read, with full
+audit trail.
+
+```rust
+let value = vault.emergency_access(
+    "ops:oncall",
+    "prod/db_root",
+    "P1 incident INC-4521 -- database compromise",
+    Duration::from_secs(1800),
+)?;
+// Access is audited, rate-limited, and auto-expires
+```
+
+### Application-Level Encryption
+
+Use transit encryption to protect application data at rest without
+storing it in the vault. The application never sees the key.
+
+```rust
+// Encrypt data using a vault-managed key
+let sealed = vault.encrypt_for("app:backend", "encryption/key", b"user PII data")?;
+// Store `sealed` in application database
+
+// Later, decrypt it
+let plaintext = vault.decrypt_as("app:backend", "encryption/key", &sealed)?;
+```
 
 ## Usage Examples
 
@@ -1062,6 +1765,26 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 | `argon2_parallelism` | `u32` | 4 | Thread count |
 | `rate_limit` | `Option<RateLimitConfig>` | None | Rate limiting (disabled if None) |
 | `max_versions` | `usize` | 5 | Maximum versions to retain per secret |
+| `attenuation` | `AttenuationPolicy` | `default()` | Distance-based permission degradation |
+| `anomaly_thresholds` | `Option<AnomalyThresholds>` | None | Anomaly detection config (default thresholds if None) |
+| `max_delegation_depth` | `Option<u32>` | None | Maximum delegation chain depth (default 3) |
+
+VaultConfig supports a builder pattern for ergonomic construction:
+
+```rust
+let config = VaultConfig::default()
+    .with_rate_limit(RateLimitConfig::default())
+    .with_attenuation(AttenuationPolicy {
+        admin_limit: 1,
+        write_limit: 2,
+        horizon: 5,
+    })
+    .with_anomaly_thresholds(AnomalyThresholds {
+        frequency_spike_limit: 100,
+        ..AnomalyThresholds::default()
+    })
+    .with_max_delegation_depth(4);
+```
 
 ### RateLimitConfig
 
@@ -1081,6 +1804,8 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 
 ## Shell Commands
 
+### Core Operations
+
 ```text
 VAULT INIT                              Initialize vault from NEUMANN_VAULT_KEY
 VAULT IDENTITY 'node:alice'             Set current identity
@@ -1094,17 +1819,49 @@ VAULT LIST 'prefix:*'                   List accessible secrets
 VAULT ROTATE 'api_key' 'new'            Rotate secret value
 VAULT VERSIONS 'api_key'                List version history
 VAULT ROLLBACK 'api_key' VERSION 2      Rollback to version
+```
 
+### Access Control
+
+```text
 VAULT GRANT 'user:bob' ON 'api_key'              Grant admin access
 VAULT GRANT 'user:bob' ON 'api_key' READ         Grant read-only access
 VAULT GRANT 'user:bob' ON 'api_key' WRITE        Grant write access
 VAULT GRANT 'user:bob' ON 'api_key' TTL 3600     Grant with 1-hour expiry
 VAULT REVOKE 'user:bob' ON 'api_key'             Revoke access
+```
 
+### Audit
+
+```text
 VAULT AUDIT 'api_key'                   View audit log for secret
 VAULT AUDIT BY 'user:alice'             View audit log for entity
 VAULT AUDIT RECENT 10                   View last 10 operations
 ```
+
+### Rust API Only
+
+The following features are available through the Rust API but do not
+yet have shell command equivalents:
+
+| Feature | API Method |
+| --- | --- |
+| Delegation | `vault.delegate()`, `vault.revoke_delegation()` |
+| Transit encryption | `vault.encrypt_for()`, `vault.decrypt_as()` |
+| Secret expiration | `vault.set_with_ttl()`, `vault.get_expiration()` |
+| Break-glass | `vault.emergency_access()` |
+| Batch operations | `vault.batch_get()`, `vault.batch_set()` |
+| Key rotation | `vault.rotate_master_key()` |
+| Access explanation | `vault.explain_access()` |
+| Blast radius | `vault.blast_radius()` |
+| Grant simulation | `vault.simulate_grant()` |
+| Security audit | `vault.security_audit()` |
+| Critical entities | `vault.find_critical_entities()` |
+| Privilege analysis | `vault.privilege_analysis()` |
+| Delegation anomalies | `vault.delegation_anomaly_scores()` |
+| Role inference | `vault.infer_roles()` |
+| Trust transitivity | `vault.trust_transitivity()` |
+| Risk propagation | `vault.risk_propagation()` |
 
 ## Security Considerations
 
@@ -1112,11 +1869,16 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 
 1. **Use strong master passwords**: At least 128 bits of entropy
 2. **Rotate secrets regularly**: Use `rotate()` to maintain version history
-3. **Grant minimal permissions**: Use Read when Write/Admin not needed
-4. **Use TTL grants for temporary access**: Prevents forgotten grants
-5. **Enable rate limiting in production**: Prevents brute-force attacks
-6. **Use namespaces for multi-tenant**: Enforces isolation
-7. **Review audit logs**: Monitor for suspicious access patterns
+3. **Rotate the master key periodically**: `rotate_master_key()` re-encrypts everything
+4. **Grant minimal permissions**: Use Read when Write/Admin not needed
+5. **Use TTL grants for temporary access**: Prevents forgotten grants
+6. **Use delegation instead of direct grants for agents**: Ceiling model limits blast radius
+7. **Enable rate limiting in production**: Prevents brute-force attacks
+8. **Enable anomaly detection**: Flags suspicious behavioral patterns early
+9. **Use namespaces for multi-tenant**: Enforces isolation
+10. **Review audit logs and run security_audit()**: Detect cycles, SPOFs, over-privilege
+11. **Use explain_access() to debug permission problems**: Shows exact paths and denial reasons
+12. **Keep attenuation horizon low**: Limits transitive privilege escalation
 
 ### Edge Cases and Gotchas
 
@@ -1125,13 +1887,19 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 | Grant to non-existent entity | Succeeds (edge created, entity may exist later) |
 | Revoke non-existent grant | Succeeds silently (idempotent) |
 | Get non-existent secret | Returns `NotFound` error |
+| Get expired secret | Returns `SecretExpired` error |
 | Set by non-root without Write | Returns `AccessDenied` or `InsufficientPermission` |
-| TTL grant cleanup | Opportunistic on `get()` - may not be immediate |
+| TTL grant cleanup | Opportunistic on `get()` -- may not be immediate |
 | Version limit exceeded | Oldest versions automatically deleted |
 | Plaintext > 64KB | Returns `CryptoError` |
 | Invalid UTF-8 in secret | `get()` returns `CryptoError` |
 | Concurrent modifications | Thread-safe via DashMap sharding |
 | MEMBER edge to secret | Path exists but NO permission granted |
+| Tampered graph edge | BFS skips the edge; `explain_access` reports `TamperedEdge` |
+| Delegation depth exceeded | Returns error; configurable via `max_delegation_depth` |
+| Delegation cycle attempt | Returns error; ancestors cannot be children |
+| Break-glass rate limited | Only 1 emergency access per rate-limit window |
+| Transit ciphertext after key rotation | Undecryptable (forward secrecy) |
 
 ### Threat Model
 
@@ -1141,11 +1909,18 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 | Offline dictionary attack | Random 128-bit salt, stored in TensorStore |
 | Ciphertext tampering | AES-GCM authentication tag (128-bit) |
 | Nonce reuse | Random 96-bit nonce per encryption |
-| Key leakage | Keys zeroized on drop, subkeys via HKDF |
+| Key leakage | Keys zeroized on drop, 5 independent subkeys via HKDF |
 | Pattern analysis | Key obfuscation, padding, metadata encryption |
 | Access enumeration | Rate limiting, audit logging |
 | Privilege escalation | MEMBER edges don't grant permissions |
 | Replay attacks | Per-operation nonces, timestamps in metadata |
+| Topology tampering | HMAC-BLAKE2b edge signatures with constant-time verification |
+| Transitive escalation | Distance-based attenuation degrades permissions with hops |
+| Delegation abuse | Ceiling model, depth limits, cycle prevention |
+| Behavioral anomaly | Real-time per-agent anomaly detection |
+| Emergency misuse | Rate-limited break-glass with mandatory justification and audit |
+| Audit log tampering | HMAC integrity protection per entry, AEAD encryption of fields |
+| Stale audit after rotation | Audit epoch counter detects entries from previous key |
 
 ## Performance
 
@@ -1176,11 +1951,13 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 
 | Crate | Purpose |
 | --- | --- |
-| `aes-gcm` | AES-256-GCM encryption |
-| `argon2` | Key derivation |
-| `hkdf` | Subkey derivation |
-| `blake2` | HMAC and obfuscation hashing |
-| `rand` | Nonce generation |
-| `zeroize` | Secure memory cleanup |
-| `dashmap` | Concurrent rate limit tracking |
-| `serde` | TTL grant persistence |
+| `aes-gcm` | AES-256-GCM authenticated encryption |
+| `argon2` | Argon2id key derivation |
+| `hkdf` | HKDF-SHA256 subkey derivation |
+| `blake2` | HMAC-BLAKE2b for obfuscation, edge signing, audit integrity |
+| `rand` | Nonce and salt generation |
+| `zeroize` | Secure memory cleanup on drop |
+| `dashmap` | Concurrent rate limit and anomaly tracking |
+| `serde` | TTL grant and delegation persistence |
+| `graph_engine` | BFS traversal, PageRank, Louvain, eigenvector centrality |
+| `tensor_store` | Underlying key-value storage for all vault data |

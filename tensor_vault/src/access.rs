@@ -171,6 +171,9 @@ const ALLOWED_TRAVERSAL_EDGES: &[&str] = &[
     "MEMBER",
 ];
 
+/// Hard limit on BFS traversal depth to prevent DoS via long MEMBER chains.
+const MAX_BFS_DEPTH: usize = 32;
+
 /// Check if an edge type is allowed for access control traversal.
 fn is_allowed_edge_type(edge_type: &str) -> bool {
     ALLOWED_TRAVERSAL_EDGES
@@ -191,12 +194,16 @@ impl AccessController {
 
         // BFS traversal - only follow outgoing edges with allowed types
         let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
-        queue.push_back(source.to_string());
+        queue.push_back((source.to_string(), 0));
         visited.insert(source.to_string());
 
-        while let Some(current) = queue.pop_front() {
+        while let Some((current, depth)) = queue.pop_front() {
+            if depth >= MAX_BFS_DEPTH {
+                continue;
+            }
+
             for (to, edge_type) in get_outgoing_edges(graph, &current) {
                 // Only traverse allowed edge types
                 if !is_allowed_edge_type(&edge_type) {
@@ -209,7 +216,7 @@ impl AccessController {
 
                 if !visited.contains(&to) {
                     visited.insert(to.clone());
-                    queue.push_back(to);
+                    queue.push_back((to, depth + 1));
                 }
             }
         }
@@ -248,13 +255,17 @@ impl AccessController {
 
         // BFS traversal tracking the best permission found along each path
         let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
         let mut best_permission: Option<Permission> = None;
 
-        queue.push_back(source.to_string());
+        queue.push_back((source.to_string(), 0));
         visited.insert(source.to_string());
 
-        while let Some(current) = queue.pop_front() {
+        while let Some((current, depth)) = queue.pop_front() {
+            if depth >= MAX_BFS_DEPTH {
+                continue;
+            }
+
             for (to, edge_type) in get_outgoing_edges(graph, &current) {
                 // Only traverse allowed edge types
                 if !is_allowed_edge_type(&edge_type) {
@@ -279,7 +290,7 @@ impl AccessController {
                     // MEMBER edge - allow traversal but no permission granted
                     if !visited.contains(&to) {
                         visited.insert(to.clone());
-                        queue.push_back(to);
+                        queue.push_back((to, depth + 1));
                     }
                 }
             }
@@ -868,5 +879,112 @@ mod tests {
             AccessController::get_permission_level(&graph, "user:alice", "secret:key"),
             None
         );
+    }
+
+    // === BFS Depth Limit Tests ===
+
+    #[test]
+    fn test_check_path_depth_limit_exceeded() {
+        let graph = GraphEngine::new();
+
+        // Chain of 35 MEMBER edges: node:0 -> node:1 -> ... -> node:35
+        for i in 0..35 {
+            add_edge(
+                &graph,
+                &format!("node:{i}"),
+                &format!("node:{}", i + 1),
+                "MEMBER",
+            );
+        }
+
+        // 35 hops exceeds MAX_BFS_DEPTH (32), path should not be found
+        assert!(!AccessController::check_path(&graph, "node:0", "node:35"));
+    }
+
+    #[test]
+    fn test_check_path_within_depth_limit() {
+        let graph = GraphEngine::new();
+
+        // Chain of 30 MEMBER edges: node:0 -> node:1 -> ... -> node:30
+        for i in 0..30 {
+            add_edge(
+                &graph,
+                &format!("node:{i}"),
+                &format!("node:{}", i + 1),
+                "MEMBER",
+            );
+        }
+
+        // 30 hops is within MAX_BFS_DEPTH (32), path should be found
+        assert!(AccessController::check_path(&graph, "node:0", "node:30"));
+    }
+
+    #[test]
+    fn test_get_permission_level_depth_limit_exceeded() {
+        let graph = GraphEngine::new();
+
+        // Chain of 35 MEMBER edges then a VAULT_ACCESS_WRITE edge
+        for i in 0..35 {
+            add_edge(
+                &graph,
+                &format!("node:{i}"),
+                &format!("node:{}", i + 1),
+                "MEMBER",
+            );
+        }
+        add_edge(&graph, "node:35", "secret:key", "VAULT_ACCESS_WRITE");
+
+        // 35 MEMBER hops exceeds MAX_BFS_DEPTH (32), should return None
+        assert_eq!(
+            AccessController::get_permission_level(&graph, "node:0", "secret:key"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_get_permission_level_within_depth_limit() {
+        let graph = GraphEngine::new();
+
+        // Chain of 30 MEMBER edges then a VAULT_ACCESS_WRITE edge
+        for i in 0..30 {
+            add_edge(
+                &graph,
+                &format!("node:{i}"),
+                &format!("node:{}", i + 1),
+                "MEMBER",
+            );
+        }
+        add_edge(&graph, "node:30", "secret:key", "VAULT_ACCESS_WRITE");
+
+        // 30 MEMBER hops is within MAX_BFS_DEPTH (32), should find permission
+        assert_eq!(
+            AccessController::get_permission_level(&graph, "node:0", "secret:key"),
+            Some(Permission::Write)
+        );
+    }
+
+    #[test]
+    fn test_check_path_at_exact_boundary() {
+        let graph = GraphEngine::new();
+
+        // Chain of exactly 31 MEMBER edges: node:0 -> ... -> node:31
+        // At depth 31, node:31 is enqueued with depth=31 which is < 32, so it
+        // will be processed and its edges explored. A target at node:32 requires
+        // the edge from node:31 (depth=31) to be explored, which succeeds.
+        for i in 0..32 {
+            add_edge(
+                &graph,
+                &format!("node:{i}"),
+                &format!("node:{}", i + 1),
+                "MEMBER",
+            );
+        }
+
+        // 31 hops (depth 31) should still find node:32 as a neighbor
+        assert!(AccessController::check_path(&graph, "node:0", "node:32"));
+
+        // But 33 hops should fail: node:32 is enqueued at depth=32 and skipped
+        add_edge(&graph, "node:32", "node:33", "MEMBER");
+        assert!(!AccessController::check_path(&graph, "node:0", "node:33"));
     }
 }

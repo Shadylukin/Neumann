@@ -13,6 +13,7 @@ use aes_gcm::{
 };
 use blake2::{digest::consts::U32, Blake2b, Digest};
 use rand::RngCore;
+use zeroize::Zeroizing;
 
 use crate::{key::MasterKey, Result, VaultError};
 
@@ -70,9 +71,9 @@ impl PaddingSize {
 /// Obfuscation utilities using HMAC-like construction.
 pub struct Obfuscator {
     /// Derived key for obfuscation (separate from encryption key)
-    obfuscation_key: [u8; 32],
+    obfuscation_key: Zeroizing<[u8; 32]>,
     /// Derived key for metadata AEAD encryption
-    metadata_key: [u8; 32],
+    metadata_key: Zeroizing<[u8; 32]>,
 }
 
 impl Obfuscator {
@@ -80,8 +81,16 @@ impl Obfuscator {
     /// Derives separate keys via HKDF for obfuscation and metadata encryption.
     pub fn new(master_key: &MasterKey) -> Self {
         Self {
-            obfuscation_key: master_key.obfuscation_key(),
-            metadata_key: master_key.metadata_key(),
+            obfuscation_key: Zeroizing::new(master_key.obfuscation_key()),
+            metadata_key: Zeroizing::new(master_key.metadata_key()),
+        }
+    }
+
+    /// Create an obfuscator with zeroed keys (for seal zeroization).
+    pub fn from_zeroed() -> Self {
+        Self {
+            obfuscation_key: Zeroizing::new([0u8; 32]),
+            metadata_key: Zeroizing::new([0u8; 32]),
         }
     }
 
@@ -104,7 +113,7 @@ impl Obfuscator {
     /// Encrypt metadata using AEAD (AES-256-GCM) with a random per-record nonce.
     /// Returns the ciphertext with the nonce prepended (nonce || ciphertext).
     pub fn encrypt_metadata(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let cipher = Aes256Gcm::new_from_slice(&self.metadata_key)
+        let cipher = Aes256Gcm::new_from_slice(&*self.metadata_key)
             .map_err(|e| VaultError::CryptoError(format!("Invalid metadata key: {e}")))?;
 
         // Generate random nonce for each encryption
@@ -133,7 +142,7 @@ impl Obfuscator {
 
         let (nonce_bytes, ciphertext) = encrypted.split_at(METADATA_NONCE_SIZE);
 
-        let cipher = Aes256Gcm::new_from_slice(&self.metadata_key)
+        let cipher = Aes256Gcm::new_from_slice(&*self.metadata_key)
             .map_err(|e| VaultError::CryptoError(format!("Invalid metadata key: {e}")))?;
 
         let nonce = Nonce::from_slice(nonce_bytes);
@@ -156,14 +165,18 @@ impl Obfuscator {
     /// Deobfuscate metadata (legacy, for backward compatibility).
     #[deprecated(note = "Use decrypt_metadata for new code")]
     pub fn deobfuscate_metadata(&self, obfuscated: &[u8]) -> Vec<u8> {
-        #[allow(deprecated)]
+        #[allow(deprecated)] // Self-call: XOR is its own inverse, both methods deprecated together
         self.obfuscate_metadata(obfuscated)
     }
 
-    /// HMAC construction using BLAKE2b (cryptographically secure).
+    /// HMAC-BLAKE2b PRF used only for key derivation (obfuscate_key, storage ID).
+    /// This is intentionally hand-rolled rather than using Blake2bMac512 because
+    /// changing the output would make all existing obfuscated storage keys
+    /// unreachable. The construction is functionally equivalent to HMAC and the
+    /// output is not used for integrity verification.
     fn hmac_hash(&self, data: &[u8], domain: &[u8]) -> [u8; 32] {
         // Inner hash: H((key XOR ipad) || domain || data)
-        let mut inner_key = self.obfuscation_key;
+        let mut inner_key = *self.obfuscation_key;
         for byte in &mut inner_key {
             *byte ^= 0x36; // ipad
         }
@@ -175,7 +188,7 @@ impl Obfuscator {
         let inner_hash = inner_hasher.finalize();
 
         // Outer hash: H((key XOR opad) || inner_hash)
-        let mut outer_key = self.obfuscation_key;
+        let mut outer_key = *self.obfuscation_key;
         for byte in &mut outer_key {
             *byte ^= 0x5c; // opad
         }

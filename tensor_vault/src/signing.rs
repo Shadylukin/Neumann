@@ -4,7 +4,8 @@
 //! Signs VAULT_ACCESS edges with HMAC-BLAKE2b to detect tampering.
 //! The signing key is derived from the master key via HKDF.
 
-use blake2::{digest::consts::U32, Blake2b, Digest};
+use blake2::{digest::consts::U32, digest::Mac, Blake2b, Digest};
+use zeroize::Zeroizing;
 
 use crate::key::{MasterKey, KEY_SIZE};
 
@@ -13,14 +14,21 @@ const EDGE_SIGNING_DOMAIN: &[u8] = b"neumann_vault_edge_signing_v1";
 
 /// Signs and verifies graph edges using HMAC-BLAKE2b.
 pub struct EdgeSigner {
-    hmac_key: [u8; KEY_SIZE],
+    hmac_key: Zeroizing<[u8; KEY_SIZE]>,
 }
 
 impl EdgeSigner {
     /// Create a new edge signer from the master key.
     pub fn new(master_key: &MasterKey) -> Self {
-        let hmac_key = master_key.derive_subkey(EDGE_SIGNING_DOMAIN);
+        let hmac_key = Zeroizing::new(master_key.derive_subkey(EDGE_SIGNING_DOMAIN));
         Self { hmac_key }
+    }
+
+    /// Create a signer with zeroed key (for seal zeroization).
+    pub fn from_zeroed() -> Self {
+        Self {
+            hmac_key: Zeroizing::new([0u8; KEY_SIZE]),
+        }
     }
 
     /// Sign edge data: `HMAC-BLAKE2b(from || to || edge_type || timestamp)`.
@@ -28,8 +36,7 @@ impl EdgeSigner {
         self.compute_mac(from, to, edge_type, timestamp).to_vec()
     }
 
-    /// Verify an edge signature.
-    #[allow(dead_code)]
+    /// Verify an edge signature (tries new MAC first, then legacy fallback).
     pub fn verify_edge(
         &self,
         from: &str,
@@ -39,21 +46,48 @@ impl EdgeSigner {
         signature: &[u8],
     ) -> bool {
         let expected = self.compute_mac(from, to, edge_type, timestamp);
-        constant_time_eq(&expected, signature)
+        if constant_time_eq(&expected, signature) {
+            return true;
+        }
+        // Legacy fallback: try old hand-rolled HMAC
+        let legacy = self.compute_mac_legacy(from, to, edge_type, timestamp);
+        constant_time_eq(&legacy, signature)
     }
 
-    /// HMAC-BLAKE2b construction for edge data.
+    /// BLAKE2b-MAC512 keyed MAC for edge data (truncated to 32 bytes).
     fn compute_mac(&self, from: &str, to: &str, edge_type: &str, timestamp: i64) -> [u8; 32] {
-        // Inner hash: H((key XOR ipad) || data)
-        let mut inner_key = self.hmac_key;
+        let mut mac =
+            blake2::Blake2bMac512::new_from_slice(&*self.hmac_key).expect("valid key length");
+        mac.update(from.as_bytes());
+        mac.update(b"\x00");
+        mac.update(to.as_bytes());
+        mac.update(b"\x00");
+        mac.update(edge_type.as_bytes());
+        mac.update(b"\x00");
+        mac.update(&timestamp.to_le_bytes());
+        let result = mac.finalize().into_bytes();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&result[..32]);
+        out
+    }
+
+    /// Legacy hand-rolled HMAC-BLAKE2b construction (for backward compatibility).
+    fn compute_mac_legacy(
+        &self,
+        from: &str,
+        to: &str,
+        edge_type: &str,
+        timestamp: i64,
+    ) -> [u8; 32] {
+        let mut inner_key = *self.hmac_key;
         for byte in &mut inner_key {
-            *byte ^= 0x36; // ipad
+            *byte ^= 0x36;
         }
 
         let mut inner = Blake2b::<U32>::new();
         inner.update(inner_key);
         inner.update(from.as_bytes());
-        inner.update(b"\x00"); // separator
+        inner.update(b"\x00");
         inner.update(to.as_bytes());
         inner.update(b"\x00");
         inner.update(edge_type.as_bytes());
@@ -61,10 +95,9 @@ impl EdgeSigner {
         inner.update(timestamp.to_le_bytes());
         let inner_hash = inner.finalize();
 
-        // Outer hash: H((key XOR opad) || inner_hash)
-        let mut outer_key = self.hmac_key;
+        let mut outer_key = *self.hmac_key;
         for byte in &mut outer_key {
-            *byte ^= 0x5c; // opad
+            *byte ^= 0x5c;
         }
 
         let mut outer = Blake2b::<U32>::new();
@@ -77,7 +110,6 @@ impl EdgeSigner {
 }
 
 /// Constant-time comparison to prevent timing attacks.
-#[allow(dead_code)]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -211,5 +243,29 @@ mod tests {
         assert!(!constant_time_eq(b"hello", b"world"));
         assert!(!constant_time_eq(b"hello", b"hell"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn test_signing_new_mac_roundtrip() {
+        let signer = test_signer();
+        let sig = signer.sign_edge("user:alice", "secret:key", "VAULT_ACCESS_READ", 1000);
+        assert!(signer.verify_edge("user:alice", "secret:key", "VAULT_ACCESS_READ", 1000, &sig));
+        assert_eq!(sig.len(), 32);
+    }
+
+    #[test]
+    fn test_signing_legacy_fallback_verify() {
+        let signer = test_signer();
+        // Compute a legacy-style signature
+        let legacy_sig =
+            signer.compute_mac_legacy("user:alice", "secret:key", "VAULT_ACCESS_READ", 1000);
+        // verify_edge should accept it via fallback
+        assert!(signer.verify_edge(
+            "user:alice",
+            "secret:key",
+            "VAULT_ACCESS_READ",
+            1000,
+            &legacy_sig
+        ));
     }
 }

@@ -25,6 +25,12 @@ pub struct RateLimitConfig {
     pub max_sets: u32,
     /// Maximum grant() calls per window.
     pub max_grants: u32,
+    /// Maximum break-glass calls per window.
+    pub max_break_glass: u32,
+    /// Maximum wrap() calls per window.
+    pub max_wraps: u32,
+    /// Maximum dynamic secret generate calls per window.
+    pub max_generates: u32,
     /// Time window for rate limiting.
     pub window: Duration,
 }
@@ -36,6 +42,9 @@ impl Default for RateLimitConfig {
             max_lists: 10,
             max_sets: 30,
             max_grants: 20,
+            max_break_glass: 1,
+            max_wraps: 20,
+            max_generates: 30,
             window: Duration::from_secs(60),
         }
     }
@@ -49,6 +58,9 @@ impl RateLimitConfig {
             max_lists: u32::MAX,
             max_sets: u32::MAX,
             max_grants: u32::MAX,
+            max_break_glass: u32::MAX,
+            max_wraps: u32::MAX,
+            max_generates: u32::MAX,
             window: Duration::from_secs(60),
         }
     }
@@ -60,6 +72,9 @@ impl RateLimitConfig {
             max_lists: 2,
             max_sets: 3,
             max_grants: 2,
+            max_break_glass: 1,
+            max_wraps: 2,
+            max_generates: 3,
             window: Duration::from_secs(60),
         }
     }
@@ -68,10 +83,20 @@ impl RateLimitConfig {
 /// Operation types that can be rate limited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
+    /// Read a secret value.
     Get,
+    /// List secret keys matching a pattern.
     List,
+    /// Store or update a secret value.
     Set,
+    /// Grant access to a secret.
     Grant,
+    /// Emergency break-glass access bypass.
+    BreakGlass,
+    /// Wrap a secret behind a single-use token.
+    Wrap,
+    /// Generate a dynamic (short-lived) secret.
+    DynamicGenerate,
 }
 
 impl Operation {
@@ -81,6 +106,9 @@ impl Operation {
             Self::List => "list",
             Self::Set => "set",
             Self::Grant => "grant",
+            Self::BreakGlass => "break_glass",
+            Self::Wrap => "wrap",
+            Self::DynamicGenerate => "dynamic_generate",
         }
     }
 
@@ -90,6 +118,9 @@ impl Operation {
             Self::List => config.max_lists,
             Self::Set => config.max_sets,
             Self::Grant => config.max_grants,
+            Self::BreakGlass => config.max_break_glass,
+            Self::Wrap => config.max_wraps,
+            Self::DynamicGenerate => config.max_generates,
         }
     }
 }

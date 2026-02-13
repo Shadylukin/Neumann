@@ -68,8 +68,7 @@ impl MasterKey {
         Ok((key, salt))
     }
 
-    /// Create from raw bytes (for testing and fuzzing).
-    #[cfg(any(test, feature = "fuzzing"))]
+    /// Create from raw bytes (used by Shamir reconstruction and tests).
     pub fn from_bytes(bytes: [u8; KEY_SIZE]) -> Self {
         Self { bytes }
     }
@@ -102,6 +101,26 @@ impl MasterKey {
     /// Derive metadata encryption key.
     pub fn metadata_key(&self) -> [u8; KEY_SIZE] {
         self.derive_subkey(b"neumann_vault_metadata_v1")
+    }
+
+    /// Derive audit log integrity key for HMAC and AEAD operations.
+    pub fn audit_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_audit_v1")
+    }
+
+    /// Derive transit encryption key for encrypt-as-a-service operations.
+    pub fn transit_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_transit_v1")
+    }
+
+    /// Derive snapshot encryption key for point-in-time recovery.
+    pub fn snapshot_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_snapshot_v1")
+    }
+
+    /// Derive sync encryption key for external target sync.
+    pub fn sync_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_sync_v1")
     }
 }
 
@@ -226,6 +245,21 @@ mod tests {
     }
 
     #[test]
+    fn test_audit_key_independent() {
+        let key = MasterKey::from_bytes([42u8; KEY_SIZE]);
+
+        let audit = key.audit_key();
+        let encryption = key.encryption_key();
+        let obfuscation = key.obfuscation_key();
+        let metadata = key.metadata_key();
+
+        assert_ne!(audit, encryption);
+        assert_ne!(audit, obfuscation);
+        assert_ne!(audit, metadata);
+        assert_ne!(&audit, key.as_bytes());
+    }
+
+    #[test]
     fn test_hkdf_subkeys_are_deterministic() {
         let key1 = MasterKey::from_bytes([99u8; KEY_SIZE]);
         let key2 = MasterKey::from_bytes([99u8; KEY_SIZE]);
@@ -233,6 +267,48 @@ mod tests {
         assert_eq!(key1.encryption_key(), key2.encryption_key());
         assert_eq!(key1.obfuscation_key(), key2.obfuscation_key());
         assert_eq!(key1.metadata_key(), key2.metadata_key());
+    }
+
+    #[test]
+    fn test_snapshot_key_independent() {
+        let key = MasterKey::from_bytes([42u8; KEY_SIZE]);
+
+        let snapshot = key.snapshot_key();
+        let encryption = key.encryption_key();
+        let obfuscation = key.obfuscation_key();
+        let metadata = key.metadata_key();
+        let audit = key.audit_key();
+        let transit = key.transit_key();
+        let sync = key.sync_key();
+
+        assert_ne!(snapshot, encryption);
+        assert_ne!(snapshot, obfuscation);
+        assert_ne!(snapshot, metadata);
+        assert_ne!(snapshot, audit);
+        assert_ne!(snapshot, transit);
+        assert_ne!(snapshot, sync);
+        assert_ne!(&snapshot, key.as_bytes());
+    }
+
+    #[test]
+    fn test_sync_key_independent() {
+        let key = MasterKey::from_bytes([42u8; KEY_SIZE]);
+
+        let sync = key.sync_key();
+        let encryption = key.encryption_key();
+        let obfuscation = key.obfuscation_key();
+        let metadata = key.metadata_key();
+        let audit = key.audit_key();
+        let transit = key.transit_key();
+        let snapshot = key.snapshot_key();
+
+        assert_ne!(sync, encryption);
+        assert_ne!(sync, obfuscation);
+        assert_ne!(sync, metadata);
+        assert_ne!(sync, audit);
+        assert_ne!(sync, transit);
+        assert_ne!(sync, snapshot);
+        assert_ne!(&sync, key.as_bytes());
     }
 
     #[test]

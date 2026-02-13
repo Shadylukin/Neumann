@@ -1030,3 +1030,75 @@ path = "fuzz_targets/checkpoint_snapshot_parse.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 45: Vault integration fuzz targets
+
+[[bin]]
+name = "vault_cipher_aad"
+path = "fuzz_targets/vault_cipher_aad.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_obfuscation"
+path = "fuzz_targets/vault_obfuscation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_shamir"
+path = "fuzz_targets/vault_shamir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_ops"
+path = "fuzz_targets/vault_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_heat_kernel"
+path = "fuzz_targets/vault_heat_kernel.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_access_tensor"
+path = "fuzz_targets/vault_access_tensor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_geo_routing"
+path = "fuzz_targets/vault_geo_routing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_dependency"
+path = "fuzz_targets/vault_dependency.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_policy"
+path = "fuzz_targets/vault_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_audit_roundtrip"
+path = "fuzz_targets/vault_audit_roundtrip.rs"
+test = false
+doc = false
+bench = false

@@ -207,8 +207,8 @@ fn test_vault_audit_logging() {
     vault.get(Vault::ROOT, "audit/secret2").unwrap();
 
     // Check audit log using the key-based query (handles obfuscation internally)
-    let secret1_logs = vault.audit_log("audit/secret1");
-    let secret2_logs = vault.audit_log("audit/secret2");
+    let secret1_logs = vault.audit_log("audit/secret1").unwrap();
+    let secret2_logs = vault.audit_log("audit/secret2").unwrap();
 
     // Should have logged the operations for each secret
     assert!(
