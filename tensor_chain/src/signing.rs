@@ -180,7 +180,7 @@ use std::time::{Duration, Instant};
 
 use blake2::{digest::consts::U16, digest::consts::U64, Blake2b, Digest};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
+use rand_core_06::OsRng;
 use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
 use zeroize::ZeroizeOnDrop;

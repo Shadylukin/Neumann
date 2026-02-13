@@ -3048,7 +3048,7 @@ impl Vault {
 
         // Derive new key material
         let mut new_salt = [0u8; SALT_SIZE];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut new_salt);
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut new_salt);
         let new_master = MasterKey::derive_with_salt(new_password, &new_salt, &self.config)?;
         let new_cipher = Cipher::new(&new_master);
         let new_obfuscator = Obfuscator::new(&new_master);

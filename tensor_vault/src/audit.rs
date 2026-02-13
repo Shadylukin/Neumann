@@ -476,7 +476,7 @@ impl<'a> AuditLog<'a> {
         let key = self.audit_key?;
         let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes()).ok()?;
         let mut result = Vec::with_capacity(NONCE_SIZE + ciphertext.len());

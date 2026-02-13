@@ -163,7 +163,7 @@ pub fn generate_tx_id() -> u64 {
     };
 
     // Get 32 bits of cryptographic randomness
-    let random_bits = u64::from(rand::rngs::OsRng.next_u32());
+    let random_bits = u64::from(rand::rng().next_u32());
 
     // Assemble the ID:
     // - Bits 63-48: milliseconds (mod 65536)

@@ -1255,12 +1255,12 @@ impl WalCrashRecoveryCluster {
     /// complete entries before the torn point.
     pub async fn crash_node_with_torn_write(&mut self, idx: usize, rng: &mut impl rand::Rng) {
         self.crash_node(idx).await;
-        if rng.gen_bool(0.5) {
+        if rng.random_bool(0.5) {
             let wal_path = &self.wal_paths[idx];
             if let Ok(meta) = std::fs::metadata(wal_path) {
                 let size = meta.len();
                 if size > 8 {
-                    let truncate_at = rng.gen_range(size.saturating_sub(64)..size);
+                    let truncate_at = rng.random_range(size.saturating_sub(64)..size);
                     let f = std::fs::OpenOptions::new()
                         .write(true)
                         .open(wal_path)
@@ -1603,20 +1603,20 @@ pub fn random_nemesis_schedule(seed: u64, duration_secs: u64) -> NemesisSchedule
     let end_ms = duration_secs * 1000;
 
     while elapsed_ms < end_ms {
-        let interval_ms = rng.gen_range(2000..5000);
+        let interval_ms = rng.random_range(2000..5000);
         elapsed_ms += interval_ms;
         if elapsed_ms >= end_ms {
             break;
         }
 
-        let action = match rng.gen_range(0..5) {
+        let action = match rng.random_range(0..5) {
             0 => NemesisAction::MajorityPartition,
             1 => NemesisAction::RandomCrash,
             2 => NemesisAction::ClockDrift {
-                drift_ms: rng.gen_range(-5000..5000),
+                drift_ms: rng.random_range(-5000..5000),
             },
             3 => NemesisAction::LinkDegradation {
-                drop_rate: rng.gen_range(0.05..0.3),
+                drop_rate: rng.random_range(0.05..0.3),
             },
             _ => NemesisAction::HealAll,
         };

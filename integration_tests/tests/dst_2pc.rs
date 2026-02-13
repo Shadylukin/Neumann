@@ -206,7 +206,7 @@ fn prepare_with_drop(
     rng: &mut StdRng,
     drop_rate: f64,
 ) -> Option<TxPhase> {
-    if rng.gen_bool(drop_rate) {
+    if rng.random_bool(drop_rate) {
         // Message dropped -- vote never reaches coordinator
         return None;
     }
@@ -231,7 +231,7 @@ fn dst_2pc_message_drop_during_prepare() {
 
         for &shard in &shards {
             let result = prepare_with_drop(&coord, tx_id, shard, &mut rng, 0.1);
-            if result.is_none() && rng.gen_bool(0.1) {
+            if result.is_none() && rng.random_bool(0.1) {
                 any_dropped = true;
             }
             if let Some(phase) = result {

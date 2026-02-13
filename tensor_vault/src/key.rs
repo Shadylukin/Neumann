@@ -63,7 +63,7 @@ impl MasterKey {
         config: &VaultConfig,
     ) -> Result<(Self, [u8; SALT_SIZE])> {
         let mut salt = [0u8; SALT_SIZE];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
         let key = Self::derive_with_salt(input, &salt, config)?;
         Ok((key, salt))
     }

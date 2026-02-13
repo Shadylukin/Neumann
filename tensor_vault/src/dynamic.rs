@@ -123,7 +123,7 @@ pub struct DynamicSecretMetadata {
 
 fn generate_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     format!("dyn_{}", hex_encode(&bytes))
 }
 
@@ -152,7 +152,7 @@ fn generate_password(config: &PasswordConfig) -> String {
         PasswordCharset::Hex => b"0123456789abcdef",
     };
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut password: Vec<u8> = Vec::with_capacity(length);
 
     // Ensure required character classes
@@ -199,7 +199,7 @@ fn generate_password(config: &PasswordConfig) -> String {
 fn generate_token(config: &TokenConfig) -> String {
     let byte_len = config.length;
     let mut bytes = vec![0u8; byte_len];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
 
     match config.encoding {
         TokenEncoding::Hex => hex_encode(&bytes),
@@ -211,7 +211,7 @@ fn generate_token(config: &TokenConfig) -> String {
 
 fn generate_api_key(config: &ApiKeyConfig) -> String {
     let mut bytes = vec![0u8; config.random_length];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     format!("{}_{}", config.prefix, hex_encode(&bytes))
 }
 

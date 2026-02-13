@@ -4,7 +4,6 @@
 //! Uses GF(256) arithmetic with the AES irreducible polynomial (0x11B)
 //! to split and reconstruct secrets without external dependencies.
 
-use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -142,7 +141,7 @@ pub fn split_master_key(key: &MasterKey, config: &ShamirConfig) -> Result<Vec<Ke
     for byte_idx in 0..KEY_SIZE {
         coeffs[0] = key_bytes[byte_idx];
 
-        OsRng.fill_bytes(&mut rng_buf);
+        rand::rng().fill_bytes(&mut rng_buf);
         coeffs[1..].copy_from_slice(&rng_buf);
 
         for share in &mut shares {
@@ -551,7 +550,7 @@ mod tests {
     fn test_random_key_roundtrip() {
         // Test with a random key to avoid fixed-pattern coincidences
         let mut key_bytes = [0u8; KEY_SIZE];
-        OsRng.fill_bytes(&mut key_bytes);
+        rand::rng().fill_bytes(&mut key_bytes);
         let key = MasterKey::from_bytes(key_bytes);
 
         let config = ShamirConfig {

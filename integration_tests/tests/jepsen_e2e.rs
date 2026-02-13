@@ -153,9 +153,9 @@ fn test_e2e_sql_partitioned_keys_4_threads() {
                 let mut rng = ChaCha8Rng::seed_from_u64(tid * 1000);
                 let key_base = (tid as i64) * keys_per_thread + 1;
                 for op_idx in 0..ops_per_thread {
-                    let key = key_base + rng.gen_range(0..keys_per_thread);
+                    let key = key_base + rng.random_range(0..keys_per_thread);
                     let key_str = key.to_string();
-                    let is_write = rng.gen_ratio(1, 2);
+                    let is_write = rng.random_ratio(1, 2);
                     if is_write {
                         let val = (tid as i64) * 1000 + op_idx;
                         let oid = history.invoke(tid, OpType::Write, key_str, Value::Int(val));
@@ -201,7 +201,7 @@ fn test_e2e_concurrent_single_key_4_threads() {
             s.spawn(move || {
                 let mut rng = ChaCha8Rng::seed_from_u64(tid * 1000);
                 for op_idx in 0..ops_per_thread {
-                    let is_write = rng.gen_ratio(3, 5);
+                    let is_write = rng.random_ratio(3, 5);
                     if is_write {
                         let val = (tid as i64) * 1000 + op_idx;
                         let oid =
@@ -245,9 +245,9 @@ fn test_e2e_concurrent_multi_key_4_threads() {
             s.spawn(move || {
                 let mut rng = ChaCha8Rng::seed_from_u64(tid * 7919);
                 for op_idx in 0..ops_per_thread {
-                    let key = rng.gen_range(1..=num_keys);
+                    let key = rng.random_range(1..=num_keys);
                     let key_str = format!("r:{key}");
-                    let is_write = rng.gen_ratio(1, 2);
+                    let is_write = rng.random_ratio(1, 2);
                     if is_write {
                         let val = (tid as i64) * 1000 + op_idx;
                         let oid =
@@ -297,7 +297,7 @@ fn test_e2e_high_contention_8_threads() {
             s.spawn(move || {
                 let mut rng = ChaCha8Rng::seed_from_u64(tid * 3571);
                 for op_idx in 0..ops_per_thread {
-                    let is_write = rng.gen_ratio(1, 2);
+                    let is_write = rng.random_ratio(1, 2);
                     if is_write {
                         let val = (tid as i64) * 1000 + op_idx;
                         let oid =
@@ -341,9 +341,9 @@ fn test_e2e_many_keys_low_contention() {
             s.spawn(move || {
                 let mut rng = ChaCha8Rng::seed_from_u64(tid * 6151);
                 for op_idx in 0..ops_per_thread {
-                    let key = rng.gen_range(1..=num_keys);
+                    let key = rng.random_range(1..=num_keys);
                     let key_str = format!("r:{key}");
-                    let is_write = rng.gen_ratio(1, 2);
+                    let is_write = rng.random_ratio(1, 2);
                     if is_write {
                         let val = (tid as i64) * 1000 + op_idx;
                         let oid =
@@ -387,9 +387,9 @@ fn test_e2e_write_heavy_workload() {
             s.spawn(move || {
                 let mut rng = ChaCha8Rng::seed_from_u64(tid * 4219);
                 for op_idx in 0..ops_per_thread {
-                    let key = rng.gen_range(1..=num_keys);
+                    let key = rng.random_range(1..=num_keys);
                     let key_str = format!("r:{key}");
-                    let is_write = rng.gen_ratio(9, 10); // 90% writes
+                    let is_write = rng.random_ratio(9, 10); // 90% writes
                     if is_write {
                         let val = (tid as i64) * 1000 + op_idx;
                         let oid =
@@ -475,9 +475,9 @@ fn test_e2e_deterministic_seed_reproducible() {
                 s.spawn(move || {
                     let mut rng = ChaCha8Rng::seed_from_u64(seed_base + tid);
                     for op_idx in 0..ops_per_thread {
-                        let key = rng.gen_range(1..=num_keys);
+                        let key = rng.random_range(1..=num_keys);
                         let key_str = format!("r:{key}");
-                        let is_write = rng.gen_ratio(1, 2);
+                        let is_write = rng.random_ratio(1, 2);
                         if is_write {
                             let val = (tid as i64) * 1000 + op_idx;
                             let oid = history.invoke(

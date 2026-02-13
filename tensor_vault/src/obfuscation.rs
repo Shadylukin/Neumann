@@ -118,7 +118,7 @@ impl Obfuscator {
 
         // Generate random nonce for each encryption
         let mut nonce_bytes = [0u8; METADATA_NONCE_SIZE];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = cipher
@@ -237,7 +237,7 @@ pub fn pad_plaintext(plaintext: &[u8]) -> Result<Vec<u8>> {
 
     // Random padding
     let mut rng_bytes = vec![0u8; padding_len];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut rng_bytes);
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut rng_bytes);
     padded.extend_from_slice(&rng_bytes);
 
     Ok(padded)

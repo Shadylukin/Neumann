@@ -38,7 +38,7 @@ fn now_ms() -> i64 {
 
 fn generate_snap_id() -> String {
     let mut bytes = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     format!("snap_{}", hex_encode(&bytes))
 }
 
