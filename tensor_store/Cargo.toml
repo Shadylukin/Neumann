@@ -11,24 +11,24 @@ readme = "../README.md"
 description = "Core tensor-based key-value storage with HNSW indexing and tiered caching"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-bitcode = { version = "0.6", features = ["serde"] }
+serde.workspace = true
+bitcode.workspace = true
 tensor_compress = { path = "../tensor_compress" }
 wide = "0.7"
-memmap2 = "0.9"
+memmap2.workspace = true
 rustc-hash = "2"
-parking_lot = "0.12"
+parking_lot.workspace = true
 bitvec = { version = "1", features = ["serde"] }
-crc32fast = "1.4"
-thiserror = "2"
+crc32fast.workspace = true
+thiserror.workspace = true
 zstd = "0.13"
-tracing = "0.1"
+tracing.workspace = true
 blake3 = "1"
-hex = "0.4"
+hex.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-tempfile = "3"
+criterion.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "tensor_store_bench"
@@ -41,3 +41,8 @@ harness = false
 [[bench]]
 name = "wal_bench"
 harness = false
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

@@ -81,10 +81,6 @@ skip = [
     # --- Proc macros ---
     { crate = "syn@1", reason = "older proc-macro crates require syn 1.x" },
 
-    # --- Error handling ---
-    { crate = "thiserror@1", reason = "x509-parser/opentelemetry use 1.x, we use 2.x" },
-    { crate = "thiserror-impl@1", reason = "thiserror 1.x requires thiserror-impl 1.x" },
-
     # --- Random ---
     { crate = "rand@0.8", reason = "proptest/tiktoken-rs use 0.8, opentelemetry uses 0.9" },
     { crate = "rand_chacha@0.3", reason = "rand 0.8 requires rand_chacha 0.3" },

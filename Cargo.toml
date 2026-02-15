@@ -36,3 +36,71 @@ documentation = "https://github.com/Shadylukin/Neumann/tree/main/docs"
 keywords = ["database", "tensor", "graph", "vector", "unified"]
 categories = ["database", "data-structures"]
 rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1" }
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
+tokio-test = "0.4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bitcode = { version = "0.6", features = ["serde"] }
+prost = "0.14"
+
+# gRPC
+tonic = { version = "0.14", features = ["gzip", "tls-ring"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+
+# Concurrency
+parking_lot = "0.12"
+dashmap = "6"
+rayon = "1.10"
+crossbeam-channel = "0.5"
+
+# Crypto
+sha2 = "0.10"
+blake2 = "0.10"
+rand = "0.9"
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+
+# Error handling
+thiserror = "2"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI / Terminal
+clap = { version = "4", features = ["derive"] }
+
+# Storage
+memmap2 = "0.9"
+tempfile = "3"
+crc32fast = "1.4"
+
+# TLS / Certificates
+x509-parser = "0.18"
+rcgen = "0.13"
+
+# Misc
+hex = "0.4"
+base64 = "0.22"
+libc = "0.2"
+bytes = "1"
+
+# Testing
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

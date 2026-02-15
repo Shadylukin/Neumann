@@ -14,28 +14,28 @@ description = "AES-256-GCM encrypted secret storage with graph-based access cont
 tensor_store = { path = "../tensor_store" }
 graph_engine = { path = "../graph_engine" }
 tensor_compress = { path = "../tensor_compress" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-dashmap = "6"
+serde.workspace = true
+serde_json.workspace = true
+dashmap.workspace = true
 
 # Cryptography
 aes-gcm = "0.10"
 argon2 = "0.5"
-blake2 = "0.10"
+blake2.workspace = true
 hkdf = "0.12"
-rand = "0.9"
-sha2 = "0.10"
-zeroize = { version = "1", features = ["derive"] }
-base64 = "0.22"
+rand.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+base64.workspace = true
 
 # X.509 certificate generation for PKI engine
-rcgen = "0.13"
+rcgen.workspace = true
 
 [features]
 fuzzing = []
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 peak_alloc = "0.3"
 serial_test = "3"
 
@@ -43,10 +43,5 @@ serial_test = "3"
 name = "tensor_vault_bench"
 harness = false
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
+[lints]
+workspace = true

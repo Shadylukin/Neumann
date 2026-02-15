@@ -17,17 +17,20 @@ description = "Checkpoint and rollback system for Neumann database"
 [dependencies]
 tensor_store = { path = "../tensor_store" }
 tensor_blob = { path = "../tensor_blob" }
-serde = { version = "1", features = ["derive"] }
-bitcode = { version = "0.6", features = ["serde"] }
-thiserror = "1"
-uuid = { version = "1", features = ["v4"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+serde.workspace = true
+bitcode.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion.workspace = true
 
 [[bench]]
 name = "checkpoint_bench"
 harness = false
+
+[lints]
+workspace = true

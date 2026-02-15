@@ -13,8 +13,11 @@ description = "Hand-written recursive descent parser for the Neumann query langu
 [dependencies]
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 
 [[bench]]
 name = "neumann_parser_bench"
 harness = false
+
+[lints]
+workspace = true

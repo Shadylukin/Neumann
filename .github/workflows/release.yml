@@ -119,6 +119,7 @@ jobs:
           choco install protoc
 
       - name: Build
+        shell: bash
         run: |
           cargo build --release \
             --package neumann_shell \
@@ -196,6 +197,7 @@ jobs:
           sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
 
       - name: Sign release artifact
+        shell: bash
         env:
           VERSION: ${{ needs.create-release.outputs.version }}
           TARGET: ${{ matrix.target }}

@@ -10,31 +10,33 @@ categories.workspace = true
 readme = "../README.md"
 description = "SQL-like relational engine with SIMD-accelerated filtering and columnar storage"
 
-[lints.rust]
-missing_docs = "warn"
-
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-
 [features]
 test-internals = []
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }
-rayon = "1.10"
+rayon.workspace = true
 wide = "0.7"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-hex = "0.4"
-parking_lot = "0.12"
-dashmap = "6"
-tracing = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-tempfile = "3"
+criterion.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "relational_engine_bench"
 harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

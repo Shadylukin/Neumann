@@ -21,42 +21,42 @@ tensor_compress = { path = "../tensor_compress" }
 graph_engine = { path = "../graph_engine" }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
+tokio = { workspace = true, features = ["full"] }
+async-trait.workspace = true
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-bitcode = { version = "0.6", features = ["serde"] }
+serde.workspace = true
+bitcode.workspace = true
 
 # Crypto
-sha2 = "0.10"
-blake2 = "0.10"
-rand = "0.9"
+sha2.workspace = true
+blake2.workspace = true
+rand.workspace = true
 rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-zeroize = { version = "1", features = ["derive"] }
+zeroize.workspace = true
 
 # Concurrency
-dashmap = "6"
-parking_lot = "0.12"
+dashmap.workspace = true
+parking_lot.workspace = true
 
 # Utilities
-uuid = { version = "1", features = ["v4"] }
-memmap2 = "0.9"
-thiserror = "1"
-hex = "0.4"
-tracing = "0.1"
-crc32fast = "1.4"
-libc = "0.2"
+uuid.workspace = true
+memmap2.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+tracing.workspace = true
+crc32fast.workspace = true
+libc.workspace = true
 
 # TCP transport
-bytes = "1.11"
+bytes.workspace = true
 socket2 = { version = "0.5", features = ["all"] }
 lz4_flex = "0.12"
 
 # Optional TLS support
 tokio-rustls = { version = "0.26", optional = true }
-x509-parser = { version = "0.18", optional = true }
+x509-parser = { workspace = true, optional = true }
 
 [features]
 default = ["tls"]
@@ -68,11 +68,11 @@ version = "0.7"
 optional = true
 
 [dev-dependencies]
-criterion = "0.5"
-tokio-test = "0.4"
-rcgen = "0.13"
-tempfile = "3.10"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+criterion.workspace = true
+tokio-test.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true
 rustls = { version = "0.23", features = ["ring"] }
 proptest = "1.6"
 proptest-state-machine = "0.7"
@@ -80,3 +80,8 @@ proptest-state-machine = "0.7"
 [[bench]]
 name = "tensor_chain_bench"
 harness = false
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

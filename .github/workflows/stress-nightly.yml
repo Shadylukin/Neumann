@@ -76,3 +76,39 @@ jobs:
             --profile stress-nightly \
             --run-ignored ignored-only \
             -E 'binary(~tensor_store_stress) | binary(~tensor_chain_stress) | binary(~tensor_compress_stress) | (binary(~duration_stress) & not test(~1_hour))'
+
+  loom:
+    name: Loom Concurrency Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Rust
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install cargo-nextest
+        # v2.52.4
+        uses: >-
+          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
+        with:
+          tool: cargo-nextest
+
+      - name: Run loom tests
+        run: >-
+          cargo nextest run
+          --package tensor_chain
+          --features loom
+          --profile ci
+          -E 'test(loom_)'

@@ -24,16 +24,21 @@ neumann_parser = { path = "../neumann_parser" }
 neumann_shell = { path = "../neumann_shell" }
 neumann_client = { path = "../neumann_client", features = ["full"] }
 neumann_server = { path = "../neumann_server" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
-futures = "0.3"
-serde_json = "1"
-parking_lot = "0.12"
-rand = "0.9"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+futures.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
 rand_chacha = "0.9"
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-bitcode = { version = "0.6", features = ["serde"] }
-sha2 = "0.10"
-crc32fast = "1"
+tempfile.workspace = true
+bitcode.workspace = true
+sha2.workspace = true
+crc32fast.workspace = true
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

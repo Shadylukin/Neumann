@@ -11,23 +11,18 @@ readme = "../README.md"
 description = "Tensor Train decomposition, delta encoding, and RLE compression for tensor data"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-bitcode = { version = "0.6", features = ["serde"] }
-thiserror = "2"
-rayon = "1.10"
+serde.workspace = true
+bitcode.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 peak_alloc = "0.3"
 
 [[bench]]
 name = "tensor_compress_bench"
 harness = false
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
+[lints]
+workspace = true

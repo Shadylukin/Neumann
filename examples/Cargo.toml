@@ -16,8 +16,8 @@ query_router = { path = "../query_router" }
 tensor_unified = { path = "../tensor_unified" }
 tensor_store = { path = "../tensor_store" }
 neumann_server = { path = "../neumann_server" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-parking_lot = "0.12"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+parking_lot.workspace = true
 
 [[example]]
 name = "basic_relational"
@@ -38,3 +38,6 @@ path = "unified_query.rs"
 [[example]]
 name = "web_admin"
 path = "web_admin.rs"
+
+[lints]
+workspace = true

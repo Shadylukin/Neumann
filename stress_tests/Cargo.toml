@@ -22,10 +22,13 @@ tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
 integration_tests = { path = "../integration_tests" }
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-futures = "0.3"
-rayon = "1.10"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures.workspace = true
+rayon.workspace = true
 hdrhistogram = "7.5"
-rand = "0.9"
+rand.workspace = true
 rand_chacha = "0.9"
-tempfile = "3"
+tempfile.workspace = true
+
+[lints]
+workspace = true

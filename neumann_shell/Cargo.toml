@@ -22,9 +22,9 @@ tensor_chain = { path = "../tensor_chain" }
 tensor_checkpoint = { path = "../tensor_checkpoint" }
 tensor_unified = { path = "../tensor_unified" }
 rustyline = "17"
-base64 = "0.22"
-parking_lot = "0.12"
-clap = { version = "4", features = ["derive", "env"] }
+base64.workspace = true
+parking_lot.workspace = true
+clap = { workspace = true, features = ["env"] }
 
 # Terminal UX
 owo-colors = "4"
@@ -33,18 +33,18 @@ tabled = { version = "0.17", default-features = false, features = ["std", "deriv
 console = "0.16"
 
 # TRO (Tensor Rust Organism) border animation
-crossbeam-channel = "0.5"
+crossbeam-channel.workspace = true
 smallvec = "1.11"
-rand = "0.9"
+rand.workspace = true
 
 # System info for doctor diagnostics
 sys-info = "0.9"
 
 # TLS certificate parsing for doctor diagnostics
-x509-parser = "0.18"
+x509-parser.workspace = true
 
 [build-dependencies]
-clap = { version = "4", features = ["derive"] }
+clap.workspace = true
 clap_complete = "4"
 clap_mangen = "0.2"
 
@@ -53,17 +53,12 @@ name = "neumann"
 path = "src/main.rs"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 peak_alloc = "0.3"
 
 [[bench]]
 name = "neumann_shell_bench"
 harness = false
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
+[lints]
+workspace = true

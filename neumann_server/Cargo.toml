@@ -20,43 +20,43 @@ tensor_store = { path = "../tensor_store" }
 relational_engine = { path = "../relational_engine" }
 vector_engine = { path = "../vector_engine" }
 graph_engine = { path = "../graph_engine" }
-tonic = { version = "0.14", features = ["gzip", "tls-ring"] }
-tonic-prost = "0.14"
+tonic.workspace = true
+tonic-prost.workspace = true
 tonic-web = "0.14"
 tonic-reflection = "0.14"
-prost = "0.14"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros", "time", "net"] }
-tokio-stream = "0.1"
-parking_lot = "0.12"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2"
-bytes = "1"
-dashmap = "6"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+prost.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "signal", "macros", "time", "net"] }
+tokio-stream.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+dashmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 opentelemetry = { version = "0.31", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.31", features = ["metrics", "grpc-tonic"] }
-uuid = { version = "1", features = ["v4"] }
+uuid.workspace = true
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
 axum = { version = "0.8", features = ["json", "macros"] }
 maud = { version = "0.27", features = ["axum"] }
 urlencoding = "2"
-x509-parser = "0.18"
+x509-parser.workspace = true
 
 [build-dependencies]
-tonic-prost-build = "0.14"
+tonic-prost-build.workspace = true
 
 [dev-dependencies]
-tokio-test = "0.4"
-tempfile = "3"
+tokio-test.workspace = true
+tempfile.workspace = true
 tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
-futures = "0.3"
-tokio-stream = "0.1"
-criterion = "0.5"
+futures.workspace = true
+tokio-stream.workspace = true
+criterion.workspace = true
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
