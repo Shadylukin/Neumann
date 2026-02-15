@@ -358,7 +358,12 @@ jobs:
       - name: Update version
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
-          npm version "${VERSION#v}" --no-git-tag-version
+          VERSION="${VERSION#v}"
+          # Ensure valid semver (append .0 if only major.minor)
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            VERSION="$VERSION.0"
+          fi
+          npm version "$VERSION" --no-git-tag-version
 
       - name: Publish to npm
         run: npm publish --access public
