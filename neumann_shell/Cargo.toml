@@ -28,9 +28,9 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Terminal UX
 owo-colors = "4"
-indicatif = "0.17"
+indicatif = "0.18"
 tabled = { version = "0.17", default-features = false, features = ["std", "derive"] }
-console = "0.15"
+console = "0.16"
 
 # TRO (Tensor Rust Organism) border animation
 crossbeam-channel = "0.5"

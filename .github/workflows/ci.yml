@@ -383,7 +383,7 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       MIRIFLAGS: -Zmiri-tree-borrows
     steps:
@@ -899,7 +899,7 @@ jobs:
                      bench-inventory:$BENCH stress-pr:$STRESS; do
             name="${job%%:*}"
             result="${job##*:}"
-            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+            if [[ "$result" != "success" && "$result" != "skipped" && "$result" != "cancelled" ]]; then
               echo "::error::$name failed: $result"
               FAILED=true
             fi

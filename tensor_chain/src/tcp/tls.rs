@@ -5,14 +5,14 @@
 //! including mutual TLS (`mTLS`) with certificate-based `NodeId` verification.
 
 #[cfg(feature = "tls")]
-use std::io::BufReader;
-#[cfg(feature = "tls")]
 use std::path::Path;
 #[cfg(feature = "tls")]
 use std::sync::Arc;
 
 #[cfg(feature = "tls")]
 use tokio::net::TcpStream;
+#[cfg(feature = "tls")]
+use tokio_rustls::rustls::pki_types::pem::PemObject;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(feature = "tls")]
@@ -71,12 +71,10 @@ impl VerifiedPeerIdentity {
 
 #[cfg(feature = "tls")]
 fn load_certs(path: &Path) -> TcpResult<Vec<CertificateDer<'static>>> {
-    let file = std::fs::File::open(path).map_err(|e| {
-        TcpError::TlsError(format!("failed to open cert file {}: {e}", path.display()))
-    })?;
-    let mut reader = BufReader::new(file);
-
-    let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<_> = CertificateDer::pem_file_iter(path)
+        .map_err(|e| {
+            TcpError::TlsError(format!("failed to open cert file {}: {e}", path.display()))
+        })?
         .filter_map(Result::ok)
         .collect();
 
@@ -92,29 +90,8 @@ fn load_certs(path: &Path) -> TcpResult<Vec<CertificateDer<'static>>> {
 
 #[cfg(feature = "tls")]
 fn load_private_key(path: &Path) -> TcpResult<PrivateKeyDer<'static>> {
-    let file = std::fs::File::open(path).map_err(|e| {
-        TcpError::TlsError(format!("failed to open key file {}: {e}", path.display()))
-    })?;
-    let mut reader = BufReader::new(file);
-
-    // Try to read PKCS8 key first, then RSA, then EC
-    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut reader).find_map(Result::ok) {
-        return Ok(PrivateKeyDer::Pkcs8(key));
-    }
-
-    // Reopen and try RSA
-    let file = std::fs::File::open(path).map_err(|e| {
-        TcpError::TlsError(format!("failed to open key file {}: {e}", path.display()))
-    })?;
-    let mut reader = BufReader::new(file);
-    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut reader).find_map(Result::ok) {
-        return Ok(PrivateKeyDer::Pkcs1(key));
-    }
-
-    Err(TcpError::TlsError(format!(
-        "no private key found in {}",
-        path.display()
-    )))
+    PrivateKeyDer::from_pem_file(path)
+        .map_err(|e| TcpError::TlsError(format!("no private key found in {}: {e}", path.display())))
 }
 
 /// Extract `NodeId` from a certificate based on the verification mode.
@@ -629,7 +606,10 @@ mod tests {
     fn test_load_private_key_missing_file() {
         let result = load_private_key(Path::new("/nonexistent/key.pem"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("failed to open"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no private key found"));
     }
 
     #[test]

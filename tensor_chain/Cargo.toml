@@ -56,12 +56,11 @@ lz4_flex = "0.12"
 
 # Optional TLS support
 tokio-rustls = { version = "0.26", optional = true }
-rustls-pemfile = { version = "2", optional = true }
 x509-parser = { version = "0.18", optional = true }
 
 [features]
 default = ["tls"]
-tls = ["tokio-rustls", "rustls-pemfile", "x509-parser"]
+tls = ["tokio-rustls", "x509-parser"]
 loom = ["dep:loom"]
 
 [dependencies.loom]

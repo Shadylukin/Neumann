@@ -919,15 +919,23 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_no_resize_stall() {
-        let slab = EmbeddingSlab::new(128, 100);
-        let count = 10_000;
+        #[cfg(miri)]
+        const DIM: usize = 16;
+        #[cfg(not(miri))]
+        const DIM: usize = 128;
+        #[cfg(miri)]
+        const COUNT: u64 = 50;
+        #[cfg(not(miri))]
+        const COUNT: u64 = 10_000;
+
+        let slab = EmbeddingSlab::new(DIM, 100);
 
         let start = Instant::now();
         let mut max_op_time = std::time::Duration::ZERO;
 
-        for i in 0..count {
+        for i in 0..COUNT {
             let op_start = Instant::now();
-            let embedding = vec![i as f32; 128];
+            let embedding = vec![i as f32; DIM];
             slab.set(EntityId::new(i), &embedding).unwrap();
             let op_time = op_start.elapsed();
             if op_time > max_op_time {
@@ -937,20 +945,29 @@ mod tests {
 
         let total_time = start.elapsed();
 
-        // No single operation should take more than 100ms (accounts for coverage overhead)
-        assert!(
-            max_op_time.as_millis() < 100,
-            "Max operation time {:?} exceeded 100ms threshold",
-            max_op_time
-        );
+        // Miri is too slow for timing assertions
+        #[cfg(not(miri))]
+        {
+            // No single operation should take more than 100ms (accounts for coverage overhead)
+            assert!(
+                max_op_time.as_millis() < 100,
+                "Max operation time {:?} exceeded 100ms threshold",
+                max_op_time
+            );
 
-        // Verify throughput is reasonable
-        let ops_per_sec = count as f64 / total_time.as_secs_f64();
-        assert!(
-            ops_per_sec > 10_000.0,
-            "Throughput {:.0} ops/sec too low",
-            ops_per_sec
-        );
+            // Verify throughput is reasonable
+            let ops_per_sec = COUNT as f64 / total_time.as_secs_f64();
+            assert!(
+                ops_per_sec > 10_000.0,
+                "Throughput {:.0} ops/sec too low",
+                ops_per_sec
+            );
+        }
+
+        #[cfg(miri)]
+        {
+            let _ = (max_op_time, total_time);
+        }
     }
 
     #[test]
@@ -971,17 +988,23 @@ mod tests {
 
     #[test]
     fn test_large_embeddings() {
-        let slab = EmbeddingSlab::new(1024, 10);
+        #[cfg(miri)]
+        const DIM: usize = 64;
+        #[cfg(not(miri))]
+        const DIM: usize = 1024;
 
-        for i in 0..5 {
-            let embedding: Vec<f32> = (0..1024).map(|j| (i * 1000 + j) as f32).collect();
+        let slab = EmbeddingSlab::new(DIM, 10);
+
+        for i in 0..5_u64 {
+            let dim = DIM;
+            let embedding: Vec<f32> = (0..dim).map(|j| (i as usize * 1000 + j) as f32).collect();
             slab.set(EntityId::new(i), &embedding).unwrap();
         }
 
         // Verify retrieval
-        for i in 0..5 {
+        for i in 0..5_u64 {
             let embedding = slab.get(EntityId::new(i)).unwrap();
-            assert_eq!(embedding.len(), 1024);
+            assert_eq!(embedding.len(), DIM);
             assert_eq!(embedding[0], (i * 1000) as f32);
         }
     }
