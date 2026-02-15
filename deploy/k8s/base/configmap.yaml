@@ -1,0 +1,61 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neumann-config
+  namespace: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+    app.kubernetes.io/component: config
+data:
+  NEUMANN_BIND_ADDR: "0.0.0.0:9200"
+  NEUMANN_CLUSTER_BIND_ADDR: "0.0.0.0:9300"
+  NEUMANN_DATA_DIR: "/var/lib/neumann"
+  NEUMANN_ENABLE_REFLECTION: "true"
+  NEUMANN_ENABLE_GRPC_WEB: "false"
+  RUST_LOG: "info"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neumann-scripts
+  namespace: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+    app.kubernetes.io/component: scripts
+data:
+  entrypoint.sh: |
+    #!/bin/sh
+    set -e
+
+    ORDINAL=${HOSTNAME##*-}
+    export NEUMANN_CLUSTER_NODE_ID="neumann-${ORDINAL}"
+    REPLICAS="${NEUMANN_REPLICAS:-3}"
+
+    # Resolve peer DNS names to IPs with retry (handles bootstrap race)
+    resolve_host() {
+      local fqdn="$1" attempts=0
+      while [ $attempts -lt 60 ]; do
+        ip=$(getent hosts "$fqdn" 2>/dev/null | awk '{print $1; exit}')
+        if [ -n "$ip" ]; then echo "$ip"; return 0; fi
+        attempts=$((attempts + 1))
+        sleep 2
+      done
+      echo "ERROR: Failed to resolve $fqdn after 120s" >&2
+      exit 1
+    }
+
+    PEERS=""
+    i=0
+    while [ "$i" -lt "$REPLICAS" ]; do
+      if [ "$i" -ne "$ORDINAL" ]; then
+        FQDN="neumann-${i}.neumann-headless.neumann.svc.cluster.local"
+        IP=$(resolve_host "$FQDN")
+        [ -n "$PEERS" ] && PEERS="${PEERS},"
+        PEERS="${PEERS}neumann-${i}=${IP}:9300"
+      fi
+      i=$((i + 1))
+    done
+
+    export NEUMANN_CLUSTER_PEERS="$PEERS"
+    exec /usr/local/bin/neumann_server

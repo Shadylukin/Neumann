@@ -1,0 +1,8 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+    app.kubernetes.io/part-of: neumann

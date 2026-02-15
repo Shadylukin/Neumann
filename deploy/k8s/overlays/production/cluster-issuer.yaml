@@ -1,0 +1,12 @@
+---
+# Self-signed ClusterIssuer for development/testing.
+# Replace with a real CA-backed issuer for production use:
+#   - ACME (Let's Encrypt): spec.acme with solver config
+#   - Internal CA: spec.ca with a CA secret reference
+#   - Vault: spec.vault with Vault server config
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: neumann-selfsigned
+spec:
+  selfSigned: {}

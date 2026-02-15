@@ -1,0 +1,30 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: neumann
+  namespace: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+spec:
+  podSelector:
+    matchLabels:
+      app: neumann
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # gRPC API: allow from any namespace
+    - ports:
+        - port: 9200
+          protocol: TCP
+    # Raft: allow only from neumann pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app: neumann
+      ports:
+        - port: 9300
+          protocol: TCP
+  egress:
+    - {}

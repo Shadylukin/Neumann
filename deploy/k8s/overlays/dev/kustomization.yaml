@@ -1,0 +1,53 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: shadylukinack/neumann
+    newTag: latest
+
+patches:
+  # Lower resource limits for dev
+  - target:
+      kind: StatefulSet
+      name: neumann
+    patch: |
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: neumann
+      spec:
+        template:
+          spec:
+            containers:
+              - name: neumann-server
+                resources:
+                  requests:
+                    memory: "128Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "1Gi"
+                    cpu: "1"
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 5Gi
+
+  # Debug logging for dev
+  - target:
+      kind: ConfigMap
+      name: neumann-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: neumann-config
+      data:
+        RUST_LOG: "debug,tower_http=debug"

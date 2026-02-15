@@ -1,0 +1,19 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: neumann-tls
+  namespace: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+    app.kubernetes.io/component: tls
+spec:
+  secretName: neumann-tls
+  issuerRef:
+    name: neumann-selfsigned
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.neumann-headless.neumann.svc.cluster.local"
+    - "neumann.neumann.svc.cluster.local"
+  duration: 8760h   # 1 year
+  renewBefore: 720h  # 30 days

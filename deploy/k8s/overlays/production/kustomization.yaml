@@ -1,0 +1,79 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - certificate.yaml
+  - cluster-issuer.yaml
+
+images:
+  - name: shadylukinack/neumann
+    newTag: v0.1.0
+
+patches:
+  # Production resource limits and TLS
+  - target:
+      kind: StatefulSet
+      name: neumann
+    patch: |
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: neumann
+      spec:
+        template:
+          spec:
+            containers:
+              - name: neumann-server
+                resources:
+                  requests:
+                    memory: "1Gi"
+                    cpu: "1"
+                  limits:
+                    memory: "4Gi"
+                    cpu: "4"
+                env:
+                  - name: NEUMANN_REPLICAS
+                    value: "3"
+                  - name: NEUMANN_TLS_CERT_PATH
+                    value: "/etc/neumann/tls/tls.crt"
+                  - name: NEUMANN_TLS_KEY_PATH
+                    value: "/etc/neumann/tls/tls.key"
+                volumeMounts:
+                  - name: data
+                    mountPath: /var/lib/neumann
+                  - name: scripts
+                    mountPath: /scripts
+                    readOnly: true
+                  - name: tls
+                    mountPath: /etc/neumann/tls
+                    readOnly: true
+            volumes:
+              - name: scripts
+                configMap:
+                  name: neumann-scripts
+                  defaultMode: 0755
+              - name: tls
+                secret:
+                  secretName: neumann-tls
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 50Gi
+
+  # Production log level
+  - target:
+      kind: ConfigMap
+      name: neumann-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: neumann-config
+      data:
+        RUST_LOG: "info"

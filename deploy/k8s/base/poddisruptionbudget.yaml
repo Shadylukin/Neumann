@@ -1,0 +1,13 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: neumann
+  namespace: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: neumann

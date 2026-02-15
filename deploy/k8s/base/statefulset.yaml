@@ -1,0 +1,105 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neumann
+  namespace: neumann
+  labels:
+    app.kubernetes.io/name: neumann
+    app.kubernetes.io/component: server
+spec:
+  serviceName: neumann-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: neumann
+  template:
+    metadata:
+      labels:
+        app: neumann
+        app.kubernetes.io/name: neumann
+        app.kubernetes.io/component: server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65534
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - neumann
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: neumann-server
+          image: shadylukinack/neumann:latest
+          command: ["/bin/sh", "/scripts/entrypoint.sh"]
+          ports:
+            - name: grpc
+              containerPort: 9200
+              protocol: TCP
+            - name: raft
+              containerPort: 9300
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: neumann-config
+          env:
+            - name: NEUMANN_REPLICAS
+              value: "3"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+          startupProbe:
+            grpc:
+              port: 9200
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            grpc:
+              port: 9200
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            grpc:
+              port: 9200
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 5
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/neumann
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: neumann-scripts
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: neumann
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
