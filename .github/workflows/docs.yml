@@ -123,11 +123,38 @@ jobs:
           path: docs/book-output
           retention-days: 7
 
-  benchmarks:
-    name: Generate Benchmark Docs
+  bench-run:
+    name: Bench ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: foundation
+            packages: >-
+              --package tensor_store
+              --package tensor_compress
+              --package neumann_parser
+          - group: engines
+            packages: >-
+              --package relational_engine
+              --package graph_engine
+              --package vector_engine
+          - group: specialized
+            packages: >-
+              --package tensor_vault
+              --package tensor_cache
+              --package tensor_blob
+              --package tensor_checkpoint
+              --package tensor_unified
+          - group: distributed
+            packages: >-
+              --package tensor_chain
+              --package query_router
+              --package neumann_shell
+              --package neumann_server
     steps:
       - name: Checkout
         # v4.2.2
@@ -145,10 +172,10 @@ jobs:
         uses: >-
           Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
-      - name: Install jq, bc, protoc, mold, and clang
+      - name: Install protoc, mold, and clang
         run: >-
           sudo apt-get update &&
-          sudo apt-get install -y jq bc protobuf-compiler mold clang
+          sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Run benchmarks (quick mode)
         env:
@@ -156,12 +183,46 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
             -Clink-arg=-fuse-ld=mold
         run: |
-          cargo bench --workspace --bench '*' -- \
+          cargo bench ${{ matrix.packages }} --bench '*' -- \
             --noplot \
             --warm-up-time 1 \
             --measurement-time 2 \
             --sample-size 10 \
             --nresamples 500
+
+      - name: Upload Criterion output
+        # v4.6.2
+        uses: >-
+          actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: criterion-${{ matrix.group }}
+          path: target/criterion
+          retention-days: 7
+
+  benchmarks:
+    name: Generate Benchmark Docs
+    needs: [bench-run]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Download all Criterion outputs
+        # v4.3.0
+        uses: >-
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: criterion-*
+          path: target/criterion
+          merge-multiple: true
+
+      - name: Install jq and bc
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y jq bc
 
       - name: Generate benchmark summary
         run: |
