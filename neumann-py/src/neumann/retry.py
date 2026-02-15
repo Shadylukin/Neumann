@@ -25,7 +25,7 @@ def _is_retryable(e: Exception, config: RetryConfig) -> bool:
             if hasattr(code, "value") and isinstance(code.value, tuple):
                 return code.value[0] in config.retryable_status_codes
         except (AttributeError, TypeError, IndexError, RuntimeError):
-            pass
+            return False
     return False
 
 

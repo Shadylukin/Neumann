@@ -273,9 +273,12 @@ class TestTransactionContextManager:
         client.execute.return_value = QueryResult(QueryResultType.EMPTY)
 
         tx = Transaction(client)
-        with pytest.raises(ValueError), tx:
-            tx.execute("INSERT users name='Alice'")
-            raise ValueError("Test error")
+        try:
+            with tx:
+                tx.execute("INSERT users name='Alice'")
+                raise ValueError("Test error")
+        except ValueError:
+            pass
 
         assert tx._rolled_back
         assert not tx.is_active

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     import numpy as np
@@ -180,4 +180,4 @@ def normalize_vectors(vectors: npt.ArrayLike) -> np.ndarray:
     arr = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(arr, axis=-1, keepdims=True)
     norms = np.maximum(norms, 1e-12)  # Avoid division by zero
-    return cast("np.ndarray[Any, Any]", arr / norms)
+    return cast("np.ndarray", arr / norms)
