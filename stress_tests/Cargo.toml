@@ -27,7 +27,7 @@ futures.workspace = true
 rayon.workspace = true
 hdrhistogram = "7.5"
 rand.workspace = true
-rand_chacha = "0.9"
+rand_chacha = "0.10"
 tempfile.workspace = true
 
 [lints]
