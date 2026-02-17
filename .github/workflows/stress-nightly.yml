@@ -43,7 +43,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
+          taiki-e/install-action@f8d25fb8a2df08dcd3cead89780d572767b8655f
         with:
           tool: cargo-nextest
 
@@ -101,7 +101,7 @@ jobs:
       - name: Install cargo-nextest
         # v2.52.4
         uses: >-
-          taiki-e/install-action@1e67dedb5e3c590e1c9d9272ace46ef689da250d
+          taiki-e/install-action@f8d25fb8a2df08dcd3cead89780d572767b8655f
         with:
           tool: cargo-nextest
 
