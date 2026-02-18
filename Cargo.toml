@@ -25,7 +25,7 @@ members = [
 exclude = ["fuzz", "neumann-py/neumann-native", "experiments", "seed_model"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Lukin Ackroyd <lukin@scrunchee.ai>"]
 edition = "2021"
 license = "BSL-1.1"

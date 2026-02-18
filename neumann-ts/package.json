@@ -1,6 +1,6 @@
 {
   "name": "@scrunchee/client",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "TypeScript SDK for Neumann database",
   "type": "module",
   "main": "./dist/cjs/index.js",
