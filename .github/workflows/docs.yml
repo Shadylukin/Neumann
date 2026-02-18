@@ -142,10 +142,12 @@ jobs:
               --package relational_engine
               --package graph_engine
               --package vector_engine
+          - group: cache
+            packages: >-
+              --package tensor_cache
           - group: specialized
             packages: >-
               --package tensor_vault
-              --package tensor_cache
               --package tensor_blob
               --package tensor_checkpoint
               --package tensor_unified
