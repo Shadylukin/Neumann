@@ -29076,3 +29076,157 @@ fn test_count_column_nonexistent_column_error() {
         "expected ColumnNotFound, got: {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// for_each_row tests
+// ---------------------------------------------------------------------------
+
+/// Helper: create a simple table with `n` integer rows.
+fn setup_for_each_row_table(engine: &RelationalEngine, table: &str, n: usize) {
+    let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+    engine.create_table(table, schema).unwrap();
+    for i in 0..n {
+        engine
+            .insert(
+                table,
+                HashMap::from([("val".to_string(), Value::Int(i as i64))]),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn test_for_each_row_basic() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 5);
+
+    let mut count = 0;
+    engine
+        .for_each_row("t", None, None, &mut |_| count += 1)
+        .unwrap();
+    assert_eq!(count, 5);
+}
+
+#[test]
+fn test_for_each_row_empty_table() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 0);
+
+    let mut count = 0;
+    engine
+        .for_each_row("t", None, None, &mut |_| count += 1)
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_for_each_row_table_not_found() {
+    let engine = RelationalEngine::new();
+    let result = engine.for_each_row("nonexistent", None, None, &mut |_| {});
+    assert!(
+        matches!(result, Err(RelationalError::TableNotFound(ref t)) if t == "nonexistent"),
+        "expected TableNotFound, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_for_each_row_max_rows_caps_iteration() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 100);
+
+    let mut count = 0;
+    engine
+        .for_each_row("t", None, Some(10), &mut |_| count += 1)
+        .unwrap();
+    assert_eq!(count, 10);
+}
+
+#[test]
+fn test_for_each_row_max_rows_larger_than_table() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 5);
+
+    let mut count = 0;
+    engine
+        .for_each_row("t", None, Some(100), &mut |_| count += 1)
+        .unwrap();
+    assert_eq!(count, 5);
+}
+
+#[test]
+fn test_for_each_row_max_rows_zero() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 10);
+
+    let mut count = 0;
+    engine
+        .for_each_row("t", None, Some(0), &mut |_| count += 1)
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_for_each_row_zero_timeout_returns_timeout_error() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 10);
+
+    let result = engine.for_each_row("t", Some(0), None, &mut |_| {});
+    assert!(
+        matches!(result, Err(RelationalError::QueryTimeout { .. })),
+        "expected QueryTimeout, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_for_each_row_zero_timeout_table_not_found_takes_precedence() {
+    let engine = RelationalEngine::new();
+    // Table doesn't exist + timeout=0 -> TableNotFound wins
+    let result = engine.for_each_row("nonexistent", Some(0), None, &mut |_| {});
+    assert!(
+        matches!(result, Err(RelationalError::TableNotFound(ref t)) if t == "nonexistent"),
+        "expected TableNotFound over QueryTimeout, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_for_each_row_no_timeout_override_uses_default() {
+    let config = RelationalConfig::default().with_default_timeout_ms(0);
+    let store = TensorStore::new();
+    let engine = RelationalEngine::with_store_and_config(store, config);
+    setup_for_each_row_table(&engine, "t", 10);
+
+    // Engine default is 0ms, so should timeout
+    let result = engine.for_each_row("t", None, None, &mut |_| {});
+    assert!(
+        matches!(result, Err(RelationalError::QueryTimeout { .. })),
+        "expected QueryTimeout from engine default, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_for_each_row_callback_receives_correct_rows() {
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 5);
+
+    let mut values = Vec::new();
+    engine
+        .for_each_row("t", None, None, &mut |row| {
+            if let Some(Value::Int(v)) = row.get("val") {
+                values.push(*v);
+            }
+        })
+        .unwrap();
+
+    values.sort_unstable();
+    assert_eq!(values, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn test_for_each_row_max_rows_returns_ok() {
+    // Confirm max_rows early-stop returns Ok, not an error.
+    let engine = RelationalEngine::new();
+    setup_for_each_row_table(&engine, "t", 100);
+
+    let result = engine.for_each_row("t", None, Some(5), &mut |_| {});
+    assert!(result.is_ok());
+}

@@ -412,6 +412,36 @@ impl TableStorage {
         results
     }
 
+    /// Iterate over alive rows, calling `f` for each one without collecting.
+    ///
+    /// Returns `true` if the full scan completed, `false` if `f` returned
+    /// `false` to signal early termination.
+    fn scan_for_each(&self, f: &mut dyn FnMut(RowId, Row) -> bool) -> bool {
+        for idx in 0..self.total_rows {
+            if !self.alive[idx] {
+                continue;
+            }
+
+            let row: Row = self
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(col_idx, col)| {
+                    if self.null_bitmaps[col_idx][idx] {
+                        ColumnValue::Null
+                    } else {
+                        col.get(idx)
+                    }
+                })
+                .collect();
+
+            if !f(RowId::new(idx as u64), row) {
+                return false;
+            }
+        }
+        true
+    }
+
     fn create_index(&mut self, column: &str) -> bool {
         if self.hash_indexes.contains_key(column) {
             return false;
@@ -905,6 +935,33 @@ impl RelationalSlab {
     /// Returns an error if the table does not exist.
     pub fn scan_all(&self, table: &str) -> Result<Vec<(RowId, Row)>, RelationalError> {
         self.scan(table, |_| true)
+    }
+
+    /// Iterate over all rows in a table without collecting into a `Vec`.
+    ///
+    /// Calls `f` for each alive row. If `f` returns `false`, iteration
+    /// stops early. Returns `true` if the full table was scanned, `false`
+    /// if `f` requested early termination.
+    ///
+    /// The callback runs under the global tables read lock. Do not call
+    /// methods that acquire the tables write lock from within `f`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
+    pub fn scan_for_each(
+        &self,
+        table: &str,
+        f: &mut dyn FnMut(RowId, Row) -> bool,
+    ) -> Result<bool, RelationalError> {
+        let tables = self.tables.read();
+        let storage = tables
+            .get(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        let completed = storage.scan_for_each(f);
+        drop(tables);
+        Ok(completed)
     }
 
     /// Create an index on a column.

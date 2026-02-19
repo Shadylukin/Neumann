@@ -5308,6 +5308,86 @@ impl RelationalEngine {
             .map_err(|e| RelationalError::StorageError(e.to_string()))
     }
 
+    /// Iterates over all rows in a table, calling `f` for each row.
+    ///
+    /// Unlike [`Self::select`], rows are streamed through the callback
+    /// one at a time instead of being collected into a `Vec`. This keeps
+    /// peak memory proportional to a single row regardless of table size.
+    ///
+    /// Respects the engine's default query timeout (if configured).
+    /// Override with `timeout_ms`. Pass `None` for no override.
+    ///
+    /// `max_rows` caps how many rows are visited; once reached the scan
+    /// stops and returns `Ok(())`. `None` means no cap.
+    ///
+    /// # Callback environment
+    ///
+    /// The callback executes under the slab's global table read lock.
+    /// Do not call any `RelationalEngine` method that mutates tables
+    /// (insert, update, delete, create/drop table, etc.) from within
+    /// `f`, as this will deadlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TableNotFound` if the table does not exist, or
+    /// `QueryTimeout` if the deadline expires.
+    pub fn for_each_row(
+        &self,
+        table: &str,
+        timeout_ms: Option<u64>,
+        max_rows: Option<usize>,
+        f: &mut dyn FnMut(&Row),
+    ) -> Result<()> {
+        // Schema validation first so TableNotFound always takes precedence
+        let schema = self.get_schema(table)?;
+
+        let effective_timeout = self.resolve_timeout(QueryOptions {
+            timeout_ms: timeout_ms.or(self.config.default_query_timeout_ms),
+        });
+        let deadline = Deadline::from_timeout_ms(effective_timeout);
+
+        // Pre-scan deadline check (honors Some(0) immediately)
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "for_each_row".to_string(),
+                timeout_ms: effective_timeout.unwrap_or(0),
+            });
+        }
+        let mut visited: usize = 0;
+
+        self.slab()
+            .scan_for_each(table, &mut |row_id, slab_row| {
+                // Row-limit check
+                if let Some(max) = max_rows {
+                    if visited >= max {
+                        return false;
+                    }
+                }
+
+                // Deadline check on first row and every 1024 rows thereafter
+                if visited.trailing_zeros() >= 10 && deadline.is_expired() {
+                    return false;
+                }
+
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                f(&row);
+                visited += 1;
+
+                true
+            })
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        // Final deadline check (catches expiry between periodic checks)
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "for_each_row".to_string(),
+                timeout_ms: effective_timeout.unwrap_or(0),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Creates a hash index on a column for fast equality lookups.
     ///
     /// Hash indexes accelerate `Eq` conditions with O(1) lookup time.

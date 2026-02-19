@@ -6,6 +6,8 @@
 // The async methods in this module are designed for API consistency with async callers,
 // even when the underlying operations are currently synchronous.
 
+pub mod contraction;
+
 use std::{collections::HashMap, sync::Arc};
 
 use graph_engine::{Direction, GraphEngine, Node, PropertyValue};

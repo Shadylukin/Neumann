@@ -918,3 +918,127 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## Cross-Modal Tensor Contraction
+
+The `contraction` module fuses graph adjacency, vector similarity, and
+relational interactions into a single algebraic scoring expression:
+
+```text
+score = (G[x,:] ⊙ s)^T R        (shape-safe: (1×n ⊙ 1×n)^T · n×m → 1×m)
+```
+
+where **G** is the graph adjacency row for source entity *x*, **s** is the
+cosine-similarity vector between *x* and its neighbors, **⊙** is the
+element-wise (Hadamard) product, and **R** is the neighbor-to-item interaction
+matrix from a relational table.
+
+### Algorithm
+
+Given a source entity (e.g. a user):
+
+1. **Adjacency** — gather the source's graph neighbors with edge weights,
+   optionally filtered by edge type (e.g. only `"FRIEND"` edges) and direction
+   (outgoing, incoming, or both).
+2. **Similarity** — compute cosine similarity between the source's embedding
+   and each neighbor's embedding. Neighbors without embeddings are skipped.
+3. **Hadamard product** — fuse adjacency and similarity into a single weight
+   per neighbor: `w[i] = adj[i] * sim[i]`. Non-finite values are skipped.
+4. **Normalization** (optional) — L1-normalize the weight vector (`Σ|w_i|`) to
+   control magnitude. Uses absolute values to handle negative similarities.
+5. **Contraction** — multiply the weight vector by the interaction matrix: for
+   each neighbor, distribute its weight to every item it interacted with.
+6. **Post-processing** — exclude already-owned items, apply a category mask,
+   per-item normalization (divide by contributor count), filter non-finite
+   scores, and truncate to top-k with deterministic tie-breaking (score
+   descending, then key ascending).
+
+### Worked Example
+
+```text
+Graph: alice --FRIEND--> bob, carol, dave
+
+Embeddings:
+  alice = [1, 0, 0]
+  bob   = [0.9, 0.1, 0]    cos(alice, bob)   ≈ 0.994
+  carol = [0.5, 0.5, 0]    cos(alice, carol)  ≈ 0.707
+  dave  = [0, 1, 0]        cos(alice, dave)   = 0.000
+
+Purchases table:
+  bob   -> {book, pen}
+  carol -> {pen, laptop}
+  dave  -> {phone}
+
+Contraction scores:
+  pen    = 0.994 + 0.707 = 1.701   (from bob + carol)
+  book   = 0.994                    (from bob)
+  laptop = 0.707                    (from carol)
+  phone  = 0.000                    (from dave — orthogonal embedding)
+```
+
+Items are ranked by score descending: pen > book > laptop > phone.
+
+### Types
+
+| Type | Description |
+| --- | --- |
+| `AdjacencyVec` | `HashMap<String, f64>` — neighbor key to edge weight |
+| `SimilarityVec` | `HashMap<String, f64>` — neighbor key to cosine similarity |
+| `InteractionMap` | `HashMap<String, HashSet<String>>` — intermediary to item set |
+| `ContractionConfig` | Direction, normalization, edge type filter, top-k |
+| `ScoredItem` | Item key, score, and contributor count |
+| `ContractionResult` | Sorted items, weight norm, and excluded count |
+
+### Configuration
+
+```rust
+let config = ContractionConfig {
+    direction: GraphDirection::Symmetric,       // or Outgoing / Incoming
+    normalization: Normalization::TotalWeight,  // or None / PerItem
+    edge_type: Some("FRIEND".into()),           // None = all edge types
+    exclude_owned: true,                        // remove source's own items
+    top_k: 10,
+};
+```
+
+**Normalization strategies**:
+
+- `None` — raw scores, no normalization.
+- `TotalWeight` — divide each weight by `Σ|w_i|` (L1 norm). Prevents sources
+  with many high-similarity neighbors from dominating.
+- `PerItem` — divide each item's final score by its contributor count. Reduces
+  popularity bias for widely-consumed items.
+
+### Engine Adapter
+
+`UnifiedEngine::cross_modal_contraction()` gathers all three data sources and
+calls the pure `contract()` function:
+
+```rust
+let result = engine.cross_modal_contraction(
+    "alice",         // source entity key
+    "purchases",     // relational table
+    "buyer",         // column identifying the intermediary
+    "item",          // column identifying the item
+    &config,
+    None,            // optional category mask
+).await?;
+
+for item in &result.items {
+    println!("{}: {:.3} ({} contributors)",
+        item.item_key, item.score, item.contributors);
+}
+```
+
+**Schema validation**: the adapter checks that the table and columns exist, and
+that column types are key-compatible (`String`, `Int`, or `Float`). `Bool`,
+`Bytes`, and `Json` columns are rejected with `InvalidOperation`.
+
+**Edge weight extraction**: if an edge has a `"weight"` property with a numeric
+value, that value is used as the adjacency weight. Otherwise the edge is treated
+as unweighted (1.0).
+
+**Performance**: the interaction table is scanned once via
+`select(table, Condition::True)`, giving O(|table|) cost. This materializes the
+full table in memory, so callers with very large tables should ensure
+`max_query_result_rows` is unset or adequate.

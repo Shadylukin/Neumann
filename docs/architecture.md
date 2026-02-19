@@ -269,6 +269,21 @@ implement `serde::Serialize` and `serde::Deserialize`.
 - Store data directly (delegates to individual engines)
 - Implement transactions across engines
 
+**Cross-Modal Tensor Contraction** (`contraction.rs`):
+
+Fuses graph adjacency, vector similarity, and relational interactions into a
+single algebraic scoring expression:
+
+```text
+score = (G[x,:] . s)^T R      (1xn . 1xn)^T * nxm -> 1xm
+```
+
+- Pure `contract()` function operates on sparse hash-map representations
+- `cross_modal_contraction()` adapter gathers data from all three engines
+- Supports edge-type filtering, direction control, L1/per-item normalization,
+  owned-item exclusion, category masking, and non-finite safety
+- Single table scan for interaction gathering (O(|table|))
+
 ### Module 6: Neumann Parser (Complete)
 
 **Responsibility**: Parse unified query language into AST.
