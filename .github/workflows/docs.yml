@@ -126,37 +126,46 @@ jobs:
   bench-run:
     name: Bench ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - group: foundation
+          - group: store-core
+            packages: --package tensor_store
+            filter: '^(?!hnsw)'
+          - group: store-hnsw
+            packages: --package tensor_store
+            filter: '^hnsw'
+          - group: parsers
             packages: >-
-              --package tensor_store
               --package tensor_compress
               --package neumann_parser
+            filter: '.'
           - group: engines
             packages: >-
               --package relational_engine
               --package graph_engine
               --package vector_engine
+            filter: '.'
           - group: cache
-            packages: >-
-              --package tensor_cache
+            packages: --package tensor_cache
+            filter: '.'
           - group: specialized
             packages: >-
               --package tensor_vault
               --package tensor_blob
               --package tensor_checkpoint
               --package tensor_unified
+            filter: '.'
           - group: distributed
             packages: >-
               --package tensor_chain
               --package query_router
               --package neumann_shell
               --package neumann_server
+            filter: '.'
     steps:
       - name: Checkout
         # v4.2.2
@@ -190,7 +199,8 @@ jobs:
             --warm-up-time 1 \
             --measurement-time 2 \
             --sample-size 10 \
-            --nresamples 500
+            --nresamples 500 \
+            '${{ matrix.filter }}'
 
       - name: Upload Criterion output
         # v4.6.2
