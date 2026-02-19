@@ -23,8 +23,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::entity_index::EntityId;
 
-/// Default chunk size: 16MB of f32s = 4M floats
+/// Default chunk size: 16MB of f32s = 4M floats.
+///
+/// Under Miri, use a tiny chunk (64 floats) so tests allocate fewer
+/// `UnsafeCell` items and run in reasonable time.
+#[cfg(not(miri))]
 const DEFAULT_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+#[cfg(miri)]
+const DEFAULT_CHUNK_SIZE: usize = 256;
 
 /// Error types for `EmbeddingSlab` operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
