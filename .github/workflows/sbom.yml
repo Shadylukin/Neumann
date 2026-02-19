@@ -89,7 +89,7 @@ jobs:
       - name: Attest SBOM
         # v2.2.0
         uses: >-
-          actions/attest-sbom@115c3be05ff3974bcbd596578934b3f9ce39bf68
+          actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
         with:
           subject-path: 'sbom-*.json'
           sbom-path: 'sbom-combined.json'
