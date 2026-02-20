@@ -134,9 +134,15 @@ jobs:
         include:
           - group: store-core
             packages: --package tensor_store
-            filter: '^(?!hnsw)'
+            benches: >-
+              --bench tensor_store_bench
+              --bench wal_bench
+            filter: '^(put|get|scan|concurrent|mixed|bloom|sparse|snapshot|metadata|delta|kmeans|tiered|wal)'
           - group: store-hnsw
             packages: --package tensor_store
+            benches: >-
+              --bench tensor_store_bench
+              --bench hnsw_concurrent_bench
             filter: '^hnsw'
           - group: parsers
             packages: >-
@@ -193,14 +199,17 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
             -Clink-arg=-fuse-ld=mold
-        run: |
-          cargo bench ${{ matrix.packages }} --bench '*' -- \
-            --noplot \
-            --warm-up-time 1 \
-            --measurement-time 2 \
-            --sample-size 10 \
-            --nresamples 500 \
-            '${{ matrix.filter }}'
+        run: >-
+          cargo bench
+          ${{ matrix.packages }}
+          ${{ matrix.benches || '--bench ''*''' }}
+          --
+          --noplot
+          --warm-up-time 1
+          --measurement-time 2
+          --sample-size 10
+          --nresamples 500
+          '${{ matrix.filter }}'
 
       - name: Upload Criterion output
         # v4.6.2

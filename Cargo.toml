@@ -21,7 +21,6 @@ members = [
     "stress_tests",
     "neumann_docs",
     "examples",
-    "tensor_spatial",
 ]
 exclude = ["fuzz", "neumann-py/neumann-native", "experiments", "seed_model"]
 
