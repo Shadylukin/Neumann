@@ -612,12 +612,12 @@ pub async fn dashboard(
             div class="m-card-content" {
                 div class="flex flex-wrap gap-2" {
                     a href="/graph/algorithms/dashboard"
-                      class=(if selected_category.is_none() { "m-btn" } else { "m-btn" }) {
+                      class=(if selected_category.is_none() { "m-btn m-btn-active" } else { "m-btn" }) {
                         "[ ALL ]"
                     }
                     @for cat in [AlgorithmCategory::Centrality, AlgorithmCategory::Community, AlgorithmCategory::Pathfinding, AlgorithmCategory::Structure, AlgorithmCategory::Similarity] {
                         a href=(format!("/graph/algorithms/dashboard?category={}", cat.label().to_lowercase()))
-                          class=(if selected_category.is_some_and(|c| c.eq_ignore_ascii_case(cat.label())) { "m-btn" } else { "m-btn" }) {
+                          class=(if selected_category.is_some_and(|c| c.eq_ignore_ascii_case(cat.label())) { "m-btn m-btn-active" } else { "m-btn" }) {
                             "[ " (cat.label()) " ]"
                         }
                     }

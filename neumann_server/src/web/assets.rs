@@ -148,6 +148,11 @@ body {
     transform: scale(0.98);
 }
 
+.m-btn-active {
+    background: var(--bg-active);
+    border-color: var(--border-emphasis);
+}
+
 .m-btn:disabled {
     color: var(--text-disabled);
     border-color: var(--border-default);
