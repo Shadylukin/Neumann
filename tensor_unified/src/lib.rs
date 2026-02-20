@@ -19,6 +19,12 @@ use vector_engine::{FilteredSearchConfig, SearchResult, VectorEngine};
 // Re-export filter types for unified filtered search.
 pub use vector_engine::{FilterCondition, FilterValue};
 
+// Re-export contraction types for external explainability.
+pub use contraction::{
+    AdjacencyVec, CategoryMask, ContractionConfig, ContractionResult, GraphDirection,
+    InteractionMap, Normalization, OwnedSet, ScoredItem, SimilarityVec,
+};
+
 /// Error types for unified operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnifiedError {

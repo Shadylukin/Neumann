@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Handlers for vector engine browsing with dystopian terminal styling.
+//! Handlers for vector engine browsing with Memoria design system.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use tensor_store::{ScalarValue, TensorValue};
 
 use crate::web::templates::layout;
 use crate::web::templates::layout::{
-    breadcrumb, empty_state, expandable_payload_preview, expandable_string, expandable_vector,
-    format_number, page_header,
+    format_number, m_breadcrumb, m_empty, m_expandable_string, m_expandable_vector, m_header,
+    m_payload_preview,
 };
 use crate::web::AdminContext;
 use crate::web::NavItem;
@@ -25,15 +25,15 @@ pub async fn collections_list(State(ctx): State<Arc<AdminContext>>) -> Markup {
     let default_count = ctx.vector.count();
 
     let content = html! {
-        (page_header("VECTOR COLLECTIONS", Some("Browse embedding storage")))
+        (m_header("VECTOR COLLECTIONS", Some("Browse embedding storage")))
 
         @if collections.is_empty() && default_count == 0 {
-            (empty_state("NO VECTORS", "Store embeddings to initialize vector storage"))
+            (m_empty("NO VECTORS", "Store embeddings to initialize vector storage"))
         } @else {
-            div class="terminal-panel" {
-                div class="panel-header" { "COLLECTION REGISTRY" }
-                div class="panel-content p-0" {
-                    table class="table-rust" {
+            div class="m-card" {
+                div class="m-card-header" { "COLLECTION REGISTRY" }
+                div class="m-card-content p-0" {
+                    table class="m-table" {
                         thead {
                             tr {
                                 th { "COLLECTION" }
@@ -47,13 +47,13 @@ pub async fn collections_list(State(ctx): State<Arc<AdminContext>>) -> Markup {
                             @if default_count > 0 {
                                 tr {
                                     td {
-                                        a href="/vector/_default" class="text-rust-blood hover:glow-rust italic" {
+                                        a href="/vector/_default" class="text-white hover:text-neutral-300 italic" {
                                             "(default)"
                                         }
                                     }
-                                    td class="text-amber font-data" { (format_number(default_count)) }
-                                    td class="text-phosphor-dim" { "-" }
-                                    td class="text-amber" { "Cosine" }
+                                    td class="text-neutral-300 font-mono" { (format_number(default_count)) }
+                                    td class="text-neutral-400" { "-" }
+                                    td class="text-neutral-300" { "Cosine" }
                                 }
                             }
 
@@ -63,12 +63,12 @@ pub async fn collections_list(State(ctx): State<Arc<AdminContext>>) -> Markup {
                                 @let config = ctx.vector.get_collection_config(coll);
                                 tr {
                                     td {
-                                        a href=(format!("/vector/{coll}")) class="text-rust-blood hover:glow-rust" {
+                                        a href=(format!("/vector/{coll}")) class="text-white hover:text-neutral-300" {
                                             (coll)
                                         }
                                     }
-                                    td class="text-amber font-data" { (format_number(count)) }
-                                    td class="text-phosphor-dim" {
+                                    td class="text-neutral-300 font-mono" { (format_number(count)) }
+                                    td class="text-neutral-400" {
                                         @if let Some(ref cfg) = config {
                                             @if let Some(dim) = cfg.dimension {
                                                 (dim)
@@ -81,7 +81,7 @@ pub async fn collections_list(State(ctx): State<Arc<AdminContext>>) -> Markup {
                                     }
                                     td {
                                         @if let Some(ref cfg) = config {
-                                            span class="text-amber" {
+                                            span class="text-neutral-300" {
                                                 (format!("{:?}", cfg.distance_metric))
                                             }
                                         } @else {
@@ -95,7 +95,7 @@ pub async fn collections_list(State(ctx): State<Arc<AdminContext>>) -> Markup {
                 }
             }
 
-            div class="mt-4 text-sm text-phosphor-dim font-terminal" {
+            div class="mt-4 text-sm text-neutral-400" {
                 "[ " (collections.len() + usize::from(default_count > 0)) " COLLECTION(S) ]"
             }
         }
@@ -109,26 +109,26 @@ pub async fn default_collection_detail(State(ctx): State<Arc<AdminContext>>) -> 
     let count = ctx.vector.count();
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), ("", "(default)")]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), ("", "(default)")]))
 
-        (page_header("DEFAULT COLLECTION", Some(&format!("{} vectors", format_number(count)))))
+        (m_header("DEFAULT COLLECTION", Some(&format!("{} vectors", format_number(count)))))
 
         // Configuration section
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "CONFIGURATION" }
-            div class="panel-content" {
-                dl class="grid grid-cols-2 gap-4 font-terminal" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "CONFIGURATION" }
+            div class="m-card-content" {
+                dl class="grid grid-cols-2 gap-4" {
                     div {
-                        dt class="text-sm text-phosphor-dim" { "DIMENSION" }
-                        dd class="text-lg text-phosphor-dark italic" { "Auto" }
+                        dt class="text-sm text-neutral-400" { "DIMENSION" }
+                        dd class="text-lg text-neutral-500 italic" { "Auto" }
                     }
                     div {
-                        dt class="text-sm text-phosphor-dim" { "DISTANCE METRIC" }
-                        dd class="text-lg text-amber" { "Cosine" }
+                        dt class="text-sm text-neutral-400" { "DISTANCE METRIC" }
+                        dd class="text-lg text-neutral-300" { "Cosine" }
                     }
                     div {
-                        dt class="text-sm text-phosphor-dim" { "VECTOR COUNT" }
-                        dd class="text-lg text-phosphor font-data" { (format_number(count)) }
+                        dt class="text-sm text-neutral-400" { "VECTOR COUNT" }
+                        dd class="text-lg text-white font-mono" { (format_number(count)) }
                     }
                 }
             }
@@ -136,8 +136,8 @@ pub async fn default_collection_detail(State(ctx): State<Arc<AdminContext>>) -> 
 
         // Action buttons
         div class="flex gap-3" {
-            a href="/vector/_default/points" class="btn-terminal" { "[ BROWSE POINTS ]" }
-            a href="/vector/_default/search" class="btn-terminal btn-terminal-rust" { "[ SEARCH VECTORS ]" }
+            a href="/vector/_default/points" class="m-btn" { "[ BROWSE POINTS ]" }
+            a href="/vector/_default/search" class="m-btn" { "[ SEARCH VECTORS ]" }
         }
     };
 
@@ -153,43 +153,43 @@ pub async fn collection_detail(
     let count = ctx.vector.collection_count(&collection);
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), ("", &collection)]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), ("", &collection)]))
 
-        (page_header(&collection.to_uppercase(), Some(&format!("{} vectors", format_number(count)))))
+        (m_header(&collection.to_uppercase(), Some(&format!("{} vectors", format_number(count)))))
 
         @if let Some(cfg) = config {
             // Configuration section
-            div class="terminal-panel mb-6" {
-                div class="panel-header" { "CONFIGURATION" }
-                div class="panel-content" {
-                    dl class="grid grid-cols-2 gap-4 font-terminal" {
+            div class="m-card mb-6" {
+                div class="m-card-header" { "CONFIGURATION" }
+                div class="m-card-content" {
+                    dl class="grid grid-cols-2 gap-4" {
                         div {
-                            dt class="text-sm text-phosphor-dim" { "DIMENSION" }
+                            dt class="text-sm text-neutral-400" { "DIMENSION" }
                             dd class="text-lg" {
                                 @if let Some(dim) = cfg.dimension {
-                                    span class="text-phosphor font-data" { (dim) }
+                                    span class="text-white font-mono" { (dim) }
                                 } @else {
-                                    span class="text-phosphor-dark italic" { "Auto" }
+                                    span class="text-neutral-500 italic" { "Auto" }
                                 }
                             }
                         }
                         div {
-                            dt class="text-sm text-phosphor-dim" { "DISTANCE METRIC" }
-                            dd class="text-lg text-amber" { (format!("{:?}", cfg.distance_metric)) }
+                            dt class="text-sm text-neutral-400" { "DISTANCE METRIC" }
+                            dd class="text-lg text-neutral-300" { (format!("{:?}", cfg.distance_metric)) }
                         }
                         div {
-                            dt class="text-sm text-phosphor-dim" { "AUTO INDEX" }
+                            dt class="text-sm text-neutral-400" { "AUTO INDEX" }
                             dd class="text-lg" {
                                 @if cfg.auto_index {
-                                    span class="text-phosphor" { "Enabled (threshold: " (cfg.auto_index_threshold) ")" }
+                                    span class="text-white" { "Enabled (threshold: " (cfg.auto_index_threshold) ")" }
                                 } @else {
-                                    span class="text-phosphor-dim" { "Disabled" }
+                                    span class="text-neutral-400" { "Disabled" }
                                 }
                             }
                         }
                         div {
-                            dt class="text-sm text-phosphor-dim" { "VECTOR COUNT" }
-                            dd class="text-lg text-phosphor font-data" { (format_number(count)) }
+                            dt class="text-sm text-neutral-400" { "VECTOR COUNT" }
+                            dd class="text-lg text-white font-mono" { (format_number(count)) }
                         }
                     }
                 }
@@ -197,11 +197,11 @@ pub async fn collection_detail(
 
             // Action buttons
             div class="flex gap-3" {
-                a href=(format!("/vector/{}/points", collection)) class="btn-terminal" { "[ BROWSE POINTS ]" }
-                a href=(format!("/vector/{}/search", collection)) class="btn-terminal btn-terminal-rust" { "[ SEARCH VECTORS ]" }
+                a href=(format!("/vector/{}/points", collection)) class="m-btn" { "[ BROWSE POINTS ]" }
+                a href=(format!("/vector/{}/search", collection)) class="m-btn" { "[ SEARCH VECTORS ]" }
             }
         } @else {
-            (empty_state("COLLECTION NOT FOUND", "The requested collection does not exist"))
+            (m_empty("COLLECTION NOT FOUND", "The requested collection does not exist"))
         }
     };
 
@@ -274,22 +274,22 @@ fn render_default_search_page(
     let sample_vector = get_sample_vector_default(ctx);
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), ("/vector/_default", "(default)"), ("", "SEARCH")]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), ("/vector/_default", "(default)"), ("", "SEARCH")]))
 
-        (page_header("VECTOR SEARCH", Some("Query default collection")))
+        (m_header("VECTOR SEARCH", Some("Query default collection")))
 
         // Search form
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "SEARCH PARAMETERS" }
-            div class="panel-content" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "SEARCH PARAMETERS" }
+            div class="m-card-content" {
                 form method="post" action="/vector/_default/search" class="space-y-4" {
                     div {
                         div class="flex items-center justify-between mb-2" {
-                            label for="vector" class="text-sm text-phosphor-dim font-terminal" {
+                            label for="vector" class="text-sm text-neutral-400" {
                                 "QUERY VECTOR"
                             }
                             @if let Some((ref sample_key, ref sample_vec)) = sample_vector {
-                                button type="button" onclick=(format!("document.getElementById('vector').value = '{}';", format_vector_compact(sample_vec))) class="expand-btn-terminal" {
+                                button type="button" onclick=(format!("document.getElementById('vector').value = '{}';", format_vector_compact(sample_vec))) class="m-expand-btn" {
                                     "[USE SAMPLE: " (truncate_key(sample_key, 15)) "]"
                                 }
                             }
@@ -298,7 +298,7 @@ fn render_default_search_page(
                             id="vector"
                             name="vector"
                             rows="3"
-                            class="input-terminal w-full"
+                            class="m-input w-full"
                             placeholder="[0.1, 0.2, 0.3, ...] - Click 'USE SAMPLE' to fill with existing vector"
                         {
                             @if let Some(p) = params {
@@ -309,7 +309,7 @@ fn render_default_search_page(
 
                     div class="flex items-end gap-4" {
                         div {
-                            label for="k" class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                            label for="k" class="block text-sm text-neutral-400 mb-2" {
                                 "RESULTS (K)"
                             }
                             input
@@ -319,10 +319,10 @@ fn render_default_search_page(
                                 min="1"
                                 max="100"
                                 value=(params.map_or(10, |p| p.k))
-                                class="input-terminal w-24";
+                                class="m-input w-24";
                         }
 
-                        button type="submit" class="btn-terminal btn-terminal-rust" { "[ SEARCH ]" }
+                        button type="submit" class="m-btn" { "[ SEARCH ]" }
                     }
                 }
             }
@@ -332,13 +332,13 @@ fn render_default_search_page(
         @if let Some(result) = results {
             @match result {
                 Ok(hits) => {
-                    div class="terminal-panel" {
-                        div class="panel-header" { "RESULTS (" (hits.len()) ")" }
-                        div class="panel-content p-0" {
+                    div class="m-card" {
+                        div class="m-card-header" { "RESULTS (" (hits.len()) ")" }
+                        div class="m-card-content p-0" {
                             @if hits.is_empty() {
-                                div class="p-4 text-phosphor-dim italic" { "< NO MATCHES FOUND >" }
+                                div class="p-4 text-neutral-400 italic" { "< NO MATCHES FOUND >" }
                             } @else {
-                                table class="table-rust" {
+                                table class="m-table" {
                                     thead {
                                         tr {
                                             th class="w-16" { "#" }
@@ -349,8 +349,8 @@ fn render_default_search_page(
                                     tbody {
                                         @for (idx, hit) in hits.iter().enumerate() {
                                             tr {
-                                                td class="text-phosphor-dim font-data" { (idx + 1) }
-                                                td class="text-phosphor" { (hit.key.clone()) }
+                                                td class="text-neutral-400 font-mono" { (idx + 1) }
+                                                td class="text-white" { (hit.key.clone()) }
                                                 td class="text-right" {
                                                     span class=(score_color(hit.score)) {
                                                         (format!("{:.4}", hit.score))
@@ -365,9 +365,9 @@ fn render_default_search_page(
                     }
                 }
                 Err(e) => {
-                    div class="terminal-panel terminal-panel-rust" {
-                        div class="panel-header" { "ERROR" }
-                        div class="panel-content text-amber" {
+                    div class="m-card" {
+                        div class="m-card-header" { "ERROR" }
+                        div class="m-card-content text-neutral-300" {
                             (e.to_string())
                         }
                     }
@@ -435,22 +435,22 @@ fn render_search_page(
     let sample_vector = get_sample_vector(ctx, collection);
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), (&format!("/vector/{collection}"), collection), ("", "SEARCH")]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), (&format!("/vector/{collection}"), collection), ("", "SEARCH")]))
 
-        (page_header("VECTOR SEARCH", Some(&format!("Query {collection}"))))
+        (m_header("VECTOR SEARCH", Some(&format!("Query {collection}"))))
 
         // Search form
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "SEARCH PARAMETERS" }
-            div class="panel-content" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "SEARCH PARAMETERS" }
+            div class="m-card-content" {
                 form method="post" action=(format!("/vector/{collection}/search")) class="space-y-4" {
                     div {
                         div class="flex items-center justify-between mb-2" {
-                            label for="vector" class="text-sm text-phosphor-dim font-terminal" {
+                            label for="vector" class="text-sm text-neutral-400" {
                                 "QUERY VECTOR"
                             }
                             @if let Some((ref sample_key, ref sample_vec)) = sample_vector {
-                                button type="button" onclick=(format!("document.getElementById('vector').value = '{}';", format_vector_compact(sample_vec))) class="expand-btn-terminal" {
+                                button type="button" onclick=(format!("document.getElementById('vector').value = '{}';", format_vector_compact(sample_vec))) class="m-expand-btn" {
                                     "[USE SAMPLE: " (truncate_key(sample_key, 15)) "]"
                                 }
                             }
@@ -459,7 +459,7 @@ fn render_search_page(
                             id="vector"
                             name="vector"
                             rows="3"
-                            class="input-terminal w-full"
+                            class="m-input w-full"
                             placeholder="[0.1, 0.2, 0.3, ...]"
                         {
                             @if let Some(p) = params {
@@ -468,14 +468,14 @@ fn render_search_page(
                         }
                         @if let Some(ref cfg) = config {
                             @if let Some(dim) = cfg.dimension {
-                                p class="text-xs text-phosphor-dark mt-1 font-terminal" { "Expected dimension: " (dim) }
+                                p class="text-xs text-neutral-500 mt-1" { "Expected dimension: " (dim) }
                             }
                         }
                     }
 
                     div class="flex items-end gap-4" {
                         div {
-                            label for="k" class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                            label for="k" class="block text-sm text-neutral-400 mb-2" {
                                 "RESULTS (K)"
                             }
                             input
@@ -485,10 +485,10 @@ fn render_search_page(
                                 min="1"
                                 max="100"
                                 value=(params.map_or(10, |p| p.k))
-                                class="input-terminal w-24";
+                                class="m-input w-24";
                         }
 
-                        button type="submit" class="btn-terminal btn-terminal-rust" { "[ SEARCH ]" }
+                        button type="submit" class="m-btn" { "[ SEARCH ]" }
                     }
                 }
             }
@@ -498,13 +498,13 @@ fn render_search_page(
         @if let Some(result) = results {
             @match result {
                 Ok(hits) => {
-                    div class="terminal-panel" {
-                        div class="panel-header" { "RESULTS (" (hits.len()) ")" }
-                        div class="panel-content p-0" {
+                    div class="m-card" {
+                        div class="m-card-header" { "RESULTS (" (hits.len()) ")" }
+                        div class="m-card-content p-0" {
                             @if hits.is_empty() {
-                                div class="p-4 text-phosphor-dim italic" { "< NO MATCHES FOUND >" }
+                                div class="p-4 text-neutral-400 italic" { "< NO MATCHES FOUND >" }
                             } @else {
-                                table class="table-rust" {
+                                table class="m-table" {
                                     thead {
                                         tr {
                                             th class="w-16" { "#" }
@@ -515,8 +515,8 @@ fn render_search_page(
                                     tbody {
                                         @for (idx, hit) in hits.iter().enumerate() {
                                             tr {
-                                                td class="text-phosphor-dim font-data" { (idx + 1) }
-                                                td class="text-phosphor" { (hit.key.clone()) }
+                                                td class="text-neutral-400 font-mono" { (idx + 1) }
+                                                td class="text-white" { (hit.key.clone()) }
                                                 td class="text-right" {
                                                     span class=(score_color(hit.score)) {
                                                         (format!("{:.4}", hit.score))
@@ -531,9 +531,9 @@ fn render_search_page(
                     }
                 }
                 Err(e) => {
-                    div class="terminal-panel terminal-panel-rust" {
-                        div class="panel-header" { "ERROR" }
-                        div class="panel-content text-amber" {
+                    div class="m-card" {
+                        div class="m-card-header" { "ERROR" }
+                        div class="m-card-content text-neutral-300" {
                             (e.to_string())
                         }
                     }
@@ -547,13 +547,13 @@ fn render_search_page(
 
 fn score_color(score: f32) -> &'static str {
     if score >= 0.9 {
-        "text-phosphor font-data glow-phosphor"
+        "text-white font-mono"
     } else if score >= 0.7 {
-        "text-amber font-data"
+        "text-white font-mono opacity-80"
     } else if score >= 0.5 {
-        "text-rust-blood font-data"
+        "text-neutral-400 font-mono opacity-60"
     } else {
-        "text-phosphor-dim font-data"
+        "text-neutral-500 font-mono opacity-40"
     }
 }
 
@@ -564,17 +564,17 @@ pub async fn default_points_list(State(ctx): State<Arc<AdminContext>>) -> Markup
     let keys = ctx.vector.list_keys();
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), ("/vector/_default", "(default)"), ("", "POINTS")]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), ("/vector/_default", "(default)"), ("", "POINTS")]))
 
-        (page_header("POINTS", Some(&format!("{} vectors in default collection", format_number(keys.len())))))
+        (m_header("POINTS", Some(&format!("{} vectors in default collection", format_number(keys.len())))))
 
         @if keys.is_empty() {
-            (empty_state("NO POINTS", "This collection is empty"))
+            (m_empty("NO POINTS", "This collection is empty"))
         } @else {
-            div class="terminal-panel" {
-                div class="panel-header" { "POINT REGISTRY" }
-                div class="panel-content p-0" {
-                    table class="table-rust" {
+            div class="m-card" {
+                div class="m-card-header" { "POINT REGISTRY" }
+                div class="m-card-content p-0" {
+                    table class="m-table" {
                         thead {
                             tr {
                                 th { "ID" }
@@ -587,11 +587,11 @@ pub async fn default_points_list(State(ctx): State<Arc<AdminContext>>) -> Markup
                                 @let metadata = ctx.vector.get_metadata(key).unwrap_or_default();
                                 tr {
                                     td {
-                                        a href=(format!("/vector/_default/points/{}", urlencoding::encode(key))) class="text-rust-blood hover:glow-rust" {
+                                        a href=(format!("/vector/_default/points/{}", urlencoding::encode(key))) class="text-white hover:text-neutral-300" {
                                             (key)
                                         }
                                     }
-                                    td class="text-phosphor-dim text-sm" {
+                                    td class="text-neutral-400 text-sm" {
                                         @if metadata.is_empty() {
                                             span class="italic" { "No payload" }
                                         } @else {
@@ -599,7 +599,7 @@ pub async fn default_points_list(State(ctx): State<Arc<AdminContext>>) -> Markup
                                         }
                                     }
                                     td class="text-right" {
-                                        a href=(format!("/vector/_default/points/{}", urlencoding::encode(key))) class="expand-btn-terminal" {
+                                        a href=(format!("/vector/_default/points/{}", urlencoding::encode(key))) class="m-expand-btn" {
                                             "[VIEW]"
                                         }
                                     }
@@ -610,7 +610,7 @@ pub async fn default_points_list(State(ctx): State<Arc<AdminContext>>) -> Markup
                 }
             }
 
-            div class="mt-4 text-sm text-phosphor-dim font-terminal" {
+            div class="mt-4 text-sm text-neutral-400" {
                 "[ " (keys.len()) " POINT(S) ]"
             }
         }
@@ -627,17 +627,17 @@ pub async fn points_list(
     let keys = ctx.vector.list_collection_keys(&collection);
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), (&format!("/vector/{collection}"), &collection), ("", "POINTS")]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), (&format!("/vector/{collection}"), &collection), ("", "POINTS")]))
 
-        (page_header("POINTS", Some(&format!("{} vectors in {}", format_number(keys.len()), collection))))
+        (m_header("POINTS", Some(&format!("{} vectors in {}", format_number(keys.len()), collection))))
 
         @if keys.is_empty() {
-            (empty_state("NO POINTS", "This collection is empty"))
+            (m_empty("NO POINTS", "This collection is empty"))
         } @else {
-            div class="terminal-panel" {
-                div class="panel-header" { "POINT REGISTRY" }
-                div class="panel-content p-0" {
-                    table class="table-rust" {
+            div class="m-card" {
+                div class="m-card-header" { "POINT REGISTRY" }
+                div class="m-card-content p-0" {
+                    table class="m-table" {
                         thead {
                             tr {
                                 th { "ID" }
@@ -650,11 +650,11 @@ pub async fn points_list(
                                 @let metadata = ctx.vector.get_collection_metadata(&collection, key).unwrap_or_default();
                                 tr {
                                     td {
-                                        a href=(format!("/vector/{}/points/{}", collection, urlencoding::encode(key))) class="text-rust-blood hover:glow-rust" {
+                                        a href=(format!("/vector/{}/points/{}", collection, urlencoding::encode(key))) class="text-white hover:text-neutral-300" {
                                             (key)
                                         }
                                     }
-                                    td class="text-phosphor-dim text-sm" {
+                                    td class="text-neutral-400 text-sm" {
                                         @if metadata.is_empty() {
                                             span class="italic" { "No payload" }
                                         } @else {
@@ -662,7 +662,7 @@ pub async fn points_list(
                                         }
                                     }
                                     td class="text-right" {
-                                        a href=(format!("/vector/{}/points/{}", collection, urlencoding::encode(key))) class="expand-btn-terminal" {
+                                        a href=(format!("/vector/{}/points/{}", collection, urlencoding::encode(key))) class="m-expand-btn" {
                                             "[VIEW]"
                                         }
                                     }
@@ -673,7 +673,7 @@ pub async fn points_list(
                 }
             }
 
-            div class="mt-4 text-sm text-phosphor-dim font-terminal" {
+            div class="mt-4 text-sm text-neutral-400" {
                 "[ " (keys.len()) " POINT(S) ]"
             }
         }
@@ -693,18 +693,18 @@ pub async fn default_point_detail(
     let metadata = ctx.vector.get_metadata(&point_id).unwrap_or_default();
 
     let content = html! {
-        (breadcrumb(&[("/vector", "COLLECTIONS"), ("/vector/_default", "(default)"), ("/vector/_default/points", "POINTS"), ("", &point_id)]))
+        (m_breadcrumb(&[("/vector", "COLLECTIONS"), ("/vector/_default", "(default)"), ("/vector/_default/points", "POINTS"), ("", &point_id)]))
 
-        (page_header(&point_id, Some("Point Details")))
+        (m_header(&point_id, Some("Point Details")))
 
         @match vector {
             Ok(vec) => {
                 // Payload section
-                div class="terminal-panel mb-6" {
-                    div class="panel-header" { "PAYLOAD" }
-                    div class="panel-content" {
+                div class="m-card mb-6" {
+                    div class="m-card-header" { "PAYLOAD" }
+                    div class="m-card-content" {
                         @if metadata.is_empty() {
-                            div class="text-phosphor-dim italic" { "< NO PAYLOAD DATA >" }
+                            div class="text-neutral-400 italic" { "< NO PAYLOAD DATA >" }
                         } @else {
                             (render_payload_table(&metadata))
                         }
@@ -712,15 +712,15 @@ pub async fn default_point_detail(
                 }
 
                 // Vector section
-                div class="terminal-panel" {
-                    div class="panel-header" { "VECTOR (" (vec.len()) " DIMENSIONS)" }
-                    div class="panel-content" {
-                        (expandable_vector(&vec, 15))
+                div class="m-card" {
+                    div class="m-card-header" { "VECTOR (" (vec.len()) " DIMENSIONS)" }
+                    div class="m-card-content" {
+                        (m_expandable_vector(&vec, 15))
                     }
                 }
             }
             Err(_) => {
-                (empty_state("POINT NOT FOUND", "The requested point does not exist"))
+                (m_empty("POINT NOT FOUND", "The requested point does not exist"))
             }
         }
     };
@@ -740,23 +740,23 @@ pub async fn point_detail(
         .unwrap_or_default();
 
     let content = html! {
-        (breadcrumb(&[
+        (m_breadcrumb(&[
             ("/vector", "COLLECTIONS"),
             (&format!("/vector/{collection}"), &collection),
             (&format!("/vector/{collection}/points"), "POINTS"),
             ("", &point_id)
         ]))
 
-        (page_header(&point_id, Some(&format!("Point in {collection}"))))
+        (m_header(&point_id, Some(&format!("Point in {collection}"))))
 
         @match vector {
             Ok(vec) => {
                 // Payload section
-                div class="terminal-panel mb-6" {
-                    div class="panel-header" { "PAYLOAD" }
-                    div class="panel-content" {
+                div class="m-card mb-6" {
+                    div class="m-card-header" { "PAYLOAD" }
+                    div class="m-card-content" {
                         @if metadata.is_empty() {
-                            div class="text-phosphor-dim italic" { "< NO PAYLOAD DATA >" }
+                            div class="text-neutral-400 italic" { "< NO PAYLOAD DATA >" }
                         } @else {
                             (render_payload_table(&metadata))
                         }
@@ -764,15 +764,15 @@ pub async fn point_detail(
                 }
 
                 // Vector section
-                div class="terminal-panel" {
-                    div class="panel-header" { "VECTOR (" (vec.len()) " DIMENSIONS)" }
-                    div class="panel-content" {
-                        (expandable_vector(&vec, 15))
+                div class="m-card" {
+                    div class="m-card-header" { "VECTOR (" (vec.len()) " DIMENSIONS)" }
+                    div class="m-card-content" {
+                        (m_expandable_vector(&vec, 15))
                     }
                 }
             }
             Err(_) => {
-                (empty_state("POINT NOT FOUND", "The requested point does not exist"))
+                (m_empty("POINT NOT FOUND", "The requested point does not exist"))
             }
         }
     };
@@ -788,7 +788,7 @@ fn render_payload_preview(metadata: &HashMap<String, TensorValue>) -> Markup {
         .map(|(k, v)| (k.clone(), format_tensor_value_short(v)))
         .collect();
 
-    expandable_payload_preview(&items, 3)
+    m_payload_preview(&items, 3)
 }
 
 fn format_tensor_value_short(value: &TensorValue) -> String {
@@ -810,7 +810,7 @@ fn format_tensor_value_short(value: &TensorValue) -> String {
 
 fn render_payload_table(metadata: &HashMap<String, TensorValue>) -> Markup {
     html! {
-        table class="table-rust w-full" {
+        table class="m-table w-full" {
             thead {
                 tr {
                     th class="w-48" { "KEY" }
@@ -820,7 +820,7 @@ fn render_payload_table(metadata: &HashMap<String, TensorValue>) -> Markup {
             tbody {
                 @for (key, value) in metadata {
                     tr {
-                        td class="text-phosphor" { (key) }
+                        td class="text-white" { (key) }
                         td {
                             (render_tensor_value(value))
                         }
@@ -833,19 +833,19 @@ fn render_payload_table(metadata: &HashMap<String, TensorValue>) -> Markup {
 
 fn render_tensor_value(value: &TensorValue) -> Markup {
     match value {
-        TensorValue::Scalar(ScalarValue::String(s)) => expandable_string(s, 100),
+        TensorValue::Scalar(ScalarValue::String(s)) => m_expandable_string(s, 100),
         TensorValue::Scalar(s) => {
-            html! { span class="text-phosphor font-data" { (format!("{s:?}")) } }
+            html! { span class="text-white font-mono" { (format!("{s:?}")) } }
         },
-        TensorValue::Vector(v) => expandable_vector(v, 10),
+        TensorValue::Vector(v) => m_expandable_vector(v, 10),
         TensorValue::Sparse(s) => {
-            html! { span class="text-amber font-data" { "[sparse " (s.dimension()) "d]" } }
+            html! { span class="text-neutral-300 font-mono" { "[sparse " (s.dimension()) "d]" } }
         },
         TensorValue::Pointer(p) => {
-            html! { span class="text-phosphor-dim" { "-> " (p) } }
+            html! { span class="text-neutral-400" { "-> " (p) } }
         },
         TensorValue::Pointers(ps) => {
-            html! { span class="text-phosphor-dim" { "[" (ps.len()) " pointers]" } }
+            html! { span class="text-neutral-400" { "[" (ps.len()) " pointers]" } }
         },
     }
 }
@@ -897,38 +897,38 @@ mod tests {
 
     #[test]
     fn test_score_color_high_score() {
-        assert_eq!(score_color(0.95), "text-phosphor font-data glow-phosphor");
-        assert_eq!(score_color(0.9), "text-phosphor font-data glow-phosphor");
-        assert_eq!(score_color(1.0), "text-phosphor font-data glow-phosphor");
+        assert_eq!(score_color(0.95), "text-white font-mono");
+        assert_eq!(score_color(0.9), "text-white font-mono");
+        assert_eq!(score_color(1.0), "text-white font-mono");
     }
 
     #[test]
     fn test_score_color_medium_high_score() {
-        assert_eq!(score_color(0.89), "text-amber font-data");
-        assert_eq!(score_color(0.7), "text-amber font-data");
-        assert_eq!(score_color(0.75), "text-amber font-data");
+        assert_eq!(score_color(0.89), "text-white font-mono opacity-80");
+        assert_eq!(score_color(0.7), "text-white font-mono opacity-80");
+        assert_eq!(score_color(0.75), "text-white font-mono opacity-80");
     }
 
     #[test]
     fn test_score_color_medium_score() {
-        assert_eq!(score_color(0.69), "text-rust-blood font-data");
-        assert_eq!(score_color(0.5), "text-rust-blood font-data");
-        assert_eq!(score_color(0.55), "text-rust-blood font-data");
+        assert_eq!(score_color(0.69), "text-neutral-400 font-mono opacity-60");
+        assert_eq!(score_color(0.5), "text-neutral-400 font-mono opacity-60");
+        assert_eq!(score_color(0.55), "text-neutral-400 font-mono opacity-60");
     }
 
     #[test]
     fn test_score_color_low_score() {
-        assert_eq!(score_color(0.49), "text-phosphor-dim font-data");
-        assert_eq!(score_color(0.0), "text-phosphor-dim font-data");
-        assert_eq!(score_color(0.25), "text-phosphor-dim font-data");
+        assert_eq!(score_color(0.49), "text-neutral-500 font-mono opacity-40");
+        assert_eq!(score_color(0.0), "text-neutral-500 font-mono opacity-40");
+        assert_eq!(score_color(0.25), "text-neutral-500 font-mono opacity-40");
     }
 
     #[test]
     fn test_score_color_boundary_values() {
         // Exact boundaries
-        assert_eq!(score_color(0.9), "text-phosphor font-data glow-phosphor");
-        assert_eq!(score_color(0.7), "text-amber font-data");
-        assert_eq!(score_color(0.5), "text-rust-blood font-data");
+        assert_eq!(score_color(0.9), "text-white font-mono");
+        assert_eq!(score_color(0.7), "text-white font-mono opacity-80");
+        assert_eq!(score_color(0.5), "text-neutral-400 font-mono opacity-60");
     }
 
     // ========== format_tensor_value_short tests ==========
@@ -1164,7 +1164,7 @@ mod tests {
         metadata.insert("key3".to_string(), TensorValue::Scalar(ScalarValue::Int(3)));
         metadata.insert("key4".to_string(), TensorValue::Scalar(ScalarValue::Int(4)));
         let html = render_payload_preview(&metadata).into_string();
-        // Should show preview (limited items due to expandable_payload_preview limit of 3)
+        // Should show preview (limited items due to m_payload_preview limit of 3)
         assert!(!html.is_empty());
     }
 
@@ -1397,23 +1397,29 @@ mod tests {
     #[test]
     fn test_score_color_exact_boundaries() {
         // Test the exact boundary values for each threshold
-        assert_eq!(score_color(0.8999999), "text-amber font-data");
-        assert_eq!(score_color(0.6999999), "text-rust-blood font-data");
-        assert_eq!(score_color(0.4999999), "text-phosphor-dim font-data");
+        assert_eq!(score_color(0.8999999), "text-white font-mono opacity-80");
+        assert_eq!(
+            score_color(0.6999999),
+            "text-neutral-400 font-mono opacity-60"
+        );
+        assert_eq!(
+            score_color(0.4999999),
+            "text-neutral-500 font-mono opacity-40"
+        );
     }
 
     #[test]
     fn test_score_color_negative() {
         // Edge case: negative scores
-        assert_eq!(score_color(-0.1), "text-phosphor-dim font-data");
-        assert_eq!(score_color(-1.0), "text-phosphor-dim font-data");
+        assert_eq!(score_color(-0.1), "text-neutral-500 font-mono opacity-40");
+        assert_eq!(score_color(-1.0), "text-neutral-500 font-mono opacity-40");
     }
 
     #[test]
     fn test_score_color_over_one() {
         // Edge case: scores > 1.0
-        assert_eq!(score_color(1.1), "text-phosphor font-data glow-phosphor");
-        assert_eq!(score_color(2.0), "text-phosphor font-data glow-phosphor");
+        assert_eq!(score_color(1.1), "text-white font-mono");
+        assert_eq!(score_color(2.0), "text-white font-mono");
     }
 
     // ========== Additional format_tensor_value_short tests ==========
@@ -1497,15 +1503,21 @@ mod tests {
     #[test]
     fn test_score_color_boundary_at_seven() {
         // Test value just at and below 0.7
-        assert_eq!(score_color(0.7), "text-amber font-data");
-        assert_eq!(score_color(0.699999), "text-rust-blood font-data");
+        assert_eq!(score_color(0.7), "text-white font-mono opacity-80");
+        assert_eq!(
+            score_color(0.699999),
+            "text-neutral-400 font-mono opacity-60"
+        );
     }
 
     #[test]
     fn test_score_color_boundary_at_five() {
         // Test value just at and below 0.5
-        assert_eq!(score_color(0.5), "text-rust-blood font-data");
-        assert_eq!(score_color(0.499999), "text-phosphor-dim font-data");
+        assert_eq!(score_color(0.5), "text-neutral-400 font-mono opacity-60");
+        assert_eq!(
+            score_color(0.499999),
+            "text-neutral-500 font-mono opacity-40"
+        );
     }
 
     // ========== render_tensor_value additional tests ==========
@@ -1641,5 +1653,235 @@ mod tests {
             k: 100,
         };
         assert_eq!(params.k, 100);
+    }
+
+    // ========== get_sample_vector tests ==========
+
+    #[test]
+    fn test_get_sample_vector_default_empty() {
+        use std::sync::Arc;
+
+        let ctx = super::AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            Arc::new(vector_engine::VectorEngine::new()),
+            Arc::new(graph_engine::GraphEngine::new()),
+        );
+        assert!(get_sample_vector_default(&ctx).is_none());
+    }
+
+    #[test]
+    fn test_get_sample_vector_default_with_data() {
+        use std::sync::Arc;
+
+        let vector = Arc::new(vector_engine::VectorEngine::new());
+        vector
+            .store_embedding("point-1", vec![1.0, 2.0, 3.0])
+            .unwrap();
+
+        let ctx = super::AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            vector,
+            Arc::new(graph_engine::GraphEngine::new()),
+        );
+        let result = get_sample_vector_default(&ctx);
+        assert!(result.is_some());
+        let (key, vec) = result.unwrap();
+        assert_eq!(key, "point-1");
+        assert_eq!(vec, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_get_sample_vector_collection_empty() {
+        use std::sync::Arc;
+
+        let ctx = super::AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            Arc::new(vector_engine::VectorEngine::new()),
+            Arc::new(graph_engine::GraphEngine::new()),
+        );
+        assert!(get_sample_vector(&ctx, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_get_sample_vector_collection_with_data() {
+        use std::sync::Arc;
+
+        let vector = Arc::new(vector_engine::VectorEngine::new());
+        vector
+            .create_collection("my-coll", vector_engine::VectorCollectionConfig::default())
+            .unwrap();
+        vector
+            .store_in_collection("my-coll", "vec-1", vec![0.5, 0.6])
+            .unwrap();
+
+        let ctx = super::AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            vector,
+            Arc::new(graph_engine::GraphEngine::new()),
+        );
+        let result = get_sample_vector(&ctx, "my-coll");
+        assert!(result.is_some());
+        let (key, vec) = result.unwrap();
+        assert_eq!(key, "vec-1");
+        assert_eq!(vec, vec![0.5, 0.6]);
+    }
+
+    // ========== Handler integration tests ==========
+
+    fn create_populated_vector_context() -> Arc<AdminContext> {
+        let relational = Arc::new(relational_engine::RelationalEngine::new());
+        let vector = Arc::new(vector_engine::VectorEngine::new());
+        let graph = Arc::new(graph_engine::GraphEngine::new());
+
+        // Store embeddings in default collection
+        vector
+            .store_embedding("vec-1", vec![1.0, 0.5, 0.3])
+            .unwrap();
+        vector
+            .store_embedding("vec-2", vec![0.9, 0.6, 0.2])
+            .unwrap();
+        vector
+            .store_embedding("vec-3", vec![0.1, 0.2, 0.9])
+            .unwrap();
+
+        // Create a named collection
+        let config = vector_engine::VectorCollectionConfig::default().with_dimension(3);
+        vector.create_collection("embeddings", config).unwrap();
+        vector
+            .store_in_collection("embeddings", "emb-1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        vector
+            .store_in_collection("embeddings", "emb-2", vec![0.0, 1.0, 0.0])
+            .unwrap();
+
+        Arc::new(super::AdminContext::new(relational, vector, graph))
+    }
+
+    #[tokio::test]
+    async fn test_collections_list_with_data() {
+        let ctx = create_populated_vector_context();
+        let result = collections_list(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("VECTOR COLLECTIONS"));
+        assert!(html.contains("COLLECTION REGISTRY"));
+        assert!(html.contains("embeddings"));
+        assert!(html.contains("_default"));
+    }
+
+    #[tokio::test]
+    async fn test_collections_list_empty() {
+        let ctx = Arc::new(super::AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            Arc::new(vector_engine::VectorEngine::new()),
+            Arc::new(graph_engine::GraphEngine::new()),
+        ));
+        let result = collections_list(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("NO VECTORS"));
+    }
+
+    #[tokio::test]
+    async fn test_default_collection_detail_with_data() {
+        let ctx = create_populated_vector_context();
+        let result = default_collection_detail(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("DEFAULT COLLECTION"));
+    }
+
+    #[tokio::test]
+    async fn test_collection_detail_with_data() {
+        let ctx = create_populated_vector_context();
+        let result = collection_detail(State(ctx), Path("embeddings".to_string())).await;
+        let html = result.into_string();
+        assert!(html.contains("EMBEDDINGS"));
+    }
+
+    #[tokio::test]
+    async fn test_collection_detail_not_found() {
+        let ctx = create_populated_vector_context();
+        let result = collection_detail(State(ctx), Path("nonexistent".to_string())).await;
+        let html = result.into_string();
+        assert!(
+            html.contains("NOT FOUND")
+                || html.contains("not found")
+                || html.contains("does not exist")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_points_list_with_data() {
+        let ctx = create_populated_vector_context();
+        let result = default_points_list(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("vec-1"));
+        assert!(html.contains("vec-2"));
+    }
+
+    #[tokio::test]
+    async fn test_points_list_with_data() {
+        let ctx = create_populated_vector_context();
+        let result = points_list(State(ctx), Path("embeddings".to_string())).await;
+        let html = result.into_string();
+        assert!(html.contains("emb-1"));
+    }
+
+    #[tokio::test]
+    async fn test_default_point_detail() {
+        let ctx = create_populated_vector_context();
+        let result = default_point_detail(State(ctx), Path("vec-1".to_string())).await;
+        let html = result.into_string();
+        assert!(html.contains("vec-1"));
+    }
+
+    #[tokio::test]
+    async fn test_point_detail_named_collection() {
+        let ctx = create_populated_vector_context();
+        let result = point_detail(
+            State(ctx),
+            Path(("embeddings".to_string(), "emb-1".to_string())),
+        )
+        .await;
+        let html = result.into_string();
+        assert!(html.contains("emb-1"));
+    }
+
+    #[tokio::test]
+    async fn test_default_search_form_renders() {
+        let ctx = create_populated_vector_context();
+        let result = default_search_form(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("SEARCH"));
+    }
+
+    #[tokio::test]
+    async fn test_search_form_named_collection() {
+        let ctx = create_populated_vector_context();
+        let result = search_form(State(ctx), Path("embeddings".to_string())).await;
+        let html = result.into_string();
+        assert!(html.contains("SEARCH"));
+    }
+
+    #[tokio::test]
+    async fn test_default_search_submit_with_results() {
+        let ctx = create_populated_vector_context();
+        let params = Form(SearchParams {
+            vector: "1.0, 0.5, 0.3".to_string(),
+            k: 3,
+        });
+        let result = default_search_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("SEARCH RESULTS") || html.contains("vec-"));
+    }
+
+    #[tokio::test]
+    async fn test_search_submit_named_collection() {
+        let ctx = create_populated_vector_context();
+        let params = Form(SearchParams {
+            vector: "1.0, 0.0, 0.0".to_string(),
+            k: 3,
+        });
+        let result = search_submit(State(ctx), Path("embeddings".to_string()), params).await;
+        let html = result.into_string();
+        assert!(html.contains("SEARCH RESULTS") || html.contains("emb-"));
     }
 }

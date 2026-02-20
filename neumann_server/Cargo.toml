@@ -20,6 +20,10 @@ tensor_store = { path = "../tensor_store" }
 relational_engine = { path = "../relational_engine" }
 vector_engine = { path = "../vector_engine" }
 graph_engine = { path = "../graph_engine" }
+tensor_unified = { path = "../tensor_unified" }
+tensor_vault = { path = "../tensor_vault" }
+tensor_cache = { path = "../tensor_cache" }
+tensor_checkpoint = { path = "../tensor_checkpoint" }
 tonic.workspace = true
 tonic-prost.workspace = true
 tonic-web = "0.14"
@@ -52,7 +56,6 @@ tonic-prost-build.workspace = true
 [dev-dependencies]
 tokio-test.workspace = true
 tempfile.workspace = true
-tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
 futures.workspace = true
 tokio-stream.workspace = true

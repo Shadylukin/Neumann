@@ -475,6 +475,58 @@ impl UnifiedEngine {
         ))
     }
 
+    // -----------------------------------------------------------------------
+    // Public explain methods
+    // -----------------------------------------------------------------------
+
+    /// Returns adjacency scores: neighbor key to edge weight.
+    ///
+    /// Wraps the internal adjacency gathering for external explainability.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_key` - The entity key to gather adjacency for.
+    /// * `config` - Contraction configuration controlling direction and edge type filter.
+    #[must_use]
+    pub fn explain_adjacency(&self, source_key: &str, config: &ContractionConfig) -> AdjacencyVec {
+        let direction: Direction = config.direction.into();
+        self.gather_adjacency(source_key, direction, config.edge_type.as_deref())
+    }
+
+    /// Returns similarity scores: neighbor key to cosine similarity.
+    ///
+    /// Requires adjacency to scope which neighbors to compute similarity for.
+    #[must_use]
+    pub fn explain_similarity(&self, source_key: &str, adjacency: &AdjacencyVec) -> SimilarityVec {
+        self.gather_similarity(source_key, adjacency)
+    }
+
+    /// Returns the interaction map and owned-item set.
+    ///
+    /// The interaction map is set-based (binary membership), not weighted --
+    /// it maps each intermediary to the set of items they interacted with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interaction table or columns are not found,
+    /// or if the column types are incompatible with key extraction.
+    pub fn explain_interactions(
+        &self,
+        interaction_table: &str,
+        source_column: &str,
+        target_column: &str,
+        intermediary_keys: &HashSet<&str>,
+        source_key_for_owned: Option<&str>,
+    ) -> Result<(InteractionMap, OwnedSet)> {
+        self.gather_interactions(
+            interaction_table,
+            source_column,
+            target_column,
+            intermediary_keys,
+            source_key_for_owned,
+        )
+    }
+
     /// Build adjacency vector from graph edges.
     ///
     /// When multiple edges connect the source to the same neighbor (e.g.
@@ -2450,5 +2502,234 @@ mod tests {
             .unwrap();
 
         assert!(result.items.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // explain_adjacency tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_explain_adjacency_returns_neighbor_weights() {
+        let engine = setup_engine().await;
+        let config = friend_config();
+
+        let adj = engine.explain_adjacency("alice", &config);
+        // alice has FRIEND edges to bob, carol, dave (all weight 1.0)
+        assert_eq!(adj.len(), 3);
+        assert!((adj["bob"] - 1.0).abs() < TOL);
+        assert!((adj["carol"] - 1.0).abs() < TOL);
+        assert!((adj["dave"] - 1.0).abs() < TOL);
+    }
+
+    #[tokio::test]
+    async fn test_explain_adjacency_edge_type_filter() {
+        let engine = setup_engine().await;
+
+        // FRIEND filter excludes eve (COWORKER)
+        let config = friend_config();
+        let adj = engine.explain_adjacency("alice", &config);
+        assert!(!adj.contains_key("eve"));
+
+        // No filter includes eve
+        let mut config_all = friend_config();
+        config_all.edge_type = None;
+        let adj_all = engine.explain_adjacency("alice", &config_all);
+        assert!(adj_all.contains_key("eve"));
+    }
+
+    #[tokio::test]
+    async fn test_explain_adjacency_no_edges_returns_empty() {
+        let engine = UnifiedEngine::new();
+        engine
+            .create_entity("lonely", HashMap::new(), None)
+            .await
+            .unwrap();
+
+        let config = friend_config();
+        let adj = engine.explain_adjacency("lonely", &config);
+        assert!(adj.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_explain_adjacency_nonexistent_source_returns_empty() {
+        let engine = UnifiedEngine::new();
+        let config = friend_config();
+        let adj = engine.explain_adjacency("nonexistent", &config);
+        assert!(adj.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_explain_adjacency_direction_outgoing() {
+        let engine = UnifiedEngine::new();
+        for key in &["a", "b", "c"] {
+            engine
+                .create_entity(key, HashMap::new(), None)
+                .await
+                .unwrap();
+        }
+        // a -> b (outgoing from a), c -> a (incoming to a)
+        engine.connect_entities("a", "b", "FRIEND").await.unwrap();
+        engine.connect_entities("c", "a", "FRIEND").await.unwrap();
+
+        let mut config = friend_config();
+        config.direction = GraphDirection::Outgoing;
+        let adj = engine.explain_adjacency("a", &config);
+        assert!(adj.contains_key("b"));
+        assert!(!adj.contains_key("c"));
+    }
+
+    // -----------------------------------------------------------------------
+    // explain_similarity tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_explain_similarity_returns_cosine_scores() {
+        let engine = setup_engine().await;
+        let config = friend_config();
+        let adj = engine.explain_adjacency("alice", &config);
+
+        let sim = engine.explain_similarity("alice", &adj);
+        // alice=[1,0,0], bob=[0.9,0.1,0] -> cos ~ 0.9939
+        assert!((sim["bob"] - 0.994).abs() < 0.001);
+        // alice=[1,0,0], carol=[0.5,0.5,0] -> cos ~ 0.7071
+        assert!((sim["carol"] - 0.707).abs() < 0.001);
+        // alice=[1,0,0], dave=[0,1,0] -> cos = 0.0
+        assert!(sim["dave"].abs() < TOL);
+    }
+
+    #[tokio::test]
+    async fn test_explain_similarity_no_embedding_returns_empty() {
+        let engine = UnifiedEngine::new();
+        for key in &["a", "b"] {
+            engine
+                .create_entity(key, HashMap::new(), None)
+                .await
+                .unwrap();
+        }
+        engine.connect_entities("a", "b", "FRIEND").await.unwrap();
+        // Neither entity has embeddings
+
+        let config = friend_config();
+        let adj = engine.explain_adjacency("a", &config);
+        let sim = engine.explain_similarity("a", &adj);
+        assert!(sim.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_explain_similarity_empty_adjacency_returns_empty() {
+        let engine = setup_engine().await;
+        let empty_adj = AdjacencyVec::new();
+        let sim = engine.explain_similarity("alice", &empty_adj);
+        assert!(sim.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_explain_similarity_partial_embeddings() {
+        let engine = setup_engine().await;
+        // eve is a neighbor (COWORKER) but has no embedding
+        let mut config = friend_config();
+        config.edge_type = None;
+        let adj = engine.explain_adjacency("alice", &config);
+        let sim = engine.explain_similarity("alice", &adj);
+        // eve should not appear in similarity since she has no embedding
+        assert!(!sim.contains_key("eve"));
+        // bob, carol, dave should appear
+        assert!(sim.contains_key("bob"));
+        assert!(sim.contains_key("carol"));
+        assert!(sim.contains_key("dave"));
+    }
+
+    // -----------------------------------------------------------------------
+    // explain_interactions tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_explain_interactions_returns_correct_sets() {
+        let engine = setup_engine().await;
+        let intermediaries: HashSet<&str> = ["bob", "carol", "dave"].into_iter().collect();
+
+        let (interactions, owned) = engine
+            .explain_interactions("purchases", "buyer", "item", &intermediaries, Some("alice"))
+            .unwrap();
+
+        // bob -> {book, pen}, carol -> {pen, laptop}, dave -> {phone}
+        assert_eq!(interactions["bob"].len(), 2);
+        assert!(interactions["bob"].contains("book"));
+        assert!(interactions["bob"].contains("pen"));
+        assert_eq!(interactions["carol"].len(), 2);
+        assert!(interactions["carol"].contains("pen"));
+        assert!(interactions["carol"].contains("laptop"));
+        assert_eq!(interactions["dave"].len(), 1);
+        assert!(interactions["dave"].contains("phone"));
+
+        // alice owns "book"
+        assert_eq!(owned.len(), 1);
+        assert!(owned.contains("book"));
+    }
+
+    #[tokio::test]
+    async fn test_explain_interactions_no_owned_key() {
+        let engine = setup_engine().await;
+        let intermediaries: HashSet<&str> = ["bob"].into_iter().collect();
+
+        let (interactions, owned) = engine
+            .explain_interactions("purchases", "buyer", "item", &intermediaries, None)
+            .unwrap();
+
+        assert!(interactions.contains_key("bob"));
+        assert!(owned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_explain_interactions_empty_intermediaries() {
+        let engine = setup_engine().await;
+        let intermediaries: HashSet<&str> = HashSet::new();
+
+        let (interactions, owned) = engine
+            .explain_interactions("purchases", "buyer", "item", &intermediaries, Some("alice"))
+            .unwrap();
+
+        assert!(interactions.is_empty());
+        // alice rows are still scanned for owned items
+        assert!(owned.contains("book"));
+    }
+
+    #[tokio::test]
+    async fn test_explain_interactions_missing_table_error() {
+        let engine = UnifiedEngine::new();
+        let intermediaries: HashSet<&str> = ["bob"].into_iter().collect();
+
+        let result =
+            engine.explain_interactions("nonexistent", "buyer", "item", &intermediaries, None);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_explain_interactions_empty_table() {
+        let engine = UnifiedEngine::new();
+        let schema = relational_engine::Schema {
+            columns: vec![
+                relational_engine::Column {
+                    name: "src".into(),
+                    column_type: ColumnType::String,
+                    nullable: false,
+                },
+                relational_engine::Column {
+                    name: "tgt".into(),
+                    column_type: ColumnType::String,
+                    nullable: false,
+                },
+            ],
+            constraints: vec![],
+        };
+        engine.relational().create_table("empty_t", schema).unwrap();
+
+        let intermediaries: HashSet<&str> = ["bob"].into_iter().collect();
+        let (interactions, owned) = engine
+            .explain_interactions("empty_t", "src", "tgt", &intermediaries, Some("alice"))
+            .unwrap();
+
+        assert!(interactions.is_empty());
+        assert!(owned.is_empty());
     }
 }

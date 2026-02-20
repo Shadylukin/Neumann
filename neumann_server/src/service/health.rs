@@ -434,4 +434,18 @@ mod tests {
             i32::from(ServingStatus::NotServing)
         );
     }
+
+    #[test]
+    fn test_health_service_default() {
+        let service = HealthServiceImpl::default();
+        let state = service.state();
+        assert!(state.is_all_healthy());
+    }
+
+    #[test]
+    fn test_health_service_state_accessor() {
+        let state = Arc::new(HealthState::new());
+        let service = HealthServiceImpl::with_state(Arc::clone(&state));
+        assert!(Arc::ptr_eq(service.state(), &state));
+    }
 }

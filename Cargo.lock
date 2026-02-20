@@ -1894,8 +1894,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tensor_blob",
+ "tensor_cache",
+ "tensor_checkpoint",
  "tensor_store",
  "tensor_unified",
+ "tensor_vault",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -3359,6 +3362,14 @@ dependencies = [
  "peak_alloc",
  "rayon",
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "tensor_spatial"
+version = "0.3.1"
+dependencies = [
+ "parking_lot",
  "thiserror",
 ]
 

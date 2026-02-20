@@ -75,7 +75,10 @@ use graph_engine::GraphEngine;
 use query_router::QueryRouter;
 use relational_engine::RelationalEngine;
 use tensor_blob::{BlobConfig, BlobStore};
+use tensor_cache::Cache;
 use tensor_store::TensorStore;
+use tensor_unified::UnifiedEngine;
+use tensor_vault::Vault;
 
 pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
 pub use config::{AuthConfig, ClusterConfig, ServerConfig, TlsConfig};
@@ -108,6 +111,9 @@ pub struct NeumannServer {
     relational_engine: Option<Arc<RelationalEngine>>,
     vector_engine: Option<Arc<VectorEngine>>,
     graph_engine: Option<Arc<GraphEngine>>,
+    unified_engine: Option<Arc<UnifiedEngine>>,
+    vault_engine: Option<Arc<Vault>>,
+    cache_engine: Option<Arc<Cache>>,
     config: ServerConfig,
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
@@ -134,6 +140,9 @@ impl NeumannServer {
             relational_engine: None,
             vector_engine: None,
             graph_engine: None,
+            unified_engine: None,
+            vault_engine: None,
+            cache_engine: None,
             config,
             rate_limiter,
             audit_logger,
@@ -173,6 +182,9 @@ impl NeumannServer {
             relational_engine: None,
             vector_engine: None,
             graph_engine: None,
+            unified_engine: None,
+            vault_engine: None,
+            cache_engine: None,
             config,
             rate_limiter,
             audit_logger,
@@ -201,6 +213,13 @@ impl NeumannServer {
         self
     }
 
+    /// Set the unified engine for cross-modal contraction views.
+    #[must_use]
+    pub fn with_unified_engine(mut self, unified_engine: Arc<UnifiedEngine>) -> Self {
+        self.unified_engine = Some(unified_engine);
+        self
+    }
+
     /// Set the blob store for blob service support.
     #[must_use]
     pub fn with_blob_store(mut self, blob_store: Arc<Mutex<BlobStore>>) -> Self {
@@ -212,6 +231,20 @@ impl NeumannServer {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<ServerMetrics>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Set the vault for secret management views.
+    #[must_use]
+    pub fn with_vault(mut self, vault: Arc<Vault>) -> Self {
+        self.vault_engine = Some(vault);
+        self
+    }
+
+    /// Set the cache for cache stats views.
+    #[must_use]
+    pub fn with_cache(mut self, cache: Arc<Cache>) -> Self {
+        self.cache_engine = Some(cache);
         self
     }
 
@@ -353,9 +386,9 @@ impl NeumannServer {
         };
 
         // Build blob service if store is available
-        let blob_svc = self.blob_store.map(|store| {
+        let blob_svc = self.blob_store.as_ref().map(|store| {
             let blob_service = BlobServiceImpl::with_full_config(
-                store,
+                Arc::clone(store),
                 &self.config,
                 self.rate_limiter.clone(),
                 self.audit_logger.clone(),
@@ -430,6 +463,10 @@ impl NeumannServer {
                         Arc::clone(vector),
                         Arc::clone(graph),
                     )
+                    .with_unified(self.unified_engine.clone())
+                    .with_vault(self.vault_engine.clone())
+                    .with_cache(self.cache_engine.clone())
+                    .with_blob(self.blob_store.clone())
                     .with_auth(self.config.auth.clone())
                     .with_metrics(self.metrics.clone()),
                 );
@@ -628,9 +665,9 @@ impl NeumannServer {
         };
 
         // Build blob service if store is available
-        let blob_svc = self.blob_store.map(|store| {
+        let blob_svc = self.blob_store.as_ref().map(|store| {
             let blob_service = BlobServiceImpl::with_full_config(
-                store,
+                Arc::clone(store),
                 &self.config,
                 self.rate_limiter.clone(),
                 self.audit_logger.clone(),
@@ -700,6 +737,10 @@ impl NeumannServer {
                         Arc::clone(vector),
                         Arc::clone(graph),
                     )
+                    .with_unified(self.unified_engine.clone())
+                    .with_vault(self.vault_engine.clone())
+                    .with_cache(self.cache_engine.clone())
+                    .with_blob(self.blob_store.clone())
                     .with_auth(self.config.auth.clone())
                     .with_metrics(self.metrics.clone()),
                 );

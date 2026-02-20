@@ -1,48 +1,41 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Embedded CSS and JavaScript assets for the dystopian terminal admin UI.
+//! Embedded CSS and JavaScript assets for the Memoria design system.
 //!
-//! Inspired by Fallout 1/2 terminals, Rupture Farms industrial aesthetic,
-//! and classic CRT phosphor displays. Includes TRO (Tensor Rust Organism)
-//! living border simulation with Physarum-based particle effects.
+//! Monochromatic, dark-themed, data-forward interface using opacity-based
+//! hierarchy, blur-to-clear animations, and strictly neutral colors.
 
-/// Custom CSS for the dystopian terminal admin interface.
+/// Custom CSS for the Memoria admin interface.
 ///
 /// Features:
-/// - Phosphor green primary with amber accents
-/// - CRT scan lines, flicker, and vignette effects
-/// - Industrial rust-laden accent colors
-/// - Terminal-style typography
+/// - Neutral monochromatic palette (white on near-black)
+/// - Opacity-based visual hierarchy (100/80/60/40/20%)
+/// - Blur-to-clear entry animations
+/// - `Inter` + `JetBrains Mono` typography
 pub const ADMIN_CSS: &str = r"
 /* ============================================
-   DYSTOPIAN TERMINAL DESIGN SYSTEM
+   MEMORIA DESIGN SYSTEM
    ============================================ */
 
-/* Color Palette Variables */
+/* Design Tokens */
 :root {
-    /* Primary Terminal Colors (Fallout Pip-Boy inspired) */
-    --phosphor-green: #00ee00;
-    --phosphor-green-dim: #008e00;
-    --phosphor-green-dark: #005f00;
-    --amber-glow: #ffb641;
-    --amber-dim: #ffb000;
+    /* Background scale (neutral, dark-to-light) */
+    --bg-primary: #0a0a0a;
+    --bg-elevated: #171717;
+    --bg-surface: #1f1f1f;
+    --bg-hover: #262626;
+    --bg-active: #2e2e2e;
 
-    /* Rupture Farms Industrial */
-    --blood-rust: #942222;
-    --dark-rust: #4a2125;
-    --corroded-brown: #622f22;
-    --deep-black: #0c0c0c;
-    --soot-gray: #1a1a1a;
-    --industrial-gray: #383838;
+    /* Text scale (white at varying opacity) */
+    --text-primary: #ffffff;
+    --text-secondary: #a3a3a3;
+    --text-tertiary: #737373;
+    --text-disabled: #525252;
+    --text-ghost: #404040;
 
-    /* Derived Colors */
-    --text-primary: var(--phosphor-green);
-    --text-secondary: var(--phosphor-green-dim);
-    --text-tertiary: var(--phosphor-green-dark);
-    --border-primary: var(--phosphor-green-dim);
-    --border-secondary: var(--dark-rust);
-    --bg-primary: var(--deep-black);
-    --bg-secondary: var(--soot-gray);
-    --bg-tertiary: var(--industrial-gray);
+    /* Border scale */
+    --border-default: #262626;
+    --border-subtle: #1f1f1f;
+    --border-emphasis: #404040;
 
     /* Typography Scale */
     --text-xs: 0.75rem;
@@ -51,70 +44,11 @@ pub const ADMIN_CSS: &str = r"
     --text-lg: 1.25rem;
     --text-xl: 1.5rem;
     --text-2xl: 2rem;
+    --text-3xl: 3rem;
 
     /* Font Families */
-    --font-terminal: 'VT323', 'Courier New', monospace;
-    --font-display: 'Orbitron', 'VT323', monospace;
-    --font-data: 'Rajdhani', 'VT323', monospace;
-}
-
-/* ============================================
-   CRT EFFECTS
-   ============================================ */
-
-/* Scan Lines Overlay */
-.crt-scanlines::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background: repeating-linear-gradient(
-        0deg,
-        rgba(0, 0, 0, 0.15),
-        rgba(0, 0, 0, 0.15) 1px,
-        transparent 1px,
-        transparent 2px
-    );
-    pointer-events: none;
-    z-index: 9999;
-}
-
-/* Phosphor Text Glow */
-.phosphor-glow {
-    text-shadow:
-        0 0 5px currentColor,
-        0 0 10px currentColor,
-        0 0 20px currentColor;
-}
-
-.phosphor-glow-subtle {
-    text-shadow:
-        0 0 3px currentColor,
-        0 0 6px currentColor;
-}
-
-/* CRT Screen Flicker (subtle) */
-@keyframes flicker {
-    0%, 100% { opacity: 1; }
-    92% { opacity: 0.97; }
-    94% { opacity: 1; }
-    97% { opacity: 0.98; }
-}
-
-.crt-flicker {
-    animation: flicker 0.15s infinite;
-}
-
-/* Vignette Effect */
-.crt-vignette {
-    box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.5);
-}
-
-/* CRT Curvature (subtle) */
-.crt-curve {
-    border-radius: 20px;
-    box-shadow:
-        inset 0 0 100px rgba(0, 0, 0, 0.5),
-        0 0 20px rgba(0, 238, 0, 0.1);
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
 }
 
 /* ============================================
@@ -122,476 +56,312 @@ pub const ADMIN_CSS: &str = r"
    ============================================ */
 
 body {
-    background-color: var(--deep-black);
-    color: var(--phosphor-green);
-    font-family: var(--font-terminal);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
+    font-weight: 400;
     line-height: 1.5;
 }
 
-/* Terminal Scrollbar */
+/* Scrollbar */
 ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-    background: var(--soot-gray);
-    border: 1px solid var(--phosphor-green-dark);
+    background: var(--bg-elevated);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--phosphor-green-dim);
-    border-radius: 0;
+    background: var(--border-emphasis);
+    border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--phosphor-green);
-    box-shadow: 0 0 5px var(--phosphor-green);
+    background: var(--text-tertiary);
 }
 
 /* Selection */
 ::selection {
-    background: var(--phosphor-green);
-    color: var(--deep-black);
+    background: rgba(255, 255, 255, 0.2);
+    color: var(--text-primary);
 }
 
 /* ============================================
-   TERMINAL BUTTON COMPONENTS
+   CARD COMPONENT (.m-card)
    ============================================ */
 
-.btn-terminal {
-    background: transparent;
-    border: 1px solid var(--phosphor-green);
-    color: var(--phosphor-green);
-    font-family: var(--font-terminal);
-    padding: 0.5rem 1rem;
-    text-shadow: 0 0 5px var(--phosphor-green);
-    transition: all 0.1s;
-    cursor: pointer;
+.m-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    position: relative;
+}
+
+.m-card-header {
+    border-bottom: 1px solid var(--border-default);
+    padding: 0.75rem 1rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
 
-.btn-terminal:hover {
-    background: var(--phosphor-green);
-    color: var(--deep-black);
-    box-shadow: 0 0 10px var(--phosphor-green);
+.m-card-content {
+    padding: 1rem;
 }
 
-.btn-terminal:active {
-    transform: scale(0.98);
-}
-
-.btn-terminal-amber {
-    border-color: var(--amber-glow);
-    color: var(--amber-glow);
-    text-shadow: 0 0 5px var(--amber-glow);
-}
-
-.btn-terminal-amber:hover {
-    background: var(--amber-glow);
-    color: var(--deep-black);
-    box-shadow: 0 0 10px var(--amber-glow);
-}
-
-.btn-terminal-rust {
-    border-color: var(--blood-rust);
-    color: var(--blood-rust);
-    text-shadow: 0 0 5px var(--blood-rust);
-}
-
-.btn-terminal-rust:hover {
-    background: var(--blood-rust);
-    color: var(--deep-black);
-    box-shadow: 0 0 10px var(--blood-rust);
-}
-
-/* Keyboard shortcut badge */
-.kbd-hint {
-    display: inline-block;
-    padding: 0.125rem 0.375rem;
-    border: 1px solid var(--phosphor-green-dim);
-    font-family: var(--font-terminal);
+.m-card-footer {
+    border-top: 1px solid var(--border-default);
+    padding: 0.5rem 1rem;
     font-size: var(--text-xs);
-    color: var(--phosphor-green-dim);
-    margin-right: 0.25rem;
+    color: var(--text-tertiary);
 }
 
 /* ============================================
-   DATA TABLE (RUST-LADEN)
+   BUTTON COMPONENT (.m-btn)
    ============================================ */
 
-.table-rust {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--font-data);
-}
-
-.table-rust th {
-    background: var(--corroded-brown);
-    color: var(--amber-glow);
-    border-bottom: 2px solid var(--blood-rust);
-    padding: 0.75rem 1rem;
-    text-align: left;
-    font-family: var(--font-terminal);
+.m-btn {
+    background: transparent;
+    border: 1px solid var(--border-emphasis);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-weight: 400;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    transition: background 150ms ease, transform 100ms ease;
+    cursor: pointer;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.05em;
     font-size: var(--text-sm);
 }
 
-.table-rust td {
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--dark-rust);
-    color: var(--phosphor-green);
+.m-btn:hover {
+    background: var(--bg-hover);
 }
 
-.table-rust tr:nth-child(even) {
-    background: rgba(74, 33, 37, 0.2);
+.m-btn:active {
+    transform: scale(0.98);
 }
 
-.table-rust tr:hover {
-    background: rgba(0, 238, 0, 0.1);
-}
-
-.table-rust tr:hover td {
-    text-shadow: 0 0 3px var(--phosphor-green);
-}
-
-/* ============================================
-   INPUT FIELDS
-   ============================================ */
-
-.input-terminal {
-    background: var(--deep-black);
-    border: 1px solid var(--phosphor-green-dim);
-    color: var(--phosphor-green);
-    font-family: var(--font-terminal);
-    padding: 0.5rem 0.75rem;
-    caret-color: var(--phosphor-green);
-    transition: all 0.1s;
-}
-
-.input-terminal::placeholder {
-    color: var(--phosphor-green-dark);
-}
-
-.input-terminal:focus {
-    outline: none;
-    border-color: var(--phosphor-green);
-    box-shadow: 0 0 5px var(--phosphor-green);
-}
-
-.input-terminal:disabled {
-    border-color: var(--phosphor-green-dark);
-    color: var(--phosphor-green-dark);
+.m-btn:disabled {
+    color: var(--text-disabled);
+    border-color: var(--border-default);
     cursor: not-allowed;
 }
 
 /* ============================================
-   TERMINAL PANELS (ASCII BOX DRAWING)
+   STATUS DOT (.m-dot)
    ============================================ */
 
-.terminal-panel {
-    background: var(--soot-gray);
-    border: 1px solid var(--phosphor-green-dim);
-    position: relative;
-}
-
-.panel-header {
-    background: var(--deep-black);
-    border-bottom: 1px solid var(--phosphor-green-dim);
-    padding: 0.5rem 1rem;
-    font-family: var(--font-terminal);
-    color: var(--phosphor-green);
-    text-shadow: 0 0 5px var(--phosphor-green);
-}
-
-.panel-header::before {
-    content: '\2554\2550\2550[ ';
-    color: var(--phosphor-green-dim);
-}
-
-.panel-header::after {
-    content: ' ]\2550\2550\2557';
-    color: var(--phosphor-green-dim);
-}
-
-.panel-content {
-    padding: 1rem;
-}
-
-.panel-footer {
-    background: var(--deep-black);
-    border-top: 1px solid var(--phosphor-green-dim);
-    padding: 0.5rem 1rem;
-    font-family: var(--font-terminal);
-    font-size: var(--text-xs);
-    color: var(--phosphor-green-dim);
-}
-
-/* Double-line panel variant */
-.terminal-panel-double {
-    border: 2px double var(--phosphor-green-dim);
-}
-
-/* Rust-accented panel */
-.terminal-panel-rust {
-    border-color: var(--blood-rust);
-    background: var(--dark-rust);
-}
-
-.terminal-panel-rust .panel-header {
-    background: var(--corroded-brown);
-    border-bottom-color: var(--blood-rust);
-    color: var(--amber-glow);
+.m-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 9999px;
+    background-color: white;
 }
 
 /* ============================================
-   STAT CARDS
+   KEYBOARD HINT (.m-kbd)
    ============================================ */
 
-.stat-card {
-    background: var(--soot-gray);
-    border: 1px solid var(--phosphor-green-dim);
-    padding: 1rem;
-    transition: all 0.1s;
-}
-
-.stat-card:hover {
-    border-color: var(--phosphor-green);
-    box-shadow: 0 0 10px rgba(0, 238, 0, 0.2);
-}
-
-.stat-card-label {
-    font-family: var(--font-terminal);
-    font-size: var(--text-sm);
-    color: var(--phosphor-green-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-}
-
-.stat-card-value {
-    font-family: var(--font-data);
-    font-size: var(--text-2xl);
-    font-weight: 600;
-    color: var(--phosphor-green);
-    text-shadow: 0 0 10px var(--phosphor-green);
-    margin: 0.25rem 0;
-}
-
-.stat-card-subtitle {
-    font-family: var(--font-terminal);
-    font-size: var(--text-xs);
-    color: var(--phosphor-green-dark);
-}
-
-/* Engine-specific stat cards */
-.stat-card-relational { border-left: 3px solid var(--amber-glow); }
-.stat-card-vector { border-left: 3px solid var(--blood-rust); }
-.stat-card-graph { border-left: 3px solid var(--phosphor-green); }
-
-/* ============================================
-   LOADING INDICATOR
-   ============================================ */
-
-.loading-terminal {
-    font-family: var(--font-terminal);
-    color: var(--phosphor-green);
-}
-
-.loading-bar {
+.m-kbd {
     display: inline-block;
-    color: var(--phosphor-green);
-    text-shadow: 0 0 5px var(--phosphor-green);
-}
-
-@keyframes loading-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
-.loading-terminal .loading-text {
-    animation: loading-pulse 0.8s ease-in-out infinite;
-}
-
-/* Progress bar ASCII style */
-.progress-terminal {
-    font-family: var(--font-terminal);
-    color: var(--phosphor-green);
-}
-
-/* ============================================
-   GRAPH VISUALIZATION
-   ============================================ */
-
-.graph-node {
-    fill: var(--soot-gray);
-    stroke: var(--phosphor-green);
-    stroke-width: 2;
-    transition: all 0.1s;
-}
-
-.graph-node:hover {
-    fill: var(--industrial-gray);
-    filter: drop-shadow(0 0 8px var(--phosphor-green));
-}
-
-.graph-node-selected {
-    fill: var(--phosphor-green-dark);
-    stroke: var(--phosphor-green);
-    stroke-width: 3;
-    filter: drop-shadow(0 0 12px var(--phosphor-green));
-}
-
-.graph-edge {
-    stroke: var(--phosphor-green-dim);
-    stroke-opacity: 0.6;
-    stroke-width: 1;
-}
-
-.graph-edge:hover {
-    stroke: var(--phosphor-green);
-    stroke-opacity: 1;
-    stroke-width: 2;
-}
-
-.graph-label {
-    fill: var(--phosphor-green);
-    font-family: var(--font-terminal);
+    padding: 0.125rem 0.375rem;
+    border: 1px solid var(--border-emphasis);
+    border-radius: 4px;
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
-    text-shadow: 0 0 3px var(--phosphor-green);
+    color: var(--text-tertiary);
+    margin-right: 0.25rem;
 }
 
-#graph-container {
-    background: var(--deep-black);
-    border: 1px solid var(--phosphor-green-dim);
-    position: relative;
+/* ============================================
+   DATA TABLE (.m-table)
+   ============================================ */
+
+.m-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-sans);
 }
 
-#graph-container::before {
-    content: '';
-    position: absolute;
+.m-table th {
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-default);
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: var(--text-xs);
+    font-weight: 400;
+}
+
+.m-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+}
+
+.m-table tr:hover {
+    background: var(--bg-hover);
+}
+
+/* ============================================
+   INPUT FIELDS (.m-input)
+   ============================================ */
+
+.m-input {
+    background: var(--bg-primary);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    caret-color: var(--text-primary);
+    transition: border-color 200ms ease;
+}
+
+.m-input::placeholder {
+    color: var(--text-ghost);
+}
+
+.m-input:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.6);
+}
+
+.m-input:disabled {
+    border-color: var(--border-subtle);
+    color: var(--text-disabled);
+    cursor: not-allowed;
+}
+
+/* ============================================
+   STAT COMPONENT (.m-stat)
+   ============================================ */
+
+.m-stat {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    padding: 1rem;
+    transition: background 150ms ease;
+}
+
+.m-stat:hover {
+    background: var(--bg-surface);
+}
+
+.m-stat-label {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.m-stat-value {
+    font-size: var(--text-3xl);
+    font-weight: 300;
+    color: var(--text-primary);
+    margin: 0.25rem 0;
+    font-family: var(--font-sans);
+}
+
+.m-stat-subtitle {
+    font-size: var(--text-xs);
+    color: var(--text-ghost);
+}
+
+/* ============================================
+   MODAL (.m-modal)
+   ============================================ */
+
+.m-modal {
+    position: fixed;
     inset: 0;
-    background: radial-gradient(ellipse at center, transparent 40%, rgba(0, 0, 0, 0.3) 100%);
-    pointer-events: none;
-    z-index: 10;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
 }
 
-#graph-container canvas {
-    position: relative;
-    z-index: 1;
+.m-modal.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.m-modal-body {
+    max-width: 90vw;
+    max-height: 85vh;
+    overflow: auto;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: 16px;
+    padding: 1.5rem;
 }
 
 /* ============================================
-   STATUS BAR
+   NAVIGATION (.m-nav)
    ============================================ */
 
-.status-bar {
-    background: var(--deep-black);
-    border: 1px solid var(--phosphor-green-dim);
-    font-family: var(--font-terminal);
-    font-size: var(--text-sm);
-    color: var(--phosphor-green-dim);
-    padding: 0.25rem 0.75rem;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
+.m-nav {
+    font-family: var(--font-sans);
 }
 
-.status-bar-item {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-.status-bar-divider {
-    color: var(--phosphor-green-dark);
-}
-
-.status-indicator {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    animation: pulse-glow 2s ease-in-out infinite;
-}
-
-.status-indicator-connected {
-    background: var(--phosphor-green);
-    box-shadow: 0 0 5px var(--phosphor-green);
-}
-
-.status-indicator-warning {
-    background: var(--amber-glow);
-    box-shadow: 0 0 5px var(--amber-glow);
-}
-
-.status-indicator-error {
-    background: var(--blood-rust);
-    box-shadow: 0 0 5px var(--blood-rust);
-}
-
-@keyframes pulse-glow {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-}
-
-/* ============================================
-   NAVIGATION
-   ============================================ */
-
-.nav-terminal {
-    font-family: var(--font-terminal);
-}
-
-.nav-terminal a {
-    color: var(--phosphor-green-dim);
+.m-nav a {
+    color: var(--text-tertiary);
     text-decoration: none;
     padding: 0.5rem 1rem;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    transition: all 0.1s;
+    transition: color 150ms ease, background 150ms ease;
     border-left: 2px solid transparent;
+    border-radius: 0 8px 8px 0;
 }
 
-.nav-terminal a:hover {
-    color: var(--phosphor-green);
-    text-shadow: 0 0 5px var(--phosphor-green);
-    background: rgba(0, 238, 0, 0.05);
+.m-nav a:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
 }
 
-.nav-terminal a.active {
-    color: var(--phosphor-green);
-    text-shadow: 0 0 5px var(--phosphor-green);
-    border-left-color: var(--phosphor-green);
-    background: rgba(0, 238, 0, 0.1);
+.m-nav a.active {
+    color: var(--text-primary);
+    border-left-color: var(--text-primary);
+    background: var(--bg-surface);
 }
 
-/* Breadcrumb Trail */
-.breadcrumb-terminal {
-    font-family: var(--font-terminal);
+/* Breadcrumb */
+.m-breadcrumb {
     font-size: var(--text-sm);
-    color: var(--phosphor-green-dim);
+    color: var(--text-tertiary);
 }
 
-.breadcrumb-terminal a {
-    color: var(--phosphor-green-dim);
+.m-breadcrumb a {
+    color: var(--text-tertiary);
     text-decoration: none;
 }
 
-.breadcrumb-terminal a:hover {
-    color: var(--phosphor-green);
-    text-shadow: 0 0 3px var(--phosphor-green);
+.m-breadcrumb a:hover {
+    color: var(--text-primary);
 }
 
-.breadcrumb-terminal .separator {
+.m-breadcrumb .separator {
     margin: 0 0.5rem;
-    color: var(--phosphor-green-dark);
+    color: var(--text-ghost);
 }
 
 /* ============================================
-   HTMX LOADING STATES
+   LOADING STATES
    ============================================ */
 
 .htmx-request {
@@ -599,111 +369,67 @@ body {
     pointer-events: none;
 }
 
-.htmx-request::after {
-    content: '_';
-    animation: blink-cursor 0.5s step-end infinite;
-    margin-left: 0.25rem;
-}
-
-@keyframes blink-cursor {
-    50% { opacity: 0; }
-}
-
 /* ============================================
-   EXPANDABLE CONTENT
+   EXPANDABLE CONTENT (.m-expandable)
    ============================================ */
 
-.expandable-terminal {
+.m-expandable {
     position: relative;
 }
 
-.expand-btn-terminal {
+.m-expand-btn {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
     padding: 0.125rem 0.5rem;
-    font-family: var(--font-terminal);
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
-    color: var(--phosphor-green-dim);
+    color: var(--text-tertiary);
     background: transparent;
-    border: 1px solid var(--phosphor-green-dark);
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
     cursor: pointer;
-    transition: all 0.1s;
+    transition: color 150ms ease, border-color 150ms ease;
 }
 
-.expand-btn-terminal:hover {
-    color: var(--phosphor-green);
-    border-color: var(--phosphor-green-dim);
-    text-shadow: 0 0 3px var(--phosphor-green);
+.m-expand-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-emphasis);
 }
 
-details.expandable-details-terminal summary {
+details.m-expandable-details summary {
     cursor: pointer;
     list-style: none;
 }
 
-details.expandable-details-terminal summary::-webkit-details-marker {
+details.m-expandable-details summary::-webkit-details-marker {
     display: none;
 }
 
-details.expandable-details-terminal[open] .expand-btn-terminal {
-    background: rgba(0, 238, 0, 0.1);
-    border-color: var(--phosphor-green);
+details.m-expandable-details[open] .m-expand-btn {
+    background: var(--bg-hover);
+    border-color: var(--border-emphasis);
 }
 
 /* ============================================
-   MODAL DIALOGS
+   TOOLTIP
    ============================================ */
 
-.modal-terminal {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.9);
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 200ms ease, visibility 200ms ease;
-}
-
-.modal-terminal.active {
-    opacity: 1;
-    visibility: visible;
-}
-
-.modal-terminal-body {
-    max-width: 90vw;
-    max-height: 85vh;
-    overflow: auto;
-    background: var(--soot-gray);
-    border: 2px solid var(--phosphor-green-dim);
-    padding: 1.5rem;
-    box-shadow:
-        0 0 20px rgba(0, 238, 0, 0.2),
-        inset 0 0 50px rgba(0, 0, 0, 0.3);
-}
-
-/* ============================================
-   TOOLTIPS
-   ============================================ */
-
-.tooltip-terminal {
+.m-tooltip {
     position: relative;
 }
 
-.tooltip-terminal::after {
+.m-tooltip::after {
     content: attr(data-tooltip);
     position: absolute;
     bottom: 100%;
     left: 50%;
     transform: translateX(-50%);
     padding: 0.375rem 0.5rem;
-    background: var(--soot-gray);
-    border: 1px solid var(--phosphor-green-dim);
-    color: var(--phosphor-green);
-    font-family: var(--font-terminal);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    color: var(--text-secondary);
     font-size: var(--text-xs);
     white-space: nowrap;
     opacity: 0;
@@ -712,72 +438,152 @@ details.expandable-details-terminal[open] .expand-btn-terminal {
     z-index: 50;
 }
 
-.tooltip-terminal:hover::after {
+.m-tooltip:hover::after {
     opacity: 1;
     visibility: visible;
 }
 
 /* ============================================
-   UTILITY CLASSES
+   GRAPH VISUALIZATION
    ============================================ */
 
-.text-phosphor { color: var(--phosphor-green); }
-.text-phosphor-dim { color: var(--phosphor-green-dim); }
-.text-phosphor-dark { color: var(--phosphor-green-dark); }
-.text-amber { color: var(--amber-glow); }
-.text-rust { color: var(--blood-rust); }
+#graph-container {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    position: relative;
+    z-index: 1;
+    overflow: hidden;
+}
 
-.bg-deep { background: var(--deep-black); }
-.bg-soot { background: var(--soot-gray); }
-.bg-industrial { background: var(--industrial-gray); }
-.bg-rust { background: var(--dark-rust); }
+#graph-container canvas {
+    position: relative;
+    z-index: 1;
+}
 
-.border-phosphor { border-color: var(--phosphor-green); }
-.border-phosphor-dim { border-color: var(--phosphor-green-dim); }
-.border-rust { border-color: var(--blood-rust); }
+.m-card:has(#graph-container) {
+    overflow: hidden;
+    position: relative;
+    z-index: 1;
+}
 
-.glow-phosphor { text-shadow: 0 0 10px var(--phosphor-green); }
-.glow-amber { text-shadow: 0 0 10px var(--amber-glow); }
-.glow-rust { text-shadow: 0 0 10px var(--blood-rust); }
-
-.font-terminal { font-family: var(--font-terminal); }
-.font-display { font-family: var(--font-display); }
-.font-data { font-family: var(--font-data); }
-
-/* ============================================
-   REDUCED MOTION
-   ============================================ */
-
-@media (prefers-reduced-motion: reduce) {
-    .crt-flicker,
-    .loading-terminal .loading-text,
-    .status-indicator,
-    .htmx-request::after {
-        animation: none;
-    }
-
-    * {
-        transition-duration: 0s !important;
-    }
+.m-card:has(#graph-container) .m-card-content {
+    overflow: hidden;
+    padding: 0;
 }
 
 /* ============================================
-   FOCUS STYLES (ACCESSIBILITY)
+   TERMINAL OUTPUT
    ============================================ */
 
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-    outline: 2px solid var(--phosphor-green);
-    outline-offset: 2px;
-    box-shadow: 0 0 10px var(--phosphor-green);
+.m-terminal-output {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.4;
+    max-height: 200px;
+    overflow-y: auto;
 }
+
+.m-terminal-output-line {
+    padding: 0.125rem 0;
+    color: var(--text-tertiary);
+}
+
+.m-terminal-output-line.success {
+    color: var(--text-primary);
+}
+
+.m-terminal-output-line.error {
+    color: var(--text-tertiary);
+    opacity: 0.6;
+}
+
+.m-terminal-output-line.warning {
+    color: var(--text-secondary);
+}
+
+.m-terminal-input-field {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: inherit;
+    outline: none;
+    caret-color: var(--text-primary);
+}
+
+.m-terminal-textarea {
+    width: 100%;
+    min-height: 60px;
+    max-height: 200px;
+    resize: none;
+    line-height: 1.4;
+    padding: 0.5rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.m-terminal-textarea:focus {
+    border-color: var(--border-emphasis);
+}
+
+.m-terminal-textarea::placeholder {
+    color: var(--text-ghost);
+}
+
+.m-terminal-input-line {
+    display: block;
+    font-family: var(--font-mono);
+}
+
+/* ============================================
+   OPACITY UTILITIES
+   ============================================ */
+
+.opacity-hero { opacity: 1; }
+.opacity-primary { opacity: 0.8; }
+.opacity-secondary { opacity: 0.6; }
+.opacity-tertiary { opacity: 0.4; }
+.opacity-ghost { opacity: 0.2; }
 
 /* ============================================
    ANIMATIONS
    ============================================ */
+
+@keyframes blur-reveal {
+    from {
+        filter: blur(8px);
+        opacity: 0;
+    }
+    to {
+        filter: blur(0);
+        opacity: 1;
+    }
+}
+
+.animate-blur-reveal {
+    animation: blur-reveal 400ms ease-out forwards;
+}
+
+@keyframes stagger-entry {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.stagger-item {
+    animation: stagger-entry 300ms ease-out forwards;
+    opacity: 0;
+}
 
 @keyframes fade-in {
     from { opacity: 0; }
@@ -804,231 +610,203 @@ textarea:focus-visible {
 }
 
 /* ============================================
-   PRINT STYLES
+   LAMP CONTAINER (empty state)
    ============================================ */
+
+.m-lamp {
+    background: radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.05) 0%, transparent 60%);
+}
 
 /* ============================================
-   GAME-LIKE INTERACTIVE EFFECTS
+   BORDER RADIUS TOKENS
    ============================================ */
 
-/* Graph container - properly contained */
-#graph-container {
+:root {
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+}
+
+/* ============================================
+   INTERACTIVE CARD (.m-card-interactive)
+   ============================================ */
+
+.m-card-interactive {
+    background: rgba(23, 23, 23, 0.6);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
     position: relative;
-    z-index: 1;
-    overflow: hidden;
-    background: var(--deep-black);
+    transition: transform 200ms ease, background 200ms ease;
 }
 
-/* Force graph to respect container bounds */
-.terminal-panel:has(#graph-container) {
-    overflow: hidden;
-    position: relative;
-    z-index: 1;
+.m-card-interactive:hover {
+    transform: translateY(-1px);
+    background: rgba(23, 23, 23, 0.8);
 }
 
-.terminal-panel:has(#graph-container) .panel-content {
-    overflow: hidden;
-    padding: 0;
+/* ============================================
+   TYPOGRAPHY EXTENSIONS
+   ============================================ */
+
+.text-hero {
+    font-weight: 100;
+    font-size: 48px;
+    line-height: 1.1;
 }
 
-/* Typewriter cursor blink */
-@keyframes cursor-blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
+.text-display {
+    font-weight: 300;
+    font-size: 32px;
+    line-height: 1.2;
 }
 
-.terminal-cursor {
-    display: inline-block;
-    width: 0.6em;
-    height: 1.2em;
-    background: var(--phosphor-green);
-    animation: cursor-blink 1s step-end infinite;
-    vertical-align: text-bottom;
-    box-shadow: 0 0 5px var(--phosphor-green);
+.text-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+    font-size: 12px;
 }
 
-/* Click flash effect (Fallout-style selection) */
-@keyframes click-flash {
-    0% { background: var(--phosphor-green); color: var(--deep-black); }
-    100% { background: transparent; color: var(--phosphor-green); }
+/* ============================================
+   BADGE (.m-badge)
+   ============================================ */
+
+.m-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.125rem 0.5rem;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
 }
 
-.click-feedback:active {
-    animation: click-flash 0.15s ease-out;
+/* ============================================
+   TABS (.m-tabs)
+   ============================================ */
+
+.m-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-default);
+    margin-bottom: 1rem;
 }
 
-/* Hover scan effect (like selecting menu items) */
-@keyframes hover-scan {
-    0% { background-position: 0% 0%; }
-    100% { background-position: 0% 100%; }
-}
-
-.nav-item:hover {
-    background: linear-gradient(
-        180deg,
-        transparent 0%,
-        rgba(0, 238, 0, 0.1) 50%,
-        transparent 100%
-    );
-    background-size: 100% 200%;
-    animation: hover-scan 0.3s ease-out forwards;
-}
-
-/* Boot-up text reveal animation */
-@keyframes text-reveal {
-    from { clip-path: inset(0 100% 0 0); }
-    to { clip-path: inset(0 0 0 0); }
-}
-
-.text-reveal {
-    animation: text-reveal 0.5s ease-out forwards;
-}
-
-/* Glitch effect for errors */
-@keyframes glitch {
-    0% { transform: translate(0); }
-    20% { transform: translate(-2px, 2px); }
-    40% { transform: translate(-2px, -2px); }
-    60% { transform: translate(2px, 2px); }
-    80% { transform: translate(2px, -2px); }
-    100% { transform: translate(0); }
-}
-
-.glitch-text {
-    animation: glitch 0.3s ease-in-out;
-}
-
-/* Power-up glow pulse */
-@keyframes glow-pulse {
-    0%, 100% { box-shadow: 0 0 5px var(--phosphor-green); }
-    50% { box-shadow: 0 0 20px var(--phosphor-green), 0 0 30px var(--phosphor-green); }
-}
-
-.glow-pulse {
-    animation: glow-pulse 2s ease-in-out infinite;
-}
-
-/* Terminal typing indicator */
-@keyframes typing-dots {
-    0%, 20% { content: '.'; }
-    40% { content: '..'; }
-    60%, 100% { content: '...'; }
-}
-
-.typing-indicator::after {
-    content: '.';
-    animation: typing-dots 1.5s steps(1) infinite;
-}
-
-/* Selection highlight (like Fallout inventory) */
-.selectable-item {
-    transition: all 0.1s ease;
-    border-left: 3px solid transparent;
-}
-
-.selectable-item:hover {
-    border-left-color: var(--phosphor-green);
-    background: rgba(0, 238, 0, 0.05);
-    padding-left: 0.5rem;
-}
-
-.selectable-item.selected {
-    border-left-color: var(--amber-glow);
-    background: rgba(255, 182, 65, 0.1);
-}
-
-/* Interactive terminal input */
-.terminal-input-line {
-    display: block;
-    font-family: var(--font-terminal);
-}
-
-.terminal-input-line::before {
-    display: none;
-}
-
-.terminal-input-field {
-    flex: 1;
-    background: transparent;
-    border: none;
-    color: var(--phosphor-green);
-    font-family: var(--font-terminal);
-    font-size: inherit;
-    outline: none;
-    caret-color: var(--phosphor-green);
-}
-
-.terminal-textarea {
-    width: 100%;
-    min-height: 60px;
-    max-height: 200px;
-    resize: none;
-    line-height: 1.4;
-    padding: 0.5rem;
-    background: rgba(0, 50, 0, 0.3);
-    border: 1px solid var(--phosphor-green-dark);
-    border-radius: 4px;
-}
-
-.terminal-textarea:focus {
-    border-color: var(--phosphor-green);
-    box-shadow: 0 0 8px rgba(0, 255, 65, 0.3);
-}
-
-.terminal-textarea::placeholder {
-    color: var(--phosphor-green-dark);
-    opacity: 0.6;
-}
-
-/* Live terminal output */
-.terminal-output {
-    font-family: var(--font-terminal);
+.m-tab {
+    padding: 0.5rem 1rem;
+    color: var(--text-tertiary);
+    text-decoration: none;
     font-size: var(--text-sm);
-    line-height: 1.4;
-    max-height: 200px;
-    overflow-y: auto;
+    border-bottom: 2px solid transparent;
+    transition: color 150ms ease, border-color 150ms ease;
 }
 
-.terminal-output-line {
-    padding: 0.125rem 0;
-    color: var(--phosphor-green-dim);
+.m-tab:hover {
+    color: var(--text-secondary);
 }
 
-.terminal-output-line.success {
-    color: var(--phosphor-green);
+.m-tab.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--text-primary);
 }
 
-.terminal-output-line.error {
-    color: var(--blood-rust);
+/* ============================================
+   SCROLL FADE (.m-scroll-fade)
+   ============================================ */
+
+.m-scroll-fade {
+    mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
 }
 
-.terminal-output-line.warning {
-    color: var(--amber-glow);
+/* ============================================
+   FOCUS BLUR (.focus-blur)
+   ============================================ */
+
+.focus-blur {
+    filter: blur(4px);
+    opacity: 0.6;
+    transition: filter 300ms ease, opacity 300ms ease;
 }
 
-/* Radar ping effect for notifications */
-@keyframes radar-ping {
-    0% {
-        transform: scale(0.8);
-        opacity: 1;
-    }
-    100% {
-        transform: scale(2);
-        opacity: 0;
-    }
-}
+/* ============================================
+   DOT PULSE (.m-dot-pulse)
+   ============================================ */
 
-.radar-ping {
-    position: relative;
-}
-
-.radar-ping::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border: 1px solid var(--phosphor-green);
+.m-dot-pulse {
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    animation: radar-ping 1.5s ease-out infinite;
+    background: var(--text-primary);
+    animation: m-dot-pulse-anim 1.5s ease-in-out infinite;
+}
+
+@keyframes m-dot-pulse-anim {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.5); opacity: 0.5; }
+}
+
+/* ============================================
+   ICON UTILITIES
+   ============================================ */
+
+.m-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+}
+
+.m-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.m-icon-sm {
+    width: 1rem;
+    height: 1rem;
+}
+
+.m-icon-lg {
+    width: 1.5rem;
+    height: 1.5rem;
+}
+
+/* ============================================
+   REDUCED MOTION
+   ============================================ */
+
+@media (prefers-reduced-motion: reduce) {
+    .stagger-item,
+    .animate-blur-reveal,
+    .m-dot-pulse {
+        animation: none;
+        opacity: 1;
+        filter: none;
+    }
+
+    * {
+        transition-duration: 0s !important;
+    }
+}
+
+/* ============================================
+   FOCUS STYLES (ACCESSIBILITY)
+   ============================================ */
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
 }
 
 /* ============================================
@@ -1036,1204 +814,548 @@ textarea:focus-visible {
    ============================================ */
 
 @media print {
-    .crt-scanlines::before,
-    .crt-vignette,
-    .crt-flicker {
-        display: none !important;
-    }
-
     body {
         background: white;
         color: black;
     }
 }
+
+/* ============================================
+   TOAST NOTIFICATIONS (.m-toast)
+   ============================================ */
+
+.m-toast-container {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+}
+
+.m-toast {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 1rem;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    max-width: 24rem;
+    pointer-events: auto;
+    animation: m-toast-in 200ms ease forwards;
+}
+
+.m-toast.m-toast-out {
+    animation: m-toast-out 200ms ease forwards;
+}
+
+.m-toast-success {
+    opacity: 1;
+}
+
+.m-toast-error {
+    opacity: 0.8;
+}
+
+@keyframes m-toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes m-toast-out {
+    from { opacity: 1; transform: translateY(0); }
+    to { opacity: 0; transform: translateY(8px); }
+}
+
+/* ============================================
+   PAGINATION
+   ============================================ */
+
+.m-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
 ";
 
-/// Tailwind CSS configuration for dystopian terminal theme.
+/// Tailwind CSS configuration for the Memoria design system.
 ///
-/// Extends default Tailwind with terminal-specific colors and fonts.
+/// Extends default Tailwind with neutral colors and Inter/JetBrains Mono fonts.
 pub const TAILWIND_CONFIG: &str = r"
 tailwind.config = {
     darkMode: 'class',
     theme: {
         extend: {
             fontFamily: {
-                terminal: ['VT323', 'Courier New', 'monospace'],
-                display: ['Orbitron', 'VT323', 'monospace'],
-                data: ['Rajdhani', 'VT323', 'monospace'],
+                sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+                mono: ['JetBrains Mono', 'Courier New', 'monospace'],
             },
             colors: {
-                phosphor: {
-                    DEFAULT: '#00ee00',
-                    dim: '#008e00',
-                    dark: '#005f00',
-                },
-                amber: {
-                    glow: '#ffb641',
-                    dim: '#ffb000',
-                },
-                rust: {
-                    blood: '#942222',
-                    dark: '#4a2125',
-                    corroded: '#622f22',
-                },
-                terminal: {
-                    deep: '#0c0c0c',
-                    soot: '#1a1a1a',
-                    industrial: '#383838',
-                },
-                engine: {
-                    relational: '#ffb641',
-                    vector: '#942222',
-                    graph: '#00ee00',
+                neutral: {
+                    750: '#333333',
+                    850: '#1f1f1f',
                 }
+            },
+            borderRadius: {
+                'sm': '8px',
+                'DEFAULT': '12px',
+                'lg': '16px',
             }
         }
     }
 }
 ";
 
-/// CSS styles for TRO living border animation.
-///
-/// Includes:
-/// - Border canvas container styling
-/// - Particle glow effects
-/// - Activity pulse animations
-/// - CRT overlay effects for the border
-pub const TRO_CSS: &str = r"
-/* ============================================
-   TRO LIVING BORDER STYLES
-   ============================================ */
-
-/* Main TRO container - wraps entire page */
-.tro-container {
-    position: relative;
-    min-height: 100vh;
-}
-
-/* Canvas border wrapper */
-.tro-border {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 9000;
-}
-
-/* Each side canvas */
-.tro-border-top,
-.tro-border-bottom,
-.tro-border-left,
-.tro-border-right {
-    position: absolute;
-    background: transparent;
-}
-
-.tro-border-top {
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 20px;
-}
-
-.tro-border-bottom {
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 20px;
-}
-
-.tro-border-left {
-    top: 20px;
-    left: 0;
-    bottom: 20px;
-    width: 20px;
-}
-
-.tro-border-right {
-    top: 20px;
-    right: 0;
-    bottom: 20px;
-    width: 20px;
-}
-
-/* Phosphor glow overlay */
-.tro-glow-overlay {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 8999;
-    box-shadow:
-        inset 0 0 30px rgba(0, 238, 0, 0.1),
-        inset 0 0 60px rgba(0, 238, 0, 0.05);
-}
-
-/* Activity pulse burst effect */
-@keyframes tro-pulse-burst {
-    0% {
-        transform: scale(0.5);
-        opacity: 1;
-    }
-    100% {
-        transform: scale(2);
-        opacity: 0;
-    }
-}
-
-.tro-pulse {
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: radial-gradient(circle, var(--phosphor-green) 0%, transparent 70%);
-    animation: tro-pulse-burst 0.5s ease-out forwards;
-    pointer-events: none;
-}
-
-.tro-pulse-put {
-    background: radial-gradient(circle, var(--phosphor-green) 0%, transparent 70%);
-}
-
-.tro-pulse-get {
-    background: radial-gradient(circle, rgba(0, 187, 204, 0.8) 0%, transparent 70%);
-}
-
-.tro-pulse-delete {
-    background: radial-gradient(circle, var(--blood-rust) 0%, transparent 70%);
-}
-
-.tro-pulse-error {
-    background: radial-gradient(circle, #ff4444 0%, transparent 70%);
-    animation-duration: 0.8s;
-}
-
-.tro-pulse-scan {
-    background: radial-gradient(circle, var(--amber-glow) 0%, transparent 70%);
-}
-
-/* Glitch effect for border */
-@keyframes tro-glitch {
-    0%, 100% { filter: none; }
-    10% { filter: hue-rotate(90deg) saturate(2); }
-    20% { filter: hue-rotate(-90deg) brightness(1.2); }
-    30% { filter: hue-rotate(180deg); }
-    40% { filter: none; }
-    50% { filter: invert(0.1) hue-rotate(45deg); }
-    60% { filter: none; }
-}
-
-.tro-glitch-active {
-    animation: tro-glitch 0.3s ease-in-out;
-}
-
-/* Scanline overlay for border */
-.tro-scanlines {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 9001;
-    background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0, 0, 0, 0.03) 2px,
-        rgba(0, 0, 0, 0.03) 4px
-    );
-}
-
-/* Settings panel for TRO */
-.tro-settings {
-    position: fixed;
-    bottom: 1rem;
-    right: 1rem;
-    background: var(--soot-gray);
-    border: 1px solid var(--phosphor-green-dim);
-    padding: 0.5rem;
-    z-index: 9100;
-    font-family: var(--font-terminal);
-    font-size: var(--text-xs);
-}
-
-.tro-settings-toggle {
-    cursor: pointer;
-    color: var(--phosphor-green-dim);
-}
-
-.tro-settings-toggle:hover {
-    color: var(--phosphor-green);
-}
-
-/* Reduced motion support */
-@media (prefers-reduced-motion: reduce) {
-    .tro-border canvas {
-        animation: none !important;
-    }
-    .tro-pulse {
-        animation: none;
-        opacity: 0;
-    }
-}
-";
-
-/// JavaScript for TRO Physarum simulation with Canvas rendering.
+/// JavaScript for the Memoria design system interactions.
 ///
 /// Features:
-/// - Agent-based Physarum slime mold simulation
-/// - Pheromone trail visualization with glowing particles
-/// - Real-time activity pulses from database operations
-/// - Smooth 60fps animation with requestAnimationFrame
-pub const TRO_SCRIPT: &str = r"
-// TRO Living Border - Physarum Simulation
-const TRO = {
-    // Configuration
-    config: {
-        enabled: false,  // Disabled by default for performance - press 'T' to toggle
-        fps: 15,
-        agentCount: 100,
-        palette: 'phosphor_green',
-        crtEffects: true,
-        trailLength: 10,
-        glowIntensity: 0.7
-    },
-
-    // Palette definitions
-    palettes: {
-        phosphor_green: {
-            primary: [0, 238, 0],
-            dim: [0, 142, 0],
-            dark: [0, 95, 0],
-            glow: 'rgba(0, 238, 0, 0.6)'
-        },
-        amber: {
-            primary: [255, 182, 65],
-            dim: [204, 136, 0],
-            dark: [102, 51, 0],
-            glow: 'rgba(255, 182, 65, 0.6)'
-        },
-        rust: {
-            primary: [148, 34, 34],
-            dim: [98, 31, 34],
-            dark: [74, 33, 37],
-            glow: 'rgba(148, 34, 34, 0.6)'
-        },
-        ghost: {
-            primary: [0, 187, 204],
-            dim: [0, 119, 136],
-            dark: [0, 51, 68],
-            glow: 'rgba(0, 187, 204, 0.6)'
-        },
-        glitch: {
-            primary: [170, 68, 170],
-            dim: [102, 0, 102],
-            dark: [68, 0, 68],
-            glow: 'rgba(170, 68, 170, 0.6)'
-        }
-    },
-
-    // Physarum configuration
-    physarum: {
-        sensorAngle: Math.PI / 4,
-        sensorDistance: 9,
-        rotationAngle: Math.PI / 6,
-        speed: 2,
-        depositAmount: 0.5,
-        decayRate: 0.95,
-        diffusionRate: 0.2
-    },
-
-    // State
-    state: {
-        agents: [],
-        pheromone: [],
-        pheromoneBuffer: [],
-        activityHeat: [],
-        borderLength: 0,
-        frame: 0,
-        paused: false,
-        inGlitch: false,
-        glitchUntil: 0
-    },
-
-    // Canvas references
-    canvases: {
-        top: null,
-        bottom: null,
-        left: null,
-        right: null
-    },
-    contexts: {
-        top: null,
-        bottom: null,
-        left: null,
-        right: null
-    },
-
-    // Initialize TRO system
-    init() {
-        if (!this.config.enabled) return;
-
-        this.createCanvases();
-        this.calculateBorderLength();
-        this.initPhysarum();
-        this.startRenderLoop();
-
-        // Listen for window resize
-        window.addEventListener('resize', () => this.handleResize());
-
-        console.log('[TRO] Physarum border initialized');
-    },
-
-    // Create canvas elements
-    createCanvases() {
-        const container = document.createElement('div');
-        container.className = 'tro-border';
-        container.id = 'tro-border';
-
-        const sides = ['top', 'bottom', 'left', 'right'];
-        sides.forEach(side => {
-            const canvas = document.createElement('canvas');
-            canvas.className = `tro-border-${side}`;
-            canvas.id = `tro-canvas-${side}`;
-            container.appendChild(canvas);
-            this.canvases[side] = canvas;
-            this.contexts[side] = canvas.getContext('2d');
-        });
-
-        // Add glow overlay
-        const glow = document.createElement('div');
-        glow.className = 'tro-glow-overlay';
-        container.appendChild(glow);
-
-        // Add scanlines if CRT effects enabled
-        if (this.config.crtEffects) {
-            const scanlines = document.createElement('div');
-            scanlines.className = 'tro-scanlines';
-            container.appendChild(scanlines);
-        }
-
-        document.body.appendChild(container);
-        this.resizeCanvases();
-    },
-
-    // Resize canvases to match window
-    resizeCanvases() {
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        const borderWidth = 20;
-
-        this.canvases.top.width = w;
-        this.canvases.top.height = borderWidth;
-        this.canvases.bottom.width = w;
-        this.canvases.bottom.height = borderWidth;
-        this.canvases.left.width = borderWidth;
-        this.canvases.left.height = h - borderWidth * 2;
-        this.canvases.right.width = borderWidth;
-        this.canvases.right.height = h - borderWidth * 2;
-    },
-
-    // Calculate total border length
-    calculateBorderLength() {
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        this.state.borderLength = 2 * w + 2 * (h - 40);
-    },
-
-    // Initialize Physarum agents and pheromone field
-    initPhysarum() {
-        const len = this.state.borderLength;
-        this.state.pheromone = new Float32Array(len);
-        this.state.pheromoneBuffer = new Float32Array(len);
-        this.state.activityHeat = new Float32Array(len);
-        this.state.agents = [];
-
-        for (let i = 0; i < this.config.agentCount; i++) {
-            this.state.agents.push({
-                position: Math.random() * len,
-                direction: Math.random() < 0.5 ? 1 : -1,
-                speed: 0.5 + Math.random() * 0.5,
-                active: true
-            });
-        }
-    },
-
-    // Update Physarum simulation
-    updatePhysarum() {
-        if (this.state.paused) return;
-
-        const len = this.state.borderLength;
-        if (len === 0) return;
-
-        const wrap = (pos) => ((pos % len) + len) % len;
-
-        // Update agents
-        for (const agent of this.state.agents) {
-            if (!agent.active) continue;
-
-            const sd = this.physarum.sensorDistance;
-            const leftPos = Math.floor(wrap(agent.position + agent.direction * sd * 0.7)) % len;
-            const centerPos = Math.floor(wrap(agent.position + agent.direction * sd)) % len;
-            const rightPos = Math.floor(wrap(agent.position + agent.direction * sd * 1.3)) % len;
-
-            const left = this.state.pheromone[leftPos] || 0;
-            const center = this.state.pheromone[centerPos] || 0;
-            const right = this.state.pheromone[rightPos] || 0;
-
-            // Decide direction
-            if (center >= left && center >= right) {
-                if (Math.random() < 0.1) {
-                    agent.direction *= Math.random() < 0.5 ? 1 : -1;
-                }
-            } else if (left > right) {
-                agent.direction = -Math.abs(agent.direction);
-            } else if (right > left) {
-                agent.direction = Math.abs(agent.direction);
-            } else {
-                agent.direction = Math.random() < 0.5 ? 1 : -1;
-            }
-
-            // Move
-            agent.position = wrap(agent.position + agent.direction * agent.speed * this.physarum.speed);
-
-            // Deposit pheromone
-            const idx = Math.floor(agent.position) % len;
-            this.state.pheromone[idx] = Math.min(1, this.state.pheromone[idx] + this.physarum.depositAmount);
-        }
-
-        // Diffuse and decay
-        this.state.pheromoneBuffer.set(this.state.pheromone);
-        for (let i = 0; i < len; i++) {
-            const prev = (i === 0) ? len - 1 : i - 1;
-            const next = (i + 1) % len;
-
-            const diffused = this.state.pheromoneBuffer[i] * (1 - this.physarum.diffusionRate) +
-                (this.state.pheromoneBuffer[prev] + this.state.pheromoneBuffer[next]) *
-                (this.physarum.diffusionRate / 2);
-
-            this.state.pheromone[i] = diffused * this.physarum.decayRate;
-        }
-
-        // Apply activity heat
-        for (let i = 0; i < len; i++) {
-            if (this.state.activityHeat[i] > 0) {
-                this.state.pheromone[i] = Math.min(1, this.state.pheromone[i] + this.state.activityHeat[i]);
-                this.state.activityHeat[i] *= 0.9;
-            }
-        }
-    },
-
-    // Convert border index to canvas coordinates
-    indexToCoord(index) {
-        const w = window.innerWidth;
-        const h = window.innerHeight - 40;
-        const len = this.state.borderLength;
-
-        index = ((index % len) + len) % len;
-
-        // Top edge
-        if (index < w) {
-            return { side: 'top', x: index, y: 10 };
-        }
-        // Right edge
-        if (index < w + h) {
-            return { side: 'right', x: 10, y: index - w };
-        }
-        // Bottom edge
-        if (index < 2 * w + h) {
-            return { side: 'bottom', x: 2 * w + h - index, y: 10 };
-        }
-        // Left edge
-        return { side: 'left', x: 10, y: 2 * w + 2 * h - index };
-    },
-
-    // Render frame
-    render() {
-        const palette = this.palettes[this.config.palette] || this.palettes.phosphor_green;
-
-        // Clear all canvases
-        for (const side of ['top', 'bottom', 'left', 'right']) {
-            const ctx = this.contexts[side];
-            const canvas = this.canvases[side];
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
-
-        // Check glitch state
-        if (this.state.inGlitch && Date.now() > this.state.glitchUntil) {
-            this.state.inGlitch = false;
-            document.getElementById('tro-border')?.classList.remove('tro-glitch-active');
-        }
-
-        // Render pheromone field
-        const len = this.state.borderLength;
-        for (let i = 0; i < len; i += 2) {
-            const intensity = this.state.pheromone[i];
-            if (intensity < 0.05) continue;
-
-            const coord = this.indexToCoord(i);
-            const ctx = this.contexts[coord.side];
-            if (!ctx) continue;
-
-            // Draw glowing particle
-            const size = 3 + intensity * 5;
-            const alpha = intensity * this.config.glowIntensity;
-
-            // Glow
-            const gradient = ctx.createRadialGradient(coord.x, coord.y, 0, coord.x, coord.y, size * 2);
-            gradient.addColorStop(0, `rgba(${palette.primary.join(',')}, ${alpha})`);
-            gradient.addColorStop(0.5, `rgba(${palette.dim.join(',')}, ${alpha * 0.5})`);
-            gradient.addColorStop(1, 'transparent');
-
-            ctx.beginPath();
-            ctx.arc(coord.x, coord.y, size * 2, 0, Math.PI * 2);
-            ctx.fillStyle = gradient;
-            ctx.fill();
-
-            // Core
-            ctx.beginPath();
-            ctx.arc(coord.x, coord.y, size * 0.5, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${palette.primary.join(',')}, ${alpha})`;
-            ctx.fill();
-        }
-
-        this.state.frame++;
-    },
-
-    // Start render loop
-    startRenderLoop() {
-        const frameTime = 1000 / this.config.fps;
-        let lastFrame = 0;
-
-        const loop = (timestamp) => {
-            if (!this.config.enabled) return;
-
-            if (timestamp - lastFrame >= frameTime) {
-                this.updatePhysarum();
-                this.render();
-                lastFrame = timestamp;
-            }
-
-            requestAnimationFrame(loop);
-        };
-
-        requestAnimationFrame(loop);
-    },
-
-    // Handle window resize
-    handleResize() {
-        this.resizeCanvases();
-        const oldLen = this.state.borderLength;
-        this.calculateBorderLength();
-        const newLen = this.state.borderLength;
-
-        if (oldLen !== newLen) {
-            // Resize arrays
-            const newPheromone = new Float32Array(newLen);
-            const newBuffer = new Float32Array(newLen);
-            const newHeat = new Float32Array(newLen);
-
-            for (let i = 0; i < Math.min(oldLen, newLen); i++) {
-                newPheromone[i] = this.state.pheromone[i];
-                newHeat[i] = this.state.activityHeat[i];
-            }
-
-            this.state.pheromone = newPheromone;
-            this.state.pheromoneBuffer = newBuffer;
-            this.state.activityHeat = newHeat;
-
-            // Rescale agent positions
-            for (const agent of this.state.agents) {
-                agent.position = (agent.position / oldLen) * newLen;
-            }
-        }
-    },
-
-    // Inject activity pulse
-    pulse(position, intensity, radius) {
-        const len = this.state.borderLength;
-        const center = Math.floor(position * len);
-
-        for (let offset = 0; offset <= radius; offset++) {
-            const decay = 1 - offset / (radius + 1);
-            const value = intensity * decay;
-
-            const left = ((center - offset) % len + len) % len;
-            const right = (center + offset) % len;
-
-            this.state.activityHeat[left] = Math.min(1, this.state.activityHeat[left] + value);
-            if (offset > 0) {
-                this.state.activityHeat[right] = Math.min(1, this.state.activityHeat[right] + value);
-            }
-        }
-
-        // Spawn extra agents at pulse location
-        const spawnCount = Math.ceil(intensity * 5);
-        for (let i = 0; i < spawnCount; i++) {
-            this.state.agents.push({
-                position: center + (Math.random() - 0.5) * radius,
-                direction: Math.random() < 0.5 ? 1 : -1,
-                speed: 0.5 + intensity * 0.5,
-                active: true
-            });
-        }
-
-        // Limit agent count
-        if (this.state.agents.length > this.config.agentCount * 2) {
-            this.state.agents = this.state.agents.slice(-this.config.agentCount);
-        }
-    },
-
-    // Trigger glitch effect
-    glitch(durationMs) {
-        this.state.inGlitch = true;
-        this.state.glitchUntil = Date.now() + durationMs;
-        document.getElementById('tro-border')?.classList.add('tro-glitch-active');
-    },
-
-    // Set palette
-    setPalette(name) {
-        if (this.palettes[name]) {
-            this.config.palette = name;
-        }
-    },
-
-    // Pause/resume
-    pause() { this.state.paused = true; },
-    resume() { this.state.paused = false; },
-
-    // Enable/disable
-    enable() { this.config.enabled = true; this.startRenderLoop(); },
-    disable() { this.config.enabled = false; }
-};
-
-// Initialize on DOM ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => TRO.init());
-} else {
-    TRO.init();
-}
-
-// Expose to window for external control
-window.TRO = TRO;
-";
-
-/// Audio feedback system using Web Audio API.
-///
-/// Provides subtle audio cues for UI interactions with configurable settings.
-/// All sounds are synthesized (no external files required).
-pub const AUDIO_SCRIPT: &str = r#"
+/// - Animated counters with 600ms tween
+/// - Card glare effect on mousemove
+/// - Blur-to-clear `IntersectionObserver`
+/// - Stagger-entry observer
+/// - Spring physics engine for modals/drawers
+/// - Focus-blur backdrop manager
+pub const MEMORIA_SCRIPT: &str = r"
 // ============================================
-// NEUMANN AUDIO FEEDBACK SYSTEM
+// MEMORIA DESIGN SYSTEM - INTERACTIONS
 // ============================================
 
-const NeumannAudio = (function() {
+(function() {
     'use strict';
 
-    let ctx = null;
-    let masterGain = null;
-    let enabled = true;
-    let volume = 0.3;
+    // ---- Animated Counters ----
+    function animateCounter(el, target, duration) {
+        duration = duration || 600;
+        var start = parseInt(el.textContent.replace(/[^0-9]/g, ''), 10) || 0;
+        var delta = target - start;
+        if (delta === 0) return;
+        var accel = Math.abs(delta) > 1000;
+        var startTime = null;
 
-    // Settings per category
-    const settings = {
-        navigation: true,
-        feedback: true,
-        achievements: true
-    };
-
-    // Initialize audio context (must be called after user interaction)
-    function init() {
-        if (ctx) return true;
-
-        try {
-            ctx = new (window.AudioContext || window.webkitAudioContext)();
-            masterGain = ctx.createGain();
-            masterGain.gain.value = volume;
-            masterGain.connect(ctx.destination);
-
-            // Load saved settings
-            loadSettings();
-            return true;
-        } catch (e) {
-            console.warn('Web Audio API not supported:', e);
-            return false;
+        function step(timestamp) {
+            if (!startTime) startTime = timestamp;
+            var progress = Math.min((timestamp - startTime) / duration, 1);
+            var eased = accel
+                ? progress * progress * (3 - 2 * progress)
+                : progress;
+            var current = Math.round(start + delta * eased);
+            el.textContent = current.toLocaleString();
+            if (progress < 1) requestAnimationFrame(step);
         }
+        requestAnimationFrame(step);
     }
 
-    // Resume context if suspended (required by browsers after page load)
-    function resume() {
-        if (ctx && ctx.state === 'suspended') {
-            ctx.resume();
-        }
-    }
+    // ---- Card Glare ----
+    function initCardGlare() {
+        document.querySelectorAll('.m-card, .m-stat').forEach(function(card) {
+            if (card.dataset.glareInit) return;
+            card.dataset.glareInit = '1';
+            var glare = null;
+            var targetX = 50, targetY = 50;
+            var currentX = 50, currentY = 50;
+            var raf = null;
 
-    // Load settings from localStorage
-    function loadSettings() {
-        try {
-            const saved = localStorage.getItem('neumann_audio_settings');
-            if (saved) {
-                const parsed = JSON.parse(saved);
-                enabled = parsed.enabled ?? true;
-                volume = parsed.volume ?? 0.3;
-                Object.assign(settings, parsed.settings ?? {});
-                if (masterGain) {
-                    masterGain.gain.value = volume;
+            card.addEventListener('mouseenter', function() {
+                glare = document.createElement('div');
+                glare.style.cssText = 'position:absolute;inset:0;pointer-events:none;border-radius:inherit;z-index:1;';
+                card.style.position = 'relative';
+                card.appendChild(glare);
+            });
+
+            card.addEventListener('mousemove', function(e) {
+                if (!glare) return;
+                var rect = card.getBoundingClientRect();
+                targetX = ((e.clientX - rect.left) / rect.width) * 100;
+                targetY = ((e.clientY - rect.top) / rect.height) * 100;
+                if (!raf) {
+                    raf = requestAnimationFrame(function lerpGlare() {
+                        currentX += (targetX - currentX) * 0.1;
+                        currentY += (targetY - currentY) * 0.1;
+                        if (glare) {
+                            glare.style.background = 'radial-gradient(60% 60% at ' + currentX + '% ' + currentY + '%, rgba(255,255,255,0.03), transparent)';
+                        }
+                        if (Math.abs(targetX - currentX) > 0.5 || Math.abs(targetY - currentY) > 0.5) {
+                            raf = requestAnimationFrame(lerpGlare);
+                        } else {
+                            raf = null;
+                        }
+                    });
                 }
+            });
+
+            card.addEventListener('mouseleave', function() {
+                if (glare) { glare.remove(); glare = null; }
+                raf = null;
+            });
+        });
+    }
+
+    // ---- Blur-to-Clear Observer ----
+    function initBlurReveal() {
+        if (!('IntersectionObserver' in window)) return;
+        var observer = new IntersectionObserver(function(entries) {
+            entries.forEach(function(entry) {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('animate-blur-reveal');
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.1 });
+
+        document.querySelectorAll('.blur-reveal').forEach(function(el) {
+            observer.observe(el);
+        });
+    }
+
+    // ---- Stagger Entry Observer ----
+    function initStaggerEntry() {
+        if (!('IntersectionObserver' in window)) return;
+        var observer = new IntersectionObserver(function(entries) {
+            entries.forEach(function(entry) {
+                if (entry.isIntersecting) {
+                    var items = entry.target.querySelectorAll('.stagger-item');
+                    items.forEach(function(item, i) {
+                        var delay = Math.min(i, 7) * 50;
+                        item.style.animationDelay = delay + 'ms';
+                    });
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.1 });
+
+        document.querySelectorAll('.stagger-container').forEach(function(el) {
+            observer.observe(el);
+        });
+    }
+
+    // ---- Spring Physics Engine ----
+    function springAnimate(from, to, config, onUpdate, onComplete) {
+        config = config || {};
+        var stiffness = config.stiffness || 300;
+        var damping = config.damping || 30;
+        var mass = config.mass || 1;
+
+        var position = from;
+        var velocity = 0;
+        var lastTime = null;
+        var settled = false;
+
+        function tick(timestamp) {
+            if (!lastTime) { lastTime = timestamp; }
+            var dt = Math.min((timestamp - lastTime) / 1000, 0.064);
+            lastTime = timestamp;
+
+            var springForce = -stiffness * (position - to);
+            var dampingForce = -damping * velocity;
+            var acceleration = (springForce + dampingForce) / mass;
+
+            velocity += acceleration * dt;
+            position += velocity * dt;
+
+            if (Math.abs(position - to) < 0.01 && Math.abs(velocity) < 0.01) {
+                position = to;
+                settled = true;
             }
-        } catch (e) {
-            // Ignore localStorage errors
+
+            onUpdate(position);
+
+            if (!settled) {
+                requestAnimationFrame(tick);
+            } else if (onComplete) {
+                onComplete();
+            }
+        }
+        requestAnimationFrame(tick);
+    }
+
+    // ---- Focus-Blur Backdrop Manager ----
+    var backdropActive = false;
+
+    function enableBackdrop() {
+        var main = document.getElementById('main-content');
+        if (main && !backdropActive) {
+            main.style.transition = 'filter 300ms ease, opacity 300ms ease';
+            main.style.filter = 'blur(4px)';
+            main.style.opacity = '0.6';
+            backdropActive = true;
         }
     }
 
-    // Save settings to localStorage
-    function saveSettings() {
-        try {
-            localStorage.setItem('neumann_audio_settings', JSON.stringify({
-                enabled,
-                volume,
-                settings
-            }));
-        } catch (e) {
-            // Ignore localStorage errors
+    function disableBackdrop() {
+        var main = document.getElementById('main-content');
+        if (main && backdropActive) {
+            main.style.filter = '';
+            main.style.opacity = '';
+            backdropActive = false;
         }
     }
 
-    // Create oscillator with envelope
-    function createTone(frequency, duration, type = 'sine', attackTime = 0.01, decayTime = 0.1) {
-        if (!ctx || !enabled) return;
+    // ---- Modal Spring Open/Close ----
+    window.Memoria = {
+        animateCounter: animateCounter,
+        springAnimate: springAnimate,
 
-        const osc = ctx.createOscillator();
-        const env = ctx.createGain();
+        openModal: function(modalEl) {
+            if (!modalEl) return;
+            var body = modalEl.querySelector('.m-modal-body');
+            enableBackdrop();
+            modalEl.classList.remove('hidden');
+            modalEl.classList.add('flex');
+            modalEl.style.opacity = '1';
+            modalEl.style.visibility = 'visible';
+            if (body) {
+                body.style.opacity = '0';
+                springAnimate(30, 0, { stiffness: 300, damping: 30, mass: 1 },
+                    function(val) {
+                        body.style.transform = 'translateY(' + val + 'px)';
+                        body.style.opacity = Math.max(0, 1 - Math.abs(val) / 30);
+                    },
+                    function() {
+                        body.style.transform = '';
+                        body.style.opacity = '1';
+                    }
+                );
+            }
+        },
 
-        osc.type = type;
-        osc.frequency.setValueAtTime(frequency, ctx.currentTime);
-
-        // ADSR-ish envelope
-        env.gain.setValueAtTime(0, ctx.currentTime);
-        env.gain.linearRampToValueAtTime(0.8, ctx.currentTime + attackTime);
-        env.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
-
-        osc.connect(env);
-        env.connect(masterGain);
-
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + duration);
-    }
-
-    // Play a click sound for navigation
-    function playClick() {
-        if (!enabled || !settings.navigation) return;
-        init();
-        resume();
-
-        // Soft click with slight pitch variation
-        const freq = 440 * (0.95 + Math.random() * 0.1);
-        createTone(freq, 0.05, 'sine', 0.005, 0.04);
-    }
-
-    // Play success sound
-    function playSuccess() {
-        if (!enabled || !settings.feedback) return;
-        init();
-        resume();
-
-        // Ascending two-tone
-        createTone(523.25, 0.1, 'sine', 0.01, 0.08);  // C5
-        setTimeout(() => {
-            createTone(659.25, 0.15, 'sine', 0.01, 0.12);  // E5
-        }, 80);
-    }
-
-    // Play error sound
-    function playError() {
-        if (!enabled || !settings.feedback) return;
-        init();
-        resume();
-
-        // Descending dissonant tone
-        createTone(220, 0.15, 'sawtooth', 0.01, 0.12);  // A3
-        setTimeout(() => {
-            createTone(165, 0.2, 'sawtooth', 0.01, 0.15);  // E3
-        }, 100);
-    }
-
-    // Play typing sound
-    function playType() {
-        if (!enabled || !settings.navigation) return;
-        init();
-        resume();
-
-        // Very soft, quick click
-        const freq = 800 * (0.9 + Math.random() * 0.2);
-        createTone(freq, 0.02, 'sine', 0.002, 0.015);
-    }
-
-    // Play query execute sound (whoosh)
-    function playQueryStart() {
-        if (!enabled || !settings.feedback) return;
-        init();
-        resume();
-
-        // Rising whoosh using filtered noise simulation
-        const osc = ctx.createOscillator();
-        const env = ctx.createGain();
-        const filter = ctx.createBiquadFilter();
-
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(200, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.15);
-
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(400, ctx.currentTime);
-        filter.frequency.exponentialRampToValueAtTime(2000, ctx.currentTime + 0.15);
-
-        env.gain.setValueAtTime(0, ctx.currentTime);
-        env.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.02);
-        env.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
-
-        osc.connect(filter);
-        filter.connect(env);
-        env.connect(masterGain);
-
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.15);
-    }
-
-    // Play query complete sound (satisfying click/lock)
-    function playQueryComplete() {
-        if (!enabled || !settings.feedback) return;
-        init();
-        resume();
-
-        // Satisfying "lock" sound
-        createTone(880, 0.03, 'square', 0.002, 0.025);
-        setTimeout(() => {
-            createTone(1100, 0.06, 'sine', 0.005, 0.05);
-        }, 25);
-    }
-
-    // Play achievement unlock sound
-    function playAchievement() {
-        if (!enabled || !settings.achievements) return;
-        init();
-        resume();
-
-        // Ascending arpeggio
-        const notes = [523.25, 659.25, 783.99, 1046.5];  // C5, E5, G5, C6
-        notes.forEach((freq, i) => {
-            setTimeout(() => {
-                createTone(freq, 0.2, 'sine', 0.01, 0.15);
-            }, i * 80);
-        });
-
-        // Final sparkle
-        setTimeout(() => {
-            createTone(1568, 0.3, 'triangle', 0.02, 0.25);  // G6
-        }, 350);
-    }
-
-    // Play level up sound
-    function playLevelUp() {
-        if (!enabled || !settings.achievements) return;
-        init();
-        resume();
-
-        // Triumphant fanfare
-        const notes = [392, 523.25, 659.25, 783.99];  // G4, C5, E5, G5
-        notes.forEach((freq, i) => {
-            setTimeout(() => {
-                createTone(freq, 0.25, 'sine', 0.02, 0.2);
-            }, i * 120);
-        });
-
-        // Chord at the end
-        setTimeout(() => {
-            createTone(523.25, 0.4, 'sine', 0.02, 0.35);
-            createTone(659.25, 0.4, 'sine', 0.02, 0.35);
-            createTone(783.99, 0.4, 'sine', 0.02, 0.35);
-        }, 500);
-    }
-
-    // Play navigation page change sound
-    function playNavigate() {
-        if (!enabled || !settings.navigation) return;
-        init();
-        resume();
-
-        // Soft slide sound
-        const osc = ctx.createOscillator();
-        const env = ctx.createGain();
-
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(600, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.08);
-
-        env.gain.setValueAtTime(0, ctx.currentTime);
-        env.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.01);
-        env.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
-
-        osc.connect(env);
-        env.connect(masterGain);
-
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.08);
-    }
-
-    // Play hover sound
-    function playHover() {
-        if (!enabled || !settings.navigation) return;
-        init();
-        resume();
-
-        // Very subtle high-frequency blip
-        createTone(1200, 0.015, 'sine', 0.002, 0.01);
-    }
-
-    // Set master volume (0.0 - 1.0)
-    function setVolume(v) {
-        volume = Math.max(0, Math.min(1, v));
-        if (masterGain) {
-            masterGain.gain.value = volume;
+        closeModal: function(modalEl) {
+            if (!modalEl) return;
+            var body = modalEl.querySelector('.m-modal-body');
+            disableBackdrop();
+            if (body) {
+                springAnimate(0, 30, { stiffness: 300, damping: 30, mass: 1 },
+                    function(val) {
+                        body.style.transform = 'translateY(' + val + 'px)';
+                        body.style.opacity = Math.max(0, 1 - Math.abs(val) / 30);
+                    },
+                    function() {
+                        modalEl.classList.add('hidden');
+                        modalEl.classList.remove('flex');
+                        modalEl.style.opacity = '';
+                        modalEl.style.visibility = '';
+                        body.style.transform = '';
+                        body.style.opacity = '';
+                    }
+                );
+            } else {
+                modalEl.classList.add('hidden');
+                modalEl.classList.remove('flex');
+            }
         }
-        saveSettings();
-    }
-
-    // Get current volume
-    function getVolume() {
-        return volume;
-    }
-
-    // Enable/disable all audio
-    function setEnabled(e) {
-        enabled = !!e;
-        saveSettings();
-    }
-
-    // Check if enabled
-    function isEnabled() {
-        return enabled;
-    }
-
-    // Set category setting
-    function setCategorySetting(category, value) {
-        if (category in settings) {
-            settings[category] = !!value;
-            saveSettings();
-        }
-    }
-
-    // Get category setting
-    function getCategorySetting(category) {
-        return settings[category] ?? false;
-    }
-
-    // Get all settings
-    function getSettings() {
-        return {
-            enabled,
-            volume,
-            navigation: settings.navigation,
-            feedback: settings.feedback,
-            achievements: settings.achievements
-        };
-    }
-
-    // Apply settings
-    function applySettings(s) {
-        if (typeof s.enabled === 'boolean') enabled = s.enabled;
-        if (typeof s.volume === 'number') setVolume(s.volume);
-        if (typeof s.navigation === 'boolean') settings.navigation = s.navigation;
-        if (typeof s.feedback === 'boolean') settings.feedback = s.feedback;
-        if (typeof s.achievements === 'boolean') settings.achievements = s.achievements;
-        saveSettings();
-    }
-
-    // Public API
-    return {
-        init,
-        resume,
-
-        // Sound effects
-        playClick,
-        playSuccess,
-        playError,
-        playType,
-        playQueryStart,
-        playQueryComplete,
-        playAchievement,
-        playLevelUp,
-        playNavigate,
-        playHover,
-
-        // Settings
-        setVolume,
-        getVolume,
-        setEnabled,
-        isEnabled,
-        setCategorySetting,
-        getCategorySetting,
-        getSettings,
-        applySettings
     };
+
+    // ---- Initialize on DOM ready ----
+    function init() {
+        initCardGlare();
+        initBlurReveal();
+        initStaggerEntry();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();
-
-// Initialize on first user interaction
-document.addEventListener('click', function initAudio() {
-    NeumannAudio.init();
-    document.removeEventListener('click', initAudio);
-}, { once: true });
-
-// Also initialize on keypress
-document.addEventListener('keydown', function initAudioKey() {
-    NeumannAudio.init();
-    document.removeEventListener('keydown', initAudioKey);
-}, { once: true });
-
-// Expose to window
-window.NeumannAudio = NeumannAudio;
-"#;
+";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_css_variables_defined() {
-        assert!(ADMIN_CSS.contains("--phosphor-green"));
-        assert!(ADMIN_CSS.contains("--blood-rust"));
-        assert!(ADMIN_CSS.contains("--amber-glow"));
-        assert!(ADMIN_CSS.contains("--deep-black"));
+    fn test_css_memoria_tokens_defined() {
+        assert!(ADMIN_CSS.contains("--bg-primary: #0a0a0a"));
+        assert!(ADMIN_CSS.contains("--bg-elevated: #171717"));
+        assert!(ADMIN_CSS.contains("--text-primary: #ffffff"));
+        assert!(ADMIN_CSS.contains("--text-secondary: #a3a3a3"));
     }
 
     #[test]
-    fn test_crt_effects_defined() {
-        assert!(ADMIN_CSS.contains("crt-scanlines"));
-        assert!(ADMIN_CSS.contains("crt-flicker"));
-        assert!(ADMIN_CSS.contains("crt-vignette"));
-        assert!(ADMIN_CSS.contains("phosphor-glow"));
+    fn test_css_memoria_components_defined() {
+        assert!(ADMIN_CSS.contains(".m-card"));
+        assert!(ADMIN_CSS.contains(".m-btn"));
+        assert!(ADMIN_CSS.contains(".m-table"));
+        assert!(ADMIN_CSS.contains(".m-input"));
+        assert!(ADMIN_CSS.contains(".m-stat"));
     }
 
     #[test]
-    fn test_terminal_components_defined() {
-        assert!(ADMIN_CSS.contains("btn-terminal"));
-        assert!(ADMIN_CSS.contains("table-rust"));
-        assert!(ADMIN_CSS.contains("input-terminal"));
-        assert!(ADMIN_CSS.contains("terminal-panel"));
-        assert!(ADMIN_CSS.contains("stat-card"));
+    fn test_css_no_phosphor_references() {
+        assert!(!ADMIN_CSS.contains("phosphor-green"));
+        assert!(!ADMIN_CSS.contains("#00ee00"));
+        assert!(!ADMIN_CSS.contains("VT323"));
     }
 
     #[test]
-    fn test_tailwind_config_has_terminal_theme() {
-        assert!(TAILWIND_CONFIG.contains("phosphor"));
-        assert!(TAILWIND_CONFIG.contains("terminal"));
-        assert!(TAILWIND_CONFIG.contains("VT323"));
-        assert!(TAILWIND_CONFIG.contains("Orbitron"));
+    fn test_css_no_bold_weights() {
+        assert!(!ADMIN_CSS.contains("font-weight: 700"));
+        assert!(!ADMIN_CSS.contains("font-weight: bold"));
     }
 
     #[test]
-    fn test_tro_css_border_classes() {
-        assert!(TRO_CSS.contains("tro-border"));
-        assert!(TRO_CSS.contains("tro-border-top"));
-        assert!(TRO_CSS.contains("tro-border-bottom"));
-        assert!(TRO_CSS.contains("tro-border-left"));
-        assert!(TRO_CSS.contains("tro-border-right"));
+    fn test_css_no_shadows() {
+        // CSS uses no box-shadow or drop-shadow
+        assert!(!ADMIN_CSS.contains("box-shadow"));
+        assert!(!ADMIN_CSS.contains("drop-shadow"));
+        assert!(!ADMIN_CSS.contains("text-shadow"));
     }
 
     #[test]
-    fn test_tro_css_pulse_classes() {
-        assert!(TRO_CSS.contains("tro-pulse"));
-        assert!(TRO_CSS.contains("tro-pulse-put"));
-        assert!(TRO_CSS.contains("tro-pulse-get"));
-        assert!(TRO_CSS.contains("tro-pulse-delete"));
-        assert!(TRO_CSS.contains("tro-pulse-error"));
+    fn test_css_no_crt_effects() {
+        assert!(!ADMIN_CSS.contains("crt-scanlines"));
+        assert!(!ADMIN_CSS.contains("crt-flicker"));
+        assert!(!ADMIN_CSS.contains("crt-vignette"));
     }
 
     #[test]
-    fn test_tro_css_effects() {
-        assert!(TRO_CSS.contains("tro-glitch-active"));
-        assert!(TRO_CSS.contains("tro-scanlines"));
-        assert!(TRO_CSS.contains("tro-glow-overlay"));
+    fn test_css_blur_reveal_animation() {
+        assert!(ADMIN_CSS.contains("blur-reveal"));
+        assert!(ADMIN_CSS.contains("stagger-entry"));
     }
 
     #[test]
-    fn test_tro_script_physarum_simulation() {
-        assert!(TRO_SCRIPT.contains("TRO"));
-        assert!(TRO_SCRIPT.contains("Physarum"));
-        assert!(TRO_SCRIPT.contains("pheromone"));
-        assert!(TRO_SCRIPT.contains("agents"));
+    fn test_css_opacity_utilities() {
+        assert!(ADMIN_CSS.contains(".opacity-hero"));
+        assert!(ADMIN_CSS.contains(".opacity-primary"));
+        assert!(ADMIN_CSS.contains(".opacity-secondary"));
+        assert!(ADMIN_CSS.contains(".opacity-tertiary"));
+        assert!(ADMIN_CSS.contains(".opacity-ghost"));
     }
 
     #[test]
-    fn test_tro_script_palettes() {
-        assert!(TRO_SCRIPT.contains("phosphor_green"));
-        assert!(TRO_SCRIPT.contains("amber"));
-        assert!(TRO_SCRIPT.contains("rust"));
-        assert!(TRO_SCRIPT.contains("ghost"));
-        assert!(TRO_SCRIPT.contains("glitch"));
+    fn test_tailwind_config_has_memoria_theme() {
+        assert!(TAILWIND_CONFIG.contains("Inter"));
+        assert!(TAILWIND_CONFIG.contains("JetBrains Mono"));
+        assert!(!TAILWIND_CONFIG.contains("VT323"));
+        assert!(!TAILWIND_CONFIG.contains("Orbitron"));
     }
 
     #[test]
-    fn test_tro_script_api() {
-        assert!(TRO_SCRIPT.contains("init()"));
-        assert!(TRO_SCRIPT.contains("pulse("));
-        assert!(TRO_SCRIPT.contains("glitch("));
-        assert!(TRO_SCRIPT.contains("setPalette("));
+    fn test_memoria_script_spring_physics() {
+        assert!(MEMORIA_SCRIPT.contains("springAnimate"));
+        assert!(MEMORIA_SCRIPT.contains("stiffness"));
+        assert!(MEMORIA_SCRIPT.contains("damping"));
+        assert!(MEMORIA_SCRIPT.contains("velocity"));
     }
 
     #[test]
-    fn test_tro_script_canvas_rendering() {
-        assert!(TRO_SCRIPT.contains("createCanvases"));
-        assert!(TRO_SCRIPT.contains("getContext('2d')"));
-        assert!(TRO_SCRIPT.contains("requestAnimationFrame"));
+    fn test_memoria_script_card_glare() {
+        assert!(MEMORIA_SCRIPT.contains("initCardGlare"));
+        assert!(MEMORIA_SCRIPT.contains("radial-gradient"));
     }
 
     #[test]
-    fn test_audio_script_initialization() {
-        assert!(AUDIO_SCRIPT.contains("NeumannAudio"));
-        assert!(AUDIO_SCRIPT.contains("AudioContext"));
-        assert!(AUDIO_SCRIPT.contains("init()"));
-        assert!(AUDIO_SCRIPT.contains("resume()"));
+    fn test_memoria_script_blur_reveal() {
+        assert!(MEMORIA_SCRIPT.contains("initBlurReveal"));
+        assert!(MEMORIA_SCRIPT.contains("IntersectionObserver"));
     }
 
     #[test]
-    fn test_audio_script_sound_effects() {
-        assert!(AUDIO_SCRIPT.contains("playClick"));
-        assert!(AUDIO_SCRIPT.contains("playSuccess"));
-        assert!(AUDIO_SCRIPT.contains("playError"));
-        assert!(AUDIO_SCRIPT.contains("playType"));
-        assert!(AUDIO_SCRIPT.contains("playQueryStart"));
-        assert!(AUDIO_SCRIPT.contains("playQueryComplete"));
-        assert!(AUDIO_SCRIPT.contains("playAchievement"));
-        assert!(AUDIO_SCRIPT.contains("playLevelUp"));
-        assert!(AUDIO_SCRIPT.contains("playNavigate"));
-        assert!(AUDIO_SCRIPT.contains("playHover"));
+    fn test_memoria_script_stagger_entry() {
+        assert!(MEMORIA_SCRIPT.contains("initStaggerEntry"));
+        assert!(MEMORIA_SCRIPT.contains("animationDelay"));
     }
 
     #[test]
-    fn test_audio_script_settings() {
-        assert!(AUDIO_SCRIPT.contains("setVolume"));
-        assert!(AUDIO_SCRIPT.contains("getVolume"));
-        assert!(AUDIO_SCRIPT.contains("setEnabled"));
-        assert!(AUDIO_SCRIPT.contains("isEnabled"));
-        assert!(AUDIO_SCRIPT.contains("setCategorySetting"));
-        assert!(AUDIO_SCRIPT.contains("getCategorySetting"));
+    fn test_memoria_script_modal_api() {
+        assert!(MEMORIA_SCRIPT.contains("openModal"));
+        assert!(MEMORIA_SCRIPT.contains("closeModal"));
+        assert!(MEMORIA_SCRIPT.contains("Memoria"));
     }
 
     #[test]
-    fn test_audio_script_persistence() {
-        assert!(AUDIO_SCRIPT.contains("localStorage"));
-        assert!(AUDIO_SCRIPT.contains("neumann_audio_settings"));
-        assert!(AUDIO_SCRIPT.contains("loadSettings"));
-        assert!(AUDIO_SCRIPT.contains("saveSettings"));
+    fn test_memoria_script_backdrop_manager() {
+        assert!(MEMORIA_SCRIPT.contains("enableBackdrop"));
+        assert!(MEMORIA_SCRIPT.contains("disableBackdrop"));
+        assert!(MEMORIA_SCRIPT.contains("blur(4px)"));
     }
 
     #[test]
-    fn test_audio_script_web_audio_api() {
-        assert!(AUDIO_SCRIPT.contains("createOscillator"));
-        assert!(AUDIO_SCRIPT.contains("createGain"));
-        assert!(AUDIO_SCRIPT.contains("createBiquadFilter"));
-        assert!(AUDIO_SCRIPT.contains("masterGain"));
+    fn test_memoria_script_counter_animation() {
+        assert!(MEMORIA_SCRIPT.contains("animateCounter"));
+        assert!(MEMORIA_SCRIPT.contains("requestAnimationFrame"));
     }
 
     #[test]
-    fn test_audio_script_exposed_to_window() {
-        assert!(AUDIO_SCRIPT.contains("window.NeumannAudio"));
+    fn test_memoria_script_no_shadow_usage() {
+        assert!(!MEMORIA_SCRIPT.contains("shadowBlur"));
+        assert!(!MEMORIA_SCRIPT.contains("shadowColor"));
+    }
+
+    #[test]
+    fn test_css_interactive_card() {
+        assert!(ADMIN_CSS.contains(".m-card-interactive"));
+        assert!(ADMIN_CSS.contains("backdrop-filter"));
+        assert!(ADMIN_CSS.contains("translateY(-1px)"));
+    }
+
+    #[test]
+    fn test_css_badge() {
+        assert!(ADMIN_CSS.contains(".m-badge"));
+        assert!(ADMIN_CSS.contains("rgba(255, 255, 255, 0.08)"));
+    }
+
+    #[test]
+    fn test_css_tabs() {
+        assert!(ADMIN_CSS.contains(".m-tabs"));
+        assert!(ADMIN_CSS.contains(".m-tab"));
+        assert!(ADMIN_CSS.contains(".m-tab.active"));
+    }
+
+    #[test]
+    fn test_css_typography_extensions() {
+        assert!(ADMIN_CSS.contains(".text-hero"));
+        assert!(ADMIN_CSS.contains(".text-display"));
+        assert!(ADMIN_CSS.contains(".text-label"));
+    }
+
+    #[test]
+    fn test_css_radius_tokens() {
+        assert!(ADMIN_CSS.contains("--radius-sm: 8px"));
+        assert!(ADMIN_CSS.contains("--radius-md: 12px"));
+        assert!(ADMIN_CSS.contains("--radius-lg: 16px"));
+    }
+
+    #[test]
+    fn test_css_dot_pulse() {
+        assert!(ADMIN_CSS.contains(".m-dot-pulse"));
+        assert!(ADMIN_CSS.contains("m-dot-pulse-anim"));
+    }
+
+    #[test]
+    fn test_css_icon_utilities() {
+        assert!(ADMIN_CSS.contains(".m-icon"));
+        assert!(ADMIN_CSS.contains(".m-icon-sm"));
+        assert!(ADMIN_CSS.contains(".m-icon-lg"));
+    }
+
+    #[test]
+    fn test_css_toast() {
+        assert!(ADMIN_CSS.contains(".m-toast"));
+        assert!(ADMIN_CSS.contains(".m-toast-container"));
+        assert!(ADMIN_CSS.contains(".m-toast-success"));
+        assert!(ADMIN_CSS.contains(".m-toast-error"));
+        assert!(ADMIN_CSS.contains("m-toast-in"));
+        assert!(ADMIN_CSS.contains("m-toast-out"));
+    }
+
+    #[test]
+    fn test_css_pagination() {
+        assert!(ADMIN_CSS.contains(".m-pagination"));
+    }
+
+    #[test]
+    fn test_css_scroll_fade() {
+        assert!(ADMIN_CSS.contains(".m-scroll-fade"));
+        assert!(ADMIN_CSS.contains("mask-image"));
+    }
+
+    #[test]
+    fn test_css_focus_blur() {
+        assert!(ADMIN_CSS.contains(".focus-blur"));
     }
 }

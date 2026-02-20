@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Maud HTML templates for the dystopian terminal admin UI.
+//! Maud HTML templates for the Memoria design system admin UI.
 
 pub mod layout;
 
 pub use layout::{
-    breadcrumb, btn_terminal, empty_state, engine_section, expandable_json,
-    expandable_payload_preview, expandable_string, expandable_text, expandable_vector,
-    format_number, layout, loading_indicator, page_header, progress_bar, stat_card, table_header,
-    terminal_panel, terminal_panel_rust,
+    format_bytes, format_number, layout, m_badge, m_breadcrumb, m_btn, m_card, m_card_interactive,
+    m_empty, m_expandable_json, m_expandable_string, m_expandable_text, m_expandable_vector,
+    m_header, m_loading, m_pagination, m_payload_preview, m_progress, m_section, m_stat,
+    m_table_header, m_tabs,
 };

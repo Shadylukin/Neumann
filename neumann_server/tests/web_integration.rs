@@ -9,6 +9,9 @@ use graph_engine::GraphEngine;
 use http_body_util::BodyExt;
 use neumann_server::web::{self, AdminContext};
 use relational_engine::{ColumnType, RelationalEngine, Schema};
+use tensor_cache::{Cache, CacheConfig};
+use tensor_store::TensorStore;
+use tensor_vault::{Vault, VaultConfig};
 use tower::ServiceExt;
 use vector_engine::{VectorCollectionConfig, VectorEngine};
 
@@ -692,26 +695,6 @@ async fn test_metrics_api() {
         .oneshot(
             Request::builder()
                 .uri("/api/metrics")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-// ========== Achievements Tests ==========
-
-#[tokio::test]
-async fn test_achievements_dashboard() {
-    let ctx = create_test_context();
-    let app = web::router(ctx);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/achievements")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1435,4 +1418,274 @@ async fn test_graph_edges_pagination() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+// ========== Vault Integration Tests ==========
+
+/// Create a context with a seeded vault.
+fn create_vault_context() -> Arc<AdminContext> {
+    let graph = Arc::new(GraphEngine::new());
+    let store = TensorStore::new();
+    let config = VaultConfig {
+        argon2_memory_cost: 256,
+        argon2_time_cost: 1,
+        argon2_parallelism: 1,
+        ..VaultConfig::default()
+    };
+    let vault =
+        Arc::new(Vault::new(b"test-key-integration", Arc::clone(&graph), store, config).unwrap());
+    vault.set(Vault::ROOT, "db/password", "s3cret").unwrap();
+    vault.set(Vault::ROOT, "api_key", "ak-12345").unwrap();
+
+    Arc::new(
+        AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            graph,
+        )
+        .with_vault(Some(vault)),
+    )
+}
+
+#[tokio::test]
+async fn test_vault_secrets_list() {
+    let ctx = create_vault_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vault")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("db/password"));
+    assert!(body.contains("api_key"));
+}
+
+#[tokio::test]
+async fn test_vault_secrets_list_empty() {
+    let ctx = create_test_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vault")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("not configured"));
+}
+
+#[tokio::test]
+async fn test_vault_secret_detail() {
+    let ctx = create_vault_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vault/api_key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("api_key"));
+    assert!(body.contains("REVEAL"));
+}
+
+#[tokio::test]
+async fn test_vault_secret_detail_slash_key() {
+    let ctx = create_vault_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vault/db/password")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("db/password"));
+}
+
+#[tokio::test]
+async fn test_vault_reveal() {
+    let ctx = create_vault_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/reveal?key=api_key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("ak-12345"));
+}
+
+#[tokio::test]
+async fn test_vault_audit_log() {
+    let ctx = create_vault_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vault/audit")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("AUDIT"));
+}
+
+#[tokio::test]
+async fn test_vault_status() {
+    let ctx = create_vault_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/vault/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("STATUS"));
+}
+
+// ========== Cache Integration Tests ==========
+
+/// Create a context with a seeded cache.
+fn create_cache_context() -> Arc<AdminContext> {
+    let config = CacheConfig::development();
+    let dim = config.embedding_dim;
+    let cache = Arc::new(Cache::with_config(config).unwrap());
+    let emb = vec![0.1_f32; dim];
+    cache.put("q1", &emb, "a1", "model", None).unwrap();
+
+    Arc::new(
+        AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(GraphEngine::new()),
+        )
+        .with_cache(Some(cache)),
+    )
+}
+
+#[tokio::test]
+async fn test_cache_stats_dashboard() {
+    let ctx = create_cache_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/cache")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("CACHE"));
+}
+
+#[tokio::test]
+async fn test_cache_stats_no_cache() {
+    let ctx = create_test_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/cache")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("not configured"));
+}
+
+#[tokio::test]
+async fn test_cache_config_viewer() {
+    let ctx = create_cache_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/cache/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("CONFIG"));
+}
+
+#[tokio::test]
+async fn test_cache_layers_breakdown() {
+    let ctx = create_cache_context();
+    let app = web::router(ctx);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/cache/layers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response.into_body()).await;
+    assert!(body.contains("LAYERS") || body.contains("Exact") || body.contains("Semantic"));
 }

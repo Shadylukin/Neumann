@@ -1,24 +1,19 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Base layout template for the dystopian terminal admin UI.
+//! Base layout template for the Memoria design system admin UI.
 //!
-//! Features ASCII art logo, CRT effects, phosphor-styled navigation,
-//! and a status bar with system metrics.
+//! Features a monochromatic dark-themed interface with opacity-based hierarchy,
+//! blur-to-clear animations, and neutral color palette.
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
-use crate::web::assets::{ADMIN_CSS, AUDIO_SCRIPT, TAILWIND_CONFIG, TRO_CSS, TRO_SCRIPT};
+use crate::web::assets::{ADMIN_CSS, MEMORIA_SCRIPT, TAILWIND_CONFIG};
+use crate::web::icons::{
+    icon_blob, icon_cache, icon_chain, icon_checkpoint, icon_contraction, icon_database,
+    icon_graph, icon_key, icon_storage, icon_vector, icon_zap,
+};
 use crate::web::NavItem;
 
-/// ASCII art NEUMANN logo for the terminal header (Fallout block style).
-const ASCII_LOGO: &str = "
-███╗   ██╗███████╗██╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗███╗   ██╗
-████╗  ██║██╔════╝██║   ██║████╗ ████║██╔══██╗████╗  ██║████╗  ██║
-██╔██╗ ██║█████╗  ██║   ██║██╔████╔██║███████║██╔██╗ ██║██╔██╗ ██║
-██║╚██╗██║██╔══╝  ██║   ██║██║╚██╔╝██║██╔══██║██║╚██╗██║██║╚██╗██║
-██║ ╚████║███████╗╚██████╔╝██║ ╚═╝ ██║██║  ██║██║ ╚████║██║ ╚████║
-╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝";
-
-/// Render the base HTML layout with dystopian terminal styling.
+/// Render the base HTML layout with Memoria design system styling.
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
 pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
@@ -28,7 +23,7 @@ pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (title) " | NEUMANN TERMINAL" }
+                title { (title) " | NEUMANN" }
 
                 // Tailwind CSS via CDN
                 script src="https://cdn.tailwindcss.com" {}
@@ -37,29 +32,23 @@ pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
                 // HTMX for interactivity
                 script src="https://unpkg.com/htmx.org@1.9.12" defer {}
 
-                // Terminal Fonts from Google Fonts
+                // Memoria Fonts from Google Fonts
                 link rel="preconnect" href="https://fonts.googleapis.com";
                 link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
-                link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Orbitron:wght@400;500;700&family=Rajdhani:wght@400;500;600&display=swap";
+                link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@100;300;400&family=JetBrains+Mono:wght@400&display=swap";
 
-                // Custom terminal styles
+                // Memoria design system styles
                 style { (PreEscaped(ADMIN_CSS)) }
-
-                // TRO Living Border styles
-                style { (PreEscaped(TRO_CSS)) }
             }
-            body class="crt-scanlines crt-flicker" {
+            body class="bg-neutral-950 text-white font-sans" {
                 div class="min-h-screen flex flex-col" {
                     // Sidebar (desktop)
                     (sidebar(active))
 
                     // Main content area
-                    div class="lg:ml-64 flex-1 flex flex-col" {
-                        // Status bar
-                        (status_bar())
-
+                    div id="main-content" class="lg:ml-64 flex-1 flex flex-col" {
                         // Main content
-                        main class="flex-1 p-4 lg:p-6 crt-vignette" {
+                        main class="flex-1 p-4 lg:p-6" {
                             div class="max-w-7xl mx-auto" {
                                 (content)
                             }
@@ -76,11 +65,8 @@ pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
                 // Keyboard navigation script
                 script { (PreEscaped(KEYBOARD_NAV_SCRIPT)) }
 
-                // TRO Living Border script
-                script { (PreEscaped(TRO_SCRIPT)) }
-
-                // Audio feedback script
-                script { (PreEscaped(AUDIO_SCRIPT)) }
+                // Memoria interactions script
+                script { (PreEscaped(MEMORIA_SCRIPT)) }
             }
         }
     }
@@ -123,7 +109,7 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
 
     // Get all navigable rows in the current table
     function getTableRows() {
-        const table = document.querySelector('.data-table tbody, .table-rust tbody');
+        const table = document.querySelector('.data-table tbody, .m-table tbody');
         return table ? Array.from(table.querySelectorAll('tr')) : [];
     }
 
@@ -142,11 +128,6 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
         rows[index].classList.add('row-selected');
         rows[index].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         selectedRowIndex = index;
-
-        // Play navigation sound if available
-        if (window.NeumannAudio) {
-            window.NeumannAudio.playClick();
-        }
     }
 
     // Navigate to next row
@@ -196,7 +177,7 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
     function focusSearch() {
         const search = document.querySelector(
             'input[type="search"], input[type="text"][placeholder*="earch"], ' +
-            '#terminal-input, input.terminal-input-field'
+            '#terminal-input, input.m-terminal-input-field'
         );
         if (search) {
             search.focus();
@@ -244,8 +225,12 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
             const nodeModal = document.getElementById('node-modal');
             const helpModal = document.getElementById('keyboard-help');
             if (nodeModal && !nodeModal.classList.contains('hidden')) {
-                nodeModal.classList.add('hidden');
-                nodeModal.classList.remove('flex');
+                if (window.Memoria) {
+                    window.Memoria.closeModal(nodeModal);
+                } else {
+                    nodeModal.classList.add('hidden');
+                    nodeModal.classList.remove('flex');
+                }
                 e.preventDefault();
                 return;
             }
@@ -281,11 +266,17 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
                 case 'g': selectFirstRow(); break;
                 case 'a': window.location.href = '/graph/algorithms'; break;
                 case 'm': window.location.href = '/metrics'; break;
-                case 'c': window.location.href = '/achievements'; break;
                 case 'd': window.location.href = '/'; break;
                 case 'r': window.location.href = '/relational'; break;
                 case 'v': window.location.href = '/vector'; break;
                 case 'h': window.location.href = '/graph'; break;
+                case 't': window.location.href = '/contraction'; break;
+                case 's': window.location.href = '/vault'; break;
+                case 'c': window.location.href = '/cache'; break;
+                case 'b': window.location.href = '/blob'; break;
+                case 'p': window.location.href = '/checkpoint'; break;
+                case 'i': window.location.href = '/storage'; break;
+                case 'n': window.location.href = '/chain'; break;
             }
             return;
         }
@@ -353,31 +344,39 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
                         window.location.href = '/';
                         break;
 
+                    case 's':
+                        window.location.href = '/vault';
+                        break;
+
+                    case 'c':
+                        window.location.href = '/cache';
+                        break;
+
+                    case 't':
+                        window.location.href = '/contraction';
+                        break;
+
+                    case 'b':
+                        window.location.href = '/blob';
+                        break;
+
+                    case 'p':
+                        window.location.href = '/checkpoint';
+                        break;
+
+                    case 'i':
+                        window.location.href = '/storage';
+                        break;
+
+                    case 'n':
+                        window.location.href = '/chain';
+                        break;
+
                     case '?':
                         // Show keyboard help
                         const help = document.getElementById('keyboard-help');
                         if (help) {
                             help.classList.toggle('hidden');
-                            e.preventDefault();
-                        }
-                        break;
-
-                    case 't':
-                        // Toggle TRO living border
-                        if (window.TRO) {
-                            window.TRO.config.enabled = !window.TRO.config.enabled;
-                            if (window.TRO.config.enabled) {
-                                window.TRO.init();
-                            }
-                            e.preventDefault();
-                        }
-                        break;
-
-                    case 's':
-                        // Toggle sound
-                        if (window.NeumannAudio) {
-                            const enabled = !window.NeumannAudio.isEnabled();
-                            window.NeumannAudio.setEnabled(enabled);
                             e.preventDefault();
                         }
                         break;
@@ -389,21 +388,22 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
     const style = document.createElement('style');
     style.textContent = `
         .row-selected {
-            background-color: rgba(0, 238, 0, 0.15) !important;
-            outline: 1px solid var(--phosphor-green-dim) !important;
+            background-color: rgba(255, 255, 255, 0.08) !important;
+            border-left: 2px solid var(--border-emphasis) !important;
         }
         .row-selected td {
-            color: var(--phosphor-green) !important;
+            color: var(--text-primary) !important;
         }
         #g-prefix-indicator {
             position: fixed;
             bottom: 1rem;
             right: 1rem;
-            background: var(--soot-gray);
-            border: 1px solid var(--phosphor-green-dim);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-emphasis);
             padding: 0.5rem 1rem;
-            font-family: 'VT323', monospace;
-            color: var(--phosphor-green);
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+            border-radius: 8px;
             z-index: 100;
         }
     `;
@@ -418,86 +418,67 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
 })();
 "#;
 
-/// Render the terminal status bar with system info.
-fn status_bar() -> Markup {
-    html! {
-        div class="status-bar border-b" {
-            span class="status-bar-item" {
-                span class="text-phosphor font-display text-xs tracking-wider" { "NEUMANN" }
-                span class="text-phosphor-dark" { "v0.1" }
-            }
-            span class="status-bar-divider" { "|" }
-            span class="status-bar-item" {
-                span class="text-phosphor-dim" { "SYS:" }
-                span class="text-phosphor" { "ONLINE" }
-            }
-            span class="status-bar-divider" { "|" }
-            span class="status-bar-item" {
-                span class="text-phosphor-dim cursor-pointer hover:text-phosphor" onclick="document.getElementById('keyboard-help').classList.toggle('hidden')" { "[?] HELP" }
-            }
-            span class="status-bar-divider" { "|" }
-            span class="status-bar-item ml-auto" {
-                span class="status-indicator status-indicator-connected" {}
-                span class="text-phosphor-dim" { "CONNECTED" }
-            }
-        }
-    }
-}
-
 /// Keyboard help overlay.
 fn keyboard_help() -> Markup {
     html! {
         div id="keyboard-help" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/90" onclick="this.classList.add('hidden')" {
-            div class="terminal-panel w-[32rem] max-w-[90vw]" onclick="event.stopPropagation()" {
-                div class="panel-header" { "KEYBOARD SHORTCUTS" }
-                div class="panel-content" {
-                    div class="space-y-4 font-terminal text-sm" {
+            div class="m-card w-[32rem] max-w-[90vw]" onclick="event.stopPropagation()" {
+                div class="m-card-header" { "KEYBOARD SHORTCUTS" }
+                div class="m-card-content" {
+                    div class="space-y-4 text-sm" {
                         // Navigation
                         div {
-                            div class="text-amber-glow mb-2" { "[ NAVIGATION ]" }
+                            div class="text-neutral-400 mb-2 uppercase tracking-wider text-xs" { "NAVIGATION" }
                             div class="grid grid-cols-2 gap-2" {
-                                div { span class="kbd-hint mr-2" { "D" } span class="text-phosphor-dim" { "Dashboard" } }
-                                div { span class="kbd-hint mr-2" { "V" } span class="text-phosphor-dim" { "Vector" } }
-                                div { span class="kbd-hint mr-2" { "R" } span class="text-phosphor-dim" { "Relational" } }
+                                div { span class="m-kbd mr-2" { "D" } span class="text-neutral-400" { "Dashboard" } }
+                                div { span class="m-kbd mr-2" { "V" } span class="text-neutral-400" { "Vector" } }
+                                div { span class="m-kbd mr-2" { "R" } span class="text-neutral-400" { "Relational" } }
+                                div { span class="m-kbd mr-2" { "S" } span class="text-neutral-400" { "Vault" } }
+                                div { span class="m-kbd mr-2" { "C" } span class="text-neutral-400" { "Cache" } }
+                                div { span class="m-kbd mr-2" { "B" } span class="text-neutral-400" { "Blob" } }
+                                div { span class="m-kbd mr-2" { "P" } span class="text-neutral-400" { "Checkpoint" } }
+                                div { span class="m-kbd mr-2" { "I" } span class="text-neutral-400" { "Storage" } }
+                                div { span class="m-kbd mr-2" { "T" } span class="text-neutral-400" { "Contraction" } }
+                                div { span class="m-kbd mr-2" { "N" } span class="text-neutral-400" { "Chain" } }
                             }
                         }
                         // G-prefix navigation
                         div {
-                            div class="text-amber-glow mb-2" { "[ G-PREFIX ]" }
+                            div class="text-neutral-400 mb-2 uppercase tracking-wider text-xs" { "G-PREFIX" }
                             div class="grid grid-cols-2 gap-2" {
-                                div { span class="kbd-hint mr-2" { "g+g" } span class="text-phosphor-dim" { "Top of list" } }
-                                div { span class="kbd-hint mr-2" { "g+h" } span class="text-phosphor-dim" { "Graph engine" } }
-                                div { span class="kbd-hint mr-2" { "g+a" } span class="text-phosphor-dim" { "Algorithms" } }
-                                div { span class="kbd-hint mr-2" { "g+m" } span class="text-phosphor-dim" { "Metrics" } }
-                                div { span class="kbd-hint mr-2" { "g+c" } span class="text-phosphor-dim" { "Achievements" } }
+                                div { span class="m-kbd mr-2" { "g+g" } span class="text-neutral-400" { "Top of list" } }
+                                div { span class="m-kbd mr-2" { "g+h" } span class="text-neutral-400" { "Graph engine" } }
+                                div { span class="m-kbd mr-2" { "g+a" } span class="text-neutral-400" { "Algorithms" } }
+                                div { span class="m-kbd mr-2" { "g+t" } span class="text-neutral-400" { "Contraction" } }
+                                div { span class="m-kbd mr-2" { "g+s" } span class="text-neutral-400" { "Vault" } }
+                                div { span class="m-kbd mr-2" { "g+c" } span class="text-neutral-400" { "Cache" } }
+                                div { span class="m-kbd mr-2" { "g+m" } span class="text-neutral-400" { "Metrics" } }
                             }
                         }
                         // Table navigation
                         div {
-                            div class="text-amber-glow mb-2" { "[ TABLE NAVIGATION ]" }
+                            div class="text-neutral-400 mb-2 uppercase tracking-wider text-xs" { "TABLE NAVIGATION" }
                             div class="grid grid-cols-2 gap-2" {
-                                div { span class="kbd-hint mr-2" { "j" } span class="text-phosphor-dim" { "Next row" } }
-                                div { span class="kbd-hint mr-2" { "k" } span class="text-phosphor-dim" { "Previous row" } }
-                                div { span class="kbd-hint mr-2" { "G" } span class="text-phosphor-dim" { "Last row" } }
-                                div { span class="kbd-hint mr-2" { "Enter" } span class="text-phosphor-dim" { "Expand row" } }
-                                div { span class="kbd-hint mr-2" { "[" } span class="text-phosphor-dim" { "Previous page" } }
-                                div { span class="kbd-hint mr-2" { "]" } span class="text-phosphor-dim" { "Next page" } }
+                                div { span class="m-kbd mr-2" { "j" } span class="text-neutral-400" { "Next row" } }
+                                div { span class="m-kbd mr-2" { "k" } span class="text-neutral-400" { "Previous row" } }
+                                div { span class="m-kbd mr-2" { "G" } span class="text-neutral-400" { "Last row" } }
+                                div { span class="m-kbd mr-2" { "Enter" } span class="text-neutral-400" { "Expand row" } }
+                                div { span class="m-kbd mr-2" { "[" } span class="text-neutral-400" { "Previous page" } }
+                                div { span class="m-kbd mr-2" { "]" } span class="text-neutral-400" { "Next page" } }
                             }
                         }
                         // General
                         div {
-                            div class="text-amber-glow mb-2" { "[ GENERAL ]" }
+                            div class="text-neutral-400 mb-2 uppercase tracking-wider text-xs" { "GENERAL" }
                             div class="grid grid-cols-2 gap-2" {
-                                div { span class="kbd-hint mr-2" { "/" } span class="text-phosphor-dim" { "Focus search" } }
-                                div { span class="kbd-hint mr-2" { "?" } span class="text-phosphor-dim" { "This help" } }
-                                div { span class="kbd-hint mr-2" { "Esc" } span class="text-phosphor-dim" { "Close/unfocus" } }
-                                div { span class="kbd-hint mr-2" { "T" } span class="text-phosphor-dim" { "Toggle TRO border" } }
-                                div { span class="kbd-hint mr-2" { "S" } span class="text-phosphor-dim" { "Toggle sound" } }
+                                div { span class="m-kbd mr-2" { "/" } span class="text-neutral-400" { "Focus search" } }
+                                div { span class="m-kbd mr-2" { "?" } span class="text-neutral-400" { "This help" } }
+                                div { span class="m-kbd mr-2" { "Esc" } span class="text-neutral-400" { "Close/unfocus" } }
                             }
                         }
                     }
                 }
-                div class="panel-footer text-center text-phosphor-dark" {
+                div class="m-card-footer text-center text-neutral-500" {
                     "Press ? or Esc to close"
                 }
             }
@@ -507,72 +488,103 @@ fn keyboard_help() -> Markup {
 
 /// Render a page header with title and optional description.
 #[must_use]
-pub fn page_header(title: &str, description: Option<&str>) -> Markup {
+pub fn m_header(title: &str, description: Option<&str>) -> Markup {
     html! {
         div class="mb-6" {
-            h1 class="text-2xl font-display text-phosphor phosphor-glow tracking-wider uppercase" {
+            h1 class="text-2xl text-white tracking-wider uppercase" style="font-weight: 300;" {
                 (title)
             }
             @if let Some(desc) = description {
-                p class="text-phosphor-dim font-terminal mt-1" { (desc) }
+                p class="text-neutral-400 mt-1" { (desc) }
             }
         }
     }
 }
 
-/// Render the desktop sidebar with ASCII art and navigation.
+/// Render the desktop sidebar with navigation.
 fn sidebar(active: NavItem) -> Markup {
     html! {
-        aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col bg-terminal-soot border-r border-phosphor-dim" {
-            // ASCII Logo - Fallout block style
-            div class="px-1 pt-3 pb-2 border-b border-phosphor-dark overflow-hidden" {
-                pre class="text-phosphor text-[4px] leading-[1.15] font-mono phosphor-glow-subtle whitespace-pre" style="transform: scale(0.95); transform-origin: center top;" {
-                    (ASCII_LOGO)
+        aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col bg-neutral-900 border-r border-neutral-800" {
+            // Wordmark
+            div class="px-4 pt-4 pb-3 border-b border-neutral-800" {
+                div class="text-white text-2xl tracking-[0.2em] uppercase" style="font-weight: 100; opacity: 0.8;" {
+                    "NEUMANN"
                 }
-                div class="text-center text-amber-glow text-[9px] font-terminal mt-2 tracking-[0.25em]" {
+                div class="text-neutral-500 text-xs tracking-[0.15em] mt-1" {
                     "TENSOR DATABASE"
                 }
             }
 
             // Navigation
-            nav class="flex-1 px-2 py-4 nav-terminal" {
+            nav class="flex-1 px-2 py-4 m-nav stagger-container" {
                 div class="mb-2 px-2" {
-                    span class="text-xs text-phosphor-dark font-terminal tracking-widest" {
-                        "[ NAVIGATION ]"
+                    span class="text-xs text-neutral-500 tracking-widest" {
+                        "NAVIGATION"
                     }
                 }
 
-                (nav_item("/", "D", "DASHBOARD", active == NavItem::Dashboard))
+                (nav_item("/", "D", "DASHBOARD", &icon_zap(), active == NavItem::Dashboard))
 
                 div class="mt-4 mb-2 px-2" {
-                    span class="text-xs text-phosphor-dark font-terminal tracking-widest" {
-                        "[ ENGINES ]"
+                    span class="text-xs text-neutral-500 tracking-widest" {
+                        "ENGINES"
                     }
                 }
 
-                (nav_item("/graph", "G", "GRAPH", active == NavItem::Graph))
-                (nav_item("/vector", "V", "VECTOR", active == NavItem::Vector))
-                (nav_item("/relational", "R", "RELATIONAL", active == NavItem::Relational))
+                (nav_item("/graph", "G", "GRAPH", &icon_graph(), active == NavItem::Graph))
+                (nav_item("/vector", "V", "VECTOR", &icon_vector(), active == NavItem::Vector))
+                (nav_item("/relational", "R", "RELATIONAL", &icon_database(), active == NavItem::Relational))
+
+                div class="mt-4 mb-2 px-2" {
+                    span class="text-xs text-neutral-500 tracking-widest" {
+                        "STORAGE"
+                    }
+                }
+
+                (nav_item("/vault", "S", "VAULT", &icon_key(), active == NavItem::Vault))
+                (nav_item("/cache", "C", "CACHE", &icon_cache(), active == NavItem::Cache))
+                (nav_item("/blob", "B", "BLOB", &icon_blob(), active == NavItem::Blob))
+                (nav_item("/checkpoint", "P", "CHECKPOINT", &icon_checkpoint(), active == NavItem::Checkpoint))
+
+                div class="mt-4 mb-2 px-2" {
+                    span class="text-xs text-neutral-500 tracking-widest" {
+                        "INTERNALS"
+                    }
+                }
+
+                (nav_item("/storage", "I", "STORAGE", &icon_storage(), active == NavItem::Storage))
+                (nav_item("/chain", "N", "CHAIN", &icon_chain(), active == NavItem::Chain))
+
+                div class="mt-4 mb-2 px-2" {
+                    span class="text-xs text-neutral-500 tracking-widest" {
+                        "ANALYSIS"
+                    }
+                }
+
+                (nav_item("/contraction", "T", "CONTRACTION", &icon_contraction(), active == NavItem::Contraction))
             }
 
-            // Keyboard hints
-            div class="px-4 py-3 border-t border-phosphor-dark" {
-                div class="text-xs text-phosphor-dark font-terminal" {
-                    "KEYBOARD SHORTCUTS"
+            // Keyboard hints — clickable to open full help overlay
+            div class="px-4 py-3 border-t border-neutral-800" {
+                div class="flex items-center justify-between cursor-pointer group"
+                    onclick="document.getElementById('keyboard-help').classList.toggle('hidden')" {
+                    span class="text-xs text-neutral-500 tracking-widest uppercase group-hover:text-neutral-300 transition-colors" {
+                        "KEYBOARD SHORTCUTS"
+                    }
+                    span class="m-kbd text-neutral-600 group-hover:text-neutral-400 transition-colors" { "?" }
                 }
-                div class="mt-2 grid grid-cols-2 gap-1 text-xs font-terminal" {
-                    span { span class="kbd-hint" { "D" } span class="text-phosphor-dim" { "Dash" } }
-                    span { span class="kbd-hint" { "G" } span class="text-phosphor-dim" { "Graph" } }
-                    span { span class="kbd-hint" { "V" } span class="text-phosphor-dim" { "Vector" } }
-                    span { span class="kbd-hint" { "R" } span class="text-phosphor-dim" { "Rel" } }
-                }
-            }
-
-            // Status footer
-            div class="px-4 py-3 border-t border-phosphor-dark" {
-                div class="flex items-center gap-2" {
-                    span class="status-indicator status-indicator-connected" {}
-                    span class="text-sm text-phosphor-dim font-terminal" { "SYSTEM READY" }
+                div class="mt-2 grid grid-cols-2 gap-1 text-xs" {
+                    span { span class="m-kbd" { "D" } span class="text-neutral-400" { "Dash" } }
+                    span { span class="m-kbd" { "G" } span class="text-neutral-400" { "Graph" } }
+                    span { span class="m-kbd" { "V" } span class="text-neutral-400" { "Vector" } }
+                    span { span class="m-kbd" { "R" } span class="text-neutral-400" { "Rel" } }
+                    span { span class="m-kbd" { "S" } span class="text-neutral-400" { "Vault" } }
+                    span { span class="m-kbd" { "C" } span class="text-neutral-400" { "Cache" } }
+                    span { span class="m-kbd" { "B" } span class="text-neutral-400" { "Blob" } }
+                    span { span class="m-kbd" { "P" } span class="text-neutral-400" { "Chkpt" } }
+                    span { span class="m-kbd" { "I" } span class="text-neutral-400" { "Store" } }
+                    span { span class="m-kbd" { "N" } span class="text-neutral-400" { "Chain" } }
+                    span { span class="m-kbd" { "T" } span class="text-neutral-400" { "Contr" } }
                 }
             }
         }
@@ -582,115 +594,132 @@ fn sidebar(active: NavItem) -> Markup {
 /// Render the mobile bottom navigation.
 fn mobile_nav(active: NavItem) -> Markup {
     html! {
-        nav class="lg:hidden fixed bottom-0 left-0 right-0 bg-terminal-soot border-t border-phosphor-dim px-2 py-1" {
+        nav class="lg:hidden fixed bottom-0 left-0 right-0 bg-neutral-900 border-t border-neutral-800 px-2 py-1" {
             div class="flex justify-around" {
-                (mobile_nav_item("/", "D", active == NavItem::Dashboard))
-                (mobile_nav_item("/graph", "G", active == NavItem::Graph))
-                (mobile_nav_item("/vector", "V", active == NavItem::Vector))
-                (mobile_nav_item("/relational", "R", active == NavItem::Relational))
+                (mobile_nav_item("/", "DASH", &icon_zap(), active == NavItem::Dashboard))
+                (mobile_nav_item("/graph", "GRAPH", &icon_graph(), active == NavItem::Graph))
+                (mobile_nav_item("/vector", "VEC", &icon_vector(), active == NavItem::Vector))
+                (mobile_nav_item("/relational", "REL", &icon_database(), active == NavItem::Relational))
+                (mobile_nav_item("/vault", "VAULT", &icon_key(), active == NavItem::Vault))
+                (mobile_nav_item("/cache", "CACHE", &icon_cache(), active == NavItem::Cache))
+                (mobile_nav_item("/blob", "BLOB", &icon_blob(), active == NavItem::Blob))
+                (mobile_nav_item("/chain", "CHAIN", &icon_chain(), active == NavItem::Chain))
+                (mobile_nav_item("/contraction", "TENS", &icon_contraction(), active == NavItem::Contraction))
             }
         }
     }
 }
 
-/// Render a navigation item with keyboard hint.
-fn nav_item(href: &str, key: &str, label: &str, is_active: bool) -> Markup {
+/// Render a navigation item with icon and keyboard hint.
+fn nav_item(href: &str, key: &str, label: &str, icon: &Markup, is_active: bool) -> Markup {
     let active_class = if is_active { "active" } else { "" };
 
     html! {
-        a href=(href) class=(format!("flex items-center gap-2 px-3 py-2 my-1 {active_class}")) {
-            span class="kbd-hint" { (key) }
+        a href=(href) class=(format!("flex items-center gap-2 px-3 py-2 my-1 stagger-item {active_class}")) {
+            span class="m-icon-sm inline-flex" { (icon) }
             span { (label) }
+            span class="m-kbd ml-auto" { (key) }
         }
     }
 }
 
-/// Render a mobile navigation item.
-fn mobile_nav_item(href: &str, key: &str, is_active: bool) -> Markup {
+/// Render a mobile navigation item with SVG icon.
+fn mobile_nav_item(href: &str, label: &str, icon: &Markup, is_active: bool) -> Markup {
     let active_class = if is_active {
-        "text-phosphor phosphor-glow-subtle"
+        "text-white"
     } else {
-        "text-phosphor-dim"
+        "text-neutral-500"
     };
 
     html! {
-        a href=(href) class=(format!("flex flex-col items-center gap-1 px-4 py-2 {active_class}")) {
-            span class="font-terminal text-lg" { "[" (key) "]" }
+        a href=(href) class=(format!("flex flex-col items-center gap-1 px-3 py-2 {active_class}")) {
+            span class="m-icon-sm inline-flex" { (icon) }
+            span class="text-[10px] tracking-wider" { (label) }
         }
     }
 }
 
-/// Render a terminal-styled stat card.
+/// Render a stat card with opacity-based hierarchy and animated counter.
 #[must_use]
-pub fn stat_card(label: &str, value: &str, subtitle: &str, engine: &str) -> Markup {
-    let border_class = match engine {
-        "relational" => "stat-card-relational",
-        "vector" => "stat-card-vector",
-        "graph" => "stat-card-graph",
-        _ => "",
-    };
-
+pub fn m_stat(label: &str, value: &str, subtitle: &str, _engine: &str) -> Markup {
     html! {
-        div class=(format!("stat-card {border_class}")) {
-            div class="stat-card-label" { (label) }
-            div class="stat-card-value" { (value) }
-            div class="stat-card-subtitle" { (subtitle) }
+        div class="m-stat" {
+            div class="m-stat-label" { (label) }
+            div class="m-stat-value" data-counter=(value) { (value) }
+            div class="m-stat-subtitle" { (subtitle) }
         }
     }
 }
 
-/// Render a terminal panel with ASCII box decorations.
+/// Render a Memoria card panel.
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
-pub fn terminal_panel(title: &str, content: Markup) -> Markup {
+pub fn m_card(title: &str, content: Markup) -> Markup {
     html! {
-        div class="terminal-panel" {
-            div class="panel-header" { (title) }
-            div class="panel-content" {
+        div class="m-card" {
+            div class="m-card-header" { (title) }
+            div class="m-card-content" {
                 (content)
             }
         }
     }
 }
 
-/// Render a terminal panel with rust accent.
+/// Render an interactive card with hover effects.
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
-pub fn terminal_panel_rust(title: &str, content: Markup) -> Markup {
+pub fn m_card_interactive(title: &str, content: Markup) -> Markup {
     html! {
-        div class="terminal-panel terminal-panel-rust" {
-            div class="panel-header" { (title) }
-            div class="panel-content" {
+        div class="m-card-interactive" {
+            div class="m-card-header" { (title) }
+            div class="m-card-content" {
                 (content)
             }
         }
     }
 }
 
-/// Render an engine section card for the dashboard.
+/// Render a Memoria badge.
 #[must_use]
-pub fn engine_section(title: &str, engine: &str, items: &[(String, String)]) -> Markup {
-    let border_class = match engine {
-        "relational" => "border-l-2 border-amber-glow",
-        "vector" => "border-l-2 border-rust-blood",
-        "graph" => "border-l-2 border-phosphor",
-        _ => "",
-    };
-
+pub fn m_badge(text: &str) -> Markup {
     html! {
-        div class=(format!("terminal-panel {border_class}")) {
-            div class="panel-header" { (title) }
-            div class="panel-content" {
+        span class="m-badge" { (text) }
+    }
+}
+
+/// Render Memoria tabs.
+///
+/// Each item is `(label, href, is_active)`.
+#[must_use]
+pub fn m_tabs(items: &[(&str, &str, bool)]) -> Markup {
+    html! {
+        div class="m-tabs" {
+            @for (label, href, active) in items {
+                a href=(*href) class=(if *active { "m-tab active" } else { "m-tab" }) {
+                    (*label)
+                }
+            }
+        }
+    }
+}
+
+/// Render a section card for the dashboard.
+#[must_use]
+pub fn m_section(title: &str, _engine: &str, items: &[(String, String)]) -> Markup {
+    html! {
+        div class="m-card" {
+            div class="m-card-header" { (title) }
+            div class="m-card-content" {
                 @if items.is_empty() {
-                    div class="text-phosphor-dark font-terminal italic" {
-                        "< NO DATA >"
+                    div class="text-neutral-500 text-sm" {
+                        "No entries"
                     }
                 } @else {
                     ul class="space-y-2" {
                         @for (name, count) in items {
-                            li class="flex items-center justify-between font-terminal" {
-                                span class="text-phosphor" { (name) }
-                                span class="text-amber font-data" { (count) }
+                            li class="flex items-center justify-between" {
+                                span class="text-white" { (name) }
+                                span class="text-neutral-400 font-mono" { (count) }
                             }
                         }
                     }
@@ -700,16 +729,35 @@ pub fn engine_section(title: &str, engine: &str, items: &[(String, String)]) -> 
     }
 }
 
-/// Render an empty state message.
+/// Render an empty state message with lamp container.
 #[must_use]
-pub fn empty_state(title: &str, description: &str) -> Markup {
+pub fn m_empty(title: &str, description: &str) -> Markup {
     html! {
-        div class="text-center py-12 terminal-panel" {
-            div class="text-6xl text-phosphor-dark mb-4 font-terminal" { "[ ]" }
-            h3 class="text-lg font-display text-phosphor phosphor-glow-subtle" { (title) }
-            p class="text-sm text-phosphor-dim font-terminal mt-1" { (description) }
+        div class="text-center py-12 m-card m-lamp" {
+            div class="text-5xl text-neutral-600 mb-4" style="font-weight: 100;" { "---" }
+            h3 class="text-lg text-white" style="font-weight: 300;" { (title) }
+            p class="text-sm text-neutral-400 mt-1" { (description) }
         }
     }
+}
+
+/// Format a byte count as a human-readable string (B/KB/MB/GB).
+#[must_use]
+#[allow(clippy::cast_precision_loss)] // Precision loss acceptable for display formatting
+pub fn format_bytes(n: usize) -> String {
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    if n < 1_048_576 {
+        let kb = n as f64 / 1024.0;
+        return format!("{kb:.1} KB");
+    }
+    if n < 1_073_741_824 {
+        let mb = n as f64 / 1_048_576.0;
+        return format!("{mb:.1} MB");
+    }
+    let gb = n as f64 / 1_073_741_824.0;
+    format!("{gb:.2} GB")
 }
 
 /// Format a number with thousands separators.
@@ -729,16 +777,15 @@ pub fn format_number(n: usize) -> String {
 
 /// Render a breadcrumb trail for navigation.
 #[must_use]
-pub fn breadcrumb(items: &[(&str, &str)]) -> Markup {
+pub fn m_breadcrumb(items: &[(&str, &str)]) -> Markup {
     html! {
-        nav class="breadcrumb-terminal mb-4" {
-            span class="text-phosphor-dark" { "> " }
+        nav class="m-breadcrumb mb-4" {
             @for (i, (href, label)) in items.iter().enumerate() {
                 @if i > 0 {
-                    span class="separator" { ">" }
+                    span class="separator" { "/" }
                 }
                 @if i == items.len() - 1 {
-                    span class="text-phosphor" { (label) }
+                    span class="text-white" { (label) }
                 } @else {
                     a href=(href) { (label) }
                 }
@@ -747,26 +794,26 @@ pub fn breadcrumb(items: &[(&str, &str)]) -> Markup {
     }
 }
 
-/// Render a terminal-styled button.
+/// Render a Memoria-styled button.
 #[must_use]
-pub fn btn_terminal(label: &str, href: Option<&str>) -> Markup {
+pub fn m_btn(label: &str, href: Option<&str>) -> Markup {
     href.map_or_else(
         || {
             html! {
-                button type="submit" class="btn-terminal" { (label) }
+                button type="submit" class="m-btn" { (label) }
             }
         },
         |h| {
             html! {
-                a href=(h) class="btn-terminal inline-block" { (label) }
+                a href=(h) class="m-btn inline-block" { (label) }
             }
         },
     )
 }
 
-/// Render a terminal-styled table.
+/// Render a table header row.
 #[must_use]
-pub fn table_header(columns: &[&str]) -> Markup {
+pub fn m_table_header(columns: &[&str]) -> Markup {
     html! {
         thead {
             tr {
@@ -778,9 +825,9 @@ pub fn table_header(columns: &[&str]) -> Markup {
     }
 }
 
-/// Render expandable text content with terminal styling.
+/// Render expandable text content.
 #[must_use]
-pub fn expandable_text(content: &str, max_chars: usize, color_class: &str) -> Markup {
+pub fn m_expandable_text(content: &str, max_chars: usize, color_class: &str) -> Markup {
     if content.len() <= max_chars {
         return html! {
             span class=(color_class) { (content) }
@@ -790,19 +837,19 @@ pub fn expandable_text(content: &str, max_chars: usize, color_class: &str) -> Ma
     let preview = &content[..max_chars.min(content.len())];
 
     html! {
-        span class="expandable-terminal" {
+        span class="m-expandable" {
             span class="preview" {
                 span class=(color_class) { (preview) "..." }
-                span class="expand-btn-terminal ml-1"
+                span class="m-expand-btn ml-1"
                     onclick="this.parentElement.style.display='none';this.parentElement.nextElementSibling.style.display='inline'" {
-                    "[MORE]"
+                    "more"
                 }
             }
             span class="full" style="display:none" {
                 span class=(format!("{color_class} whitespace-pre-wrap")) { (content) }
-                span class="expand-btn-terminal ml-1"
+                span class="m-expand-btn ml-1"
                     onclick="this.parentElement.style.display='none';this.parentElement.previousElementSibling.style.display='inline'" {
-                    "[LESS]"
+                    "less"
                 }
             }
         }
@@ -811,60 +858,60 @@ pub fn expandable_text(content: &str, max_chars: usize, color_class: &str) -> Ma
 
 /// Render expandable text with quoted string formatting.
 #[must_use]
-pub fn expandable_string(content: &str, max_chars: usize) -> Markup {
+pub fn m_expandable_string(content: &str, max_chars: usize) -> Markup {
     if content.len() <= max_chars {
         return html! {
-            span class="text-amber" { "\"" (content) "\"" }
+            span class="text-neutral-300" { "\"" (content) "\"" }
         };
     }
 
     let preview = &content[..max_chars.min(content.len())];
 
     html! {
-        span class="expandable-terminal" {
+        span class="m-expandable" {
             span class="preview" {
-                span class="text-amber" { "\"" (preview) "...\"" }
-                span class="expand-btn-terminal ml-1"
+                span class="text-neutral-300" { "\"" (preview) "...\"" }
+                span class="m-expand-btn ml-1"
                     onclick="this.parentElement.style.display='none';this.parentElement.nextElementSibling.style.display='inline'" {
-                    "[MORE]"
+                    "more"
                 }
             }
             span class="full" style="display:none" {
-                span class="text-amber whitespace-pre-wrap" { "\"" (content) "\"" }
-                span class="expand-btn-terminal ml-1"
+                span class="text-neutral-300 whitespace-pre-wrap" { "\"" (content) "\"" }
+                span class="m-expand-btn ml-1"
                     onclick="this.parentElement.style.display='none';this.parentElement.previousElementSibling.style.display='inline'" {
-                    "[LESS]"
+                    "less"
                 }
             }
         }
     }
 }
 
-/// Render expandable JSON content with terminal styling.
+/// Render expandable JSON content.
 #[must_use]
-pub fn expandable_json(content: &str, max_chars: usize) -> Markup {
+pub fn m_expandable_json(content: &str, max_chars: usize) -> Markup {
     if content.len() <= max_chars {
         return html! {
-            span class="text-phosphor font-terminal text-sm" { (content) }
+            span class="text-white font-mono text-sm" { (content) }
         };
     }
 
     let preview = &content[..max_chars.min(content.len())];
 
     html! {
-        span class="expandable-terminal" {
+        span class="m-expandable" {
             span class="preview" {
-                span class="text-phosphor font-terminal text-sm" { (preview) "..." }
-                span class="expand-btn-terminal ml-1"
+                span class="text-white font-mono text-sm" { (preview) "..." }
+                span class="m-expand-btn ml-1"
                     onclick="this.parentElement.style.display='none';this.parentElement.nextElementSibling.style.display='inline'" {
-                    "[MORE]"
+                    "more"
                 }
             }
             span class="full" style="display:none" {
-                span class="text-phosphor font-terminal text-sm whitespace-pre-wrap" { (content) }
-                span class="expand-btn-terminal ml-1"
+                span class="text-white font-mono text-sm whitespace-pre-wrap" { (content) }
+                span class="m-expand-btn ml-1"
                     onclick="this.parentElement.style.display='none';this.parentElement.previousElementSibling.style.display='inline'" {
-                    "[LESS]"
+                    "less"
                 }
             }
         }
@@ -873,7 +920,7 @@ pub fn expandable_json(content: &str, max_chars: usize) -> Markup {
 
 /// Render expandable vector content with dimension info.
 #[must_use]
-pub fn expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
+pub fn m_expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
     let total = vec.len();
 
     if total <= max_preview {
@@ -883,7 +930,7 @@ pub fn expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
             .collect::<Vec<_>>()
             .join(", ");
         return html! {
-            span class="font-terminal text-xs text-phosphor-dim" { "[" (formatted) "]" }
+            span class="font-mono text-xs text-neutral-400" { "[" (formatted) "]" }
         };
     }
 
@@ -922,24 +969,24 @@ pub fn expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
         .join(", ");
 
     html! {
-        details class="expandable-details-terminal" {
+        details class="m-expandable-details" {
             summary class="cursor-pointer list-none" {
-                span class="font-terminal text-xs text-phosphor-dim" { (preview) }
-                span class="expand-btn-terminal ml-2" {
-                    "[SHOW ALL " (total) "]"
+                span class="font-mono text-xs text-neutral-400" { (preview) }
+                span class="m-expand-btn ml-2" {
+                    "show all " (total)
                 }
             }
-            div class="mt-2 p-3 bg-terminal-deep border border-phosphor-dark max-h-96 overflow-auto" {
-                div class="flex items-center justify-between mb-2 pb-2 border-b border-phosphor-dark" {
-                    span class="text-xs text-phosphor-dark font-terminal" { (total) " DIMENSIONS" }
+            div class="mt-2 p-3 bg-neutral-950 border border-neutral-800 rounded-lg max-h-96 overflow-auto" {
+                div class="flex items-center justify-between mb-2 pb-2 border-b border-neutral-800" {
+                    span class="text-xs text-neutral-500 font-mono" { (total) " dimensions" }
                     span
-                        class="expand-btn-terminal cursor-pointer"
+                        class="m-expand-btn cursor-pointer"
                         onclick="navigator.clipboard.writeText(this.closest('details').querySelector('pre').textContent)"
                     {
-                        "[COPY]"
+                        "copy"
                     }
                 }
-                pre class="font-terminal text-xs text-phosphor-dim whitespace-pre-wrap" {
+                pre class="font-mono text-xs text-neutral-400 whitespace-pre-wrap" {
                     "[" (full_formatted) "]"
                 }
             }
@@ -947,9 +994,9 @@ pub fn expandable_vector(vec: &[f32], max_preview: usize) -> Markup {
     }
 }
 
-/// Render expandable payload preview with terminal styling.
+/// Render expandable payload preview.
 #[must_use]
-pub fn expandable_payload_preview(items: &[(String, String)], max_items: usize) -> Markup {
+pub fn m_payload_preview(items: &[(String, String)], max_items: usize) -> Markup {
     if items.len() <= max_items {
         let preview = items
             .iter()
@@ -957,7 +1004,7 @@ pub fn expandable_payload_preview(items: &[(String, String)], max_items: usize) 
             .collect::<Vec<_>>()
             .join(", ");
         return html! {
-            span class="font-terminal text-xs" { "{ " (preview) " }" }
+            span class="font-mono text-xs" { "{ " (preview) " }" }
         };
     }
 
@@ -969,20 +1016,20 @@ pub fn expandable_payload_preview(items: &[(String, String)], max_items: usize) 
     let hidden_count = items.len() - max_items;
 
     html! {
-        details class="expandable-details-terminal" {
+        details class="m-expandable-details" {
             summary class="cursor-pointer list-none" {
-                span class="font-terminal text-xs" { "{ " (shown.join(", ")) " " }
-                span class="expand-btn-terminal" {
-                    "[+" (hidden_count) " MORE]"
+                span class="font-mono text-xs" { "{ " (shown.join(", ")) " " }
+                span class="m-expand-btn" {
+                    "+" (hidden_count) " more"
                 }
-                span class="font-terminal text-xs" { " }" }
+                span class="font-mono text-xs" { " }" }
             }
-            div class="mt-2 p-3 bg-terminal-deep border border-phosphor-dark" {
+            div class="mt-2 p-3 bg-neutral-950 border border-neutral-800 rounded-lg" {
                 dl class="space-y-1" {
                     @for (key, value) in items {
                         div class="flex gap-2" {
-                            dt class="font-terminal text-xs text-phosphor-dim min-w-[100px]" { (key) ":" }
-                            dd class="font-terminal text-xs text-phosphor break-all" { (value) }
+                            dt class="font-mono text-xs text-neutral-400 min-w-[100px]" { (key) ":" }
+                            dd class="font-mono text-xs text-white break-all" { (value) }
                         }
                     }
                 }
@@ -991,30 +1038,75 @@ pub fn expandable_payload_preview(items: &[(String, String)], max_items: usize) 
     }
 }
 
-/// Render a loading indicator with terminal ASCII style.
+/// Render a loading indicator with blur-to-clear animation.
 #[must_use]
-pub fn loading_indicator(text: &str) -> Markup {
+pub fn m_loading(text: &str) -> Markup {
     html! {
-        div class="loading-terminal text-center py-4" {
-            span class="loading-bar" { "[ " }
-            span class="loading-text" { (text) }
-            span class="loading-bar" { " ]" }
+        div class="text-center py-4 animate-blur-reveal" {
+            span class="text-neutral-400" { (text) }
         }
     }
 }
 
-/// Render an ASCII progress bar.
+/// Render a pagination control.
+///
+/// Generates Previous / page numbers / Next buttons with `m-btn` styling.
+/// Handles edge cases: page 1 has no previous, last page has no next.
 #[must_use]
-pub fn progress_bar(percent: u8) -> Markup {
-    let filled = (percent as usize * 20) / 100;
-    let empty = 20 - filled;
-    let filled_chars = "#".repeat(filled);
-    let empty_chars = "-".repeat(empty);
+#[allow(clippy::cast_possible_truncation)]
+pub fn m_pagination(current_page: usize, total_pages: usize, base_url: &str) -> Markup {
+    if total_pages <= 1 {
+        return html! {};
+    }
+
+    let separator = if base_url.contains('?') { "&" } else { "?" };
 
     html! {
-        span class="progress-terminal font-terminal" {
-            "[" (filled_chars) (empty_chars) "] " (percent) "%"
+        nav class="flex items-center justify-center gap-2 mt-6" {
+            // Previous
+            @if current_page > 1 {
+                a href=(format!("{base_url}{separator}page={}", current_page - 1))
+                    class="m-btn text-sm" { "PREV" }
+            } @else {
+                span class="m-btn text-sm opacity-30 pointer-events-none" { "PREV" }
+            }
+
+            // Page numbers
+            @for p in 1..=total_pages {
+                @if p == current_page {
+                    span class="m-btn text-sm" style="background: var(--bg-active);" {
+                        (p)
+                    }
+                } @else if total_pages <= 7
+                    || p <= 2
+                    || p > total_pages - 2
+                    || (p >= current_page.saturating_sub(1) && p <= current_page + 1) {
+                    a href=(format!("{base_url}{separator}page={p}"))
+                        class="m-btn text-sm" { (p) }
+                } @else if p == 3 || p == total_pages - 2 {
+                    span class="text-neutral-500 px-1" { "..." }
+                }
+            }
+
+            // Next
+            @if current_page < total_pages {
+                a href=(format!("{base_url}{separator}page={}", current_page + 1))
+                    class="m-btn text-sm" { "NEXT" }
+            } @else {
+                span class="m-btn text-sm opacity-30 pointer-events-none" { "NEXT" }
+            }
         }
+    }
+}
+
+/// Render a thin progress bar.
+#[must_use]
+pub fn m_progress(percent: u8) -> Markup {
+    html! {
+        div class="w-full bg-neutral-700 rounded-sm overflow-hidden" style="height: 2px;" {
+            div class="bg-white h-full transition-all" style=(format!("width: {}%", percent)) {}
+        }
+        span class="text-xs text-neutral-400 font-mono ml-2" { (percent) "%" }
     }
 }
 
@@ -1023,27 +1115,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_layout_contains_crt_effects() {
+    fn test_layout_uses_memoria_styling() {
         let content = html! { p { "Test content" } };
         let result = layout("Test", NavItem::Dashboard, content);
         let html_str = result.0;
-        assert!(html_str.contains("crt-scanlines"));
-        assert!(html_str.contains("crt-flicker"));
-        assert!(html_str.contains("crt-vignette"));
+        assert!(html_str.contains("bg-neutral-950"));
+        assert!(html_str.contains("text-white"));
+        assert!(html_str.contains("font-sans"));
     }
 
     #[test]
-    fn test_layout_contains_terminal_fonts() {
+    fn test_layout_no_crt_effects() {
+        let content = html! { p { "Test content" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        let html_str = result.0;
+        assert!(!html_str.contains("crt-scanlines"));
+        assert!(!html_str.contains("crt-flicker"));
+        assert!(!html_str.contains("crt-vignette"));
+    }
+
+    #[test]
+    fn test_layout_contains_memoria_fonts() {
         let content = html! { p { "Test" } };
         let result = layout("Test", NavItem::Dashboard, content);
         let html_str = result.0;
-        assert!(html_str.contains("VT323"));
-        assert!(html_str.contains("Orbitron"));
-        assert!(html_str.contains("Rajdhani"));
+        assert!(html_str.contains("Inter"));
+        assert!(html_str.contains("JetBrains+Mono"));
+        assert!(!html_str.contains("VT323"));
+        assert!(!html_str.contains("Orbitron"));
+        assert!(!html_str.contains("Rajdhani"));
     }
 
     #[test]
-    fn test_layout_contains_ascii_logo() {
+    fn test_layout_contains_wordmark() {
         let content = html! { p { "Test" } };
         let result = layout("Test", NavItem::Dashboard, content);
         let html_str = result.0;
@@ -1051,15 +1155,48 @@ mod tests {
     }
 
     #[test]
-    fn test_stat_card_engine_classes() {
-        let card = stat_card("Test", "100", "subtitle", "relational");
-        assert!(card.0.contains("stat-card-relational"));
+    fn test_layout_has_memoria_script() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        let html_str = result.0;
+        assert!(html_str.contains("Memoria"));
+    }
 
-        let card = stat_card("Test", "100", "subtitle", "vector");
-        assert!(card.0.contains("stat-card-vector"));
+    #[test]
+    fn test_layout_no_tro_or_audio() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        let html_str = result.0;
+        assert!(!html_str.contains("TRO"));
+        assert!(!html_str.contains("NeumannAudio"));
+    }
 
-        let card = stat_card("Test", "100", "subtitle", "graph");
-        assert!(card.0.contains("stat-card-graph"));
+    #[test]
+    fn test_m_stat_renders() {
+        let card = m_stat("Test", "100", "subtitle", "relational");
+        assert!(card.0.contains("m-stat"));
+        assert!(card.0.contains("m-stat-label"));
+        assert!(card.0.contains("m-stat-value"));
+        assert!(card.0.contains("Test"));
+        assert!(card.0.contains("100"));
+        assert!(card.0.contains("subtitle"));
+        assert!(card.0.contains("data-counter"));
+    }
+
+    #[test]
+    fn test_m_stat_no_engine_border() {
+        // All engines should produce the same m-stat (no colored borders)
+        let r = m_stat("Test", "100", "sub", "relational");
+        let v = m_stat("Test", "100", "sub", "vector");
+        let g = m_stat("Test", "100", "sub", "graph");
+        let u = m_stat("Test", "100", "sub", "unknown");
+        // All should contain m-stat but not engine-specific classes
+        for card in [&r, &v, &g, &u] {
+            assert!(card.0.contains("m-stat"));
+            assert!(!card.0.contains("border-amber"));
+            assert!(!card.0.contains("border-rust"));
+            assert!(!card.0.contains("border-phosphor"));
+        }
     }
 
     #[test]
@@ -1072,244 +1209,231 @@ mod tests {
     }
 
     #[test]
-    fn test_breadcrumb_rendering() {
-        let bc = breadcrumb(&[("/", "ROOT"), ("/tables", "TABLES")]);
+    fn test_m_breadcrumb_rendering() {
+        let bc = m_breadcrumb(&[("/", "ROOT"), ("/tables", "TABLES")]);
         let html_str = bc.0;
         assert!(html_str.contains("ROOT"));
         assert!(html_str.contains("TABLES"));
-        assert!(html_str.contains("&gt;")); // HTML encoded >
+        assert!(html_str.contains("m-breadcrumb"));
     }
 
     #[test]
-    fn test_progress_bar() {
-        let bar = progress_bar(50);
-        assert!(bar.0.contains("##########"));
+    fn test_m_progress() {
+        let bar = m_progress(50);
         assert!(bar.0.contains("50%"));
+        assert!(bar.0.contains("bg-white"));
+        assert!(bar.0.contains("bg-neutral-700"));
     }
 
     #[test]
-    fn test_empty_state() {
-        let state = empty_state("No Data", "Nothing to display");
+    fn test_m_empty() {
+        let state = m_empty("No Data", "Nothing to display");
         assert!(state.0.contains("No Data"));
         assert!(state.0.contains("Nothing to display"));
-        assert!(state.0.contains("[ ]"));
+        assert!(state.0.contains("m-lamp"));
     }
 
-    // ========== Additional tests for improved coverage ==========
-
     #[test]
-    fn test_page_header_without_description() {
-        let header = page_header("TEST TITLE", None);
+    fn test_m_header_without_description() {
+        let header = m_header("TEST TITLE", None);
         assert!(header.0.contains("TEST TITLE"));
-        assert!(!header.0.contains("text-phosphor-dim font-terminal mt-1"));
+        assert!(!header.0.contains("text-neutral-400 mt-1"));
     }
 
     #[test]
-    fn test_page_header_with_description() {
-        let header = page_header("MAIN", Some("This is a description"));
+    fn test_m_header_with_description() {
+        let header = m_header("MAIN", Some("This is a description"));
         assert!(header.0.contains("MAIN"));
         assert!(header.0.contains("This is a description"));
     }
 
     #[test]
-    fn test_terminal_panel() {
+    fn test_m_card() {
         let content = html! { p { "Inner content" } };
-        let panel = terminal_panel("PANEL TITLE", content);
-        assert!(panel.0.contains("terminal-panel"));
+        let panel = m_card("PANEL TITLE", content);
+        assert!(panel.0.contains("m-card"));
         assert!(panel.0.contains("PANEL TITLE"));
         assert!(panel.0.contains("Inner content"));
     }
 
     #[test]
-    fn test_terminal_panel_rust() {
-        let content = html! { p { "Rust content" } };
-        let panel = terminal_panel_rust("RUST PANEL", content);
-        assert!(panel.0.contains("terminal-panel-rust"));
-        assert!(panel.0.contains("RUST PANEL"));
-    }
-
-    #[test]
-    fn test_engine_section_empty() {
+    fn test_m_section_empty() {
         let items: Vec<(String, String)> = vec![];
-        let section = engine_section("EMPTY SECTION", "relational", &items);
-        assert!(section.0.contains("NO DATA"));
-        assert!(section.0.contains("border-l-2 border-amber-glow"));
+        let section = m_section("EMPTY SECTION", "relational", &items);
+        assert!(section.0.contains("No entries"));
+        assert!(section.0.contains("m-card"));
     }
 
     #[test]
-    fn test_engine_section_with_items() {
+    fn test_m_section_with_items() {
         let items = vec![
             ("Item1".to_string(), "10".to_string()),
             ("Item2".to_string(), "20".to_string()),
         ];
-        let section = engine_section("ITEMS SECTION", "vector", &items);
+        let section = m_section("ITEMS SECTION", "vector", &items);
         assert!(section.0.contains("Item1"));
         assert!(section.0.contains("10"));
         assert!(section.0.contains("Item2"));
         assert!(section.0.contains("20"));
-        assert!(section.0.contains("border-l-2 border-rust-blood"));
+        assert!(section.0.contains("m-card"));
     }
 
     #[test]
-    fn test_engine_section_graph() {
+    fn test_m_section_graph() {
         let items = vec![("Nodes".to_string(), "100".to_string())];
-        let section = engine_section("GRAPH DATA", "graph", &items);
-        assert!(section.0.contains("border-l-2 border-phosphor"));
+        let section = m_section("GRAPH DATA", "graph", &items);
+        assert!(section.0.contains("m-card"));
     }
 
     #[test]
-    fn test_engine_section_unknown_engine() {
+    fn test_m_section_unknown_engine() {
         let items = vec![("Data".to_string(), "42".to_string())];
-        let section = engine_section("UNKNOWN", "unknown", &items);
-        // Should not have any border-l-2 class for unknown engines
-        assert!(!section.0.contains("border-amber-glow"));
-        assert!(!section.0.contains("border-rust-blood"));
+        let section = m_section("UNKNOWN", "unknown", &items);
+        assert!(!section.0.contains("border-amber"));
+        assert!(!section.0.contains("border-rust"));
     }
 
     #[test]
-    fn test_btn_terminal_with_href() {
-        let btn = btn_terminal("[ CLICK ME ]", Some("/test"));
+    fn test_m_btn_with_href() {
+        let btn = m_btn("CLICK ME", Some("/test"));
         assert!(btn.0.contains("href=\"/test\""));
         assert!(btn.0.contains("CLICK ME"));
         assert!(btn.0.contains("<a "));
+        assert!(btn.0.contains("m-btn"));
     }
 
     #[test]
-    fn test_btn_terminal_without_href() {
-        let btn = btn_terminal("[ SUBMIT ]", None);
+    fn test_m_btn_without_href() {
+        let btn = m_btn("SUBMIT", None);
         assert!(btn.0.contains("<button"));
         assert!(btn.0.contains("SUBMIT"));
         assert!(btn.0.contains("type=\"submit\""));
+        assert!(btn.0.contains("m-btn"));
     }
 
     #[test]
-    fn test_table_header_single_column() {
-        let header = table_header(&["ID"]);
+    fn test_m_table_header_single_column() {
+        let header = m_table_header(&["ID"]);
         assert!(header.0.contains("<th>"));
         assert!(header.0.contains("ID"));
     }
 
     #[test]
-    fn test_table_header_multiple_columns() {
-        let header = table_header(&["ID", "NAME", "VALUE"]);
+    fn test_m_table_header_multiple_columns() {
+        let header = m_table_header(&["ID", "NAME", "VALUE"]);
         assert!(header.0.contains("ID"));
         assert!(header.0.contains("NAME"));
         assert!(header.0.contains("VALUE"));
     }
 
     #[test]
-    fn test_expandable_text_short() {
-        let text = expandable_text("Short text", 50, "text-phosphor");
+    fn test_m_expandable_text_short() {
+        let text = m_expandable_text("Short text", 50, "text-white");
         assert!(text.0.contains("Short text"));
-        assert!(!text.0.contains("[MORE]"));
+        assert!(!text.0.contains("more"));
     }
 
     #[test]
-    fn test_expandable_text_long() {
+    fn test_m_expandable_text_long() {
         let long_text = "a".repeat(100);
-        let text = expandable_text(&long_text, 20, "text-phosphor");
-        assert!(text.0.contains("[MORE]"));
-        assert!(text.0.contains("[LESS]"));
+        let text = m_expandable_text(&long_text, 20, "text-white");
+        assert!(text.0.contains("more"));
+        assert!(text.0.contains("less"));
         assert!(text.0.contains("..."));
     }
 
     #[test]
-    fn test_expandable_string_short() {
-        let text = expandable_string("Hello", 50);
-        // Maud escapes quotes as HTML entities
+    fn test_m_expandable_string_short() {
+        let text = m_expandable_string("Hello", 50);
         assert!(text.0.contains("Hello"));
-        assert!(!text.0.contains("[MORE]"));
+        assert!(!text.0.contains("more"));
     }
 
     #[test]
-    fn test_expandable_string_long() {
+    fn test_m_expandable_string_long() {
         let long_text = "a".repeat(100);
-        let text = expandable_string(&long_text, 20);
-        assert!(text.0.contains("[MORE]"));
+        let text = m_expandable_string(&long_text, 20);
+        assert!(text.0.contains("more"));
         assert!(text.0.contains("..."));
     }
 
     #[test]
-    fn test_expandable_json_short() {
+    fn test_m_expandable_json_short() {
         let json = r#"{"key": "value"}"#;
-        let text = expandable_json(json, 50);
+        let text = m_expandable_json(json, 50);
         assert!(text.0.contains("key"));
-        assert!(!text.0.contains("[MORE]"));
+        assert!(!text.0.contains("more"));
     }
 
     #[test]
-    fn test_expandable_json_long() {
+    fn test_m_expandable_json_long() {
         let long_json = format!("{{\"data\": \"{}\"}}", "x".repeat(100));
-        let text = expandable_json(&long_json, 20);
-        assert!(text.0.contains("[MORE]"));
-        assert!(text.0.contains("[LESS]"));
+        let text = m_expandable_json(&long_json, 20);
+        assert!(text.0.contains("more"));
+        assert!(text.0.contains("less"));
     }
 
     #[test]
-    fn test_expandable_vector_short() {
+    fn test_m_expandable_vector_short() {
         let vec = vec![1.0, 2.0, 3.0];
-        let result = expandable_vector(&vec, 10);
+        let result = m_expandable_vector(&vec, 10);
         assert!(result.0.contains("1.000000"));
         assert!(result.0.contains("2.000000"));
         assert!(result.0.contains("3.000000"));
-        assert!(!result.0.contains("[SHOW ALL"));
+        assert!(!result.0.contains("show all"));
     }
 
     #[test]
-    fn test_expandable_vector_long() {
+    fn test_m_expandable_vector_long() {
         let vec: Vec<f32> = (0..100).map(|i| i as f32).collect();
-        let result = expandable_vector(&vec, 10);
-        assert!(result.0.contains("[SHOW ALL 100]"));
-        assert!(result.0.contains("DIMENSIONS"));
-        assert!(result.0.contains("[COPY]"));
+        let result = m_expandable_vector(&vec, 10);
+        assert!(result.0.contains("show all 100"));
+        assert!(result.0.contains("dimensions"));
+        assert!(result.0.contains("copy"));
     }
 
     #[test]
-    fn test_expandable_payload_preview_few_items() {
+    fn test_m_payload_preview_few_items() {
         let items = vec![
             ("name".to_string(), "Alice".to_string()),
             ("age".to_string(), "30".to_string()),
         ];
-        let result = expandable_payload_preview(&items, 5);
+        let result = m_payload_preview(&items, 5);
         assert!(result.0.contains("name"));
         assert!(result.0.contains("Alice"));
-        assert!(!result.0.contains("[+"));
     }
 
     #[test]
-    fn test_expandable_payload_preview_many_items() {
+    fn test_m_payload_preview_many_items() {
         let items: Vec<_> = (0..10)
             .map(|i| (format!("key{i}"), format!("value{i}")))
             .collect();
-        let result = expandable_payload_preview(&items, 3);
-        assert!(result.0.contains("[+7 MORE]"));
+        let result = m_payload_preview(&items, 3);
+        assert!(result.0.contains("+7 more"));
     }
 
     #[test]
-    fn test_loading_indicator() {
-        let loading = loading_indicator("Loading...");
+    fn test_m_loading() {
+        let loading = m_loading("Loading...");
         assert!(loading.0.contains("Loading..."));
-        assert!(loading.0.contains("loading-terminal"));
+        assert!(loading.0.contains("animate-blur-reveal"));
     }
 
     #[test]
-    fn test_progress_bar_zero() {
-        let bar = progress_bar(0);
-        assert!(bar.0.contains("--------------------"));
+    fn test_m_progress_zero() {
+        let bar = m_progress(0);
         assert!(bar.0.contains("0%"));
     }
 
     #[test]
-    fn test_progress_bar_full() {
-        let bar = progress_bar(100);
-        assert!(bar.0.contains("####################"));
+    fn test_m_progress_full() {
+        let bar = m_progress(100);
         assert!(bar.0.contains("100%"));
     }
 
     #[test]
-    fn test_progress_bar_quarter() {
-        let bar = progress_bar(25);
-        assert!(bar.0.contains("#####---------------"));
+    fn test_m_progress_quarter() {
+        let bar = m_progress(25);
         assert!(bar.0.contains("25%"));
     }
 
@@ -1322,14 +1446,14 @@ mod tests {
     }
 
     #[test]
-    fn test_breadcrumb_single_item() {
-        let bc = breadcrumb(&[("", "CURRENT")]);
+    fn test_m_breadcrumb_single_item() {
+        let bc = m_breadcrumb(&[("", "CURRENT")]);
         assert!(bc.0.contains("CURRENT"));
     }
 
     #[test]
-    fn test_breadcrumb_three_items() {
-        let bc = breadcrumb(&[("/", "HOME"), ("/level1", "LEVEL1"), ("", "CURRENT")]);
+    fn test_m_breadcrumb_three_items() {
+        let bc = m_breadcrumb(&[("/", "HOME"), ("/level1", "LEVEL1"), ("", "CURRENT")]);
         assert!(bc.0.contains("HOME"));
         assert!(bc.0.contains("LEVEL1"));
         assert!(bc.0.contains("CURRENT"));
@@ -1337,57 +1461,188 @@ mod tests {
 
     #[test]
     fn test_nav_item_active() {
-        let item = nav_item("/test", "T", "TEST", true);
+        let icon = icon_zap();
+        let item = nav_item("/test", "T", "TEST", &icon, true);
         assert!(item.0.contains("active"));
         assert!(item.0.contains("TEST"));
         assert!(item.0.contains("/test"));
+        assert!(item.0.contains("svg"));
     }
 
     #[test]
     fn test_nav_item_inactive() {
-        let item = nav_item("/test", "T", "TEST", false);
-        // Should not contain "active" as a class (but might contain in other contexts)
+        let icon = icon_zap();
+        let item = nav_item("/test", "T", "TEST", &icon, false);
         let html = item.0;
         assert!(html.contains("TEST"));
+        assert!(html.contains("svg"));
     }
 
     #[test]
     fn test_mobile_nav_item_active() {
-        let item = mobile_nav_item("/test", "T", true);
-        assert!(item.0.contains("phosphor-glow-subtle"));
-        assert!(item.0.contains("[T]"));
+        let icon = icon_zap();
+        let item = mobile_nav_item("/test", "T", &icon, true);
+        assert!(item.0.contains("text-white"));
+        assert!(item.0.contains("svg"));
     }
 
     #[test]
     fn test_mobile_nav_item_inactive() {
-        let item = mobile_nav_item("/test", "T", false);
-        assert!(item.0.contains("text-phosphor-dim"));
-        assert!(item.0.contains("[T]"));
-    }
-
-    #[test]
-    fn test_stat_card_unknown_engine() {
-        let card = stat_card("Test", "42", "units", "unknown");
-        assert!(card.0.contains("stat-card"));
-        assert!(card.0.contains("Test"));
-        assert!(card.0.contains("42"));
-        assert!(card.0.contains("units"));
+        let icon = icon_zap();
+        let item = mobile_nav_item("/test", "T", &icon, false);
+        assert!(item.0.contains("text-neutral-500"));
+        assert!(item.0.contains("svg"));
     }
 
     #[test]
     fn test_layout_different_nav_items() {
         let content = html! { p { "Test" } };
 
-        // Test Graph nav item
         let result = layout("Test", NavItem::Graph, content.clone());
         assert!(result.0.contains("GRAPH"));
 
-        // Test Vector nav item
         let result = layout("Test", NavItem::Vector, content.clone());
         assert!(result.0.contains("VECTOR"));
 
-        // Test Relational nav item
         let result = layout("Test", NavItem::Relational, content);
         assert!(result.0.contains("RELATIONAL"));
+    }
+
+    #[test]
+    fn test_layout_has_main_content_id() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        assert!(result.0.contains("id=\"main-content\""));
+    }
+
+    #[test]
+    fn test_keyboard_nav_no_tro_toggle() {
+        assert!(!KEYBOARD_NAV_SCRIPT.contains("TRO"));
+        assert!(!KEYBOARD_NAV_SCRIPT.contains("NeumannAudio"));
+    }
+
+    #[test]
+    fn test_keyboard_nav_neutral_row_selected() {
+        assert!(KEYBOARD_NAV_SCRIPT.contains("rgba(255, 255, 255, 0.08)"));
+        assert!(KEYBOARD_NAV_SCRIPT.contains("--border-emphasis"));
+    }
+
+    #[test]
+    fn test_m_card_interactive() {
+        let content = html! { p { "Interactive content" } };
+        let card = m_card_interactive("INTERACTIVE", content);
+        assert!(card.0.contains("m-card-interactive"));
+        assert!(card.0.contains("INTERACTIVE"));
+        assert!(card.0.contains("Interactive content"));
+    }
+
+    #[test]
+    fn test_m_badge() {
+        let badge = m_badge("v1.0");
+        assert!(badge.0.contains("m-badge"));
+        assert!(badge.0.contains("v1.0"));
+    }
+
+    #[test]
+    fn test_m_tabs_active() {
+        let tabs = m_tabs(&[("Tab1", "/a", true), ("Tab2", "/b", false)]);
+        assert!(tabs.0.contains("m-tabs"));
+        assert!(tabs.0.contains("m-tab active"));
+        assert!(tabs.0.contains("Tab1"));
+        assert!(tabs.0.contains("Tab2"));
+        assert!(tabs.0.contains("href=\"/a\""));
+    }
+
+    #[test]
+    fn test_m_tabs_none_active() {
+        let tabs = m_tabs(&[("A", "/a", false), ("B", "/b", false)]);
+        assert!(!tabs.0.contains("active"));
+    }
+
+    #[test]
+    fn test_keyboard_help_has_vault_cache_shortcuts() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        let html_str = result.0;
+        assert!(html_str.contains("g+s"));
+        assert!(html_str.contains("g+c"));
+        assert!(html_str.contains("Vault"));
+        assert!(html_str.contains("Cache"));
+    }
+
+    #[test]
+    fn test_m_pagination_single_page() {
+        let result = m_pagination(1, 1, "/test");
+        let html_str = result.into_string();
+        // Single page renders nothing
+        assert!(html_str.is_empty());
+    }
+
+    #[test]
+    fn test_m_pagination_first_page() {
+        let result = m_pagination(1, 5, "/test");
+        let html_str = result.into_string();
+        assert!(html_str.contains("NEXT"));
+        assert!(html_str.contains("PREV"));
+        // PREV should be disabled
+        assert!(html_str.contains("pointer-events-none"));
+    }
+
+    #[test]
+    fn test_m_pagination_last_page() {
+        let result = m_pagination(5, 5, "/test");
+        let html_str = result.into_string();
+        assert!(html_str.contains("PREV"));
+        assert!(html_str.contains("NEXT"));
+    }
+
+    #[test]
+    fn test_m_pagination_middle_page() {
+        let result = m_pagination(3, 5, "/test");
+        let html_str = result.into_string();
+        assert!(html_str.contains("page=2"));
+        assert!(html_str.contains("page=4"));
+    }
+
+    #[test]
+    fn test_m_pagination_with_query_params() {
+        let result = m_pagination(1, 3, "/test?filter=abc");
+        let html_str = result.into_string();
+        assert!(html_str.contains("&amp;page=2"));
+    }
+
+    #[test]
+    fn test_sidebar_has_vault_and_cache() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        let html_str = result.0;
+        assert!(html_str.contains("VAULT"));
+        assert!(html_str.contains("CACHE"));
+        assert!(html_str.contains("STORAGE"));
+    }
+
+    #[test]
+    fn test_mobile_nav_has_vault_and_cache() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Dashboard, content);
+        let html_str = result.0;
+        assert!(html_str.contains("VAULT"));
+        assert!(html_str.contains("CACHE"));
+    }
+
+    #[test]
+    fn test_nav_item_vault_active() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Vault, content);
+        let html_str = result.0;
+        assert!(html_str.contains("VAULT"));
+    }
+
+    #[test]
+    fn test_nav_item_cache_active() {
+        let content = html! { p { "Test" } };
+        let result = layout("Test", NavItem::Cache, content);
+        let html_str = result.0;
+        assert!(html_str.contains("CACHE"));
     }
 }

@@ -270,4 +270,28 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(status.message(), "invalid input");
     }
+
+    #[test]
+    fn test_router_error_to_server_error() {
+        let router_err = query_router::RouterError::ParseError("bad query".to_string());
+        let server_err: ServerError = router_err.into();
+        assert!(matches!(server_err, ServerError::Query(_)));
+        assert!(server_err.to_string().contains("bad query"));
+    }
+
+    #[test]
+    fn test_blob_error_to_server_error() {
+        let blob_err = tensor_blob::BlobError::NotFound("key123".to_string());
+        let server_err: ServerError = blob_err.into();
+        assert!(matches!(server_err, ServerError::Blob(_)));
+        assert!(server_err.to_string().contains("key123"));
+    }
+
+    #[test]
+    fn test_blob_error_to_status_conversion() {
+        let blob_err = tensor_blob::BlobError::NotFound("x".to_string());
+        let server_err: ServerError = blob_err.into();
+        let status: Status = server_err.into();
+        assert_eq!(status.code(), tonic::Code::Internal);
+    }
 }

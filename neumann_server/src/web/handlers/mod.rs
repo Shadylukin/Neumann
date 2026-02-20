@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Request handlers for the dystopian terminal admin UI.
+//! Request handlers for the Memoria design system admin UI.
 
 use std::sync::Arc;
 
 use axum::extract::State;
 use maud::{html, Markup, PreEscaped};
 
-use crate::web::templates::{engine_section, format_number, layout, page_header, stat_card};
+use crate::web::templates::{format_number, layout, m_header, m_section, m_stat};
 use crate::web::AdminContext;
 use crate::web::NavItem;
 
-pub mod achievements;
+pub mod blob;
+pub mod cache;
+pub mod chain;
+pub mod checkpoint;
+pub mod contraction;
 pub mod graph;
 pub mod graph_algorithms;
 pub mod metrics;
 pub mod relational;
+pub mod storage;
+pub mod vault;
 pub mod vector;
 
 /// Dashboard stats gathered from all engines.
@@ -37,6 +43,12 @@ pub struct DashboardStats {
     pub collections: Vec<(String, String)>,
     /// Graph statistics summary.
     pub graph_summary: Vec<(String, String)>,
+    /// Total secrets in vault (if available).
+    pub secret_count: Option<usize>,
+    /// Cache hit rate (if available).
+    pub cache_hit_rate: Option<String>,
+    /// Cache entry count (if available).
+    pub cache_entries: Option<usize>,
 }
 
 impl DashboardStats {
@@ -82,6 +94,29 @@ impl DashboardStats {
             ("Edges".to_string(), format_number(edge_count)),
         ];
 
+        // Gather vault stats
+        let secret_count = ctx.vault.as_ref().map(|v| {
+            v.list_with_metadata("node:root", "*")
+                .map_or(0, |list| list.len())
+        });
+
+        // Gather cache stats
+        let (cache_entries, cache_hit_rate) = ctx.cache.as_ref().map_or((None, None), |c| {
+            let snap = c.stats_snapshot();
+            let total_hits = snap.exact_hits + snap.semantic_hits + snap.embedding_hits;
+            let total_misses = snap.exact_misses + snap.semantic_misses + snap.embedding_misses;
+            let total = total_hits + total_misses;
+            let entries = snap.exact_size + snap.semantic_size + snap.embedding_size;
+            let rate = if total > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                let pct = (total_hits as f64 / total as f64) * 100.0;
+                format!("{pct:.1}%")
+            } else {
+                "N/A".to_string()
+            };
+            (Some(entries), Some(rate))
+        });
+
         Self {
             table_count,
             total_rows,
@@ -92,6 +127,9 @@ impl DashboardStats {
             top_tables,
             collections,
             graph_summary,
+            secret_count,
+            cache_hit_rate,
+            cache_entries,
         }
     }
 }
@@ -102,95 +140,58 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
     let stats = DashboardStats::gather(&ctx);
 
     let content = html! {
-        (page_header("SYSTEM DASHBOARD", Some("Overview of all storage engines")))
+        (m_header("DASHBOARD", None))
 
-        // System status display
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "SYSTEM STATUS" }
-            div class="panel-content" {
-                div class="grid grid-cols-2 md:grid-cols-4 gap-4 font-terminal text-sm" {
-                    div {
-                        span class="text-phosphor-dim" { "UPTIME: " }
-                        span class="text-phosphor" { "ONLINE" }
-                    }
-                    div {
-                        span class="text-phosphor-dim" { "MODE: " }
-                        span class="text-phosphor" { "OPERATIONAL" }
-                    }
-                    div {
-                        span class="text-phosphor-dim" { "MEMORY: " }
-                        span class="text-phosphor" { "NOMINAL" }
-                    }
-                    div {
-                        span class="text-phosphor-dim" { "DISK: " }
-                        span class="text-phosphor" { "AVAILABLE" }
-                    }
-                }
+        // Hero stats -- numbers are heroes, labels are whispers
+        div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8 stagger-container" {
+            (m_stat("TABLES", &stats.table_count.to_string(), "relational", "relational"))
+            (m_stat("VECTORS", &format_number(stats.vector_count), "embeddings", "vector"))
+            (m_stat("NODES", &format_number(stats.node_count), "graph", "graph"))
+            (m_stat("ROWS", &format_number(stats.total_rows), "total records", "relational"))
+            (m_stat("COLLECTIONS", &stats.collection_count.to_string(), "vector", "vector"))
+            (m_stat("EDGES", &format_number(stats.edge_count), "relationships", "graph"))
+            @if let Some(count) = stats.secret_count {
+                (m_stat("SECRETS", &format_number(count), "vault", "vault"))
+            }
+            @if let Some(entries) = stats.cache_entries {
+                (m_stat("CACHED", &format_number(entries), "responses", "cache"))
+            }
+            @if let Some(ref rate) = stats.cache_hit_rate {
+                (m_stat("HIT RATE", rate, "cache", "cache"))
             }
         }
 
-        // Stats grid with terminal styling
-        div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6" {
-            (stat_card("TABLES", &stats.table_count.to_string(), "relational_engine", "relational"))
-            (stat_card("VECTORS", &format_number(stats.vector_count), "vector_engine", "vector"))
-            (stat_card("NODES", &format_number(stats.node_count), "graph_engine", "graph"))
-            (stat_card("ROWS", &format_number(stats.total_rows), "total records", "relational"))
-            (stat_card("COLLECTIONS", &stats.collection_count.to_string(), "configured", "vector"))
-            (stat_card("EDGES", &format_number(stats.edge_count), "relationships", "graph"))
-        }
-
-        // Quick navigation shortcuts
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "QUICK ACCESS" }
-            div class="panel-content" {
-                div class="flex flex-wrap gap-2" {
-                    a href="/graph" class="btn-terminal" {
-                        span class="kbd-hint" { "G" }
-                        " GRAPH ENGINE"
-                    }
-                    a href="/vector" class="btn-terminal" {
-                        span class="kbd-hint" { "V" }
-                        " VECTOR ENGINE"
-                    }
-                    a href="/relational" class="btn-terminal" {
-                        span class="kbd-hint" { "R" }
-                        " RELATIONAL ENGINE"
-                    }
-                }
-            }
-        }
-
-        // Engine sections
+        // Engine breakdown
         div class="grid grid-cols-1 lg:grid-cols-3 gap-6" {
-            (engine_section("RELATIONAL", "relational", &stats.top_tables))
-            (engine_section("VECTOR", "vector", &stats.collections))
-            (engine_section("GRAPH", "graph", &stats.graph_summary))
+            (m_section("RELATIONAL", "relational", &stats.top_tables))
+            (m_section("VECTOR", "vector", &stats.collections))
+            (m_section("GRAPH", "graph", &stats.graph_summary))
         }
 
         // Interactive Query Terminal
-        div class="terminal-panel mt-6" {
-            div class="panel-header" { "QUERY TERMINAL" }
-            div class="panel-content" {
+        div class="m-card mt-6" {
+            div class="m-card-header" { "QUERY TERMINAL" }
+            div class="m-card-content" {
                 // Output area
-                div id="terminal-output" class="terminal-output mb-3" {
-                    div class="terminal-output-line success" { "> System initialized" }
-                    div class="terminal-output-line success" { "> All engines operational" }
-                    div class="terminal-output-line" { "> Type a query (Ctrl+Enter to execute)" }
+                div id="terminal-output" class="m-terminal-output mb-3" {
+                    div class="m-terminal-output-line success" { "> System initialized" }
+                    div class="m-terminal-output-line success" { "> All engines operational" }
+                    div class="m-terminal-output-line" { "> Type a query (Ctrl+Enter to execute)" }
                 }
                 // Input area - multi-line textarea
-                form id="terminal-form" class="terminal-input-line" {
+                form id="terminal-form" class="m-terminal-input-line" {
                     textarea
                         id="terminal-input"
-                        class="terminal-input-field terminal-textarea"
+                        class="m-terminal-input-field m-terminal-textarea"
                         placeholder="SELECT * FROM documents LIMIT 5"
                         autocomplete="off"
                         rows="3"
                         spellcheck="false" {}
                 }
             }
-            div class="panel-footer flex justify-between items-center" {
+            div class="m-card-footer flex justify-between items-center" {
                 span { "Ctrl+Enter to execute | Esc to clear | Up/Down for history" }
-                span class="text-phosphor-dim" { "Multi-line supported" }
+                span class="text-neutral-400" { "Multi-line supported" }
             }
         }
 
@@ -304,7 +305,7 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
 
             function addLine(text, type) {
                 const line = document.createElement('div');
-                line.className = 'terminal-output-line ' + (type || '');
+                line.className = 'm-terminal-output-line ' + (type || '');
                 line.textContent = text;
                 output.appendChild(line);
                 output.scrollTop = output.scrollHeight;
@@ -504,13 +505,11 @@ mod tests {
     use vector_engine::VectorEngine;
 
     fn create_test_context() -> Arc<AdminContext> {
-        Arc::new(AdminContext {
-            relational: Arc::new(RelationalEngine::new()),
-            vector: Arc::new(VectorEngine::new()),
-            graph: Arc::new(GraphEngine::new()),
-            auth_config: None,
-            metrics: None,
-        })
+        Arc::new(AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(GraphEngine::new()),
+        ))
     }
 
     // === Value Conversion Tests ===
@@ -634,6 +633,13 @@ mod tests {
             relational,
             vector: Arc::new(VectorEngine::new()),
             graph: Arc::new(GraphEngine::new()),
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
             auth_config: None,
             metrics: None,
         });
@@ -663,6 +669,13 @@ mod tests {
             relational: Arc::new(RelationalEngine::new()),
             vector,
             graph: Arc::new(GraphEngine::new()),
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
             auth_config: None,
             metrics: None,
         });
@@ -687,6 +700,13 @@ mod tests {
             relational: Arc::new(RelationalEngine::new()),
             vector: Arc::new(VectorEngine::new()),
             graph,
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
             auth_config: None,
             metrics: None,
         });
@@ -881,6 +901,13 @@ mod tests {
             relational,
             vector: Arc::new(VectorEngine::new()),
             graph: Arc::new(GraphEngine::new()),
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
             auth_config: None,
             metrics: None,
         });
@@ -916,6 +943,13 @@ mod tests {
             relational,
             vector: Arc::new(VectorEngine::new()),
             graph: Arc::new(GraphEngine::new()),
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
             auth_config: None,
             metrics: None,
         });
@@ -947,5 +981,179 @@ mod tests {
         };
         let response = api_query(State(ctx), axum::Json(req)).await;
         assert!(response.0.rows.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_api_query_select_empty_table_name() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SELECT * FROM ".to_string(),
+        };
+        let response = api_query(State(ctx), axum::Json(req)).await;
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("parse table name"));
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_handler() {
+        let ctx = create_test_context();
+        let result = dashboard(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("DASHBOARD"));
+        assert!(html.contains("TABLES"));
+        assert!(html.contains("VECTORS"));
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_handler_with_data() {
+        use relational_engine::{Column, ColumnType, Schema, Value};
+
+        let relational = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("id".to_string(), ColumnType::Int)]);
+        relational.create_table("test", schema).unwrap();
+        relational
+            .insert(
+                "test",
+                [("id".to_string(), Value::Int(1))].into_iter().collect(),
+            )
+            .unwrap();
+
+        let vector = Arc::new(VectorEngine::new());
+        vector.store_embedding("v1", vec![1.0, 0.0]).unwrap();
+
+        let graph = Arc::new(GraphEngine::new());
+        let n1 = graph.create_node("A", Default::default()).unwrap();
+        let n2 = graph.create_node("B", Default::default()).unwrap();
+        graph
+            .create_edge(n1, n2, "LINK", Default::default(), true)
+            .unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational,
+            vector,
+            graph,
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
+            auth_config: None,
+            metrics: None,
+        });
+
+        let result = dashboard(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("DASHBOARD"));
+        assert!(html.contains("RELATIONAL"));
+    }
+
+    #[test]
+    fn test_dashboard_stats_gather_with_default_vectors() {
+        let vector = Arc::new(VectorEngine::new());
+        vector.store_embedding("v1", vec![1.0, 0.0]).unwrap();
+        vector.store_embedding("v2", vec![0.0, 1.0]).unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational: Arc::new(RelationalEngine::new()),
+            vector,
+            graph: Arc::new(GraphEngine::new()),
+            unified: None,
+            vault: None,
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
+            auth_config: None,
+            metrics: None,
+        });
+
+        let stats = DashboardStats::gather(&ctx);
+        assert_eq!(stats.vector_count, 2);
+        // Default embeddings appear in the collections list
+        assert!(stats
+            .collections
+            .iter()
+            .any(|(name, _)| name == "(default)"));
+    }
+
+    #[test]
+    fn test_dashboard_stats_no_vault_no_cache() {
+        let ctx = create_test_context();
+        let stats = DashboardStats::gather(&ctx);
+
+        assert!(stats.secret_count.is_none());
+        assert!(stats.cache_entries.is_none());
+        assert!(stats.cache_hit_rate.is_none());
+    }
+
+    #[test]
+    fn test_dashboard_stats_with_vault() {
+        use tensor_store::TensorStore;
+        use tensor_vault::{Vault, VaultConfig};
+
+        let graph = Arc::new(GraphEngine::new());
+        let store = TensorStore::new();
+        let config = VaultConfig {
+            argon2_memory_cost: 256,
+            argon2_time_cost: 1,
+            argon2_parallelism: 1,
+            ..VaultConfig::default()
+        };
+        let vault = Arc::new(Vault::new(b"test", Arc::clone(&graph), store, config).unwrap());
+        vault.set(Vault::ROOT, "key1", "val1").unwrap();
+        vault.set(Vault::ROOT, "key2", "val2").unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational: Arc::new(RelationalEngine::new()),
+            vector: Arc::new(VectorEngine::new()),
+            graph,
+            unified: None,
+            vault: Some(vault),
+            cache: None,
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
+            auth_config: None,
+            metrics: None,
+        });
+
+        let stats = DashboardStats::gather(&ctx);
+        assert_eq!(stats.secret_count, Some(2));
+    }
+
+    #[test]
+    fn test_dashboard_stats_with_cache() {
+        use tensor_cache::{Cache, CacheConfig};
+
+        let config = CacheConfig::development();
+        let dim = config.embedding_dim;
+        let cache = Arc::new(Cache::with_config(config).unwrap());
+        let emb = vec![0.1_f32; dim];
+        cache.put("q1", &emb, "a1", "m", None).unwrap();
+        cache.put("q2", &emb, "a2", "m", None).unwrap();
+
+        let ctx = Arc::new(AdminContext {
+            relational: Arc::new(RelationalEngine::new()),
+            vector: Arc::new(VectorEngine::new()),
+            graph: Arc::new(GraphEngine::new()),
+            unified: None,
+            vault: None,
+            cache: Some(cache),
+            blob: None,
+            checkpoint: None,
+            store: None,
+            chain: None,
+            auth_config: None,
+            metrics: None,
+        });
+
+        let stats = DashboardStats::gather(&ctx);
+        assert!(stats.cache_entries.is_some());
+        assert!(stats.cache_entries.unwrap() >= 2);
+        assert!(stats.cache_hit_rate.is_some());
     }
 }

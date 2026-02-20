@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Handlers for graph algorithm execution with dystopian terminal styling.
+//! Handlers for graph algorithm execution with Memoria design system.
 //!
 //! Exposes all 17 graph algorithms with configurable parameters and result visualization.
 
@@ -17,7 +17,7 @@ use graph_engine::{
 };
 
 use crate::web::templates::layout;
-use crate::web::templates::layout::{breadcrumb, empty_state, format_number, page_header};
+use crate::web::templates::layout::{format_number, m_breadcrumb, m_empty, m_header};
 use crate::web::AdminContext;
 use crate::web::NavItem;
 
@@ -580,44 +580,44 @@ pub async fn dashboard(
     let selected_category = params.category.as_deref();
 
     let content = html! {
-        (breadcrumb(&[("/graph", "GRAPH"), ("", "ALGORITHMS")]))
+        (m_breadcrumb(&[("/graph", "GRAPH"), ("", "ALGORITHMS")]))
 
-        (page_header("ALGORITHM DASHBOARD", Some("Execute graph analysis algorithms")))
+        (m_header("ALGORITHM DASHBOARD", Some("Execute graph analysis algorithms")))
 
         // Stats
         div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" {
-            div class="terminal-panel" {
-                div class="panel-content text-center" {
-                    div class="text-3xl font-data text-phosphor" { (format_number(node_count)) }
-                    div class="text-xs text-phosphor-dim font-terminal" { "NODES" }
+            div class="m-card" {
+                div class="m-card-content text-center" {
+                    div class="text-3xl font-mono text-white" { (format_number(node_count)) }
+                    div class="text-xs text-neutral-400" { "NODES" }
                 }
             }
-            div class="terminal-panel" {
-                div class="panel-content text-center" {
-                    div class="text-3xl font-data text-phosphor" { (format_number(edge_count)) }
-                    div class="text-xs text-phosphor-dim font-terminal" { "EDGES" }
+            div class="m-card" {
+                div class="m-card-content text-center" {
+                    div class="text-3xl font-mono text-white" { (format_number(edge_count)) }
+                    div class="text-xs text-neutral-400" { "EDGES" }
                 }
             }
-            div class="terminal-panel" {
-                div class="panel-content text-center" {
-                    div class="text-3xl font-data text-amber" { (ALGORITHMS.len()) }
-                    div class="text-xs text-phosphor-dim font-terminal" { "ALGORITHMS" }
+            div class="m-card" {
+                div class="m-card-content text-center" {
+                    div class="text-3xl font-mono text-neutral-300" { (ALGORITHMS.len()) }
+                    div class="text-xs text-neutral-400" { "ALGORITHMS" }
                 }
             }
         }
 
         // Category tabs
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "ALGORITHM CATEGORIES" }
-            div class="panel-content" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "ALGORITHM CATEGORIES" }
+            div class="m-card-content" {
                 div class="flex flex-wrap gap-2" {
                     a href="/graph/algorithms/dashboard"
-                      class=(if selected_category.is_none() { "btn-terminal btn-terminal-amber" } else { "btn-terminal" }) {
+                      class=(if selected_category.is_none() { "m-btn" } else { "m-btn" }) {
                         "[ ALL ]"
                     }
                     @for cat in [AlgorithmCategory::Centrality, AlgorithmCategory::Community, AlgorithmCategory::Pathfinding, AlgorithmCategory::Structure, AlgorithmCategory::Similarity] {
                         a href=(format!("/graph/algorithms/dashboard?category={}", cat.label().to_lowercase()))
-                          class=(if selected_category.is_some_and(|c| c.eq_ignore_ascii_case(cat.label())) { "btn-terminal btn-terminal-amber" } else { "btn-terminal" }) {
+                          class=(if selected_category.is_some_and(|c| c.eq_ignore_ascii_case(cat.label())) { "m-btn" } else { "m-btn" }) {
                             "[ " (cat.label()) " ]"
                         }
                     }
@@ -627,7 +627,7 @@ pub async fn dashboard(
 
         // Algorithm grid
         @if node_count == 0 {
-            (empty_state("NO GRAPH DATA", "Create nodes and edges to run algorithms"))
+            (m_empty("NO GRAPH DATA", "Create nodes and edges to run algorithms"))
         } @else {
             div class="grid grid-cols-1 lg:grid-cols-2 gap-4" {
                 @for algo in ALGORITHMS {
@@ -652,21 +652,21 @@ pub async fn execute_form(
 
     let content = if let Some(algo) = algo {
         html! {
-            (breadcrumb(&[("/graph", "GRAPH"), ("/graph/algorithms/dashboard", "ALGORITHMS"), ("", algo.name)]))
+            (m_breadcrumb(&[("/graph", "GRAPH"), ("/graph/algorithms/dashboard", "ALGORITHMS"), ("", algo.name)]))
 
-            (page_header(algo.name, Some(algo.description)))
+            (m_header(algo.name, Some(algo.description)))
 
             // Parameter form
-            div class="terminal-panel mb-6" {
-                div class="panel-header" { "PARAMETERS" }
-                div class="panel-content" {
+            div class="m-card mb-6" {
+                div class="m-card-header" { "PARAMETERS" }
+                div class="m-card-content" {
                     form method="post" action="/graph/algorithms/execute" class="space-y-4" {
                         input type="hidden" name="algorithm" value=(algo.id);
 
                         div class="grid grid-cols-1 md:grid-cols-2 gap-4" {
                             @for param in algo.params {
                                 div {
-                                    label for=(param.name) class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                                    label for=(param.name) class="block text-sm text-neutral-400 mb-2" {
                                         (param.label)
                                     }
                                     @match param.param_type {
@@ -677,17 +677,17 @@ pub async fn execute_form(
                                                 name=(param.name)
                                                 value=(param.default)
                                                 placeholder=(param.description)
-                                                class="input-terminal w-full";
+                                                class="m-input w-full";
                                         }
                                         ParamType::Direction => {
-                                            select id=(param.name) name=(param.name) class="input-terminal w-full" {
+                                            select id=(param.name) name=(param.name) class="m-input w-full" {
                                                 option value="both" selected[param.default == "both"] { "Both (Undirected)" }
                                                 option value="outgoing" selected[param.default == "outgoing"] { "Outgoing" }
                                                 option value="incoming" selected[param.default == "incoming"] { "Incoming" }
                                             }
                                         }
                                         ParamType::SimilarityMetric => {
-                                            select id=(param.name) name=(param.name) class="input-terminal w-full" {
+                                            select id=(param.name) name=(param.name) class="m-input w-full" {
                                                 option value="jaccard" selected[param.default == "jaccard"] { "Jaccard" }
                                                 option value="cosine" { "Cosine" }
                                                 option value="adamic_adar" { "Adamic-Adar" }
@@ -697,32 +697,32 @@ pub async fn execute_form(
                                             }
                                         }
                                     }
-                                    p class="text-xs text-phosphor-dark mt-1" { (param.description) }
+                                    p class="text-xs text-neutral-500 mt-1" { (param.description) }
                                 }
                             }
                         }
 
-                        button type="submit" class="btn-terminal btn-terminal-amber" { "[ EXECUTE ALGORITHM ]" }
+                        button type="submit" class="m-btn" { "[ EXECUTE ALGORITHM ]" }
                     }
                 }
             }
 
             // Info panel
-            div class="terminal-panel" {
-                div class="panel-header" { "ALGORITHM INFO" }
-                div class="panel-content text-sm font-terminal" {
+            div class="m-card" {
+                div class="m-card-header" { "ALGORITHM INFO" }
+                div class="m-card-content text-sm" {
                     div class="flex gap-2 mb-2" {
-                        span class="text-phosphor-dim" { "CATEGORY:" }
-                        span class="text-amber" { (algo.category.label()) }
+                        span class="text-neutral-400" { "CATEGORY:" }
+                        span class="text-neutral-300" { (algo.category.label()) }
                     }
-                    p class="text-phosphor-dim" { (algo.description) }
+                    p class="text-neutral-400" { (algo.description) }
                 }
             }
         }
     } else {
         html! {
-            (breadcrumb(&[("/graph", "GRAPH"), ("/graph/algorithms/dashboard", "ALGORITHMS"), ("", "NOT FOUND")]))
-            (empty_state("ALGORITHM NOT FOUND", "The requested algorithm does not exist"))
+            (m_breadcrumb(&[("/graph", "GRAPH"), ("/graph/algorithms/dashboard", "ALGORITHMS"), ("", "NOT FOUND")]))
+            (m_empty("ALGORITHM NOT FOUND", "The requested algorithm does not exist"))
         }
     };
 
@@ -743,35 +743,35 @@ pub async fn execute_submit(
     let algo_name = algo.map_or("Unknown", |a| a.name);
 
     let status_text = match result.status {
-        ResultStatus::Success => ("text-phosphor", "SUCCESS"),
-        ResultStatus::Error => ("text-rust-blood", "ERROR"),
-        ResultStatus::NoData => ("text-amber", "NO DATA"),
+        ResultStatus::Success => ("text-white", "SUCCESS"),
+        ResultStatus::Error => ("text-neutral-400", "ERROR"),
+        ResultStatus::NoData => ("text-neutral-300", "NO DATA"),
     };
 
     let content = html! {
-        (breadcrumb(&[("/graph", "GRAPH"), ("/graph/algorithms/dashboard", "ALGORITHMS"), ("", algo_name)]))
+        (m_breadcrumb(&[("/graph", "GRAPH"), ("/graph/algorithms/dashboard", "ALGORITHMS"), ("", algo_name)]))
 
-        (page_header(&format!("{} RESULTS", algo_name.to_uppercase()), None))
+        (m_header(&format!("{} RESULTS", algo_name.to_uppercase()), None))
 
         // Execution stats
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "EXECUTION STATS" }
-            div class="panel-content" {
-                div class="grid grid-cols-2 md:grid-cols-4 gap-4 font-terminal text-sm" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "EXECUTION STATS" }
+            div class="m-card-content" {
+                div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm" {
                     div {
-                        span class="text-phosphor-dim" { "ALGORITHM: " }
-                        span class="text-phosphor" { (algo_name) }
+                        span class="text-neutral-400" { "ALGORITHM: " }
+                        span class="text-white" { (algo_name) }
                     }
                     div {
-                        span class="text-phosphor-dim" { "STATUS: " }
+                        span class="text-neutral-400" { "STATUS: " }
                         span class=(status_text.0) { (status_text.1) }
                     }
                     div {
-                        span class="text-phosphor-dim" { "TIME: " }
-                        span class="text-amber font-data" { (elapsed_ms) "ms" }
+                        span class="text-neutral-400" { "TIME: " }
+                        span class="text-neutral-300 font-mono" { (elapsed_ms) "ms" }
                     }
                     div {
-                        a href=(format!("/graph/algorithms/execute?algorithm={}", params.algorithm)) class="btn-terminal text-xs" {
+                        a href=(format!("/graph/algorithms/execute?algorithm={}", params.algorithm)) class="m-btn text-xs" {
                             "[ RUN AGAIN ]"
                         }
                     }
@@ -784,7 +784,7 @@ pub async fn execute_submit(
 
         // Back link
         div class="mt-6" {
-            a href="/graph/algorithms/dashboard" class="btn-terminal" { "[ BACK TO DASHBOARD ]" }
+            a href="/graph/algorithms/dashboard" class="m-btn" { "[ BACK TO DASHBOARD ]" }
         }
     };
 
@@ -1488,28 +1488,26 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
 
 fn render_algorithm_card(algo: &AlgorithmDef) -> Markup {
     let category_color = match algo.category {
-        AlgorithmCategory::Centrality => "text-phosphor",
-        AlgorithmCategory::Community => "text-amber",
-        AlgorithmCategory::Pathfinding => "text-rust-blood",
-        AlgorithmCategory::Structure => "text-phosphor-dim",
-        AlgorithmCategory::Similarity => "text-amber-glow",
+        AlgorithmCategory::Centrality => "text-white",
+        AlgorithmCategory::Community | AlgorithmCategory::Similarity => "text-neutral-300",
+        AlgorithmCategory::Pathfinding | AlgorithmCategory::Structure => "text-neutral-400",
     };
 
     html! {
-        div class="terminal-panel hover:border-phosphor transition-colors" {
-            div class="panel-header flex justify-between items-center" {
+        div class="m-card hover:border-neutral-600 transition-colors" {
+            div class="m-card-header flex justify-between items-center" {
                 span { (algo.name) }
                 span class=(format!("text-xs {category_color}")) { (algo.category.label()) }
             }
-            div class="panel-content" {
-                p class="text-sm text-phosphor-dim mb-4" { (algo.description) }
+            div class="m-card-content" {
+                p class="text-sm text-neutral-400 mb-4" { (algo.description) }
 
                 div class="flex justify-between items-center" {
-                    span class="text-xs text-phosphor-dark" {
+                    span class="text-xs text-neutral-500" {
                         (algo.params.len()) " parameters"
                     }
                     a href=(format!("/graph/algorithms/execute?algorithm={}", algo.id))
-                      class="btn-terminal text-xs" {
+                      class="m-btn text-xs" {
                         "[ CONFIGURE ]"
                     }
                 }
@@ -1522,13 +1520,13 @@ fn render_algorithm_card(algo: &AlgorithmDef) -> Markup {
 fn render_result(result: &AlgorithmResult) -> Markup {
     match &result.data {
         ResultData::Scores(scores) => html! {
-            div class="terminal-panel" {
-                div class="panel-header" { "NODE SCORES" }
-                div class="panel-content p-0" {
+            div class="m-card" {
+                div class="m-card-header" { "NODE SCORES" }
+                div class="m-card-content p-0" {
                     @if scores.is_empty() {
-                        div class="p-4 text-phosphor-dim italic" { "< NO RESULTS >" }
+                        div class="p-4 text-neutral-400 italic" { "< NO RESULTS >" }
                     } @else {
-                        table class="table-rust" {
+                        table class="m-table" {
                             thead {
                                 tr {
                                     th class="w-16" { "#" }
@@ -1539,9 +1537,9 @@ fn render_result(result: &AlgorithmResult) -> Markup {
                             tbody {
                                 @for (idx, (node_id, score)) in scores.iter().enumerate() {
                                     tr {
-                                        td class="text-phosphor-dim font-data" { (idx + 1) }
-                                        td class="text-phosphor font-data" { (node_id) }
-                                        td class="text-right text-amber font-data" { (format!("{score:.6}")) }
+                                        td class="text-neutral-400 font-mono" { (idx + 1) }
+                                        td class="text-white font-mono" { (node_id) }
+                                        td class="text-right text-neutral-300 font-mono" { (format!("{score:.6}")) }
                                     }
                                 }
                             }
@@ -1552,28 +1550,28 @@ fn render_result(result: &AlgorithmResult) -> Markup {
         },
 
         ResultData::Communities(data) => html! {
-            div class="terminal-panel" {
-                div class="panel-header" { "COMMUNITY DETECTION" }
-                div class="panel-content" {
+            div class="m-card" {
+                div class="m-card-header" { "COMMUNITY DETECTION" }
+                div class="m-card-content" {
                     // Stats
-                    div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4 font-terminal text-sm" {
+                    div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4 text-sm" {
                         div {
-                            span class="text-phosphor-dim" { "COMMUNITIES: " }
-                            span class="text-amber font-data" { (data.count) }
+                            span class="text-neutral-400" { "COMMUNITIES: " }
+                            span class="text-neutral-300 font-mono" { (data.count) }
                         }
                         @if let Some(mod_val) = data.modularity {
                             div {
-                                span class="text-phosphor-dim" { "MODULARITY: " }
-                                span class="text-amber font-data" { (format!("{mod_val:.4}")) }
+                                span class="text-neutral-400" { "MODULARITY: " }
+                                span class="text-neutral-300 font-mono" { (format!("{mod_val:.4}")) }
                             }
                         }
                     }
 
                     // Community list
                     @if data.communities.is_empty() {
-                        div class="text-phosphor-dim italic" { "< NO COMMUNITIES FOUND >" }
+                        div class="text-neutral-400 italic" { "< NO COMMUNITIES FOUND >" }
                     } @else {
-                        table class="table-rust" {
+                        table class="m-table" {
                             thead {
                                 tr {
                                     th { "COMMUNITY ID" }
@@ -1583,14 +1581,14 @@ fn render_result(result: &AlgorithmResult) -> Markup {
                             tbody {
                                 @for (comm_id, size) in data.communities.iter().take(20) {
                                     tr {
-                                        td class="text-phosphor font-data" { (comm_id) }
-                                        td class="text-right text-amber font-data" { (size) }
+                                        td class="text-white font-mono" { (comm_id) }
+                                        td class="text-right text-neutral-300 font-mono" { (size) }
                                     }
                                 }
                             }
                         }
                         @if data.communities.len() > 20 {
-                            div class="mt-2 text-xs text-phosphor-dark" {
+                            div class="mt-2 text-xs text-neutral-500" {
                                 "Showing 20 of " (data.communities.len()) " communities"
                             }
                         }
@@ -1600,16 +1598,16 @@ fn render_result(result: &AlgorithmResult) -> Markup {
         },
 
         ResultData::Path(data) => html! {
-            div class="terminal-panel" {
-                div class="panel-header" { "PATH RESULT" }
-                div class="panel-content" {
+            div class="m-card" {
+                div class="m-card-header" { "PATH RESULT" }
+                div class="m-card-content" {
                     @if data.found {
-                        div class="mb-4 font-terminal text-sm" {
-                            span class="text-phosphor-dim" { "PATH LENGTH: " }
-                            span class="text-phosphor" { (data.nodes.len()) " nodes" }
+                        div class="mb-4 text-sm" {
+                            span class="text-neutral-400" { "PATH LENGTH: " }
+                            span class="text-white" { (data.nodes.len()) " nodes" }
                             @if let Some(weight) = data.weight {
-                                span class="ml-4 text-phosphor-dim" { "TOTAL WEIGHT: " }
-                                span class="text-amber font-data" { (format!("{weight:.4}")) }
+                                span class="ml-4 text-neutral-400" { "TOTAL WEIGHT: " }
+                                span class="text-neutral-300 font-mono" { (format!("{weight:.4}")) }
                             }
                         }
 
@@ -1618,43 +1616,43 @@ fn render_result(result: &AlgorithmResult) -> Markup {
                             div class="flex items-center gap-2 min-w-max" {
                                 @for (idx, node_id) in data.nodes.iter().enumerate() {
                                     div class="flex flex-col items-center" {
-                                        div class="w-12 h-12 border-2 border-phosphor bg-terminal-soot flex items-center justify-center" {
-                                            span class="text-sm font-data text-phosphor" { (node_id) }
+                                        div class="w-12 h-12 border-2 border-neutral-600 bg-neutral-900 flex items-center justify-center" {
+                                            span class="text-sm font-mono text-white" { (node_id) }
                                         }
                                     }
                                     @if idx < data.nodes.len() - 1 {
-                                        div class="flex items-center text-phosphor-dim" { "--->" }
+                                        div class="flex items-center text-neutral-400" { "--->" }
                                     }
                                 }
                             }
                         }
 
                         // Path sequence
-                        div class="text-sm text-phosphor-dim font-terminal" {
+                        div class="text-sm text-neutral-400" {
                             "SEQUENCE: "
                             @for (idx, node_id) in data.nodes.iter().enumerate() {
-                                span class="text-phosphor" { (node_id) }
+                                span class="text-white" { (node_id) }
                                 @if idx < data.nodes.len() - 1 { " -> " }
                             }
                         }
                     } @else {
-                        (empty_state("NO PATH FOUND", "The nodes are not connected"))
+                        (m_empty("NO PATH FOUND", "The nodes are not connected"))
                     }
                 }
             }
         },
 
         ResultData::Structure(data) => html! {
-            div class="terminal-panel" {
-                div class="panel-header" { "STRUCTURE ANALYSIS" }
-                div class="panel-content" {
+            div class="m-card" {
+                div class="m-card-header" { "STRUCTURE ANALYSIS" }
+                div class="m-card-content" {
                     // Summary stats
                     @if !data.summary.is_empty() {
-                        div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4 font-terminal text-sm" {
+                        div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4 text-sm" {
                             @for (key, value) in &data.summary {
                                 div {
-                                    span class="text-phosphor-dim" { (key.to_uppercase()) ": " }
-                                    span class="text-amber font-data" { (value) }
+                                    span class="text-neutral-400" { (key.to_uppercase()) ": " }
+                                    span class="text-neutral-300 font-mono" { (value) }
                                 }
                             }
                         }
@@ -1662,13 +1660,13 @@ fn render_result(result: &AlgorithmResult) -> Markup {
 
                     // Items list
                     @if data.items.is_empty() {
-                        div class="text-phosphor-dim italic" { "< NO ITEMS >" }
+                        div class="text-neutral-400 italic" { "< NO ITEMS >" }
                     } @else {
                         div class="space-y-1 max-h-96 overflow-y-auto" {
                             @for (label, value) in &data.items {
-                                div class="flex justify-between font-terminal text-sm border-b border-phosphor-dark pb-1" {
-                                    span class="text-phosphor" { (label) }
-                                    span class="text-phosphor-dim" { (value) }
+                                div class="flex justify-between text-sm border-b border-neutral-800 pb-1" {
+                                    span class="text-white" { (label) }
+                                    span class="text-neutral-400" { (value) }
                                 }
                             }
                         }
@@ -1678,24 +1676,24 @@ fn render_result(result: &AlgorithmResult) -> Markup {
         },
 
         ResultData::Similarity(score) => html! {
-            div class="terminal-panel" {
-                div class="panel-header" { "SIMILARITY SCORE" }
-                div class="panel-content text-center py-8" {
-                    div class="text-5xl font-data text-amber mb-4" { (format!("{score:.6}")) }
-                    div class="text-phosphor-dim font-terminal" { "SIMILARITY COEFFICIENT" }
+            div class="m-card" {
+                div class="m-card-header" { "SIMILARITY SCORE" }
+                div class="m-card-content text-center py-8" {
+                    div class="text-5xl font-mono text-neutral-300 mb-4" { (format!("{score:.6}")) }
+                    div class="text-neutral-400" { "SIMILARITY COEFFICIENT" }
                 }
             }
         },
 
         ResultData::Error(msg) => html! {
-            div class="terminal-panel terminal-panel-rust" {
-                div class="panel-header" { "ERROR" }
-                div class="panel-content text-amber" { (msg) }
+            div class="m-card" {
+                div class="m-card-header" { "ERROR" }
+                div class="m-card-content text-neutral-300" { (msg) }
             }
         },
 
         ResultData::Empty => html! {
-            (empty_state("NO DATA", "No results to display"))
+            (m_empty("NO DATA", "No results to display"))
         },
     }
 }
@@ -2194,7 +2192,7 @@ mod tests {
             .unwrap();
         let card = render_algorithm_card(algo);
         let html = card.0;
-        assert!(html.contains("text-amber"));
+        assert!(html.contains("text-neutral-300"));
         assert!(html.contains("COMMUNITY"));
     }
 
@@ -2206,7 +2204,7 @@ mod tests {
             .unwrap();
         let card = render_algorithm_card(algo);
         let html = card.0;
-        assert!(html.contains("text-rust-blood"));
+        assert!(html.contains("text-neutral-400"));
         assert!(html.contains("PATHFINDING"));
     }
 
@@ -2218,7 +2216,7 @@ mod tests {
             .unwrap();
         let card = render_algorithm_card(algo);
         let html = card.0;
-        assert!(html.contains("text-phosphor-dim"));
+        assert!(html.contains("text-neutral-400"));
         assert!(html.contains("STRUCTURE"));
     }
 
@@ -2230,7 +2228,7 @@ mod tests {
             .unwrap();
         let card = render_algorithm_card(algo);
         let html = card.0;
-        assert!(html.contains("text-amber-glow"));
+        assert!(html.contains("text-neutral-300"));
         assert!(html.contains("SIMILARITY"));
     }
 
@@ -2949,7 +2947,7 @@ mod tests {
         let algo = &ALGORITHMS[0]; // First algorithm is pagerank (centrality)
         let card = render_algorithm_card(algo);
         let html = card.0;
-        assert!(html.contains("text-phosphor"));
+        assert!(html.contains("text-white"));
         assert!(html.contains(algo.id));
     }
 
@@ -3775,5 +3773,312 @@ mod tests {
         let result = execute_algorithm(&ctx, &params);
         // Should handle missing to parameter
         assert_eq!(result.algorithm, "dijkstra");
+    }
+
+    // ========== Handler integration tests ==========
+
+    #[tokio::test]
+    async fn test_dashboard_handler_with_graph() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Query(DashboardParams { category: None });
+        let result = dashboard(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("ALGORITHM DASHBOARD"));
+        assert!(html.contains("NODES"));
+        assert!(html.contains("EDGES"));
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_handler_empty_graph() {
+        let ctx = Arc::new(create_test_context());
+        let params = Query(DashboardParams { category: None });
+        let result = dashboard(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("ALGORITHM DASHBOARD"));
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_category_filter() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Query(DashboardParams {
+            category: Some("centrality".to_string()),
+        });
+        let result = dashboard(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("ALGORITHM DASHBOARD"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_form_handler() {
+        let ctx = Arc::new(create_test_context());
+        let params = Query(ExecuteParams {
+            algorithm: "pagerank".to_string(),
+            ..Default::default()
+        });
+        let result = execute_form(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EXECUTE ALGORITHM"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_form_unknown_algorithm() {
+        let ctx = Arc::new(create_test_context());
+        let params = Query(ExecuteParams {
+            algorithm: "nonexistent".to_string(),
+            ..Default::default()
+        });
+        let result = execute_form(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("ALGORITHM NOT FOUND") || html.contains("EXECUTE ALGORITHM"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_submit_pagerank() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Form(ExecuteParams {
+            algorithm: "pagerank".to_string(),
+            top_k: Some(10),
+            ..Default::default()
+        });
+        let result = execute_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EXECUTION STATS"));
+        assert!(html.contains("pagerank"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_submit_components() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Form(ExecuteParams {
+            algorithm: "components".to_string(),
+            ..Default::default()
+        });
+        let result = execute_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EXECUTION STATS"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_submit_bfs_with_from() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Form(ExecuteParams {
+            algorithm: "bfs".to_string(),
+            from: Some("1".to_string()),
+            max_depth: Some(3),
+            ..Default::default()
+        });
+        let result = execute_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EXECUTION STATS"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_submit_degree() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Form(ExecuteParams {
+            algorithm: "degree".to_string(),
+            top_k: Some(5),
+            ..Default::default()
+        });
+        let result = execute_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EXECUTION STATS"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_submit_louvain() {
+        let ctx = Arc::new(create_test_context_with_graph());
+        let params = Form(ExecuteParams {
+            algorithm: "louvain".to_string(),
+            ..Default::default()
+        });
+        let result = execute_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EXECUTION STATS"));
+    }
+
+    // --- variable_paths algorithm tests ---
+
+    #[test]
+    fn test_execute_algorithm_variable_paths_empty_graph() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "variable_paths".to_string(),
+            from: Some("1".to_string()),
+            to: Some("2".to_string()),
+            min_hops: Some(1),
+            max_hops: Some(3),
+            max_paths: Some(50),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "variable_paths");
+    }
+
+    #[test]
+    fn test_execute_algorithm_variable_paths_with_graph() {
+        let ctx = create_test_context_with_graph();
+        let params = ExecuteParams {
+            algorithm: "variable_paths".to_string(),
+            from: Some("1".to_string()),
+            to: Some("3".to_string()),
+            min_hops: Some(1),
+            max_hops: Some(3),
+            max_paths: Some(100),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "variable_paths");
+        assert!(!matches!(result.status, ResultStatus::Error));
+    }
+
+    #[test]
+    fn test_execute_algorithm_variable_paths_invalid_ids() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "variable_paths".to_string(),
+            from: Some("not_a_number".to_string()),
+            to: Some("2".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert!(matches!(result.status, ResultStatus::Error));
+        assert!(matches!(result.data, ResultData::Error(ref s) if s.contains("Invalid")));
+    }
+
+    // --- astar invalid IDs test ---
+
+    #[test]
+    fn test_execute_algorithm_astar_invalid_ids() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "astar".to_string(),
+            from: Some("abc".to_string()),
+            to: Some("2".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert!(matches!(result.status, ResultStatus::Error));
+        assert!(matches!(result.data, ResultData::Error(ref s) if s.contains("Invalid")));
+    }
+
+    // --- dijkstra path not found test ---
+
+    #[test]
+    fn test_execute_algorithm_dijkstra_path_not_found() {
+        use graph_engine::GraphEngine;
+        use relational_engine::RelationalEngine;
+        use vector_engine::VectorEngine;
+        let graph = GraphEngine::new();
+        let n1 = graph.create_node("A", HashMap::new()).unwrap();
+        let n2 = graph.create_node("B", HashMap::new()).unwrap();
+        // No edge between n1 and n2
+        let ctx = AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(graph),
+        );
+        let params = ExecuteParams {
+            algorithm: "dijkstra".to_string(),
+            from: Some(n1.to_string()),
+            to: Some(n2.to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "dijkstra");
+        assert!(matches!(
+            result.status,
+            ResultStatus::NoData | ResultStatus::Error
+        ));
+    }
+
+    #[test]
+    fn test_execute_algorithm_dijkstra_invalid_ids() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "dijkstra".to_string(),
+            from: Some("xyz".to_string()),
+            to: Some("abc".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert!(matches!(result.status, ResultStatus::Error));
+    }
+
+    // --- similarity invalid IDs test ---
+
+    #[test]
+    fn test_execute_algorithm_similarity_invalid_ids() {
+        let ctx = create_test_context();
+        let params = ExecuteParams {
+            algorithm: "similarity".to_string(),
+            node_a: Some("xyz".to_string()),
+            node_b: Some("2".to_string()),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert!(matches!(result.status, ResultStatus::Error));
+        assert!(matches!(result.data, ResultData::Error(ref s) if s.contains("Invalid")));
+    }
+
+    // --- scc large component test ---
+
+    #[test]
+    fn test_execute_algorithm_scc_large_component() {
+        use graph_engine::GraphEngine;
+        use relational_engine::RelationalEngine;
+        use vector_engine::VectorEngine;
+        let graph = GraphEngine::new();
+        // Create a cycle of 6 nodes to get one large SCC
+        let mut nodes = Vec::new();
+        for _ in 0..6 {
+            nodes.push(graph.create_node("Node", HashMap::new()).unwrap());
+        }
+        for i in 0..6 {
+            graph
+                .create_edge(nodes[i], nodes[(i + 1) % 6], "NEXT", HashMap::new(), true)
+                .ok();
+        }
+        let ctx = AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(graph),
+        );
+        let params = ExecuteParams {
+            algorithm: "scc".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "scc");
+        assert!(!matches!(result.status, ResultStatus::Error));
+    }
+
+    // --- biconnected with articulation points ---
+
+    #[test]
+    fn test_execute_algorithm_biconnected_with_articulation() {
+        use graph_engine::GraphEngine;
+        use relational_engine::RelationalEngine;
+        use vector_engine::VectorEngine;
+        let graph = GraphEngine::new();
+        // Linear chain: A-B-C where B is an articulation point
+        let a = graph.create_node("A", HashMap::new()).unwrap();
+        let b = graph.create_node("B", HashMap::new()).unwrap();
+        let c = graph.create_node("C", HashMap::new()).unwrap();
+        graph.create_edge(a, b, "LINK", HashMap::new(), false).ok();
+        graph.create_edge(b, a, "LINK", HashMap::new(), false).ok();
+        graph.create_edge(b, c, "LINK", HashMap::new(), false).ok();
+        graph.create_edge(c, b, "LINK", HashMap::new(), false).ok();
+        let ctx = AdminContext::new(
+            Arc::new(RelationalEngine::new()),
+            Arc::new(VectorEngine::new()),
+            Arc::new(graph),
+        );
+        let params = ExecuteParams {
+            algorithm: "biconnected".to_string(),
+            ..Default::default()
+        };
+        let result = execute_algorithm(&ctx, &params);
+        assert_eq!(result.algorithm, "biconnected");
     }
 }

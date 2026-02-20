@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-//! Handlers for graph engine browsing with dystopian terminal styling.
+//! Handlers for graph engine browsing with Memoria design system.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,9 +13,7 @@ use serde::{Deserialize, Serialize};
 use graph_engine::{Node, PageRankConfig, PropertyValue};
 
 use crate::web::templates::layout;
-use crate::web::templates::layout::{
-    breadcrumb, empty_state, format_number, page_header, stat_card,
-};
+use crate::web::templates::layout::{format_number, m_breadcrumb, m_empty, m_header, m_stat};
 use crate::web::AdminContext;
 use crate::web::NavItem;
 
@@ -47,23 +45,23 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
     let edge_count = ctx.graph.edge_count();
 
     let content = html! {
-        (page_header("GRAPH ENGINE", Some("Navigate nodes and edge relationships")))
+        (m_header("GRAPH ENGINE", Some("Navigate nodes and edge relationships")))
 
         // Stats
         div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6" {
-            (stat_card("NODES", &format_number(node_count), "graph entities", "graph"))
-            (stat_card("EDGES", &format_number(edge_count), "relationships", "graph"))
+            (m_stat("NODES", &format_number(node_count), "graph entities", "graph"))
+            (m_stat("EDGES", &format_number(edge_count), "relationships", "graph"))
         }
 
         // Quick actions
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "OPERATIONS" }
-            div class="panel-content" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "OPERATIONS" }
+            div class="m-card-content" {
                 div class="flex flex-wrap gap-2" {
-                    a href="/graph/nodes" class="btn-terminal" { "[ BROWSE NODES ]" }
-                    a href="/graph/edges" class="btn-terminal" { "[ BROWSE EDGES ]" }
-                    a href="/graph/path" class="btn-terminal btn-terminal-amber" { "[ FIND PATH ]" }
-                    a href="/graph/algorithms" class="btn-terminal btn-terminal-amber" { "[ ALGORITHMS ]" }
+                    a href="/graph/nodes" class="m-btn" { "[ BROWSE NODES ]" }
+                    a href="/graph/edges" class="m-btn" { "[ BROWSE EDGES ]" }
+                    a href="/graph/path" class="m-btn" { "[ FIND PATH ]" }
+                    a href="/graph/algorithms" class="m-btn" { "[ ALGORITHMS ]" }
                 }
             }
         }
@@ -71,18 +69,18 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
         // Graph Visualization
         @if node_count > 0 {
             div class="mb-6" {
-                div class="terminal-panel" {
-                    div class="panel-header" { "GRAPH VISUALIZATION" }
-                    div class="panel-content p-0" {
+                div class="m-card" {
+                    div class="m-card-header" { "GRAPH VISUALIZATION" }
+                    div class="m-card-content p-0" {
                         div id="graph-container" class="w-full h-[400px]" {}
                     }
-                    div class="panel-footer" {
+                    div class="m-card-footer" {
                         "Drag to pan, scroll to zoom, click nodes for details"
                     }
                 }
             }
 
-            // force-graph script with terminal phosphor theme
+            // force-graph script with Memoria neutral theme
             script src="https://unpkg.com/force-graph" {}
             script { (PreEscaped(r#"
                 (function initGraph() {
@@ -101,22 +99,13 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
                     fetch('/api/graph/subgraph?limit=100')
                         .then(function(res) { return res.json(); })
                         .then(function(data) {
-                            // Terminal phosphor color palette
+                            // Memoria neutral color palette
                             var nodeColors = {
-                                'Person': '#00ee00',
-                                'Company': '#ffb641',
-                                'Location': '#008e00',
-                                'Document': '#00ee00',
-                                'Section': '#ffb641',
-                                'default': '#00ee00'
-                            };
-                            var linkColors = {
-                                'KNOWS': '#005f00',
-                                'WORKS_AT': '#ffb000',
-                                'IN_SECTION': '#008e00',
-                                'LINKS_TO': '#005f00',
-                                'RELATED_TO': '#4a2125',
-                                'default': '#005f00'
+                                'Person': '#94a3b8',
+                                'Project': '#a1a1aa',
+                                'Memory': '#a8a29e',
+                                'Channel': '#9ca3af',
+                                'default': '#a3a3a3'
                             };
 
                             var Graph = ForceGraph()
@@ -124,49 +113,46 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
                                 .width(container.clientWidth)
                                 .height(container.clientHeight || 400)
                                 .graphData(data)
-                                .backgroundColor('#0c0c0c')
+                                .backgroundColor('#0a0a0a')
                                 .nodeColor(function(node) { return nodeColors[node.label] || nodeColors.default; })
                                 .nodeRelSize(6)
                                 .nodeCanvasObject(function(node, ctx, globalScale) {
-                                    // Draw node with glow effect
                                     var color = nodeColors[node.label] || nodeColors.default;
                                     var size = 5;
 
-                                    // Outer glow
-                                    ctx.shadowColor = color;
-                                    ctx.shadowBlur = 15;
+                                    // Node circle at 80% opacity
+                                    ctx.globalAlpha = 0.8;
                                     ctx.beginPath();
                                     ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
                                     ctx.fillStyle = color;
                                     ctx.fill();
 
                                     // Inner bright core
-                                    ctx.shadowBlur = 0;
                                     ctx.beginPath();
                                     ctx.arc(node.x, node.y, size * 0.6, 0, 2 * Math.PI);
                                     ctx.fillStyle = '#ffffff';
-                                    ctx.globalAlpha = 0.3;
+                                    ctx.globalAlpha = 0.2;
                                     ctx.fill();
                                     ctx.globalAlpha = 1;
 
-                                    // Label
+                                    // Label at 60% opacity
                                     var label = node.name || node.label;
                                     var fontSize = 10 / globalScale;
                                     ctx.font = fontSize + 'px monospace';
                                     ctx.textAlign = 'center';
                                     ctx.textBaseline = 'middle';
                                     ctx.fillStyle = color;
-                                    ctx.shadowColor = color;
-                                    ctx.shadowBlur = 5;
+                                    ctx.globalAlpha = 0.6;
                                     ctx.fillText(label, node.x, node.y + size + fontSize);
+                                    ctx.globalAlpha = 1;
                                 })
-                                .linkColor(function(link) { return linkColors[link.type] || linkColors.default; })
+                                .linkColor(function() { return 'rgba(64,64,64,0.8)'; })
                                 .linkWidth(1.5)
                                 .linkDirectionalArrowLength(4)
                                 .linkDirectionalArrowRelPos(1)
                                 .linkDirectionalParticles(1)
                                 .linkDirectionalParticleWidth(2)
-                                .linkDirectionalParticleColor(function(link) { return linkColors[link.type] || linkColors.default; })
+                                .linkDirectionalParticleColor(function() { return 'rgba(64,64,64,0.8)'; })
                                 .onNodeClick(function(node) {
                                     showNodeModal(node);
                                 })
@@ -180,7 +166,7 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
                         })
                         .catch(function(err) {
                             console.error('Failed to load graph data:', err);
-                            container.innerHTML = '<div style="color:#942222;padding:20px;text-align:center">ERROR: Failed to load graph data</div>';
+                            container.innerHTML = '<div style="color:#737373;padding:20px;text-align:center">ERROR: Failed to load graph data</div>';
                         });
                 })();
 
@@ -190,24 +176,24 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
                     var name = node.name || '< unnamed >';
 
                     content.innerHTML =
-                        '<div class=\"text-amber-glow text-lg mb-3 font-display tracking-wider\">' +
+                        '<div class=\"text-neutral-300 text-lg mb-3 font-display tracking-wider\">' +
                             '══[ NODE INSPECTOR ]══' +
                         '</div>' +
-                        '<div class=\"space-y-2 font-terminal text-sm\">' +
-                            '<div class=\"flex\"><span class=\"text-phosphor-dim w-24\">ID:</span>' +
-                            '<span class=\"text-phosphor\">' + node.id + '</span></div>' +
-                            '<div class=\"flex\"><span class=\"text-phosphor-dim w-24\">TYPE:</span>' +
-                            '<span class=\"text-amber-glow\">' + node.label + '</span></div>' +
-                            '<div class=\"flex\"><span class=\"text-phosphor-dim w-24\">NAME:</span>' +
-                            '<span class=\"text-phosphor\">' + name + '</span></div>' +
-                            '<div class=\"border-t border-phosphor-dark my-3 pt-3\">' +
-                                '<div class=\"text-phosphor-dim mb-2\">[ ACTIONS ]</div>' +
+                        '<div class=\"space-y-2 text-sm\">' +
+                            '<div class=\"flex\"><span class=\"text-neutral-400 w-24\">ID:</span>' +
+                            '<span class=\"text-white\">' + node.id + '</span></div>' +
+                            '<div class=\"flex\"><span class=\"text-neutral-400 w-24\">TYPE:</span>' +
+                            '<span class=\"text-neutral-300\">' + node.label + '</span></div>' +
+                            '<div class=\"flex\"><span class=\"text-neutral-400 w-24\">NAME:</span>' +
+                            '<span class=\"text-white\">' + name + '</span></div>' +
+                            '<div class=\"border-t border-neutral-800 my-3 pt-3\">' +
+                                '<div class=\"text-neutral-400 mb-2\">[ ACTIONS ]</div>' +
                                 '<div class=\"flex gap-2 flex-wrap\">' +
-                                    '<a href=\"/graph/nodes?label=' + node.label + '\" class=\"btn-terminal text-xs\">[ FILTER BY TYPE ]</a>' +
+                                    '<a href=\"/graph/nodes?label=' + node.label + '\" class=\"m-btn text-xs\">[ FILTER BY TYPE ]</a>' +
                                 '</div>' +
                             '</div>' +
                         '</div>' +
-                        '<div class=\"text-phosphor-dark text-xs mt-4 text-center\">Click outside or press ESC to close</div>';
+                        '<div class=\"text-neutral-500 text-xs mt-4 text-center\">Click outside or press ESC to close</div>';
 
                     modal.classList.remove('hidden');
                     modal.classList.add('flex');
@@ -222,38 +208,38 @@ pub async fn overview(State(ctx): State<Arc<AdminContext>>) -> Markup {
 
             // Node detail modal
             div id="node-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/80" onclick="if(event.target === this) closeNodeModal()" {
-                div class="terminal-panel w-96 max-w-[90vw] animate-slide-in" onclick="event.stopPropagation()" {
-                    div class="panel-content" id="node-modal-content" {}
+                div class="m-card w-96 max-w-[90vw] animate-slide-in" onclick="event.stopPropagation()" {
+                    div class="m-card-content" id="node-modal-content" {}
                 }
             }
         }
 
         // Info panels
         div class="grid grid-cols-1 lg:grid-cols-2 gap-6" {
-            div class="terminal-panel" {
-                div class="panel-header" { "NODES" }
-                div class="panel-content" {
+            div class="m-card" {
+                div class="m-card-header" { "NODES" }
+                div class="m-card-content" {
                     @if node_count == 0 {
-                        p class="text-phosphor-dim italic" { "< NO NODES IN GRAPH >" }
+                        p class="text-neutral-400 italic" { "< NO NODES IN GRAPH >" }
                     } @else {
-                        p class="text-phosphor-dim" {
-                            "Browse all " span class="text-phosphor" { (format_number(node_count)) } " nodes or filter by label."
+                        p class="text-neutral-400" {
+                            "Browse all " span class="text-white" { (format_number(node_count)) } " nodes or filter by label."
                         }
-                        a href="/graph/nodes" class="btn-terminal mt-3 inline-block" { "[ VIEW ALL ]" }
+                        a href="/graph/nodes" class="m-btn mt-3 inline-block" { "[ VIEW ALL ]" }
                     }
                 }
             }
 
-            div class="terminal-panel" {
-                div class="panel-header" { "EDGES" }
-                div class="panel-content" {
+            div class="m-card" {
+                div class="m-card-header" { "EDGES" }
+                div class="m-card-content" {
                     @if edge_count == 0 {
-                        p class="text-phosphor-dim italic" { "< NO EDGES IN GRAPH >" }
+                        p class="text-neutral-400 italic" { "< NO EDGES IN GRAPH >" }
                     } @else {
-                        p class="text-phosphor-dim" {
-                            "Browse all " span class="text-phosphor" { (format_number(edge_count)) } " edges or filter by type."
+                        p class="text-neutral-400" {
+                            "Browse all " span class="text-white" { (format_number(edge_count)) } " edges or filter by type."
                         }
-                        a href="/graph/edges" class="btn-terminal mt-3 inline-block" { "[ VIEW ALL ]" }
+                        a href="/graph/edges" class="m-btn mt-3 inline-block" { "[ VIEW ALL ]" }
                     }
                 }
             }
@@ -292,34 +278,34 @@ pub async fn nodes_list(
     );
 
     let content = html! {
-        (breadcrumb(&[("/graph", "GRAPH"), ("", if params.label.is_some() { "FILTERED NODES" } else { "NODES" })]))
+        (m_breadcrumb(&[("/graph", "GRAPH"), ("", if params.label.is_some() { "FILTERED NODES" } else { "NODES" })]))
 
-        (page_header(
+        (m_header(
             if params.label.is_some() { "NODES BY LABEL" } else { "ALL NODES" },
             Some(&format!("{} entities", format_number(total)))
         ))
 
         // Filter
-        div class="terminal-panel mb-4" {
-            div class="panel-header" { "FILTER" }
-            div class="panel-content" {
+        div class="m-card mb-4" {
+            div class="m-card-header" { "FILTER" }
+            div class="m-card-content" {
                 form method="get" action="/graph/nodes" class="flex items-center gap-4" {
                     input
                         type="text"
                         name="label"
                         placeholder="Filter by label..."
                         value=(params.label.clone().unwrap_or_default())
-                        class="input-terminal flex-1";
-                    button type="submit" class="btn-terminal" { "[ APPLY ]" }
+                        class="m-input flex-1";
+                    button type="submit" class="m-btn" { "[ APPLY ]" }
                     @if params.label.is_some() {
-                        a href="/graph/nodes" class="btn-terminal btn-terminal-rust" { "[ CLEAR ]" }
+                        a href="/graph/nodes" class="m-btn" { "[ CLEAR ]" }
                     }
                 }
             }
         }
 
         @if nodes.is_empty() {
-            (empty_state("NO NODES", "Create nodes to populate the graph"))
+            (m_empty("NO NODES", "Create nodes to populate the graph"))
         } @else {
             (render_nodes_table(&nodes))
             (pagination(page, page_size, total, "/graph/nodes", params.label.as_deref()))
@@ -360,39 +346,39 @@ pub async fn edges_list(
     );
 
     let content = html! {
-        (breadcrumb(&[("/graph", "GRAPH"), ("", if params.edge_type.is_some() { "FILTERED EDGES" } else { "EDGES" })]))
+        (m_breadcrumb(&[("/graph", "GRAPH"), ("", if params.edge_type.is_some() { "FILTERED EDGES" } else { "EDGES" })]))
 
-        (page_header(
+        (m_header(
             if params.edge_type.is_some() { "EDGES BY TYPE" } else { "ALL EDGES" },
             Some(&format!("{} relationships", format_number(total)))
         ))
 
         // Filter
-        div class="terminal-panel mb-4" {
-            div class="panel-header" { "FILTER" }
-            div class="panel-content" {
+        div class="m-card mb-4" {
+            div class="m-card-header" { "FILTER" }
+            div class="m-card-content" {
                 form method="get" action="/graph/edges" class="flex items-center gap-4" {
                     input
                         type="text"
                         name="edge_type"
                         placeholder="Filter by type..."
                         value=(params.edge_type.clone().unwrap_or_default())
-                        class="input-terminal flex-1";
-                    button type="submit" class="btn-terminal" { "[ APPLY ]" }
+                        class="m-input flex-1";
+                    button type="submit" class="m-btn" { "[ APPLY ]" }
                     @if params.edge_type.is_some() {
-                        a href="/graph/edges" class="btn-terminal btn-terminal-rust" { "[ CLEAR ]" }
+                        a href="/graph/edges" class="m-btn" { "[ CLEAR ]" }
                     }
                 }
             }
         }
 
         @if edges.is_empty() {
-            (empty_state("NO EDGES", "Create edges to connect nodes"))
+            (m_empty("NO EDGES", "Create edges to connect nodes"))
         } @else {
-            div class="terminal-panel" {
-                div class="panel-header" { "EDGE REGISTRY" }
-                div class="panel-content p-0 overflow-x-auto" {
-                    table class="table-rust min-w-max" {
+            div class="m-card" {
+                div class="m-card-header" { "EDGE REGISTRY" }
+                div class="m-card-content p-0 overflow-x-auto" {
+                    table class="m-table min-w-max" {
                         thead {
                             tr {
                                 th { "ID" }
@@ -406,16 +392,16 @@ pub async fn edges_list(
                         tbody {
                             @for edge in &edges {
                                 tr {
-                                    td class="text-phosphor-dim font-data" { (edge.id) }
-                                    td class="text-phosphor" { (edge.from) }
+                                    td class="text-neutral-400 font-mono" { (edge.id) }
+                                    td class="text-white" { (edge.from) }
                                     td {
-                                        span class="text-amber" { "[:" (edge.edge_type.clone()) "]" }
+                                        span class="text-neutral-300" { "[:" (edge.edge_type.clone()) "]" }
                                     }
-                                    td class="text-phosphor" { (edge.to) }
-                                    td class="text-phosphor-dim" {
+                                    td class="text-white" { (edge.to) }
+                                    td class="text-neutral-400" {
                                         @if edge.directed { "YES" } @else { "NO" }
                                     }
-                                    td class="text-phosphor-dim" {
+                                    td class="text-neutral-400" {
                                         (render_properties_summary(&edge.properties))
                                     }
                                 }
@@ -474,18 +460,18 @@ fn render_path_finder_page(
     result: Option<Result<graph_engine::Path, graph_engine::GraphError>>,
 ) -> Markup {
     let content = html! {
-        (breadcrumb(&[("/graph", "GRAPH"), ("", "PATH FINDER")]))
+        (m_breadcrumb(&[("/graph", "GRAPH"), ("", "PATH FINDER")]))
 
-        (page_header("PATH FINDER", Some("Compute shortest path between nodes")))
+        (m_header("PATH FINDER", Some("Compute shortest path between nodes")))
 
         // Form
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "PATH PARAMETERS" }
-            div class="panel-content" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "PATH PARAMETERS" }
+            div class="m-card-content" {
                 form method="post" action="/graph/path" class="space-y-4" {
                     div class="grid grid-cols-1 md:grid-cols-2 gap-4" {
                         div {
-                            label for="from" class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                            label for="from" class="block text-sm text-neutral-400 mb-2" {
                                 "SOURCE NODE ID"
                             }
                             input
@@ -493,11 +479,11 @@ fn render_path_finder_page(
                                 id="from"
                                 name="from"
                                 value=(params.map_or(String::new(), |p| p.from.clone()))
-                                class="input-terminal w-full"
+                                class="m-input w-full"
                                 placeholder="e.g., 123";
                         }
                         div {
-                            label for="to" class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                            label for="to" class="block text-sm text-neutral-400 mb-2" {
                                 "TARGET NODE ID"
                             }
                             input
@@ -505,11 +491,11 @@ fn render_path_finder_page(
                                 id="to"
                                 name="to"
                                 value=(params.map_or(String::new(), |p| p.to.clone()))
-                                class="input-terminal w-full"
+                                class="m-input w-full"
                                 placeholder="e.g., 456";
                         }
                     }
-                    button type="submit" class="btn-terminal" { "[ COMPUTE PATH ]" }
+                    button type="submit" class="m-btn" { "[ COMPUTE PATH ]" }
                 }
             }
         }
@@ -518,10 +504,10 @@ fn render_path_finder_page(
         @if let Some(result) = result {
             @match result {
                 Ok(path) => {
-                    div class="terminal-panel" {
-                        div class="panel-header" { "PATH FOUND" }
-                        div class="panel-content" {
-                            div class="mb-4 text-phosphor font-terminal" {
+                    div class="m-card" {
+                        div class="m-card-header" { "PATH FOUND" }
+                        div class="m-card-content" {
+                            div class="mb-4 text-white" {
                                 "[ " (path.nodes.len()) " NODES IN PATH ]"
                             }
 
@@ -530,12 +516,12 @@ fn render_path_finder_page(
                                 div class="flex items-center gap-2 min-w-max" {
                                     @for (idx, node_id) in path.nodes.iter().enumerate() {
                                         div class="flex flex-col items-center" {
-                                            div class="w-12 h-12 border-2 border-phosphor bg-terminal-soot flex items-center justify-center" {
-                                                span class="text-sm font-data text-phosphor" { (node_id) }
+                                            div class="w-12 h-12 border-2 border-neutral-600 bg-neutral-900 flex items-center justify-center" {
+                                                span class="text-sm font-mono text-white" { (node_id) }
                                             }
                                         }
                                         @if idx < path.nodes.len() - 1 {
-                                            div class="flex items-center text-phosphor-dim" {
+                                            div class="flex items-center text-neutral-400" {
                                                 "--->"
                                             }
                                         }
@@ -544,10 +530,10 @@ fn render_path_finder_page(
                             }
 
                             // Path sequence
-                            div class="text-sm text-phosphor-dim font-terminal" {
+                            div class="text-sm text-neutral-400" {
                                 "SEQUENCE: "
                                 @for (idx, node_id) in path.nodes.iter().enumerate() {
-                                    span class="text-phosphor" { (node_id) }
+                                    span class="text-white" { (node_id) }
                                     @if idx < path.nodes.len() - 1 {
                                         span { " -> " }
                                     }
@@ -557,12 +543,12 @@ fn render_path_finder_page(
                     }
                 }
                 Err(ref e) if matches!(e, graph_engine::GraphError::PathNotFound) => {
-                    (empty_state("NO PATH FOUND", "The nodes are not connected"))
+                    (m_empty("NO PATH FOUND", "The nodes are not connected"))
                 }
                 Err(e) => {
-                    div class="terminal-panel terminal-panel-rust" {
-                        div class="panel-header" { "ERROR" }
-                        div class="panel-content text-amber" {
+                    div class="m-card" {
+                        div class="m-card-header" { "ERROR" }
+                        div class="m-card-content text-neutral-300" {
                             (e.to_string())
                         }
                     }
@@ -636,31 +622,31 @@ fn render_algorithms_page(
     result: Option<(&'static str, Vec<(u64, f64)>)>,
 ) -> Markup {
     let content = html! {
-        (breadcrumb(&[("/graph", "GRAPH"), ("", "ALGORITHMS")]))
+        (m_breadcrumb(&[("/graph", "GRAPH"), ("", "ALGORITHMS")]))
 
-        (page_header("GRAPH ALGORITHMS", Some("Execute analysis algorithms")))
+        (m_header("GRAPH ALGORITHMS", Some("Execute analysis algorithms")))
 
         // Form
-        div class="terminal-panel mb-6" {
-            div class="panel-header" { "ALGORITHM PARAMETERS" }
-            div class="panel-content" {
+        div class="m-card mb-6" {
+            div class="m-card-header" { "ALGORITHM PARAMETERS" }
+            div class="m-card-content" {
                 form method="post" action="/graph/algorithms" class="space-y-4" {
                     div class="grid grid-cols-1 md:grid-cols-2 gap-4" {
                         div {
-                            label for="algorithm" class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                            label for="algorithm" class="block text-sm text-neutral-400 mb-2" {
                                 "ALGORITHM"
                             }
                             select
                                 id="algorithm"
                                 name="algorithm"
-                                class="input-terminal w-full"
+                                class="m-input w-full"
                             {
                                 option value="pagerank" selected[params.map_or(true, |p| p.algorithm == "pagerank")] { "PageRank" }
                                 option value="components" selected[params.map_or(false, |p| p.algorithm == "components")] { "Connected Components" }
                             }
                         }
                         div {
-                            label for="top_k" class="block text-sm text-phosphor-dim mb-2 font-terminal" {
+                            label for="top_k" class="block text-sm text-neutral-400 mb-2" {
                                 "TOP K RESULTS"
                             }
                             input
@@ -670,23 +656,23 @@ fn render_algorithms_page(
                                 min="1"
                                 max="100"
                                 value=(params.map_or(10, |p| p.top_k))
-                                class="input-terminal w-full";
+                                class="m-input w-full";
                         }
                     }
-                    button type="submit" class="btn-terminal" { "[ EXECUTE ]" }
+                    button type="submit" class="m-btn" { "[ EXECUTE ]" }
                 }
             }
         }
 
         // Results
         @if let Some((name, results)) = result {
-            div class="terminal-panel" {
-                div class="panel-header" { (name.to_uppercase()) " RESULTS" }
-                div class="panel-content p-0" {
+            div class="m-card" {
+                div class="m-card-header" { (name.to_uppercase()) " RESULTS" }
+                div class="m-card-content p-0" {
                     @if results.is_empty() {
-                        div class="p-4 text-phosphor-dim italic" { "< NO RESULTS >" }
+                        div class="p-4 text-neutral-400 italic" { "< NO RESULTS >" }
                     } @else {
-                        table class="table-rust" {
+                        table class="m-table" {
                             thead {
                                 tr {
                                     th class="w-16" { "#" }
@@ -697,9 +683,9 @@ fn render_algorithms_page(
                             tbody {
                                 @for (idx, (node_id, score)) in results.iter().enumerate() {
                                     tr {
-                                        td class="text-phosphor-dim font-data" { (idx + 1) }
-                                        td class="text-phosphor font-data" { (node_id) }
-                                        td class="text-right text-amber font-data" { (format!("{score:.6}")) }
+                                        td class="text-neutral-400 font-mono" { (idx + 1) }
+                                        td class="text-white font-mono" { (node_id) }
+                                        td class="text-right text-neutral-300 font-mono" { (format!("{score:.6}")) }
                                     }
                                 }
                             }
@@ -889,10 +875,10 @@ fn get_node_display_name(props: &HashMap<String, PropertyValue>) -> Option<Strin
 
 fn render_nodes_table(nodes: &[Node]) -> Markup {
     html! {
-        div class="terminal-panel" {
-            div class="panel-header" { "NODE REGISTRY" }
-            div class="panel-content p-0 overflow-x-auto" {
-                table class="table-rust min-w-max" {
+        div class="m-card" {
+            div class="m-card-header" { "NODE REGISTRY" }
+            div class="m-card-content p-0 overflow-x-auto" {
+                table class="m-table min-w-max" {
                     thead {
                         tr {
                             th { "ID" }
@@ -903,18 +889,18 @@ fn render_nodes_table(nodes: &[Node]) -> Markup {
                     tbody {
                         @for node in nodes {
                             tr {
-                                td class="text-phosphor font-data" { (node.id) }
+                                td class="text-white font-mono" { (node.id) }
                                 td {
                                     div class="flex flex-wrap gap-1" {
                                         @for label in &node.labels {
-                                            span class="text-amber" { "[:" (label) "]" }
+                                            span class="text-neutral-300" { "[:" (label) "]" }
                                         }
                                         @if node.labels.is_empty() {
-                                            span class="text-phosphor-dark italic" { "none" }
+                                            span class="text-neutral-500 italic" { "none" }
                                         }
                                     }
                                 }
-                                td class="text-phosphor-dim" {
+                                td class="text-neutral-400" {
                                     (render_properties_summary(&node.properties))
                                 }
                             }
@@ -957,7 +943,7 @@ fn render_properties_summary(props: &HashMap<String, PropertyValue>) -> Markup {
     let has_more = props.len() > 3;
 
     html! {
-        span class="font-terminal text-sm" {
+        span class="text-sm" {
             "{" (text) @if has_more { ", ..." } "}"
         }
     }
@@ -977,23 +963,23 @@ fn pagination(
     let filter_param = filter.map_or(String::new(), |f| format!("&label={f}"));
 
     html! {
-        div class="mt-4 flex items-center justify-between font-terminal" {
-            div class="text-sm text-phosphor-dim" {
+        div class="mt-4 flex items-center justify-between" {
+            div class="text-sm text-neutral-400" {
                 "SHOWING " (page * page_size + 1) " - " (((page + 1) * page_size).min(total)) " OF " (format_number(total))
             }
             div class="flex items-center gap-2" {
                 @if has_prev {
                     a href=(format!("{base_url}?page={}&page_size={page_size}{filter_param}", page - 1))
-                      class="btn-terminal text-sm" {
+                      class="m-btn text-sm" {
                         "[ PREV ]"
                     }
                 }
-                span class="px-3 py-1 text-sm text-phosphor-dim" {
+                span class="px-3 py-1 text-sm text-neutral-400" {
                     "PAGE " (page + 1) " / " (total_pages.max(1))
                 }
                 @if has_next {
                     a href=(format!("{base_url}?page={}&page_size={page_size}{filter_param}", page + 1))
-                      class="btn-terminal text-sm" {
+                      class="m-btn text-sm" {
                         "[ NEXT ]"
                     }
                 }
@@ -1524,5 +1510,318 @@ mod tests {
         let html = render_algorithms_page(Some(&params), None).into_string();
         // Check that the form has the values
         assert!(html.contains("20"));
+    }
+
+    // ========== Handler integration tests ==========
+
+    fn create_populated_graph_context() -> Arc<AdminContext> {
+        let relational = Arc::new(relational_engine::RelationalEngine::new());
+        let vector = Arc::new(vector_engine::VectorEngine::new());
+        let graph = Arc::new(graph_engine::GraphEngine::new());
+
+        // Create nodes with labels and properties
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        props.insert(
+            "entity_key".to_string(),
+            PropertyValue::String("alice".into()),
+        );
+        let n1 = graph.create_node("Person", props).unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("name".to_string(), PropertyValue::String("Bob".into()));
+        props2.insert(
+            "entity_key".to_string(),
+            PropertyValue::String("bob".into()),
+        );
+        let n2 = graph.create_node("Person", props2).unwrap();
+
+        let mut props3 = HashMap::new();
+        props3.insert("title".to_string(), PropertyValue::String("Neumann".into()));
+        let n3 = graph.create_node("Project", props3).unwrap();
+
+        // Create edges
+        graph
+            .create_edge(n1, n2, "KNOWS", Default::default(), true)
+            .unwrap();
+        graph
+            .create_edge(n1, n3, "WORKS_ON", Default::default(), true)
+            .unwrap();
+        graph
+            .create_edge(n2, n3, "WORKS_ON", Default::default(), true)
+            .unwrap();
+
+        Arc::new(AdminContext::new(relational, vector, graph))
+    }
+
+    #[tokio::test]
+    async fn test_overview_with_populated_graph() {
+        let ctx = create_populated_graph_context();
+        let result = overview(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("GRAPH ENGINE"));
+        assert!(html.contains("NODES"));
+        assert!(html.contains("EDGES"));
+        assert!(html.contains("GRAPH VISUALIZATION"));
+        assert!(html.contains("BROWSE NODES"));
+    }
+
+    #[tokio::test]
+    async fn test_overview_empty_graph() {
+        let ctx = Arc::new(AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            Arc::new(vector_engine::VectorEngine::new()),
+            Arc::new(graph_engine::GraphEngine::new()),
+        ));
+        let result = overview(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("GRAPH ENGINE"));
+        // No visualization card when graph is empty (CSS has #graph-container but not the id attribute form)
+        assert!(!html.contains("id=\"graph-container\""));
+    }
+
+    #[tokio::test]
+    async fn test_nodes_list_with_data() {
+        let ctx = create_populated_graph_context();
+        let params = Query(PaginationParams {
+            page: 0,
+            page_size: 50,
+            label: None,
+            edge_type: None,
+        });
+        let result = nodes_list(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("ALL NODES"));
+        assert!(html.contains("Person"));
+        assert!(html.contains("Project"));
+    }
+
+    #[tokio::test]
+    async fn test_nodes_list_with_label_filter() {
+        let ctx = create_populated_graph_context();
+        let params = Query(PaginationParams {
+            page: 0,
+            page_size: 50,
+            label: Some("Person".to_string()),
+            edge_type: None,
+        });
+        let result = nodes_list(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("NODES BY LABEL"));
+        assert!(html.contains("Person"));
+    }
+
+    #[tokio::test]
+    async fn test_edges_list_with_data() {
+        let ctx = create_populated_graph_context();
+        let params = Query(PaginationParams {
+            page: 0,
+            page_size: 50,
+            label: None,
+            edge_type: None,
+        });
+        let result = edges_list(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("ALL EDGES"));
+        assert!(html.contains("KNOWS"));
+        assert!(html.contains("WORKS_ON"));
+    }
+
+    #[tokio::test]
+    async fn test_edges_list_with_type_filter() {
+        let ctx = create_populated_graph_context();
+        let params = Query(PaginationParams {
+            page: 0,
+            page_size: 50,
+            label: None,
+            edge_type: Some("KNOWS".to_string()),
+        });
+        let result = edges_list(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("EDGES BY TYPE"));
+        assert!(html.contains("KNOWS"));
+    }
+
+    #[tokio::test]
+    async fn test_path_finder_renders() {
+        let ctx = create_populated_graph_context();
+        let result = path_finder(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("PATH FINDER"));
+    }
+
+    #[tokio::test]
+    async fn test_algorithms_form_renders() {
+        let ctx = create_populated_graph_context();
+        let result = algorithms(State(ctx)).await;
+        let html = result.into_string();
+        assert!(html.contains("GRAPH ALGORITHMS"));
+    }
+
+    #[tokio::test]
+    async fn test_algorithms_submit_pagerank() {
+        let ctx = create_populated_graph_context();
+        let params = Form(AlgorithmParams {
+            algorithm: "pagerank".to_string(),
+            top_k: 10,
+        });
+        let result = algorithms_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("PAGERANK RESULTS"));
+    }
+
+    #[tokio::test]
+    async fn test_api_subgraph_with_data() {
+        let ctx = create_populated_graph_context();
+        let params = Query(SubgraphParams {
+            center: None,
+            limit: 50,
+            depth: 2,
+        });
+        let result = api_subgraph(State(ctx), params).await;
+        let json_str = serde_json::to_string(&result.0).unwrap();
+        assert!(json_str.contains("nodes"));
+        assert!(json_str.contains("links"));
+    }
+
+    #[tokio::test]
+    async fn test_nodes_list_empty_graph() {
+        let ctx = Arc::new(AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            Arc::new(vector_engine::VectorEngine::new()),
+            Arc::new(graph_engine::GraphEngine::new()),
+        ));
+        let params = Query(PaginationParams {
+            page: 0,
+            page_size: 50,
+            label: None,
+            edge_type: None,
+        });
+        let result = nodes_list(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("NO NODES"));
+    }
+
+    #[tokio::test]
+    async fn test_edges_list_empty_graph() {
+        let ctx = Arc::new(AdminContext::new(
+            Arc::new(relational_engine::RelationalEngine::new()),
+            Arc::new(vector_engine::VectorEngine::new()),
+            Arc::new(graph_engine::GraphEngine::new()),
+        ));
+        let params = Query(PaginationParams {
+            page: 0,
+            page_size: 50,
+            label: None,
+            edge_type: None,
+        });
+        let result = edges_list(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("NO EDGES"));
+    }
+
+    #[tokio::test]
+    async fn test_path_finder_submit_valid_ids() {
+        let ctx = create_populated_graph_context();
+        let params = Form(PathFinderParams {
+            from: "1".to_string(),
+            to: "3".to_string(),
+        });
+        let result = path_finder_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("PATH FINDER"));
+    }
+
+    #[tokio::test]
+    async fn test_path_finder_submit_invalid_ids() {
+        let ctx = create_populated_graph_context();
+        let params = Form(PathFinderParams {
+            from: "not_a_number".to_string(),
+            to: "456".to_string(),
+        });
+        let result = path_finder_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("PATH FINDER"));
+        assert!(html.contains("Invalid"));
+    }
+
+    #[tokio::test]
+    async fn test_path_finder_submit_connected_nodes() {
+        let ctx = create_populated_graph_context();
+        let params = Form(PathFinderParams {
+            from: "1".to_string(),
+            to: "2".to_string(),
+        });
+        let result = path_finder_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("PATH FOUND") || html.contains("NO PATH"));
+    }
+
+    #[tokio::test]
+    async fn test_algorithms_submit_components() {
+        let ctx = create_populated_graph_context();
+        let params = Form(AlgorithmParams {
+            algorithm: "components".to_string(),
+            top_k: 10,
+        });
+        let result = algorithms_submit(State(ctx), params).await;
+        let html = result.into_string();
+        assert!(html.contains("CONNECTED COMPONENTS RESULTS"));
+    }
+
+    #[tokio::test]
+    async fn test_algorithms_submit_unknown() {
+        let ctx = create_populated_graph_context();
+        let params = Form(AlgorithmParams {
+            algorithm: "unknown_algo".to_string(),
+            top_k: 10,
+        });
+        let result = algorithms_submit(State(ctx), params).await;
+        let html = result.into_string();
+        // Unknown algorithm produces no result section
+        assert!(html.contains("GRAPH ALGORITHMS"));
+    }
+
+    #[tokio::test]
+    async fn test_api_subgraph_with_center() {
+        let ctx = create_populated_graph_context();
+        let params = Query(SubgraphParams {
+            center: Some(1),
+            depth: 2,
+            limit: 100,
+        });
+        let result = api_subgraph(State(ctx), params).await;
+        let json_str = serde_json::to_string(&result.0).unwrap();
+        assert!(json_str.contains("nodes"));
+        assert!(json_str.contains("links"));
+        // Should have at least the center node
+        assert!(!result.0.nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_subgraph_with_center_and_neighbors() {
+        let ctx = create_populated_graph_context();
+        let params = Query(SubgraphParams {
+            center: Some(1),
+            depth: 1,
+            limit: 100,
+        });
+        let result = api_subgraph(State(ctx), params).await;
+        // Node 1 connects to node 2 (KNOWS) and node 3 (KNOWS)
+        assert!(result.0.nodes.len() >= 2);
+        assert!(!result.0.links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_subgraph_center_not_found() {
+        let ctx = create_populated_graph_context();
+        let params = Query(SubgraphParams {
+            center: Some(9999),
+            depth: 2,
+            limit: 100,
+        });
+        let result = api_subgraph(State(ctx), params).await;
+        // Non-existent center returns empty
+        assert!(result.0.nodes.is_empty());
     }
 }

@@ -3,6 +3,7 @@
 //!
 //! This module provides metrics collection using OpenTelemetry with OTLP export.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use opentelemetry::metrics::{Counter, Histogram, Meter, MeterProvider};
@@ -72,7 +73,50 @@ impl MetricsConfig {
     }
 }
 
+/// Readable snapshot of request counters for the admin UI.
+#[derive(Debug, Clone, Copy)]
+pub struct CounterSnapshot {
+    /// Total requests received.
+    pub total: u64,
+    /// Successful requests.
+    pub success: u64,
+    /// Failed requests.
+    pub errors: u64,
+    /// Authentication failures.
+    pub auth_failures: u64,
+    /// Rate-limited requests.
+    pub rate_limited: u64,
+}
+
+impl CounterSnapshot {
+    /// Success rate as a percentage (0.0 to 100.0).
+    #[must_use]
+    pub fn success_rate(&self) -> f64 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let rate = self.success as f64 / self.total as f64 * 100.0;
+        rate
+    }
+
+    /// Error rate as a percentage (0.0 to 100.0).
+    #[must_use]
+    pub fn error_rate(&self) -> f64 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let rate = self.errors as f64 / self.total as f64 * 100.0;
+        rate
+    }
+}
+
 /// Server metrics collection.
+///
+/// Shadow `AtomicU64` counters track request totals alongside OpenTelemetry
+/// counters, enabling the admin UI to read current values (`OTel` counters
+/// are write-only).
 pub struct ServerMetrics {
     meter: Meter,
     /// Total number of requests received.
@@ -91,6 +135,12 @@ pub struct ServerMetrics {
     pub blob_latency: Histogram<f64>,
     /// Vector operation latency histogram in milliseconds.
     pub vector_latency: Histogram<f64>,
+    // Shadow counters for UI readback
+    shadow_total: AtomicU64,
+    shadow_success: AtomicU64,
+    shadow_errors: AtomicU64,
+    shadow_auth_failures: AtomicU64,
+    shadow_rate_limited: AtomicU64,
 }
 
 impl ServerMetrics {
@@ -147,6 +197,11 @@ impl ServerMetrics {
             query_latency,
             blob_latency,
             vector_latency,
+            shadow_total: AtomicU64::new(0),
+            shadow_success: AtomicU64::new(0),
+            shadow_errors: AtomicU64::new(0),
+            shadow_auth_failures: AtomicU64::new(0),
+            shadow_rate_limited: AtomicU64::new(0),
         }
     }
 
@@ -158,11 +213,14 @@ impl ServerMetrics {
         ];
 
         self.requests_total.add(1, &attrs);
+        self.shadow_total.fetch_add(1, Ordering::Relaxed);
 
         if success {
             self.requests_success.add(1, &attrs);
+            self.shadow_success.fetch_add(1, Ordering::Relaxed);
         } else {
             self.requests_error.add(1, &attrs);
+            self.shadow_errors.fetch_add(1, Ordering::Relaxed);
         }
 
         // Also record the latency based on service type
@@ -197,6 +255,7 @@ impl ServerMetrics {
     pub fn record_auth_failure(&self, reason: &str) {
         let attrs = [KeyValue::new("reason", reason.to_string())];
         self.auth_failures.add(1, &attrs);
+        self.shadow_auth_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a rate-limited request.
@@ -206,12 +265,25 @@ impl ServerMetrics {
             KeyValue::new("operation", operation.to_string()),
         ];
         self.rate_limited.add(1, &attrs);
+        self.shadow_rate_limited.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get the underlying meter for custom metrics.
     #[must_use]
     pub const fn meter(&self) -> &Meter {
         &self.meter
+    }
+
+    /// Read current counter values for the admin UI.
+    #[must_use]
+    pub fn counter_snapshot(&self) -> CounterSnapshot {
+        CounterSnapshot {
+            total: self.shadow_total.load(Ordering::Relaxed),
+            success: self.shadow_success.load(Ordering::Relaxed),
+            errors: self.shadow_errors.load(Ordering::Relaxed),
+            auth_failures: self.shadow_auth_failures.load(Ordering::Relaxed),
+            rate_limited: self.shadow_rate_limited.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -476,5 +548,69 @@ mod tests {
         metrics.record_vector_latency("search", 15.0);
         metrics.record_auth_failure("invalid_token");
         metrics.record_rate_limited("user:bob", "search");
+    }
+
+    #[test]
+    fn test_counter_snapshot_initial() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        let snap = metrics.counter_snapshot();
+        assert_eq!(snap.total, 0);
+        assert_eq!(snap.success, 0);
+        assert_eq!(snap.errors, 0);
+        assert_eq!(snap.auth_failures, 0);
+        assert_eq!(snap.rate_limited, 0);
+    }
+
+    #[test]
+    fn test_counter_snapshot_after_requests() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        for _ in 0..5 {
+            metrics.record_request("query", "execute", true, 1.0);
+        }
+        for _ in 0..3 {
+            metrics.record_request("query", "execute", false, 1.0);
+        }
+        metrics.record_auth_failure("bad_key");
+        metrics.record_auth_failure("expired");
+        metrics.record_rate_limited("user:x", "query");
+
+        let snap = metrics.counter_snapshot();
+        assert_eq!(snap.total, 8);
+        assert_eq!(snap.success, 5);
+        assert_eq!(snap.errors, 3);
+        assert_eq!(snap.auth_failures, 2);
+        assert_eq!(snap.rate_limited, 1);
+    }
+
+    #[test]
+    fn test_counter_snapshot_rates() {
+        let snap = CounterSnapshot {
+            total: 10,
+            success: 8,
+            errors: 2,
+            auth_failures: 0,
+            rate_limited: 0,
+        };
+        assert!((snap.success_rate() - 80.0).abs() < f64::EPSILON);
+        assert!((snap.error_rate() - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_counter_snapshot_rates_zero_total() {
+        let snap = CounterSnapshot {
+            total: 0,
+            success: 0,
+            errors: 0,
+            auth_failures: 0,
+            rate_limited: 0,
+        };
+        assert!((snap.success_rate() - 0.0).abs() < f64::EPSILON);
+        assert!((snap.error_rate() - 0.0).abs() < f64::EPSILON);
     }
 }
