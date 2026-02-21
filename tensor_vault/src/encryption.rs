@@ -121,8 +121,10 @@ impl Cipher {
             )));
         }
 
-        // Version-tagged: 0x02 means AAD-bound ciphertext
-        if ciphertext.first() == Some(&0x02) {
+        // Version-tagged: 0x02 means AAD-bound ciphertext.
+        // Legacy ciphertext has a 1/256 chance of starting with 0x02,
+        // so we try AAD decryption first and fall back to bare decrypt.
+        if ciphertext.first() == Some(&0x02) && ciphertext.len() > 1 {
             let cipher = Aes256Gcm::new_from_slice(&*self.encryption_key)
                 .map_err(|e| VaultError::CryptoError(format!("Invalid key: {e}")))?;
             let nonce = Nonce::from_slice(nonce_bytes);
@@ -130,9 +132,10 @@ impl Cipher {
                 msg: &ciphertext[1..],
                 aad,
             };
-            cipher
-                .decrypt(nonce, payload)
-                .map_err(|e| VaultError::CryptoError(format!("Decryption failed: {e}")))
+            match cipher.decrypt(nonce, payload) {
+                Ok(plaintext) => Ok(plaintext),
+                Err(_) => self.decrypt(ciphertext, nonce_bytes),
+            }
         } else {
             // Legacy ciphertext without version tag -- bare decrypt
             self.decrypt(ciphertext, nonce_bytes)
@@ -273,6 +276,25 @@ mod tests {
             .decrypt_with_aad(&ciphertext, &nonce, b"any-aad")
             .unwrap();
         assert_eq!(&decrypted[..], b"old data");
+    }
+
+    #[test]
+    fn test_aad_legacy_fallback_when_first_byte_is_0x02() {
+        let cipher = Cipher::new(&test_key());
+        // Keep encrypting until we get a ciphertext that starts with 0x02
+        // (1/256 chance per attempt, so this converges quickly)
+        loop {
+            let (ciphertext, nonce) = cipher.encrypt(b"edge case").unwrap();
+            if ciphertext[0] == 0x02 {
+                // This legacy ciphertext starts with 0x02 -- the fallback
+                // must still decrypt it correctly via bare decrypt retry
+                let decrypted = cipher
+                    .decrypt_with_aad(&ciphertext, &nonce, b"some-aad")
+                    .unwrap();
+                assert_eq!(&decrypted[..], b"edge case");
+                break;
+            }
+        }
     }
 
     #[test]
