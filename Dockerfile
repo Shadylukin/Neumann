@@ -38,6 +38,7 @@ COPY neumann_client/Cargo.toml neumann_client/
 COPY neumann_docs/Cargo.toml neumann_docs/
 COPY integration_tests/Cargo.toml integration_tests/
 COPY stress_tests/Cargo.toml stress_tests/
+COPY tensor_spatial/Cargo.toml tensor_spatial/
 COPY examples/Cargo.toml examples/
 
 # Create dummy lib.rs files for dependency caching
@@ -60,6 +61,7 @@ RUN mkdir -p tensor_store/src && echo "pub fn dummy() {}" > tensor_store/src/lib
     mkdir -p neumann_docs/src && echo "pub fn dummy() {}" > neumann_docs/src/lib.rs && \
     mkdir -p integration_tests/src && echo "pub fn dummy() {}" > integration_tests/src/lib.rs && \
     mkdir -p stress_tests/src && echo "pub fn dummy() {}" > stress_tests/src/lib.rs && \
+    mkdir -p tensor_spatial/src && echo "pub fn dummy() {}" > tensor_spatial/src/lib.rs && \
     mkdir -p examples/src && echo "pub fn dummy() {}" > examples/src/lib.rs
 
 # Build dependencies only (this layer is cached)
@@ -91,6 +93,7 @@ COPY neumann_client/src neumann_client/src
 COPY neumann_docs/src neumann_docs/src
 COPY integration_tests/src integration_tests/src
 COPY stress_tests/src stress_tests/src
+COPY tensor_spatial/src tensor_spatial/src
 COPY examples/src examples/src
 
 # Copy bench files (required by Cargo.toml [[bench]] sections)
