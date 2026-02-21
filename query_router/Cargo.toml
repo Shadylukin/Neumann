@@ -22,6 +22,8 @@ tensor_cache = { path = "../tensor_cache" }
 tensor_blob = { path = "../tensor_blob", features = ["full"] }
 tensor_checkpoint = { path = "../tensor_checkpoint" }
 neumann_parser = { path = "../neumann_parser" }
+tensor_spatial = { path = "../tensor_spatial" }
+parking_lot.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "fs"] }
 futures.workspace = true
 serde.workspace = true

@@ -9,7 +9,8 @@ use query_router::{
     CheckpointInfo as RouterCheckpointInfo, CommunityItem, CommunityResult, ConstraintInfo,
     EdgeResult, NodeResult, PageRankItem, PageRankResult, PagedQueryResult,
     PatternMatchBinding as RouterPatternMatchBinding, PatternMatchResultValue,
-    PatternMatchStatsValue, QueryResult, SimilarResult as RouterSimilarResult, UnifiedResult,
+    PatternMatchStatsValue, QueryResult, SimilarResult as RouterSimilarResult,
+    SpatialResult as RouterSpatialResult, UnifiedResult,
 };
 use relational_engine::{Row as RelationalRow, Value as RelationalValue};
 
@@ -120,6 +121,12 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
         QueryResult::PatternMatch(pm) => {
             proto::query_response::Result::PatternMatch(pattern_match_to_proto(pm))
         },
+
+        QueryResult::Spatial(results) => {
+            proto::query_response::Result::Spatial(proto::SpatialQueryResult {
+                items: results.into_iter().map(spatial_to_proto).collect(),
+            })
+        },
     };
 
     proto::QueryResponse {
@@ -207,6 +214,19 @@ pub fn similar_to_proto(item: RouterSimilarResult) -> proto::SimilarItem {
     proto::SimilarItem {
         key: item.key,
         score: item.score,
+    }
+}
+
+/// Convert a `SpatialResult` to protobuf.
+#[must_use]
+pub fn spatial_to_proto(item: RouterSpatialResult) -> proto::SpatialItem {
+    proto::SpatialItem {
+        key: item.key,
+        distance: item.distance,
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        height: item.height,
     }
 }
 
@@ -2450,5 +2470,71 @@ mod tests {
             },
             _ => panic!("Expected TableList result"),
         }
+    }
+
+    // === Spatial Tests ===
+
+    #[test]
+    fn test_spatial_result_conversion() {
+        let result = QueryResult::Spatial(vec![
+            RouterSpatialResult {
+                key: "park".to_string(),
+                distance: 1.5,
+                x: 10.0,
+                y: 20.0,
+                width: 5.0,
+                height: 3.0,
+            },
+            RouterSpatialResult {
+                key: "lake".to_string(),
+                distance: 4.2,
+                x: 30.0,
+                y: 40.0,
+                width: 10.0,
+                height: 8.0,
+            },
+        ]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Spatial(s)) => {
+                assert_eq!(s.items.len(), 2);
+                assert_eq!(s.items[0].key, "park");
+                assert!((s.items[0].distance - 1.5).abs() < 0.001);
+                assert!((s.items[0].x - 10.0).abs() < 0.001);
+                assert_eq!(s.items[1].key, "lake");
+            },
+            _ => panic!("Expected Spatial result"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_empty_result_conversion() {
+        let result = QueryResult::Spatial(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Spatial(s)) => {
+                assert!(s.items.is_empty());
+            },
+            _ => panic!("Expected Spatial result"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_to_proto() {
+        let item = RouterSpatialResult {
+            key: "point".to_string(),
+            distance: 0.0,
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        };
+        let proto = spatial_to_proto(item);
+        assert_eq!(proto.key, "point");
+        assert!((proto.distance - 0.0).abs() < f32::EPSILON);
+        assert!((proto.x - 1.0).abs() < f32::EPSILON);
+        assert!((proto.y - 2.0).abs() < f32::EPSILON);
+        assert!((proto.width - 3.0).abs() < f32::EPSILON);
+        assert!((proto.height - 4.0).abs() < f32::EPSILON);
     }
 }

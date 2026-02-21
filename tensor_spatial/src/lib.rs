@@ -22,6 +22,10 @@ pub enum SpatialError {
     /// The requested entry was not found in the index.
     #[error("entry not found in spatial index")]
     NotFound,
+
+    /// A negative, NaN, or infinite radius was provided.
+    #[error("invalid radius: must be non-negative and finite")]
+    InvalidRadius,
 }
 
 /// An axis-aligned bounding box in 2D space.
@@ -104,7 +108,8 @@ impl BoundingBox {
     }
 
     /// Returns the minimum squared distance from point `(px, py)` to this box.
-    fn min_dist_sq(self, px: f32, py: f32) -> f32 {
+    #[must_use]
+    pub fn min_dist_sq(self, px: f32, py: f32) -> f32 {
         let dx = if px < self.x {
             self.x - px
         } else if px > self.x + self.width {
@@ -220,8 +225,7 @@ impl<T> Node<T> {
         match self {
             Self::Leaf { entries } => {
                 for entry in entries {
-                    let (cx, cy) = entry.bounds.center();
-                    let dist_sq = (cx - px).mul_add(cx - px, (cy - py) * (cy - py));
+                    let dist_sq = entry.bounds.min_dist_sq(px, py);
                     if heap.len() < k {
                         heap.push(NearestCandidate { dist_sq, entry });
                     } else if let Some(worst) = heap.peek() {
@@ -253,6 +257,33 @@ impl<T> Node<T> {
                         }
                     }
                     children[idx].1.query_nearest_heap(px, py, heap, k);
+                }
+            },
+        }
+    }
+
+    /// Collects entries within a squared radius from a point.
+    fn query_within_radius<'a>(
+        &'a self,
+        px: f32,
+        py: f32,
+        r_sq: f32,
+        results: &mut Vec<(&'a SpatialEntry<T>, f32)>,
+    ) {
+        match self {
+            Self::Leaf { entries } => {
+                for entry in entries {
+                    let dist_sq = entry.bounds.min_dist_sq(px, py);
+                    if dist_sq <= r_sq {
+                        results.push((entry, dist_sq));
+                    }
+                }
+            },
+            Self::Internal { children } => {
+                for (child_bounds, child) in children {
+                    if child_bounds.min_dist_sq(px, py) <= r_sq {
+                        child.query_within_radius(px, py, r_sq, results);
+                    }
                 }
             },
         }
@@ -338,7 +369,7 @@ impl<T> Node<T> {
 
 /// Candidate entry for nearest-neighbor search (max-heap by distance).
 struct NearestCandidate<'a, T> {
-    /// Squared distance from the query point to this entry's center.
+    /// Squared distance from the query point to this entry's bounding box edge.
     dist_sq: f32,
     /// Reference to the spatial entry.
     entry: &'a SpatialEntry<T>,
@@ -602,22 +633,65 @@ impl<T> SpatialIndex<T> {
     /// Returns the `k` entries nearest to the point `(x, y)`, ordered by distance
     /// from nearest to farthest.
     ///
-    /// Distance is measured from the query point to each entry's bounding box center.
+    /// Distance is measured from the query point to the nearest edge of each entry's
+    /// bounding box. Elements containing the query point have distance 0.
     /// If fewer than `k` entries exist, all entries are returned.
     #[must_use]
     pub fn query_nearest(&self, x: f32, y: f32, k: usize) -> Vec<&SpatialEntry<T>> {
         let mut heap = BinaryHeap::new();
         self.root.query_nearest_heap(x, y, &mut heap, k);
         let mut results: Vec<_> = heap.into_iter().map(|c| c.entry).collect();
-        // Sort nearest-first (ascending distance).
+        // Sort nearest-first (ascending edge distance).
         results.sort_by(|a, b| {
-            let (ax, ay) = a.bounds.center();
-            let (bx, by) = b.bounds.center();
-            let da = (ax - x).mul_add(ax - x, (ay - y) * (ay - y));
-            let db = (bx - x).mul_add(bx - x, (by - y) * (by - y));
+            let da = a.bounds.min_dist_sq(x, y);
+            let db = b.bounds.min_dist_sq(x, y);
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         });
         results
+    }
+
+    /// Returns all entries within `r` pixels of the point `(x, y)`, sorted
+    /// nearest-first by edge distance.
+    ///
+    /// Distance is measured from the query point to the nearest edge of each
+    /// entry's bounding box. Elements containing the query point have distance 0.
+    /// Returns an empty vector if `r < 0.0`.
+    #[must_use]
+    pub fn query_within_radius(&self, x: f32, y: f32, r: f32) -> Vec<&SpatialEntry<T>> {
+        if r < 0.0 {
+            return Vec::new();
+        }
+        let r_sq = r * r;
+        let mut results = Vec::new();
+        self.root.query_within_radius(x, y, r_sq, &mut results);
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.into_iter().map(|(entry, _)| entry).collect()
+    }
+
+    /// Returns all entries within `r` pixels of the point `(x, y)` with their
+    /// distances, sorted nearest-first.
+    ///
+    /// Each tuple contains `(entry, distance)` where distance is measured from
+    /// the query point to the nearest edge of the bounding box (0 when inside).
+    /// Returns an empty vector if `r < 0.0`.
+    #[must_use]
+    pub fn query_within_radius_with_distances(
+        &self,
+        x: f32,
+        y: f32,
+        r: f32,
+    ) -> Vec<(&SpatialEntry<T>, f32)> {
+        if r < 0.0 {
+            return Vec::new();
+        }
+        let r_sq = r * r;
+        let mut results = Vec::new();
+        self.root.query_within_radius(x, y, r_sq, &mut results);
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results
+            .into_iter()
+            .map(|(entry, dist_sq)| (entry, dist_sq.sqrt()))
+            .collect()
     }
 
     /// Returns the number of entries in the index.
@@ -1024,6 +1098,11 @@ mod tests {
         );
         let err = SpatialError::NotFound;
         assert_eq!(err.to_string(), "entry not found in spatial index");
+        let err = SpatialError::InvalidRadius;
+        assert_eq!(
+            err.to_string(),
+            "invalid radius: must be non-negative and finite"
+        );
     }
 
     #[test]
@@ -1110,9 +1189,227 @@ mod tests {
     }
 
     #[test]
+    fn test_bounding_box_min_dist_sq_is_pub() {
+        // Verifies min_dist_sq is accessible from outside the crate
+        let bb = BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap();
+        let dist = bb.min_dist_sq(5.0, 5.0);
+        assert_eq!(dist, 0.0);
+    }
+
+    #[test]
     fn test_bounding_box_min_dist_sq_above_box() {
         let bb = BoundingBox::new(0.0, 0.0, 2.0, 2.0).unwrap();
         // Point above: (1, 5) -> nearest edge at y=2
         assert!((bb.min_dist_sq(1.0, 5.0) - 9.0).abs() < f32::EPSILON);
+    }
+
+    // --- query_within_radius tests ---
+
+    #[test]
+    fn test_query_within_radius_point_inside() {
+        let mut index = SpatialIndex::new();
+        // Large element
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 100.0, 100.0).unwrap(),
+            data: "large",
+        });
+        // Point (50,50) is inside -> distance 0, included for any r > 0
+        let results = index.query_within_radius(50.0, 50.0, 1.0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].data, "large");
+    }
+
+    #[test]
+    fn test_query_within_radius_point_outside() {
+        let mut index = SpatialIndex::new();
+        // Element at (10, 10, 5, 5) -> right edge at x=15
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(10.0, 10.0, 5.0, 5.0).unwrap(),
+            data: "box",
+        });
+        // Point (20, 12) -> nearest edge at x=15, distance = 5
+        let results = index.query_within_radius(20.0, 12.0, 5.0);
+        assert_eq!(results.len(), 1);
+        // r=4.9 should not include it
+        let results = index.query_within_radius(20.0, 12.0, 4.9);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_query_within_radius_zero() {
+        let mut index = SpatialIndex::new();
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 100.0, 100.0).unwrap(),
+            data: "inside",
+        });
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(200.0, 200.0, 10.0, 10.0).unwrap(),
+            data: "outside",
+        });
+        // r=0 should only return elements containing the point
+        let results = index.query_within_radius(50.0, 50.0, 0.0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].data, "inside");
+    }
+
+    #[test]
+    fn test_query_within_radius_negative() {
+        let mut index = SpatialIndex::new();
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 100.0, 100.0).unwrap(),
+            data: 1,
+        });
+        let results = index.query_within_radius(50.0, 50.0, -1.0);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_query_within_radius_sorted_nearest_first() {
+        let mut index = SpatialIndex::new();
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(100.0, 0.0, 10.0, 10.0).unwrap(),
+            data: "far",
+        });
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(20.0, 0.0, 10.0, 10.0).unwrap(),
+            data: "near",
+        });
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+            data: "closest",
+        });
+        // Query from (0,0) with large radius
+        let results = index.query_within_radius(0.0, 0.0, 200.0);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].data, "closest");
+        assert_eq!(results[1].data, "near");
+        assert_eq!(results[2].data, "far");
+    }
+
+    #[test]
+    fn test_query_within_radius_empty_index() {
+        let index: SpatialIndex<u32> = SpatialIndex::new();
+        let results = index.query_within_radius(0.0, 0.0, 100.0);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_query_within_radius_with_distances() {
+        let mut index = SpatialIndex::new();
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 100.0, 100.0).unwrap(),
+            data: "inside",
+        });
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(110.0, 0.0, 10.0, 10.0).unwrap(),
+            data: "outside",
+        });
+        let results = index.query_within_radius_with_distances(50.0, 50.0, 200.0);
+        assert_eq!(results.len(), 2);
+        // First: inside element, distance 0
+        assert_eq!(results[0].0.data, "inside");
+        assert!((results[0].1 - 0.0).abs() < f32::EPSILON);
+        // Second: outside element, dx=60 dy=40, distance = sqrt(5200) ≈ 72.1
+        assert_eq!(results[1].0.data, "outside");
+        let expected = (60.0_f32.powi(2) + 40.0_f32.powi(2)).sqrt();
+        assert!((results[1].1 - expected).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_large_bbox_edge_distance_regression() {
+        let mut index = SpatialIndex::new();
+        // Large banner spanning full width
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 1000.0, 100.0).unwrap(),
+            data: "banner",
+        });
+        // Small button far away
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(50.0, 200.0, 10.0, 10.0).unwrap(),
+            data: "button",
+        });
+
+        // Point (50, 50) is inside the banner (distance 0)
+        // but old center-distance would rank the small button closer
+        // because banner center is (500, 50), button center is (55, 205)
+        let nearest = index.query_nearest(50.0, 50.0, 2);
+        assert_eq!(nearest.len(), 2);
+        assert_eq!(
+            nearest[0].data, "banner",
+            "Banner should be nearest (point is inside)"
+        );
+        assert_eq!(nearest[1].data, "button");
+
+        // Radius query: r=50 should include banner (distance 0) but not button (distance ~150)
+        let radius_results = index.query_within_radius(50.0, 50.0, 50.0);
+        assert_eq!(radius_results.len(), 1);
+        assert_eq!(radius_results[0].data, "banner");
+
+        // With larger radius, should include both
+        let radius_results = index.query_within_radius(50.0, 50.0, 200.0);
+        assert_eq!(radius_results.len(), 2);
+        assert_eq!(radius_results[0].data, "banner");
+        assert_eq!(radius_results[1].data, "button");
+    }
+
+    #[test]
+    fn test_query_within_radius_large_dataset_brute_force() {
+        let mut index = SpatialIndex::new();
+        for i in 0..10_000u32 {
+            let x = (i % 100) as f32;
+            let y = (i / 100) as f32;
+            index.insert(SpatialEntry {
+                bounds: BoundingBox::new(x, y, 0.5, 0.5).unwrap(),
+                data: i,
+            });
+        }
+
+        let cx = 50.0_f32;
+        let cy = 50.0_f32;
+        let radius = 10.0_f32;
+
+        let results = index.query_within_radius(cx, cy, radius);
+
+        // Brute-force: check every entry
+        let mut expected_count = 0;
+        for entry in index.iter() {
+            if entry.bounds.min_dist_sq(cx, cy) <= radius * radius {
+                expected_count += 1;
+            }
+        }
+        assert_eq!(results.len(), expected_count);
+
+        // All results should be within radius
+        for entry in &results {
+            let dist = entry.bounds.min_dist_sq(cx, cy).sqrt();
+            assert!(dist <= radius + f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_query_within_radius_all_entries() {
+        let mut index = SpatialIndex::new();
+        for i in 0..20u32 {
+            let x = (i % 5) as f32;
+            let y = (i / 5) as f32;
+            index.insert(SpatialEntry {
+                bounds: BoundingBox::new(x, y, 1.0, 1.0).unwrap(),
+                data: i,
+            });
+        }
+        // Radius large enough to capture everything
+        let results = index.query_within_radius(2.5, 2.5, 1000.0);
+        assert_eq!(results.len(), 20);
+    }
+
+    #[test]
+    fn test_query_within_radius_with_distances_negative() {
+        let mut index = SpatialIndex::new();
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+            data: 1,
+        });
+        let results = index.query_within_radius_with_distances(0.0, 0.0, -1.0);
+        assert!(results.is_empty());
     }
 }

@@ -84,6 +84,34 @@ pub fn format_unified(unified: &query_router::UnifiedResult, theme: &Theme) -> S
     output
 }
 
+/// Formats spatial query results.
+#[must_use]
+pub fn format_spatial(results: &[query_router::SpatialResult], theme: &Theme) -> String {
+    if results.is_empty() {
+        return styled("(no spatial results)", theme.muted);
+    }
+
+    let mut output = format!("{}\n", styled("Spatial:", theme.header));
+
+    let mut builder = TableBuilder::new();
+    builder.add_header(vec!["#", "Key", "Distance", "X", "Y", "W", "H"]);
+
+    for (i, r) in results.iter().enumerate() {
+        builder.add_row(vec![
+            styled(i + 1, theme.muted),
+            styled(&r.key, theme.id),
+            styled(format!("{:.4}", r.distance), theme.number),
+            styled(format!("{:.1}", r.x), theme.number),
+            styled(format!("{:.1}", r.y), theme.number),
+            styled(format!("{:.1}", r.width), theme.number),
+            styled(format!("{:.1}", r.height), theme.number),
+        ]);
+    }
+
+    output.push_str(&builder.build(theme));
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +271,57 @@ mod tests {
         assert!(result.contains("item1"));
         assert!(result.contains("item2"));
         assert!(result.contains("2 items"));
+    }
+
+    #[test]
+    fn test_format_spatial_empty() {
+        let theme = Theme::plain();
+        let result = format_spatial(&[], &theme);
+        assert!(result.contains("no spatial results"));
+    }
+
+    #[test]
+    fn test_format_spatial_with_results() {
+        let theme = Theme::plain();
+        let results = vec![
+            query_router::SpatialResult {
+                key: "park".to_string(),
+                distance: 1.5,
+                x: 10.0,
+                y: 20.0,
+                width: 5.0,
+                height: 3.0,
+            },
+            query_router::SpatialResult {
+                key: "lake".to_string(),
+                distance: 4.2,
+                x: 30.0,
+                y: 40.0,
+                width: 10.0,
+                height: 8.0,
+            },
+        ];
+        let result = format_spatial(&results, &theme);
+        assert!(result.contains("Spatial:"));
+        assert!(result.contains("park"));
+        assert!(result.contains("lake"));
+        assert!(result.contains("1.5000"));
+        assert!(result.contains("4.2000"));
+    }
+
+    #[test]
+    fn test_format_spatial_single() {
+        let theme = Theme::plain();
+        let results = vec![query_router::SpatialResult {
+            key: "point".to_string(),
+            distance: 0.0,
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        }];
+        let result = format_spatial(&results, &theme);
+        assert!(result.contains("point"));
+        assert!(result.contains("0.0000"));
     }
 }

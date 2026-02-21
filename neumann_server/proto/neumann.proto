@@ -68,6 +68,7 @@ message QueryResponse {
     BatchOperationResult batch_operation = 24;
     GraphIndexesResult graph_indexes = 25;
     PatternMatchResult pattern_match = 26;
+    SpatialQueryResult spatial = 27;
   }
   optional ErrorInfo error = 20;
 }
@@ -539,6 +540,21 @@ message ChainConflictResolution {
 message ChainMergeResult {
   bool success = 1;
   uint64 merged_count = 2;
+}
+
+// === Spatial Result Types ===
+
+message SpatialQueryResult {
+  repeated SpatialItem items = 1;
+}
+
+message SpatialItem {
+  string key = 1;
+  float distance = 2;
+  float x = 3;
+  float y = 4;
+  float width = 5;
+  float height = 6;
 }
 
 // === Error Types ===

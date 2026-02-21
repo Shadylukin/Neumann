@@ -57,8 +57,8 @@ use neumann_parser::{
     GraphBatchStmt, GraphConstraintOp, GraphConstraintStmt, GraphIndexOp, GraphIndexStmt,
     GraphPatternOp, GraphPatternStmt, InsertSource, InsertStmt, JoinCondition, JoinKind, Literal,
     NeighborsStmt, NodeOp, NodeStmt, NullsOrder, PathStmt, Property, RollbackStmt, SelectStmt,
-    SimilarQuery, SimilarStmt, SortDirection, Statement, StatementKind, TableRefKind, UpdateStmt,
-    VaultOp, VaultStmt,
+    SimilarQuery, SimilarStmt, SortDirection, SpatialOp, SpatialStmt, Statement, StatementKind,
+    TableRefKind, UpdateStmt, VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -296,6 +296,8 @@ pub enum QueryResult {
     BatchResult(BatchOperationResult),
     /// Pattern match results
     PatternMatch(PatternMatchResultValue),
+    /// Spatial range query results
+    Spatial(Vec<SpatialResult>),
 }
 
 /// Result of a paginated query execution.
@@ -384,8 +386,27 @@ pub struct EdgeResult {
 /// Similarity search result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimilarResult {
+    /// Key of the matching embedding.
     pub key: String,
+    /// Similarity score.
     pub score: f32,
+}
+
+/// Result from a spatial range query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpatialResult {
+    /// Key of the spatial entry.
+    pub key: String,
+    /// Minimum distance from query point to closest point on bounding box.
+    pub distance: f32,
+    /// Bounding box x coordinate.
+    pub x: f32,
+    /// Bounding box y coordinate.
+    pub y: f32,
+    /// Bounding box width.
+    pub width: f32,
+    /// Bounding box height.
+    pub height: f32,
 }
 
 /// Result from unified cross-engine query.
@@ -738,6 +759,8 @@ pub struct QueryRouter {
     local_shard_id: ShardId,
     /// Cursor store for paginated queries
     cursor_store: Arc<CursorStore>,
+    /// Spatial index for 2D range queries (always initialized, zero cost when empty)
+    spatial: Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>,
 }
 
 impl QueryRouter {
@@ -781,6 +804,7 @@ impl QueryRouter {
             distributed_config: DistributedQueryConfig::default(),
             local_shard_id: 0,
             cursor_store: Arc::new(CursorStore::new()),
+            spatial: Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new())),
         }
     }
 
@@ -818,6 +842,7 @@ impl QueryRouter {
             distributed_config: DistributedQueryConfig::default(),
             local_shard_id: 0,
             cursor_store: Arc::new(CursorStore::new()),
+            spatial: Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new())),
         }
     }
 
@@ -834,6 +859,11 @@ impl QueryRouter {
     /// Get reference to vector engine.
     pub fn vector(&self) -> &VectorEngine {
         &self.vector
+    }
+
+    /// Get reference to the spatial index.
+    pub const fn spatial(&self) -> &Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>> {
+        &self.spatial
     }
 
     /// Get reference to unified engine (if initialized).
@@ -1531,7 +1561,7 @@ impl QueryRouter {
             // Parser-based execution for commands that need full AST
             "FIND" | "ENTITY" | "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" | "CLUSTER"
             | "SHOW" | "VAULT" | "CACHE" | "BLOB" | "CHECKPOINT" | "CHAIN" | "MATCH" | "BEGIN"
-            | "COMMIT" | "ROLLBACK" => self.execute_parsed(command),
+            | "COMMIT" | "ROLLBACK" | "SPATIAL" => self.execute_parsed(command),
 
             _ => Err(RouterError::UnknownCommand(keyword)),
         }
@@ -2045,6 +2075,9 @@ impl QueryRouter {
             // Vector statements
             StatementKind::Embed(embed) => self.exec_embed(embed),
             StatementKind::Similar(similar) => self.exec_similar(similar),
+
+            // Spatial statements
+            StatementKind::Spatial(spatial) => self.exec_spatial(spatial),
 
             // Unified queries
             StatementKind::Find(find) => self.exec_find(find),
@@ -5989,6 +6022,95 @@ impl QueryRouter {
             ExprKind::Literal(Literal::String(s)) => Ok(s.clone()),
             ExprKind::Ident(ident) => Ok(ident.name.clone()),
             _ => Err(RouterError::InvalidArgument("Expected string".to_string())),
+        }
+    }
+
+    /// Executes a spatial statement.
+    fn exec_spatial(&self, spatial_stmt: &SpatialStmt) -> Result<QueryResult> {
+        match &spatial_stmt.op {
+            SpatialOp::Insert {
+                key,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let key_str = self.expr_to_string(key)?;
+                let x_val = self.expr_to_f32(x)?;
+                let y_val = self.expr_to_f32(y)?;
+                let w_val = self.expr_to_f32(width)?;
+                let h_val = self.expr_to_f32(height)?;
+                let bounds = tensor_spatial::BoundingBox::new(x_val, y_val, w_val, h_val)
+                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+                let entry = tensor_spatial::SpatialEntry {
+                    bounds,
+                    data: key_str,
+                };
+                self.spatial.write().insert(entry);
+                Ok(QueryResult::Empty)
+            },
+            SpatialOp::WithinRadius {
+                x,
+                y,
+                radius,
+                limit,
+            } => {
+                let cx = self.expr_to_f32(x)?;
+                let cy = self.expr_to_f32(y)?;
+                let r = self.expr_to_f32(radius)?;
+                let max_results = limit.as_ref().map(|e| self.expr_to_usize(e)).transpose()?;
+
+                if !r.is_finite() || r < 0.0 {
+                    return Err(RouterError::InvalidArgument(
+                        "invalid radius: must be non-negative and finite".to_string(),
+                    ));
+                }
+
+                let mut results: Vec<SpatialResult> = self
+                    .spatial
+                    .read()
+                    .query_within_radius_with_distances(cx, cy, r)
+                    .into_iter()
+                    .map(|(e, dist)| SpatialResult {
+                        key: e.data.clone(),
+                        distance: dist,
+                        x: e.bounds.x,
+                        y: e.bounds.y,
+                        width: e.bounds.width,
+                        height: e.bounds.height,
+                    })
+                    .collect();
+
+                if let Some(max) = max_results {
+                    results.truncate(max);
+                }
+
+                Ok(QueryResult::Spatial(results))
+            },
+            SpatialOp::Delete {
+                key,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let key_str = self.expr_to_string(key)?;
+                let x_val = self.expr_to_f32(x)?;
+                let y_val = self.expr_to_f32(y)?;
+                let w_val = self.expr_to_f32(width)?;
+                let h_val = self.expr_to_f32(height)?;
+                let bounds = tensor_spatial::BoundingBox::new(x_val, y_val, w_val, h_val)
+                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+                self.spatial
+                    .write()
+                    .remove(bounds, |e| e.data == key_str && e.bounds == bounds)
+                    .map_err(|e| RouterError::NotFound(e.to_string()))?;
+                Ok(QueryResult::Empty)
+            },
+            SpatialOp::Count => {
+                let count = self.spatial.read().len();
+                Ok(QueryResult::Count(count))
+            },
         }
     }
 
@@ -20569,5 +20691,167 @@ mod tests {
         let router = QueryRouter::new();
         let result = router.execute_parsed("MERGE (n:person {name: 'Charlie'})");
         let _ = result;
+    }
+
+    // --- Spatial tests ---
+
+    #[test]
+    fn test_spatial_insert_and_within_radius() {
+        let router = QueryRouter::new();
+        // Insert 3 entries at known positions
+        router
+            .execute("SPATIAL INSERT 'a' BOUNDS 0.0 0.0 1.0 1.0")
+            .unwrap();
+        router
+            .execute("SPATIAL INSERT 'b' BOUNDS 5.0 5.0 1.0 1.0")
+            .unwrap();
+        router
+            .execute("SPATIAL INSERT 'c' BOUNDS 100.0 100.0 1.0 1.0")
+            .unwrap();
+
+        // Query with radius that includes 'a' and 'b' but not 'c'
+        let result = router
+            .execute("SPATIAL WITHIN 3.0 3.0 RADIUS 10.0")
+            .unwrap();
+        match result {
+            QueryResult::Spatial(items) => {
+                assert_eq!(items.len(), 2);
+                // Results are sorted by distance
+                let keys: Vec<&str> = items.iter().map(|r| r.key.as_str()).collect();
+                assert!(keys.contains(&"a"));
+                assert!(keys.contains(&"b"));
+                // Verify distance is populated
+                for item in &items {
+                    assert!(item.distance >= 0.0);
+                }
+            },
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_within_radius_no_results() {
+        let router = QueryRouter::new();
+        router
+            .execute("SPATIAL INSERT 'far' BOUNDS 100.0 100.0 1.0 1.0")
+            .unwrap();
+        let result = router.execute("SPATIAL WITHIN 0.0 0.0 RADIUS 1.0").unwrap();
+        match result {
+            QueryResult::Spatial(items) => assert!(items.is_empty()),
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_within_radius_with_limit() {
+        let router = QueryRouter::new();
+        for i in 0..10 {
+            let x = f64::from(i);
+            router
+                .execute(&format!("SPATIAL INSERT 'item{i}' BOUNDS {x} 0.0 1.0 1.0"))
+                .unwrap();
+        }
+        let result = router
+            .execute("SPATIAL WITHIN 5.0 0.0 RADIUS 100.0 LIMIT 3")
+            .unwrap();
+        match result {
+            QueryResult::Spatial(items) => assert_eq!(items.len(), 3),
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_delete() {
+        let router = QueryRouter::new();
+        router
+            .execute("SPATIAL INSERT 'del_me' BOUNDS 1.0 2.0 3.0 4.0")
+            .unwrap();
+        // Verify it exists
+        let result = router.execute("SPATIAL COUNT").unwrap();
+        assert!(matches!(result, QueryResult::Count(1)));
+
+        // Delete it
+        router
+            .execute("SPATIAL DELETE 'del_me' BOUNDS 1.0 2.0 3.0 4.0")
+            .unwrap();
+        let result = router.execute("SPATIAL COUNT").unwrap();
+        assert!(matches!(result, QueryResult::Count(0)));
+    }
+
+    #[test]
+    fn test_spatial_count() {
+        let router = QueryRouter::new();
+        let result = router.execute("SPATIAL COUNT").unwrap();
+        assert!(matches!(result, QueryResult::Count(0)));
+
+        router
+            .execute("SPATIAL INSERT 'x' BOUNDS 0.0 0.0 1.0 1.0")
+            .unwrap();
+        router
+            .execute("SPATIAL INSERT 'y' BOUNDS 5.0 5.0 1.0 1.0")
+            .unwrap();
+        let result = router.execute("SPATIAL COUNT").unwrap();
+        assert!(matches!(result, QueryResult::Count(2)));
+    }
+
+    #[test]
+    fn test_spatial_invalid_radius() {
+        let router = QueryRouter::new();
+        let result = router.execute("SPATIAL WITHIN 0.0 0.0 RADIUS -1.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spatial_invalid_bounds() {
+        let router = QueryRouter::new();
+        // Negative dimensions should fail
+        let result = router.execute("SPATIAL INSERT 'bad' BOUNDS 0.0 0.0 -1.0 1.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spatial_zero_radius() {
+        let router = QueryRouter::new();
+        router
+            .execute("SPATIAL INSERT 'origin' BOUNDS 0.0 0.0 1.0 1.0")
+            .unwrap();
+        // Zero radius should only find entries containing the query point
+        let result = router.execute("SPATIAL WITHIN 0.5 0.5 RADIUS 0.0").unwrap();
+        match result {
+            QueryResult::Spatial(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].key, "origin");
+            },
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_delete_nonexistent() {
+        let router = QueryRouter::new();
+        // Delete from empty spatial index should fail
+        let result = router.execute("SPATIAL DELETE 'none' BOUNDS 0.0 0.0 1.0 1.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spatial_end_to_end_parsed() {
+        let router = QueryRouter::new();
+        // Test the execute_parsed path for spatial
+        router
+            .execute_parsed("SPATIAL INSERT 'pt1' BOUNDS 1.0 1.0 2.0 2.0")
+            .unwrap();
+        router
+            .execute_parsed("SPATIAL INSERT 'pt2' BOUNDS 3.0 3.0 1.0 1.0")
+            .unwrap();
+        let result = router.execute_parsed("SPATIAL COUNT").unwrap();
+        assert!(matches!(result, QueryResult::Count(2)));
+        let result = router
+            .execute_parsed("SPATIAL WITHIN 2.0 2.0 RADIUS 5.0")
+            .unwrap();
+        match result {
+            QueryResult::Spatial(items) => assert_eq!(items.len(), 2),
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
     }
 }

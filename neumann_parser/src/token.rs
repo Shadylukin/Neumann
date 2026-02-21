@@ -320,6 +320,16 @@ pub enum TokenKind {
     /// Vector `BATCH` keyword.
     Batch,
 
+    // === Spatial Keywords ===
+    /// Spatial `SPATIAL` keyword.
+    Spatial,
+    /// Spatial `WITHIN` keyword.
+    Within,
+    /// Spatial `RADIUS` keyword.
+    Radius,
+    /// Spatial `BOUNDS` keyword.
+    Bounds,
+
     // === Unified Query Keywords ===
     /// Unified `FIND` keyword.
     Find,
@@ -720,6 +730,10 @@ impl TokenKind {
                 | DotProduct
                 | Build
                 | Batch
+                | Spatial
+                | Within
+                | Radius
+                | Bounds
                 | Find
                 | With
                 | Return
@@ -1003,6 +1017,12 @@ impl TokenKind {
             "BUILD" => Self::Build,
             "BATCH" => Self::Batch,
 
+            // Spatial keywords
+            "SPATIAL" => Self::Spatial,
+            "WITHIN" => Self::Within,
+            "RADIUS" => Self::Radius,
+            "BOUNDS" => Self::Bounds,
+
             // Unified keywords
             "FIND" => Self::Find,
             "WITH" => Self::With,
@@ -1241,6 +1261,10 @@ impl TokenKind {
             DotProduct => "DOT_PRODUCT",
             Build => "BUILD",
             Batch => "BATCH",
+            Spatial => "SPATIAL",
+            Within => "WITHIN",
+            Radius => "RADIUS",
+            Bounds => "BOUNDS",
             Find => "FIND",
             With => "WITH",
             Return => "RETURN",
@@ -1965,6 +1989,11 @@ mod tests {
         assert!(TokenKind::keyword_from_str("EUCLIDEAN").is_some());
         assert!(TokenKind::keyword_from_str("BUILD").is_some());
         assert!(TokenKind::keyword_from_str("BATCH").is_some());
+        // Spatial keywords
+        assert!(TokenKind::keyword_from_str("SPATIAL").is_some());
+        assert!(TokenKind::keyword_from_str("WITHIN").is_some());
+        assert!(TokenKind::keyword_from_str("RADIUS").is_some());
+        assert!(TokenKind::keyword_from_str("BOUNDS").is_some());
         // Aggregates
         assert!(TokenKind::keyword_from_str("MIN").is_some());
         assert!(TokenKind::keyword_from_str("MAX").is_some());

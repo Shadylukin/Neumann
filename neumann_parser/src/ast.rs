@@ -78,6 +78,10 @@ pub enum StatementKind {
     /// SIMILAR search
     Similar(SimilarStmt),
 
+    // === Spatial Statements ===
+    /// SPATIAL command
+    Spatial(SpatialStmt),
+
     // === Unified Statements ===
     /// FIND unified query
     Find(FindStmt),
@@ -744,6 +748,61 @@ pub enum DistanceMetric {
     Euclidean,
     /// Dot product similarity.
     DotProduct,
+}
+
+// =============================================================================
+// Spatial Statements
+// =============================================================================
+
+/// SPATIAL statement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpatialStmt {
+    /// The spatial operation.
+    pub op: SpatialOp,
+}
+
+/// Spatial operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpatialOp {
+    /// Insert entry: `SPATIAL INSERT 'key' BOUNDS x y w h`
+    Insert {
+        /// Key identifier for the entry.
+        key: Expr,
+        /// Bounding box x coordinate.
+        x: Expr,
+        /// Bounding box y coordinate.
+        y: Expr,
+        /// Bounding box width.
+        width: Expr,
+        /// Bounding box height.
+        height: Expr,
+    },
+    /// Range query: `SPATIAL WITHIN x y RADIUS r [LIMIT n]`
+    WithinRadius {
+        /// Center x coordinate.
+        x: Expr,
+        /// Center y coordinate.
+        y: Expr,
+        /// Search radius.
+        radius: Expr,
+        /// Maximum results.
+        limit: Option<Expr>,
+    },
+    /// Remove entry: `SPATIAL DELETE 'key' BOUNDS x y w h`
+    Delete {
+        /// Key identifier for the entry.
+        key: Expr,
+        /// Bounding box x coordinate.
+        x: Expr,
+        /// Bounding box y coordinate.
+        y: Expr,
+        /// Bounding box width.
+        width: Expr,
+        /// Bounding box height.
+        height: Expr,
+    },
+    /// Count entries: `SPATIAL COUNT`
+    Count,
 }
 
 // =============================================================================

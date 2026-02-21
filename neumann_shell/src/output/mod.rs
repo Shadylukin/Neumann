@@ -23,7 +23,7 @@ pub use graph::{
 pub use help::format_help;
 pub use rows::format_rows;
 pub use table::TableBuilder;
-pub use vector::{format_similar, format_unified};
+pub use vector::{format_similar, format_spatial, format_unified};
 
 use crate::style::{Icons, Theme};
 use query_router::{CheckpointInfo, QueryResult};
@@ -57,6 +57,7 @@ pub fn format_result(result: &QueryResult, theme: &Theme, icons: &Icons) -> Stri
         QueryResult::Aggregate(agg) => format_aggregate(agg, theme),
         QueryResult::BatchResult(batch) => format_batch_result(batch, theme, icons),
         QueryResult::PatternMatch(pm) => format_pattern_match(pm, theme),
+        QueryResult::Spatial(results) => format_spatial(results, theme),
     }
 }
 
@@ -680,6 +681,34 @@ mod tests {
             &icons,
         );
         let _ = result;
+    }
+
+    #[test]
+    fn test_format_result_spatial_empty() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(&QueryResult::Spatial(vec![]), &theme, &icons);
+        assert!(result.contains("no spatial"));
+    }
+
+    #[test]
+    fn test_format_result_spatial_with_data() {
+        let theme = Theme::plain();
+        let icons = Icons::ASCII;
+        let result = format_result(
+            &QueryResult::Spatial(vec![query_router::SpatialResult {
+                key: "obj1".to_string(),
+                distance: 2.5,
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            }]),
+            &theme,
+            &icons,
+        );
+        assert!(result.contains("obj1"));
+        assert!(result.contains("2.5000"));
     }
 
     #[test]

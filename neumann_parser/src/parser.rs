@@ -704,6 +704,9 @@ impl<'a> Parser<'a> {
             TokenKind::Embed => self.parse_embed()?,
             TokenKind::Similar => self.parse_similar()?,
 
+            // Spatial Statements
+            TokenKind::Spatial => self.parse_spatial()?,
+
             // Unified Statements
             TokenKind::Find => self.parse_find()?,
             TokenKind::Entity => self.parse_entity()?,
@@ -1916,6 +1919,71 @@ impl<'a> Parser<'a> {
             collection,
             where_clause,
         }))
+    }
+
+    // =========================================================================
+    // Spatial Query Parser
+    // =========================================================================
+
+    fn parse_spatial(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Spatial)?;
+
+        let op = if self.eat(&TokenKind::Insert) {
+            let key = self.parse_expr()?;
+            self.expect(&TokenKind::Bounds)?;
+            let x = self.parse_expr()?;
+            let y = self.parse_expr()?;
+            let width = self.parse_expr()?;
+            let height = self.parse_expr()?;
+            SpatialOp::Insert {
+                key,
+                x,
+                y,
+                width,
+                height,
+            }
+        } else if self.eat(&TokenKind::Within) {
+            let x = self.parse_expr()?;
+            let y = self.parse_expr()?;
+            self.expect(&TokenKind::Radius)?;
+            let radius = self.parse_expr()?;
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            SpatialOp::WithinRadius {
+                x,
+                y,
+                radius,
+                limit,
+            }
+        } else if self.eat(&TokenKind::Delete) {
+            let key = self.parse_expr()?;
+            self.expect(&TokenKind::Bounds)?;
+            let x = self.parse_expr()?;
+            let y = self.parse_expr()?;
+            let width = self.parse_expr()?;
+            let height = self.parse_expr()?;
+            SpatialOp::Delete {
+                key,
+                x,
+                y,
+                width,
+                height,
+            }
+        } else if self.eat(&TokenKind::Count) {
+            SpatialOp::Count
+        } else {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidSyntax(
+                    "expected INSERT, WITHIN, DELETE, or COUNT after SPATIAL".to_string(),
+                ),
+                self.current.span,
+            ));
+        };
+
+        Ok(StatementKind::Spatial(SpatialStmt { op }))
     }
 
     // =========================================================================
@@ -10158,5 +10226,112 @@ mod tests {
     #[should_panic(expected = "expected Vault")]
     fn test_unwrap_vault_wrong_variant() {
         unwrap_vault(parse_stmt("SELECT 1"));
+    }
+
+    // =========================================================================
+    // Spatial parser tests
+    // =========================================================================
+
+    fn unwrap_spatial(stmt: Statement) -> SpatialStmt {
+        match stmt.kind {
+            StatementKind::Spatial(s) => s,
+            other => panic!("expected Spatial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spatial_insert() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL INSERT 'building_a' BOUNDS 10 20 30 40"));
+        match stmt.op {
+            SpatialOp::Insert {
+                key,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                assert!(
+                    matches!(key.kind, ExprKind::Literal(Literal::String(ref s)) if s == "building_a")
+                );
+                assert!(matches!(x.kind, ExprKind::Literal(Literal::Integer(10))));
+                assert!(matches!(y.kind, ExprKind::Literal(Literal::Integer(20))));
+                assert!(matches!(
+                    width.kind,
+                    ExprKind::Literal(Literal::Integer(30))
+                ));
+                assert!(matches!(
+                    height.kind,
+                    ExprKind::Literal(Literal::Integer(40))
+                ));
+            },
+            other => panic!("expected Insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spatial_within_radius() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL WITHIN 5.0 10.0 RADIUS 25.0"));
+        match stmt.op {
+            SpatialOp::WithinRadius {
+                x,
+                y,
+                radius,
+                limit,
+            } => {
+                assert!(
+                    matches!(x.kind, ExprKind::Literal(Literal::Float(v)) if (v - 5.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(y.kind, ExprKind::Literal(Literal::Float(v)) if (v - 10.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(radius.kind, ExprKind::Literal(Literal::Float(v)) if (v - 25.0).abs() < f64::EPSILON)
+                );
+                assert!(limit.is_none());
+            },
+            other => panic!("expected WithinRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spatial_within_radius_limit() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL WITHIN 0 0 RADIUS 100 LIMIT 10"));
+        match stmt.op {
+            SpatialOp::WithinRadius { radius, limit, .. } => {
+                assert!(matches!(
+                    radius.kind,
+                    ExprKind::Literal(Literal::Integer(100))
+                ));
+                assert!(limit.is_some());
+                let lim = limit.unwrap();
+                assert!(matches!(lim.kind, ExprKind::Literal(Literal::Integer(10))));
+            },
+            other => panic!("expected WithinRadius, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spatial_delete() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL DELETE 'building_a' BOUNDS 10 20 30 40"));
+        match stmt.op {
+            SpatialOp::Delete { key, .. } => {
+                assert!(
+                    matches!(key.kind, ExprKind::Literal(Literal::String(ref s)) if s == "building_a")
+                );
+            },
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spatial_count() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL COUNT"));
+        assert!(matches!(stmt.op, SpatialOp::Count));
+    }
+
+    #[test]
+    fn test_parse_spatial_invalid_op() {
+        let result = parse("SPATIAL UNKNOWN");
+        assert!(result.is_err());
     }
 }
