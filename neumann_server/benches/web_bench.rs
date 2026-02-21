@@ -15,8 +15,8 @@ use tensor_store::{ScalarValue, TensorValue};
 use vector_engine::VectorEngine;
 
 use neumann_server::web::templates::layout::{
-    empty_state, engine_section, expandable_string, expandable_text, expandable_vector,
-    format_number, layout, page_header, stat_card,
+    format_number, layout, m_empty, m_expandable_string, m_expandable_text, m_expandable_vector,
+    m_header, m_section, m_stat,
 };
 use neumann_server::web::NavItem;
 
@@ -107,21 +107,21 @@ fn bench_template_rendering(c: &mut Criterion) {
     // Benchmark stat card
     group.bench_function("stat_card", |b| {
         b.iter(|| {
-            let _: Markup = stat_card("Tables", "24", "relational", "orange");
+            let _: Markup = m_stat("Tables", "24", "relational", "orange");
         });
     });
 
     // Benchmark page header
     group.bench_function("page_header", |b| {
         b.iter(|| {
-            let _: Markup = page_header("Test Page", Some("Description here"));
+            let _: Markup = m_header("Test Page", Some("Description here"));
         });
     });
 
     // Benchmark empty state
     group.bench_function("empty_state", |b| {
         b.iter(|| {
-            let _: Markup = empty_state("No Data", "Nothing to show");
+            let _: Markup = m_empty("No Data", "Nothing to show");
         });
     });
 
@@ -133,7 +133,7 @@ fn bench_template_rendering(c: &mut Criterion) {
             ("products".to_string(), "3,456".to_string()),
         ];
         b.iter(|| {
-            let _: Markup = engine_section("Relational", "orange", black_box(&items));
+            let _: Markup = m_section("Relational", "orange", black_box(&items));
         });
     });
 
@@ -156,28 +156,28 @@ fn bench_expandable_components(c: &mut Criterion) {
     // Benchmark expandable_text short (no expansion)
     group.bench_function("expandable_text_short", |b| {
         b.iter(|| {
-            let _: Markup = expandable_text(black_box(short_text), 100, "text-white");
+            let _: Markup = m_expandable_text(black_box(short_text), 100, "text-white");
         });
     });
 
     // Benchmark expandable_text long (with expansion)
     group.bench_function("expandable_text_long", |b| {
         b.iter(|| {
-            let _: Markup = expandable_text(black_box(&long_text), 100, "text-white");
+            let _: Markup = m_expandable_text(black_box(&long_text), 100, "text-white");
         });
     });
 
     // Benchmark expandable_string short
     group.bench_function("expandable_string_short", |b| {
         b.iter(|| {
-            let _: Markup = expandable_string(black_box(short_text), 100);
+            let _: Markup = m_expandable_string(black_box(short_text), 100);
         });
     });
 
     // Benchmark expandable_string long
     group.bench_function("expandable_string_long", |b| {
         b.iter(|| {
-            let _: Markup = expandable_string(black_box(&long_text), 100);
+            let _: Markup = m_expandable_string(black_box(&long_text), 100);
         });
     });
 
@@ -187,13 +187,13 @@ fn bench_expandable_components(c: &mut Criterion) {
 
     group.bench_function("expandable_vector_small", |b| {
         b.iter(|| {
-            let _: Markup = expandable_vector(black_box(&small_vec), 15);
+            let _: Markup = m_expandable_vector(black_box(&small_vec), 15);
         });
     });
 
     group.bench_function("expandable_vector_large", |b| {
         b.iter(|| {
-            let _: Markup = expandable_vector(black_box(&large_vec), 15);
+            let _: Markup = m_expandable_vector(black_box(&large_vec), 15);
         });
     });
 
