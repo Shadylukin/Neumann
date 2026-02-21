@@ -228,9 +228,20 @@ fn loom_dtx_abort_during_vote() {
 // Real-code loom tests: drive DistributedTxCoordinator through sync_compat
 // ---------------------------------------------------------------------------
 
-fn make_coordinator() -> DistributedTxCoordinator {
+/// Generator stack size for real-code loom threads. The loom model closure
+/// runs on a generator coroutine with only 32 KiB stack (128 KiB on macOS).
+/// The real `DistributedTxCoordinator` + `ConsensusManager` types overflow
+/// the 32 KiB Linux default. We keep the model closure as a thin trampoline
+/// and run the actual test body on a spawned thread with a 1 MiB generator
+/// stack.
+const REAL_STACK_SIZE: usize = 1024 * 1024;
+
+fn make_coordinator() -> Arc<DistributedTxCoordinator> {
     let consensus = ConsensusManager::new(ConsensusConfig::default());
-    DistributedTxCoordinator::new(consensus, DistributedTxConfig::default())
+    Arc::new(DistributedTxCoordinator::new(
+        consensus,
+        DistributedTxConfig::default(),
+    ))
 }
 
 fn yes_vote(shard: usize) -> PrepareVote {
@@ -250,25 +261,38 @@ fn no_vote() -> PrepareVote {
 fn loom_dtx_real_concurrent_begin() {
     // Two threads call begin() concurrently, contending on the pending write lock.
     loom::model(|| {
-        let coord = Arc::new(make_coordinator());
+        // Trampoline: run test body on a large-stack thread to avoid the
+        // 32 KiB generator stack limit on Linux.
+        loom::thread::Builder::new()
+            .stack_size(REAL_STACK_SIZE)
+            .spawn(|| {
+                let coord = make_coordinator();
 
-        let c1 = Arc::clone(&coord);
-        let c2 = Arc::clone(&coord);
+                let c1 = Arc::clone(&coord);
+                let c2 = Arc::clone(&coord);
 
-        let t1 = thread::spawn(move || c1.begin(&"node1".to_string(), &[0, 1]).ok());
-        let t2 = thread::spawn(move || c2.begin(&"node2".to_string(), &[0, 1]).ok());
+                let t1 = loom::thread::Builder::new()
+                    .stack_size(REAL_STACK_SIZE)
+                    .spawn(move || c1.begin(&"node1".to_string(), &[0, 1]).ok())
+                    .unwrap();
+                let t2 = loom::thread::Builder::new()
+                    .stack_size(REAL_STACK_SIZE)
+                    .spawn(move || c2.begin(&"node2".to_string(), &[0, 1]).ok())
+                    .unwrap();
 
-        let tx1 = t1.join().unwrap();
-        let tx2 = t2.join().unwrap();
+                let tx1 = t1.join().unwrap();
+                let tx2 = t2.join().unwrap();
 
-        // Both should succeed (max_concurrent default is 100)
-        assert!(tx1.is_some(), "first begin must succeed");
-        assert!(tx2.is_some(), "second begin must succeed");
+                assert!(tx1.is_some(), "first begin must succeed");
+                assert!(tx2.is_some(), "second begin must succeed");
 
-        // Both transactions should have different IDs
-        let id1 = tx1.unwrap().tx_id;
-        let id2 = tx2.unwrap().tx_id;
-        assert_ne!(id1, id2, "transaction IDs must be unique");
+                let id1 = tx1.unwrap().tx_id;
+                let id2 = tx2.unwrap().tx_id;
+                assert_ne!(id1, id2, "transaction IDs must be unique");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     });
 }
 
@@ -276,33 +300,38 @@ fn loom_dtx_real_concurrent_begin() {
 fn loom_dtx_real_concurrent_votes() {
     // Two shards record_vote() for the same tx (phased locking pattern).
     loom::model(|| {
-        let coord = Arc::new(make_coordinator());
-        let tx = coord.begin(&"node1".to_string(), &[0, 1]).unwrap();
-        let tx_id = tx.tx_id;
+        loom::thread::Builder::new()
+            .stack_size(REAL_STACK_SIZE)
+            .spawn(|| {
+                let coord = make_coordinator();
+                let tx = coord.begin(&"node1".to_string(), &[0, 1]).unwrap();
+                let tx_id = tx.tx_id;
 
-        let c1 = Arc::clone(&coord);
-        let c2 = Arc::clone(&coord);
+                let c1 = Arc::clone(&coord);
+                let c2 = Arc::clone(&coord);
 
-        let t1 = thread::spawn(move || c1.record_vote(tx_id, 0, yes_vote(0)));
-        let t2 = thread::spawn(move || c2.record_vote(tx_id, 1, yes_vote(1)));
+                let t1 = thread::spawn(move || c1.record_vote(tx_id, 0, yes_vote(0)));
+                let t2 = thread::spawn(move || c2.record_vote(tx_id, 1, yes_vote(1)));
 
-        let r1 = t1.join().unwrap();
-        let r2 = t2.join().unwrap();
+                let r1 = t1.join().unwrap();
+                let r2 = t2.join().unwrap();
 
-        // Both votes must succeed (no TxNotFound or DuplicateVote)
-        assert!(r1.is_ok(), "shard 0 vote must succeed");
-        assert!(r2.is_ok(), "shard 1 vote must succeed");
+                assert!(r1.is_ok(), "shard 0 vote must succeed");
+                assert!(r2.is_ok(), "shard 1 vote must succeed");
 
-        // Exactly one of them should trigger the Prepared phase transition
-        let phase1 = r1.unwrap();
-        let phase2 = r2.unwrap();
-        let phases = [phase1, phase2];
-        let transitions: Vec<_> = phases.iter().filter(|p| p.is_some()).collect();
-        assert_eq!(
-            transitions.len(),
-            1,
-            "exactly one vote triggers phase change"
-        );
+                let phase1 = r1.unwrap();
+                let phase2 = r2.unwrap();
+                let phases = [phase1, phase2];
+                let transitions: Vec<_> = phases.iter().filter(|p| p.is_some()).collect();
+                assert_eq!(
+                    transitions.len(),
+                    1,
+                    "exactly one vote triggers phase change"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     });
 }
 
@@ -310,26 +339,29 @@ fn loom_dtx_real_concurrent_votes() {
 fn loom_dtx_real_begin_and_abort() {
     // begin() on one thread, abort() on another (pending + pending_aborts ordering).
     loom::model(|| {
-        let coord = Arc::new(make_coordinator());
-        let tx = coord.begin(&"node1".to_string(), &[0]).unwrap();
-        let tx_id = tx.tx_id;
+        loom::thread::Builder::new()
+            .stack_size(REAL_STACK_SIZE)
+            .spawn(|| {
+                let coord = make_coordinator();
+                let tx = coord.begin(&"node1".to_string(), &[0]).unwrap();
+                let tx_id = tx.tx_id;
 
-        let c1 = Arc::clone(&coord);
-        let c2 = Arc::clone(&coord);
+                let c1 = Arc::clone(&coord);
+                let c2 = Arc::clone(&coord);
 
-        let t1 = thread::spawn(move || c1.begin(&"node2".to_string(), &[1]));
-        let t2 = thread::spawn(move || c2.abort(tx_id, "test abort"));
+                let t1 = thread::spawn(move || c1.begin(&"node2".to_string(), &[1]));
+                let t2 = thread::spawn(move || c2.abort(tx_id, "test abort"));
 
-        let begin_result = t1.join().unwrap();
-        let abort_result = t2.join().unwrap();
+                let begin_result = t1.join().unwrap();
+                let abort_result = t2.join().unwrap();
 
-        // begin must succeed (different tx)
-        assert!(begin_result.is_ok(), "concurrent begin must succeed");
-        // abort must succeed (tx was in pending)
-        assert!(abort_result.is_ok(), "abort must succeed");
-
-        // Original tx must be gone
-        assert!(coord.get(tx_id).is_none(), "aborted tx must be removed");
+                assert!(begin_result.is_ok(), "concurrent begin must succeed");
+                assert!(abort_result.is_ok(), "abort must succeed");
+                assert!(coord.get(tx_id).is_none(), "aborted tx must be removed");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     });
 }
 
@@ -337,33 +369,37 @@ fn loom_dtx_real_begin_and_abort() {
 fn loom_dtx_real_vote_no_triggers_abort() {
     // Concurrent YES/NO votes where the NO triggers the abort path.
     loom::model(|| {
-        let coord = Arc::new(make_coordinator());
-        let tx = coord.begin(&"node1".to_string(), &[0, 1]).unwrap();
-        let tx_id = tx.tx_id;
+        loom::thread::Builder::new()
+            .stack_size(REAL_STACK_SIZE)
+            .spawn(|| {
+                let coord = make_coordinator();
+                let tx = coord.begin(&"node1".to_string(), &[0, 1]).unwrap();
+                let tx_id = tx.tx_id;
 
-        let c1 = Arc::clone(&coord);
-        let c2 = Arc::clone(&coord);
+                let c1 = Arc::clone(&coord);
+                let c2 = Arc::clone(&coord);
 
-        let t1 = thread::spawn(move || c1.record_vote(tx_id, 0, yes_vote(0)));
-        let t2 = thread::spawn(move || c2.record_vote(tx_id, 1, no_vote()));
+                let t1 = thread::spawn(move || c1.record_vote(tx_id, 0, yes_vote(0)));
+                let t2 = thread::spawn(move || c2.record_vote(tx_id, 1, no_vote()));
 
-        let r1 = t1.join().unwrap();
-        let r2 = t2.join().unwrap();
+                let r1 = t1.join().unwrap();
+                let r2 = t2.join().unwrap();
 
-        // Both votes must succeed
-        assert!(r1.is_ok(), "shard 0 vote must succeed");
-        assert!(r2.is_ok(), "shard 1 vote must succeed");
+                assert!(r1.is_ok(), "shard 0 vote must succeed");
+                assert!(r2.is_ok(), "shard 1 vote must succeed");
 
-        // The second-to-finish should trigger Aborting (NO vote present)
-        let phase1 = r1.unwrap();
-        let phase2 = r2.unwrap();
-        let phases: Vec<_> = [phase1, phase2].into_iter().flatten().collect();
-        if !phases.is_empty() {
-            // If a phase transition occurred, it must be Aborting
-            assert!(
-                phases.iter().any(|p| *p == tensor_chain::TxPhase::Aborting),
-                "NO vote must trigger Aborting, got {phases:?}"
-            );
-        }
+                let phase1 = r1.unwrap();
+                let phase2 = r2.unwrap();
+                let phases: Vec<_> = [phase1, phase2].into_iter().flatten().collect();
+                if !phases.is_empty() {
+                    assert!(
+                        phases.iter().any(|p| *p == tensor_chain::TxPhase::Aborting),
+                        "NO vote must trigger Aborting, got {phases:?}"
+                    );
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     });
 }

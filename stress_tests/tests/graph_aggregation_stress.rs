@@ -409,8 +409,8 @@ fn stress_concurrent_degree_by_type() {
                         // Query degree by type
                         let edge_type = edge_types[i % edge_types.len()];
                         if let Ok(degree) = eng.out_degree_by_type(center_id, edge_type) {
-                            // Degree should be non-negative
-                            assert!(degree <= num_spokes, "Degree exceeds max possible");
+                            // Degree must be positive (edges of this type exist)
+                            assert!(degree > 0, "Degree must be positive for seeded type");
                             cnt.fetch_add(1, Ordering::Relaxed);
                         }
                     } else if i % 3 == 1 {
