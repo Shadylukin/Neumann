@@ -3371,7 +3371,9 @@ dependencies = [
 name = "tensor_spatial"
 version = "0.3.1"
 dependencies = [
+ "bitcode",
  "parking_lot",
+ "serde",
  "thiserror",
 ]
 
