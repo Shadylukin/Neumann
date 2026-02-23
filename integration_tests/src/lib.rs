@@ -135,19 +135,19 @@ pub fn create_test_graph_router() -> QueryRouter {
     let router = create_shared_router();
 
     // Create user nodes
-    router.execute("NODE CREATE user name='Alice'").unwrap();
-    router.execute("NODE CREATE user name='Bob'").unwrap();
-    router.execute("NODE CREATE user name='Carol'").unwrap();
+    router.execute("NODE CREATE user {name: 'Alice'}").unwrap();
+    router.execute("NODE CREATE user {name: 'Bob'}").unwrap();
+    router.execute("NODE CREATE user {name: 'Carol'}").unwrap();
 
     // Create post nodes
-    router.execute("NODE CREATE post title='Post1'").unwrap();
-    router.execute("NODE CREATE post title='Post2'").unwrap();
+    router.execute("NODE CREATE post {title: 'Post1'}").unwrap();
+    router.execute("NODE CREATE post {title: 'Post2'}").unwrap();
 
     // Create edges (user wrote post)
-    router.execute("EDGE CREATE 1 -> 4 wrote").unwrap();
-    router.execute("EDGE CREATE 2 -> 5 wrote").unwrap();
-    router.execute("EDGE CREATE 1 -> 2 follows").unwrap();
-    router.execute("EDGE CREATE 2 -> 3 follows").unwrap();
+    router.execute("EDGE CREATE 1 -> 4 : wrote").unwrap();
+    router.execute("EDGE CREATE 2 -> 5 : wrote").unwrap();
+    router.execute("EDGE CREATE 1 -> 2 : follows").unwrap();
+    router.execute("EDGE CREATE 2 -> 3 : follows").unwrap();
 
     router
 }
@@ -163,7 +163,9 @@ pub fn create_test_vector_router(count: usize, dim: usize) -> QueryRouter {
             .map(|v| format!("{v:.4}"))
             .collect::<Vec<_>>()
             .join(", ");
-        router.execute(&format!("EMBED doc:{i} {emb_str}")).unwrap();
+        router
+            .execute(&format!("EMBED STORE 'doc:{i}' [{emb_str}]"))
+            .unwrap();
     }
 
     router

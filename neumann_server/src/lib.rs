@@ -433,7 +433,8 @@ impl NeumannServer {
                     .with_auth(self.config.auth.clone())
                     .with_rate_limiter(self.rate_limiter.clone())
                     .with_audit_logger(self.audit_logger.clone())
-                    .with_metrics(self.metrics.clone()),
+                    .with_metrics(self.metrics.clone())
+                    .with_spatial(Some(self.router.read().spatial().clone())),
             );
             let rest_router = rest::router(rest_ctx);
             let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
@@ -711,7 +712,8 @@ impl NeumannServer {
                     .with_auth(self.config.auth.clone())
                     .with_rate_limiter(self.rate_limiter.clone())
                     .with_audit_logger(self.audit_logger.clone())
-                    .with_metrics(self.metrics.clone()),
+                    .with_metrics(self.metrics.clone())
+                    .with_spatial(Some(self.router.read().spatial().clone())),
             );
             let rest_router = rest::router(rest_ctx);
             let listener = TcpListener::bind(rest_addr).await.map_err(|e| {

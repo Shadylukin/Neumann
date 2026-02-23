@@ -10,6 +10,49 @@ use tonic::{Request, Response, Status};
 
 use vector_engine::VectorEngine;
 
+/// Converts a `TensorValue` back to a JSON value for payload retrieval.
+///
+/// This is the inverse of `json_to_tensor_value`. Since `json_to_tensor_value` only
+/// produces `Scalar(*)` variants, `meta:` prefixed fields will only contain scalars.
+/// Non-scalar variants are handled gracefully for completeness.
+fn tensor_value_to_json(value: &TensorValue) -> serde_json::Value {
+    match value {
+        TensorValue::Scalar(s) => match s {
+            ScalarValue::Null => serde_json::Value::Null,
+            ScalarValue::Bool(b) => serde_json::Value::Bool(*b),
+            ScalarValue::Int(i) => serde_json::json!(*i),
+            ScalarValue::Float(f) => serde_json::Number::from_f64(*f)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+            ScalarValue::String(s) => serde_json::Value::String(s.clone()),
+            ScalarValue::Bytes(b) => serde_json::Value::String(
+                String::from_utf8(b.clone()).unwrap_or_else(|e| format!("{:02x?}", e.into_bytes())),
+            ),
+        },
+        TensorValue::Vector(v) => serde_json::json!(v),
+        TensorValue::Sparse(_) => serde_json::Value::String("(sparse vector)".to_string()),
+        TensorValue::Pointer(p) => serde_json::Value::String(p.clone()),
+        TensorValue::Pointers(ps) => serde_json::json!(ps),
+    }
+}
+
+/// Retrieves stored metadata for a point and serializes it as JSON bytes for gRPC.
+fn retrieve_payload(
+    engine: &VectorEngine,
+    collection: &str,
+    key: &str,
+) -> std::collections::HashMap<String, Vec<u8>> {
+    engine
+        .get_collection_metadata(collection, key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(k, v)| {
+            serde_json::to_vec(&tensor_value_to_json(&v))
+                .ok()
+                .map(|bytes| (k, bytes))
+        })
+        .collect()
+}
+
 fn json_to_tensor_value(value: &serde_json::Value) -> TensorValue {
     match value {
         serde_json::Value::Null => TensorValue::Scalar(ScalarValue::Null),
@@ -318,7 +361,11 @@ impl PointsService for PointsServiceImpl {
                 let point = Point {
                     id: id.clone(),
                     vector: if req.with_vector { vector } else { vec![] },
-                    payload: std::collections::HashMap::new(),
+                    payload: if req.with_payload {
+                        retrieve_payload(&self.engine, &req.collection, id)
+                    } else {
+                        std::collections::HashMap::new()
+                    },
                 };
                 points.push(point);
             }
@@ -475,10 +522,16 @@ impl PointsService for PointsServiceImpl {
                         vec![]
                     };
 
+                    let point_id = item.key;
+                    let payload = if req.with_payload {
+                        retrieve_payload(&self.engine, &collection, &point_id)
+                    } else {
+                        std::collections::HashMap::new()
+                    };
                     results.push(ScoredPoint {
-                        id: item.key,
+                        id: point_id,
                         score: item.score,
-                        payload: std::collections::HashMap::new(),
+                        payload,
                         vector,
                     });
                 }
@@ -581,10 +634,15 @@ impl PointsService for PointsServiceImpl {
                 vec![]
             };
 
+            let payload = if req.with_payload {
+                retrieve_payload(&self.engine, &req.collection, key)
+            } else {
+                std::collections::HashMap::new()
+            };
             points.push(Point {
                 id: (*key).clone(),
                 vector,
-                payload: std::collections::HashMap::new(),
+                payload,
             });
         }
 
@@ -685,5 +743,126 @@ mod tests {
 
         service.record_failure();
         assert_eq!(service.consecutive_failures.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_scalars() {
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Null)),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Bool(true))),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Int(42))),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Float(3.14))),
+            serde_json::json!(3.14)
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::String(
+                "hello".to_string()
+            ))),
+            serde_json::json!("hello")
+        );
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_nan_float() {
+        let result = tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Float(f64::NAN)));
+        assert_eq!(result, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_inf_float() {
+        let result = tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Float(f64::INFINITY)));
+        assert_eq!(result, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_bytes() {
+        let result = tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Bytes(
+            b"utf8text".to_vec(),
+        )));
+        assert_eq!(result, serde_json::json!("utf8text"));
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_non_scalar() {
+        let result = tensor_value_to_json(&TensorValue::Vector(vec![1.0, 2.0, 3.0]));
+        assert_eq!(result, serde_json::json!([1.0, 2.0, 3.0]));
+
+        let result = tensor_value_to_json(&TensorValue::Pointer("ptr".to_string()));
+        assert_eq!(result, serde_json::json!("ptr"));
+
+        let result = tensor_value_to_json(&TensorValue::Pointers(vec![
+            "a".to_string(),
+            "b".to_string(),
+        ]));
+        assert_eq!(result, serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn test_retrieve_payload_roundtrip() {
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_payload",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("docs".to_string())),
+        );
+        metadata.insert(
+            "priority".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(5)),
+        );
+
+        engine
+            .store_in_collection_with_metadata(
+                "test_payload",
+                "point1",
+                vec![1.0, 0.0, 0.0],
+                metadata,
+            )
+            .unwrap();
+
+        let payload = retrieve_payload(&engine, "test_payload", "point1");
+        assert!(!payload.is_empty());
+
+        // Verify category
+        let cat_json: serde_json::Value =
+            serde_json::from_slice(payload.get("category").unwrap()).unwrap();
+        assert_eq!(cat_json, serde_json::json!("docs"));
+
+        // Verify priority
+        let pri_json: serde_json::Value =
+            serde_json::from_slice(payload.get("priority").unwrap()).unwrap();
+        assert_eq!(pri_json, serde_json::json!(5));
+    }
+
+    #[test]
+    fn test_retrieve_payload_empty() {
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_empty",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+        engine
+            .store_in_collection("test_empty", "point1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+
+        let payload = retrieve_payload(&engine, "test_empty", "point1");
+        assert!(payload.is_empty());
     }
 }

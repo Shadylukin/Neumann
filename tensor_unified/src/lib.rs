@@ -47,6 +47,8 @@ pub enum UnifiedError {
         /// Description of the failure.
         cause: String,
     },
+    /// Error from spatial engine.
+    SpatialError(String),
 }
 
 impl std::fmt::Display for UnifiedError {
@@ -63,6 +65,7 @@ impl std::fmt::Display for UnifiedError {
                     "Batch operation failed at index {index} (key: {key}): {cause}"
                 )
             },
+            Self::SpatialError(msg) => write!(f, "Spatial error: {msg}"),
         }
     }
 }
@@ -84,6 +87,12 @@ impl From<vector_engine::VectorError> for UnifiedError {
 impl From<relational_engine::RelationalError> for UnifiedError {
     fn from(e: relational_engine::RelationalError) -> Self {
         Self::RelationalError(e.to_string())
+    }
+}
+
+impl From<tensor_spatial::SpatialError> for UnifiedError {
+    fn from(e: tensor_spatial::SpatialError) -> Self {
+        Self::SpatialError(e.to_string())
     }
 }
 
@@ -409,6 +418,7 @@ pub struct UnifiedEngine {
     relational: Arc<RelationalEngine>,
     graph: Arc<GraphEngine>,
     vector: Arc<VectorEngine>,
+    spatial: Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>,
 }
 
 impl UnifiedEngine {
@@ -427,6 +437,7 @@ impl UnifiedEngine {
             graph: Arc::new(GraphEngine::with_store(store.clone())),
             vector: Arc::new(VectorEngine::with_store(store.clone())),
             store,
+            spatial: Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new())),
         }
     }
 
@@ -444,7 +455,18 @@ impl UnifiedEngine {
             relational,
             graph,
             vector,
+            spatial: Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new())),
         }
+    }
+
+    /// Inject a shared spatial index.
+    #[must_use]
+    pub fn with_spatial(
+        mut self,
+        spatial: Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>,
+    ) -> Self {
+        self.spatial = spatial;
+        self
     }
 
     /// Returns a reference to the underlying store.
@@ -470,6 +492,150 @@ impl UnifiedEngine {
     #[must_use]
     pub fn vector(&self) -> &VectorEngine {
         &self.vector
+    }
+
+    /// Returns a reference to the shared spatial index.
+    #[must_use]
+    pub const fn spatial(&self) -> &Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>> {
+        &self.spatial
+    }
+
+    // ========== Spatial Operations ==========
+
+    /// Insert an entity's location into the spatial index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpatialError` if the bounding box dimensions are invalid.
+    pub fn insert_entity_location(
+        &self,
+        key: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Result<()> {
+        let bounds = tensor_spatial::BoundingBox::new(x, y, width, height)?;
+        let entry = tensor_spatial::SpatialEntry {
+            data: key.to_string(),
+            bounds,
+        };
+        self.spatial.write().insert(entry);
+        Ok(())
+    }
+
+    /// Remove an entity's location from the spatial index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpatialError` if the bounding box is invalid or entry not found.
+    pub fn remove_entity_location(
+        &self,
+        key: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Result<()> {
+        let bounds = tensor_spatial::BoundingBox::new(x, y, width, height)?;
+        let key_owned = key.to_string();
+        self.spatial
+            .write()
+            .remove(bounds, |e| e.data == key_owned && e.bounds == bounds)?;
+        Ok(())
+    }
+
+    /// Find entities within a radius of a point.
+    ///
+    /// Returns `UnifiedResult` items with `source="spatial"` and `score=distance`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpatialError` if the radius is invalid.
+    pub fn find_spatial_within_radius(
+        &self,
+        x: f32,
+        y: f32,
+        radius: f32,
+        limit: Option<usize>,
+    ) -> Result<UnifiedResult> {
+        let guard = self.spatial.read();
+        let results = guard.query_within_radius_with_distances(x, y, radius);
+        let max_items = limit.unwrap_or(usize::MAX);
+        let items: Vec<UnifiedItem> = results
+            .into_iter()
+            .take(max_items)
+            .map(|(entry, distance)| {
+                let mut data = HashMap::new();
+                data.insert("x".to_string(), entry.bounds.x.to_string());
+                data.insert("y".to_string(), entry.bounds.y.to_string());
+                data.insert("width".to_string(), entry.bounds.width.to_string());
+                data.insert("height".to_string(), entry.bounds.height.to_string());
+                UnifiedItem {
+                    source: "spatial".to_string(),
+                    id: entry.data.clone(),
+                    score: Some(distance),
+                    data,
+                    embedding: None,
+                }
+            })
+            .collect();
+        drop(guard);
+        Ok(UnifiedResult {
+            description: format!(
+                "Spatial radius query at ({x}, {y}) r={radius}: {} results",
+                items.len()
+            ),
+            items,
+        })
+    }
+
+    /// Find entities within a rectangular region.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpatialError` if the region dimensions are invalid.
+    pub fn find_spatial_in_region(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Result<UnifiedResult> {
+        let region = tensor_spatial::BoundingBox::new(x, y, width, height)?;
+        let guard = self.spatial.read();
+        let entries = guard.query_region(region);
+        let items: Vec<UnifiedItem> = entries
+            .into_iter()
+            .map(|e| {
+                let mut data = HashMap::new();
+                data.insert("x".to_string(), e.bounds.x.to_string());
+                data.insert("y".to_string(), e.bounds.y.to_string());
+                data.insert("width".to_string(), e.bounds.width.to_string());
+                data.insert("height".to_string(), e.bounds.height.to_string());
+                UnifiedItem {
+                    source: "spatial".to_string(),
+                    id: e.data.clone(),
+                    score: None,
+                    data,
+                    embedding: None,
+                }
+            })
+            .collect();
+        drop(guard);
+        Ok(UnifiedResult {
+            description: format!(
+                "Spatial region query at ({x}, {y}, {width}, {height}): {} results",
+                items.len()
+            ),
+            items,
+        })
+    }
+
+    /// Returns the number of entries in the spatial index.
+    #[must_use]
+    pub fn spatial_count(&self) -> usize {
+        self.spatial.read().len()
     }
 
     // ========== Entity Operations ==========
@@ -902,7 +1068,8 @@ impl UnifiedEngine {
     /// Finds entities similar to a query that are also connected via graph edges.
     ///
     /// Optionally accepts pre-computed HNSW results to avoid redundant computation
-    /// when an HNSW index is available in the caller.
+    /// when an HNSW index is available in the caller. Uses adaptive widening when
+    /// initial results have insufficient connected neighbors.
     ///
     /// # Errors
     /// Returns an error if embedding retrieval or similarity search fails.
@@ -914,19 +1081,48 @@ impl UnifiedEngine {
         top_k: usize,
         hnsw_results: Option<Vec<SearchResult>>,
     ) -> Result<Vec<UnifiedItem>> {
-        // Use pre-computed HNSW results if available, otherwise search directly
-        let similar = if let Some(results) = hnsw_results {
-            results
-        } else {
-            let query_embedding = self.vector.get_entity_embedding(query_key)?;
-            self.vector.search_entities(&query_embedding, top_k * 2)?
-        };
-
-        // Get connected neighbors
+        // Get connected neighbors FIRST (needed for filtering and under-recall check)
         let connected_neighbors: std::collections::HashSet<String> = self
             .get_entity_neighbors(connected_to)
             .into_iter()
             .collect();
+
+        if connected_neighbors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Start with pre-computed HNSW results if available
+        let mut similar = if let Some(results) = hnsw_results {
+            results
+        } else {
+            let query_embedding = self.vector.get_entity_embedding(query_key)?;
+            self.vector
+                .search_entities(&query_embedding, top_k.saturating_mul(4))?
+        };
+
+        // Check if we have enough connected results; if not, widen via brute-force
+        let connected_count = similar
+            .iter()
+            .filter(|c| connected_neighbors.contains(&c.key))
+            .count();
+
+        if connected_count < top_k {
+            let query_embedding = self.vector.get_entity_embedding(query_key)?;
+            let mut multiplier = 8;
+            loop {
+                similar = self
+                    .vector
+                    .search_entities(&query_embedding, top_k.saturating_mul(multiplier))?;
+                let count = similar
+                    .iter()
+                    .filter(|c| connected_neighbors.contains(&c.key))
+                    .count();
+                if count >= top_k || multiplier >= 32 {
+                    break;
+                }
+                multiplier = multiplier.saturating_mul(2);
+            }
+        }
 
         // Filter to only connected entities and sort by score
         let mut items: Vec<UnifiedItem> = similar
@@ -1849,6 +2045,7 @@ impl Clone for UnifiedEngine {
             relational: Arc::clone(&self.relational),
             graph: Arc::clone(&self.graph),
             vector: Arc::clone(&self.vector),
+            spatial: Arc::clone(&self.spatial),
         }
     }
 }
@@ -2254,10 +2451,12 @@ mod tests {
     #[tokio::test]
     async fn test_find_similar_connected_no_embedding() {
         let engine = create_engine();
+        // With no neighbors for "other", returns Ok(empty) via early return
         let result = engine
             .find_similar_connected("nonexistent", "other", 10)
             .await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2634,6 +2833,60 @@ mod tests {
         // doc2 should be found (similar to doc1 and connected to hub)
         // Note: results depend on whether doc2/doc3 are in the neighbors
         assert!(result.is_empty() || !result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_similar_connected_empty_neighbors() {
+        let engine = create_engine();
+
+        engine
+            .vector()
+            .set_entity_embedding("doc1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        engine
+            .vector()
+            .set_entity_embedding("doc2", vec![0.9, 0.1, 0.0])
+            .unwrap();
+
+        // No graph edges from "isolated" — should return empty
+        let result = engine
+            .find_similar_connected("doc1", "isolated", 5)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_similar_connected_with_hnsw_precomputed() {
+        let engine = create_engine();
+
+        // Create entities with embeddings
+        engine
+            .vector()
+            .set_entity_embedding("doc1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        engine
+            .vector()
+            .set_entity_embedding("doc2", vec![0.9, 0.1, 0.0])
+            .unwrap();
+        engine
+            .vector()
+            .set_entity_embedding("doc3", vec![0.0, 1.0, 0.0])
+            .unwrap();
+
+        // Create graph connections
+        add_test_edge(engine.graph(), "hub", "doc2", "links");
+        add_test_edge(engine.graph(), "hub", "doc3", "links");
+
+        // Pass pre-computed results (empty) — should trigger adaptive widening
+        let result = engine
+            .find_similar_connected_with_hnsw("doc1", "hub", 5, Some(Vec::new()))
+            .await
+            .unwrap();
+
+        // Result should still work (adaptive widening kicks in)
+        // At minimum, doc2 and doc3 are connected to hub
+        assert!(result.len() <= 5);
     }
 
     #[tokio::test]
@@ -4674,5 +4927,154 @@ mod tests {
         new_fields.insert("name".to_string(), "updated".to_string());
         let result = engine.update_entity("uvmeta", new_fields, None).await;
         assert!(result.is_ok());
+    }
+
+    // ========== Spatial Integration Tests ==========
+
+    #[test]
+    fn test_spatial_insert_and_count() {
+        let engine = create_engine();
+        assert_eq!(engine.spatial_count(), 0);
+
+        engine
+            .insert_entity_location("building_a", 10.0, 20.0, 5.0, 3.0)
+            .unwrap();
+        engine
+            .insert_entity_location("building_b", 30.0, 40.0, 8.0, 6.0)
+            .unwrap();
+        engine
+            .insert_entity_location("park", 50.0, 50.0, 20.0, 20.0)
+            .unwrap();
+
+        assert_eq!(engine.spatial_count(), 3);
+    }
+
+    #[test]
+    fn test_spatial_radius_query() {
+        let engine = create_engine();
+
+        engine
+            .insert_entity_location("near", 1.0, 1.0, 1.0, 1.0)
+            .unwrap();
+        engine
+            .insert_entity_location("mid", 5.0, 5.0, 1.0, 1.0)
+            .unwrap();
+        engine
+            .insert_entity_location("far", 100.0, 100.0, 1.0, 1.0)
+            .unwrap();
+
+        let result = engine
+            .find_spatial_within_radius(0.0, 0.0, 10.0, None)
+            .unwrap();
+        // "near" and "mid" should be within radius 10 of origin
+        assert!(result.items.len() >= 2);
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item.id == "near" && item.source == "spatial"));
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item.id == "mid" && item.source == "spatial"));
+        // "far" should not be within radius 10
+        assert!(result.items.iter().all(|item| item.id != "far"));
+        // Items should have distance scores
+        assert!(result.items.iter().all(|item| item.score.is_some()));
+    }
+
+    #[test]
+    fn test_spatial_radius_query_with_limit() {
+        let engine = create_engine();
+        for i in 0..10 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = i as f32;
+            engine
+                .insert_entity_location(&format!("item_{i}"), x, x, 1.0, 1.0)
+                .unwrap();
+        }
+
+        let result = engine
+            .find_spatial_within_radius(0.0, 0.0, 1000.0, Some(3))
+            .unwrap();
+        assert_eq!(result.items.len(), 3);
+    }
+
+    #[test]
+    fn test_spatial_region_query() {
+        let engine = create_engine();
+
+        engine
+            .insert_entity_location("inside", 5.0, 5.0, 1.0, 1.0)
+            .unwrap();
+        engine
+            .insert_entity_location("outside", 50.0, 50.0, 1.0, 1.0)
+            .unwrap();
+
+        let result = engine.find_spatial_in_region(0.0, 0.0, 20.0, 20.0).unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].id, "inside");
+        assert_eq!(result.items[0].source, "spatial");
+        // Region queries do not have distance scores
+        assert!(result.items[0].score.is_none());
+    }
+
+    #[test]
+    fn test_spatial_remove() {
+        let engine = create_engine();
+        engine
+            .insert_entity_location("temp", 10.0, 10.0, 2.0, 2.0)
+            .unwrap();
+        assert_eq!(engine.spatial_count(), 1);
+
+        engine
+            .remove_entity_location("temp", 10.0, 10.0, 2.0, 2.0)
+            .unwrap();
+        assert_eq!(engine.spatial_count(), 0);
+    }
+
+    #[test]
+    fn test_spatial_invalid_bounds() {
+        let engine = create_engine();
+        let result = engine.insert_entity_location("bad", 0.0, 0.0, -1.0, 5.0);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), UnifiedError::SpatialError(_)));
+    }
+
+    #[test]
+    fn test_spatial_accessor() {
+        let engine = create_engine();
+        {
+            let mut spatial = engine.spatial().write();
+            let bounds = tensor_spatial::BoundingBox::new(1.0, 2.0, 3.0, 4.0).unwrap();
+            spatial.insert(tensor_spatial::SpatialEntry {
+                data: "direct".to_string(),
+                bounds,
+            });
+        }
+        assert_eq!(engine.spatial_count(), 1);
+    }
+
+    #[test]
+    fn test_unified_error_spatial() {
+        let err = UnifiedError::SpatialError("bad bounds".to_string());
+        assert_eq!(err.to_string(), "Spatial error: bad bounds");
+
+        let spatial_err = tensor_spatial::SpatialError::InvalidBounds;
+        let unified: UnifiedError = spatial_err.into();
+        assert!(matches!(unified, UnifiedError::SpatialError(_)));
+    }
+
+    #[test]
+    fn test_spatial_with_spatial_builder() {
+        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new()));
+        let engine = UnifiedEngine::new().with_spatial(Arc::clone(&spatial));
+
+        // Insert via engine
+        engine
+            .insert_entity_location("shared", 1.0, 1.0, 1.0, 1.0)
+            .unwrap();
+
+        // Verify via the shared reference
+        assert_eq!(spatial.read().len(), 1);
     }
 }

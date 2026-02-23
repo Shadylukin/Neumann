@@ -12,20 +12,20 @@ fn test_find_with_where_clause() {
 
     // Create table with data
     router
-        .execute("CREATE TABLE users (id:INT, name:TEXT, age:INT)")
+        .execute("CREATE TABLE users (id INT, name TEXT, age INT)")
         .unwrap();
 
     router
-        .execute("INSERT users id=1, name='Alice', age=25")
+        .execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 25)")
         .unwrap();
     router
-        .execute("INSERT users id=2, name='Bob', age=35")
+        .execute("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 35)")
         .unwrap();
     router
-        .execute("INSERT users id=3, name='Carol', age=28")
+        .execute("INSERT INTO users (id, name, age) VALUES (3, 'Carol', 28)")
         .unwrap();
     router
-        .execute("INSERT users id=4, name='Dave', age=42")
+        .execute("INSERT INTO users (id, name, age) VALUES (4, 'Dave', 42)")
         .unwrap();
 
     // FIND with WHERE clause using parsed syntax
@@ -60,7 +60,7 @@ fn test_find_with_similar_to() {
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute(&format!("EMBED doc:{} {}", i, emb_str))
+            .execute(&format!("EMBED 'doc:{}' [{emb_str}]", i))
             .unwrap();
     }
 
@@ -91,29 +91,29 @@ fn test_find_with_connected_to() {
     let router = create_shared_router();
 
     // Create graph structure
-    let alice = match router.execute("NODE CREATE user name='Alice'").unwrap() {
+    let alice = match router.execute("NODE CREATE user {name: 'Alice'}").unwrap() {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
-    let bob = match router.execute("NODE CREATE user name='Bob'").unwrap() {
+    let bob = match router.execute("NODE CREATE user {name: 'Bob'}").unwrap() {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
-    let post1 = match router.execute("NODE CREATE post title='Post1'").unwrap() {
+    let post1 = match router.execute("NODE CREATE post {title: 'Post1'}").unwrap() {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
-    let post2 = match router.execute("NODE CREATE post title='Post2'").unwrap() {
+    let post2 = match router.execute("NODE CREATE post {title: 'Post2'}").unwrap() {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
 
     // Alice wrote post1, Bob wrote post2
     router
-        .execute(&format!("EDGE CREATE {} -> {} wrote", alice, post1))
+        .execute(&format!("EDGE CREATE {} -> {} : wrote", alice, post1))
         .unwrap();
     router
-        .execute(&format!("EDGE CREATE {} -> {} wrote", bob, post2))
+        .execute(&format!("EDGE CREATE {} -> {} : wrote", bob, post2))
         .unwrap();
 
     // FIND posts CONNECTED TO Alice
@@ -146,14 +146,14 @@ fn test_find_combined_where_similar() {
 
     // Create table and embeddings
     router
-        .execute("CREATE TABLE items (id:INT, name:TEXT, price:FLOAT)")
+        .execute("CREATE TABLE items (id INT, name TEXT, price FLOAT)")
         .unwrap();
 
     for i in 0..5 {
         let price = 10.0 + (i as f64) * 5.0;
         router
             .execute(&format!(
-                "INSERT items id={}, name='Item{}', price={:.1}",
+                "INSERT INTO items (id, name, price) VALUES ({}, 'Item{}', {:.1})",
                 i, i, price
             ))
             .unwrap();
@@ -166,7 +166,7 @@ fn test_find_combined_where_similar() {
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute(&format!("EMBED item:{} {}", i, emb_str))
+            .execute(&format!("EMBED 'item:{}' [{emb_str}]", i))
             .unwrap();
     }
 
@@ -193,7 +193,7 @@ fn test_find_combined_all_clauses() {
 
     // Setup: Create users, posts with embeddings and relationships
     let alice = match router
-        .execute("NODE CREATE user name='Alice', age=30")
+        .execute("NODE CREATE user {name: 'Alice', age: 30}")
         .unwrap()
     {
         query_router::QueryResult::Ids(ids) => ids[0],
@@ -201,7 +201,7 @@ fn test_find_combined_all_clauses() {
     };
 
     let _bob = match router
-        .execute("NODE CREATE user name='Bob', age=25")
+        .execute("NODE CREATE user {name: 'Bob', age: 25}")
         .unwrap()
     {
         query_router::QueryResult::Ids(ids) => ids[0],
@@ -210,7 +210,7 @@ fn test_find_combined_all_clauses() {
 
     // Create posts
     let post1 = match router
-        .execute("NODE CREATE post title='Tech Post'")
+        .execute("NODE CREATE post {title: 'Tech Post'}")
         .unwrap()
     {
         query_router::QueryResult::Ids(ids) => ids[0],
@@ -219,13 +219,15 @@ fn test_find_combined_all_clauses() {
 
     // Connect users to posts
     router
-        .execute(&format!("EDGE CREATE {} -> {} wrote", alice, post1))
+        .execute(&format!("EDGE CREATE {} -> {} : wrote", alice, post1))
         .unwrap();
 
     // Store embeddings
-    router.execute("EMBED post:1 0.5, 0.5, 0.5, 0.5").unwrap();
     router
-        .execute(&format!("EMBED node:{} 0.6, 0.4, 0.5, 0.5", post1))
+        .execute("EMBED 'post:1' [0.5, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute(&format!("EMBED 'node:{}' [0.6, 0.4, 0.5, 0.5]", post1))
         .unwrap();
 
     // FIND with all clauses: WHERE, SIMILAR TO, CONNECTED TO
@@ -261,7 +263,7 @@ fn test_find_with_limit() {
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute(&format!("EMBED doc:{} {}", i, emb_str))
+            .execute(&format!("EMBED 'doc:{}' [{emb_str}]", i))
             .unwrap();
     }
 
@@ -287,7 +289,7 @@ fn test_find_empty_results() {
 
     // Create empty table
     router
-        .execute("CREATE TABLE empty_items (id:INT, name:TEXT)")
+        .execute("CREATE TABLE empty_items (id INT, name TEXT)")
         .unwrap();
 
     // FIND on empty table - should return empty, not error
@@ -330,9 +332,13 @@ fn test_find_node_basic() {
     let router = create_shared_router();
 
     // Create nodes
-    router.execute("NODE CREATE person name='Alice'").unwrap();
-    router.execute("NODE CREATE person name='Bob'").unwrap();
-    router.execute("NODE CREATE company name='Acme'").unwrap();
+    router
+        .execute("NODE CREATE person {name: 'Alice'}")
+        .unwrap();
+    router.execute("NODE CREATE person {name: 'Bob'}").unwrap();
+    router
+        .execute("NODE CREATE company {name: 'Acme'}")
+        .unwrap();
 
     // FIND NODE with label
     let result = router.execute_parsed("FIND NODE person");
@@ -350,8 +356,8 @@ fn test_find_node_without_label() {
     let router = create_shared_router();
 
     // Create nodes of different types
-    router.execute("NODE CREATE user name='Alice'").unwrap();
-    router.execute("NODE CREATE post title='Hello'").unwrap();
+    router.execute("NODE CREATE user {name: 'Alice'}").unwrap();
+    router.execute("NODE CREATE post {title: 'Hello'}").unwrap();
 
     // FIND NODE without label should find all nodes
     let result = router.execute_parsed("FIND NODE");
@@ -363,17 +369,17 @@ fn test_find_edge_basic() {
     let router = create_shared_router();
 
     // Create nodes and edges
-    let alice_id = match router.execute("NODE CREATE user name='Alice'").unwrap() {
+    let alice_id = match router.execute("NODE CREATE user {name: 'Alice'}").unwrap() {
         QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
-    let bob_id = match router.execute("NODE CREATE user name='Bob'").unwrap() {
+    let bob_id = match router.execute("NODE CREATE user {name: 'Bob'}").unwrap() {
         QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
 
     router
-        .execute(&format!("EDGE CREATE {} -> {} follows", alice_id, bob_id))
+        .execute(&format!("EDGE CREATE {} -> {} : follows", alice_id, bob_id))
         .unwrap();
 
     // FIND EDGE with type
@@ -386,20 +392,20 @@ fn test_find_edge_without_type() {
     let router = create_shared_router();
 
     // Create nodes and edges of different types
-    let a = match router.execute("NODE CREATE user name='A'").unwrap() {
+    let a = match router.execute("NODE CREATE user {name: 'A'}").unwrap() {
         QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
-    let b = match router.execute("NODE CREATE user name='B'").unwrap() {
+    let b = match router.execute("NODE CREATE user {name: 'B'}").unwrap() {
         QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
 
     router
-        .execute(&format!("EDGE CREATE {} -> {} likes", a, b))
+        .execute(&format!("EDGE CREATE {} -> {} : likes", a, b))
         .unwrap();
     router
-        .execute(&format!("EDGE CREATE {} -> {} follows", b, a))
+        .execute(&format!("EDGE CREATE {} -> {} : follows", b, a))
         .unwrap();
 
     // FIND EDGE without type should find all edges
@@ -413,13 +419,13 @@ fn test_find_node_with_where() {
 
     // Create nodes with properties
     router
-        .execute("NODE CREATE person name='Alice', age=25")
+        .execute("NODE CREATE person {name: 'Alice', age: 25}")
         .unwrap();
     router
-        .execute("NODE CREATE person name='Bob', age=35")
+        .execute("NODE CREATE person {name: 'Bob', age: 35}")
         .unwrap();
     router
-        .execute("NODE CREATE person name='Carol', age=28")
+        .execute("NODE CREATE person {name: 'Carol', age: 28}")
         .unwrap();
 
     // FIND NODE with WHERE filter
@@ -433,7 +439,7 @@ fn test_find_with_return_clause() {
 
     // Create nodes
     router
-        .execute("NODE CREATE person name='Alice', email='alice@test.com'")
+        .execute("NODE CREATE person {name: 'Alice', email: 'alice@test.com'}")
         .unwrap();
 
     // FIND with RETURN - specifying which fields to return
@@ -448,7 +454,7 @@ fn test_find_with_limit_clause() {
     // Create many nodes
     for i in 0..10 {
         router
-            .execute(&format!("NODE CREATE item name='Item{}'", i))
+            .execute(&format!("NODE CREATE item {{name: 'Item{i}'}}"))
             .unwrap();
     }
 
@@ -467,7 +473,7 @@ fn test_find_vertex_alias() {
     let router = create_shared_router();
 
     // VERTEX should work as an alias for NODE
-    router.execute("NODE CREATE user name='Test'").unwrap();
+    router.execute("NODE CREATE user {name: 'Test'}").unwrap();
 
     let result = router.execute_parsed("FIND VERTEX user");
     assert!(result.is_ok());
@@ -479,13 +485,13 @@ fn test_find_multiple_where_conditions() {
 
     // Create nodes with multiple properties
     router
-        .execute("NODE CREATE employee name='Alice', dept='Engineering', salary=100000")
+        .execute("NODE CREATE employee {name: 'Alice', dept: 'Engineering', salary: 100000}")
         .unwrap();
     router
-        .execute("NODE CREATE employee name='Bob', dept='Sales', salary=80000")
+        .execute("NODE CREATE employee {name: 'Bob', dept: 'Sales', salary: 80000}")
         .unwrap();
     router
-        .execute("NODE CREATE employee name='Carol', dept='Engineering', salary=120000")
+        .execute("NODE CREATE employee {name: 'Carol', dept: 'Engineering', salary: 120000}")
         .unwrap();
 
     // FIND with multiple conditions
@@ -498,7 +504,7 @@ fn test_find_json_output() {
     let router = create_shared_router();
 
     // Create some data
-    router.execute("NODE CREATE doc title='Test'").unwrap();
+    router.execute("NODE CREATE doc {title: 'Test'}").unwrap();
 
     // Execute FIND and verify JSON output works
     let result = router.execute_parsed("FIND NODE doc").unwrap();
@@ -519,18 +525,20 @@ fn test_find_across_engines() {
     // Create data in all three engines
     // 1. Relational
     router
-        .execute("CREATE TABLE products (id:INT, name:TEXT)")
+        .execute("CREATE TABLE products (id INT, name TEXT)")
         .unwrap();
     router
-        .execute("INSERT products id=1, name='Widget'")
+        .execute("INSERT INTO products (id, name) VALUES (1, 'Widget')")
         .unwrap();
 
     // 2. Graph
-    router.execute("NODE CREATE product name='Gadget'").unwrap();
+    router
+        .execute("NODE CREATE product {name: 'Gadget'}")
+        .unwrap();
 
     // 3. Vector
     router
-        .execute("EMBED product:1 0.5, 0.5, 0.5, 0.5")
+        .execute("EMBED 'product:1' [0.5, 0.5, 0.5, 0.5]")
         .unwrap();
 
     // FIND should be able to work across engines
@@ -542,7 +550,7 @@ fn test_find_across_engines() {
 fn test_find_case_insensitive() {
     let router = create_shared_router();
 
-    router.execute("NODE CREATE Person name='Test'").unwrap();
+    router.execute("NODE CREATE Person {name: 'Test'}").unwrap();
 
     // FIND should be case-insensitive for keywords
     let result1 = router.execute_parsed("FIND NODE Person");

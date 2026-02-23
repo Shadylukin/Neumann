@@ -118,12 +118,18 @@ fn test_find_similar_entities() {
     let router = create_shared_router();
 
     // Store embeddings directly via EMBED (SIMILAR uses vector engine lookup)
-    router.execute("EMBED doc:a 1.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED doc:b 0.9, 0.1, 0.0").unwrap();
-    router.execute("EMBED doc:c 0.0, 1.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'doc:a' [1.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'doc:b' [0.9, 0.1, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'doc:c' [0.0, 1.0, 0.0]")
+        .unwrap();
 
     // Use the SIMILAR command to find entities similar to doc:a
-    let result = router.execute("SIMILAR doc:a TOP 2");
+    let result = router.execute("SIMILAR 'doc:a' TOP 2");
     assert!(result.is_ok(), "SIMILAR query failed: {result:?}");
 
     match result.unwrap() {
@@ -249,9 +255,15 @@ fn test_find_similar_to_vector() {
     let router = create_shared_router();
 
     // Store embeddings
-    router.execute("EMBED vec:1 1.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED vec:2 0.0, 1.0, 0.0").unwrap();
-    router.execute("EMBED vec:3 0.9, 0.1, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'vec:1' [1.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'vec:2' [0.0, 1.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'vec:3' [0.9, 0.1, 0.0]")
+        .unwrap();
 
     // SIMILAR with inline vector
     let result = router.execute("SIMILAR [1.0, 0.0, 0.0] TOP 2");

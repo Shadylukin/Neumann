@@ -67,6 +67,45 @@ fn check_rate_limit(
     Ok(())
 }
 
+/// Converts a `TensorValue` back to a JSON value for payload retrieval.
+fn tensor_value_to_json(value: &TensorValue) -> serde_json::Value {
+    match value {
+        TensorValue::Scalar(s) => match s {
+            ScalarValue::Null => serde_json::Value::Null,
+            ScalarValue::Bool(b) => serde_json::Value::Bool(*b),
+            ScalarValue::Int(i) => serde_json::json!(*i),
+            ScalarValue::Float(f) => serde_json::Number::from_f64(*f)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+            ScalarValue::String(s) => serde_json::Value::String(s.clone()),
+            ScalarValue::Bytes(b) => serde_json::Value::String(
+                String::from_utf8(b.clone()).unwrap_or_else(|e| format!("{:02x?}", e.into_bytes())),
+            ),
+        },
+        TensorValue::Vector(v) => serde_json::json!(v),
+        TensorValue::Sparse(_) => serde_json::Value::String("(sparse vector)".to_string()),
+        TensorValue::Pointer(p) => serde_json::Value::String(p.clone()),
+        TensorValue::Pointers(ps) => serde_json::json!(ps),
+    }
+}
+
+/// Retrieves stored metadata for a point as a JSON payload map.
+fn retrieve_payload_json(
+    engine: &vector_engine::VectorEngine,
+    collection: &str,
+    key: &str,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    let metadata = engine.get_collection_metadata(collection, key).ok()?;
+    if metadata.is_empty() {
+        return None;
+    }
+    Some(
+        metadata
+            .into_iter()
+            .map(|(k, v)| (k, tensor_value_to_json(&v)))
+            .collect(),
+    )
+}
+
 fn json_to_tensor_value(value: &serde_json::Value) -> TensorValue {
     match value {
         serde_json::Value::Null => TensorValue::Scalar(ScalarValue::Null),
@@ -189,7 +228,11 @@ pub async fn get(
             points.push(PointStruct {
                 id: id.clone(),
                 vector: if request.with_vector { vector } else { vec![] },
-                payload: None,
+                payload: if request.with_payload {
+                    retrieve_payload_json(&ctx.engine, &collection, id)
+                } else {
+                    None
+                },
             });
         }
     }
@@ -295,10 +338,16 @@ pub async fn query(
                     None
                 };
 
+                let point_id = item.key;
+                let payload = if request.with_payload {
+                    retrieve_payload_json(&ctx.engine, &collection, &point_id)
+                } else {
+                    None
+                };
                 results.push(ScoredPoint {
-                    id: item.key,
+                    id: point_id,
                     score: item.score,
-                    payload: None,
+                    payload,
                     vector,
                 });
             }
@@ -385,10 +434,15 @@ pub async fn scroll(
             vec![]
         };
 
+        let payload = if request.with_payload {
+            retrieve_payload_json(&ctx.engine, &collection, key)
+        } else {
+            None
+        };
         points.push(PointStruct {
             id: (*key).clone(),
             vector,
-            payload: None,
+            payload,
         });
     }
 
@@ -749,6 +803,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -792,6 +847,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let mut payload = std::collections::HashMap::new();
@@ -838,6 +894,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -894,6 +951,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -943,6 +1001,7 @@ mod tests {
             rate_limiter: None,
             metrics: Some(metrics.clone()),
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -987,6 +1046,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: Some(audit_logger),
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1031,6 +1091,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1076,6 +1137,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1117,6 +1179,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1161,6 +1224,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1203,6 +1267,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1250,6 +1315,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1300,6 +1366,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1352,6 +1419,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1398,6 +1466,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1447,6 +1516,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1493,6 +1563,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1542,6 +1613,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         // First page
@@ -1603,6 +1675,7 @@ mod tests {
             rate_limiter: None,
             metrics: None,
             audit_logger: None,
+            spatial: None,
         });
 
         let headers = HeaderMap::new();
@@ -1625,5 +1698,313 @@ mod tests {
         let response = result.unwrap().0;
         assert!(response.points.is_empty());
         assert!(response.next_offset.is_none());
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_scalars() {
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Null)),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Bool(true))),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Int(42))),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Float(3.14))),
+            serde_json::json!(3.14)
+        );
+        assert_eq!(
+            tensor_value_to_json(&TensorValue::Scalar(ScalarValue::String(
+                "hello".to_string()
+            ))),
+            serde_json::json!("hello")
+        );
+    }
+
+    #[test]
+    fn test_tensor_value_to_json_nan_returns_null() {
+        let result = tensor_value_to_json(&TensorValue::Scalar(ScalarValue::Float(f64::NAN)));
+        assert_eq!(result, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_retrieve_payload_json_roundtrip() {
+        use vector_engine::VectorEngine;
+
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_payload",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("category".to_string(), serde_json::json!("docs"));
+        metadata.insert("priority".to_string(), serde_json::json!(5));
+        metadata.insert("active".to_string(), serde_json::json!(true));
+
+        engine
+            .store_in_collection_with_metadata(
+                "test_payload",
+                "point1",
+                vec![1.0, 0.0, 0.0],
+                convert_metadata(&metadata),
+            )
+            .unwrap();
+
+        let payload = retrieve_payload_json(&engine, "test_payload", "point1");
+        assert!(payload.is_some());
+        let payload = payload.unwrap();
+        assert_eq!(payload.get("category"), Some(&serde_json::json!("docs")));
+        assert_eq!(payload.get("priority"), Some(&serde_json::json!(5)));
+        assert_eq!(payload.get("active"), Some(&serde_json::json!(true)));
+    }
+
+    #[test]
+    fn test_retrieve_payload_json_empty() {
+        use vector_engine::VectorEngine;
+
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_empty",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+        engine
+            .store_in_collection("test_empty", "point1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+
+        let payload = retrieve_payload_json(&engine, "test_empty", "point1");
+        assert!(payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_with_payload() {
+        use vector_engine::VectorEngine;
+
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_coll",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("category".to_string(), serde_json::json!("docs"));
+
+        engine
+            .store_in_collection_with_metadata(
+                "test_coll",
+                "point1",
+                vec![1.0, 0.0, 0.0],
+                convert_metadata(&metadata),
+            )
+            .unwrap();
+
+        let ctx = Arc::new(VectorApiContext {
+            engine: Arc::new(engine),
+            auth_config: None,
+            rate_limiter: None,
+            metrics: None,
+            audit_logger: None,
+            spatial: None,
+        });
+
+        let headers = HeaderMap::new();
+        let request = GetRequest {
+            ids: vec!["point1".to_string()],
+            with_payload: true,
+            with_vector: false,
+        };
+
+        let result = get(
+            State(ctx),
+            Path("test_coll".to_string()),
+            headers,
+            Json(request),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap().0;
+        assert_eq!(response.points.len(), 1);
+        let payload = response.points[0].payload.as_ref().unwrap();
+        assert_eq!(payload.get("category"), Some(&serde_json::json!("docs")));
+    }
+
+    #[tokio::test]
+    async fn test_get_without_payload() {
+        use vector_engine::VectorEngine;
+
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_coll",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("category".to_string(), serde_json::json!("docs"));
+
+        engine
+            .store_in_collection_with_metadata(
+                "test_coll",
+                "point1",
+                vec![1.0, 0.0, 0.0],
+                convert_metadata(&metadata),
+            )
+            .unwrap();
+
+        let ctx = Arc::new(VectorApiContext {
+            engine: Arc::new(engine),
+            auth_config: None,
+            rate_limiter: None,
+            metrics: None,
+            audit_logger: None,
+            spatial: None,
+        });
+
+        let headers = HeaderMap::new();
+        let request = GetRequest {
+            ids: vec!["point1".to_string()],
+            with_payload: false,
+            with_vector: true,
+        };
+
+        let result = get(
+            State(ctx),
+            Path("test_coll".to_string()),
+            headers,
+            Json(request),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap().0;
+        assert_eq!(response.points.len(), 1);
+        assert!(response.points[0].payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_with_payload() {
+        use vector_engine::VectorEngine;
+
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_coll",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("tag".to_string(), serde_json::json!("important"));
+
+        engine
+            .store_in_collection_with_metadata(
+                "test_coll",
+                "p1",
+                vec![1.0, 0.0, 0.0],
+                convert_metadata(&metadata),
+            )
+            .unwrap();
+
+        let ctx = Arc::new(VectorApiContext {
+            engine: Arc::new(engine),
+            auth_config: None,
+            rate_limiter: None,
+            metrics: None,
+            audit_logger: None,
+            spatial: None,
+        });
+
+        let headers = HeaderMap::new();
+        let request = QueryRequest {
+            vector: vec![1.0, 0.0, 0.0],
+            limit: 5,
+            offset: 0,
+            with_payload: true,
+            with_vector: false,
+            score_threshold: None,
+        };
+
+        let result = query(
+            State(ctx),
+            Path("test_coll".to_string()),
+            headers,
+            Json(request),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap().0;
+        assert!(!response.result.is_empty());
+        let payload = response.result[0].payload.as_ref().unwrap();
+        assert_eq!(payload.get("tag"), Some(&serde_json::json!("important")));
+    }
+
+    #[tokio::test]
+    async fn test_scroll_with_payload() {
+        use vector_engine::VectorEngine;
+
+        let engine = VectorEngine::new();
+        engine
+            .create_collection(
+                "test_coll",
+                vector_engine::VectorCollectionConfig::default().with_dimension(3),
+            )
+            .unwrap();
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("label".to_string(), serde_json::json!("test"));
+
+        engine
+            .store_in_collection_with_metadata(
+                "test_coll",
+                "p1",
+                vec![1.0, 0.0, 0.0],
+                convert_metadata(&metadata),
+            )
+            .unwrap();
+
+        let ctx = Arc::new(VectorApiContext {
+            engine: Arc::new(engine),
+            auth_config: None,
+            rate_limiter: None,
+            metrics: None,
+            audit_logger: None,
+            spatial: None,
+        });
+
+        let headers = HeaderMap::new();
+        let request = ScrollRequest {
+            limit: 10,
+            offset_id: None,
+            with_payload: true,
+            with_vector: false,
+        };
+
+        let result = scroll(
+            State(ctx),
+            Path("test_coll".to_string()),
+            headers,
+            Json(request),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap().0;
+        assert!(!response.points.is_empty());
+        let payload = response.points[0].payload.as_ref().unwrap();
+        assert_eq!(payload.get("label"), Some(&serde_json::json!("test")));
     }
 }

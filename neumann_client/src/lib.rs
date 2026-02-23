@@ -39,7 +39,7 @@
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let client = NeumannClient::embedded()?;
 //!
-//!     let result = client.execute_sync("CREATE TABLE users (name:string)")?;
+//!     let result = client.execute_sync("CREATE TABLE users (name string)")?;
 //!     println!("{:?}", result);
 //!
 //!     Ok(())
@@ -94,6 +94,8 @@ pub enum QueryChunk {
     Edge(proto::Edge),
     /// A similar item from vector search.
     SimilarItem(proto::SimilarItem),
+    /// A spatial item from spatial query.
+    SpatialItem(proto::SpatialItem),
     /// Raw blob data.
     BlobData(Vec<u8>),
     /// Cursor info for pagination checkpoints.
@@ -159,6 +161,10 @@ impl StreamingQueryResult {
                 .item
                 .map(QueryChunk::SimilarItem)
                 .ok_or_else(|| ClientError::Internal("Empty similar chunk".to_string())),
+            Some(Chunk::SpatialItem(s)) => s
+                .item
+                .map(QueryChunk::SpatialItem)
+                .ok_or_else(|| ClientError::Internal("Empty spatial chunk".to_string())),
             Some(Chunk::BlobData(b)) => Ok(QueryChunk::BlobData(b)),
             Some(Chunk::CursorInfo(c)) => Ok(QueryChunk::CursorInfo(c)),
             Some(Chunk::Error(e)) => Err(ClientError::Query(e.message)),
@@ -993,6 +999,15 @@ impl RemoteQueryResult {
             _ => None,
         }
     }
+
+    /// Get the spatial items if this is a spatial result.
+    #[must_use]
+    pub fn spatial(&self) -> Option<&[proto::SpatialItem]> {
+        match &self.0.result {
+            Some(proto::query_response::Result::Spatial(s)) => Some(&s.items),
+            _ => None,
+        }
+    }
 }
 
 /// Result from a paginated query execution.
@@ -1116,14 +1131,14 @@ mod tests {
 
         // Create a table
         let result = client
-            .execute_sync("CREATE TABLE test_client (x:int)")
+            .execute_sync("CREATE TABLE test_client (x int)")
             .expect("should create table");
         // CREATE TABLE returns Empty
         assert!(matches!(result, QueryResult::Empty));
 
         // Insert data - returns Ids with the inserted row ID
         let result = client
-            .execute_sync("INSERT test_client x=42")
+            .execute_sync("INSERT INTO test_client (x) VALUES (42)")
             .expect("should insert row");
         assert!(
             matches!(
@@ -1135,7 +1150,7 @@ mod tests {
 
         // Select data
         let result = client
-            .execute_sync("SELECT test_client")
+            .execute_sync("SELECT * FROM test_client")
             .expect("should select rows");
         assert!(matches!(result, QueryResult::Rows(_)));
     }
@@ -1146,7 +1161,7 @@ mod tests {
         let client = NeumannClient::embedded().expect("should create embedded client");
 
         let result = client
-            .execute_sync_with_identity("CREATE TABLE id_test (x:int)", Some("test-user"))
+            .execute_sync_with_identity("CREATE TABLE id_test (x int)", Some("test-user"))
             .expect("should create table with identity");
         assert!(matches!(result, QueryResult::Empty));
     }
@@ -1162,7 +1177,7 @@ mod tests {
 
         // Execute through client
         let result = client
-            .execute_sync("CREATE TABLE custom_router_test (x:int)")
+            .execute_sync("CREATE TABLE custom_router_test (x int)")
             .expect("should create table");
         assert!(matches!(result, QueryResult::Empty));
     }
@@ -1174,7 +1189,7 @@ mod tests {
 
         // Create table before close
         let result = client
-            .execute_sync("CREATE TABLE close_test (x:int)")
+            .execute_sync("CREATE TABLE close_test (x int)")
             .expect("should create table");
         assert!(matches!(result, QueryResult::Empty));
 
@@ -1182,7 +1197,7 @@ mod tests {
         client.close();
 
         // After close, execute should fail (router is None)
-        let result = client.execute_sync("SELECT close_test");
+        let result = client.execute_sync("SELECT * FROM close_test");
         assert!(result.is_err());
     }
 
@@ -1244,6 +1259,7 @@ mod tests {
         assert!(result.nodes().is_none());
         assert!(result.edges().is_none());
         assert!(result.similar().is_none());
+        assert!(result.spatial().is_none());
 
         // Test count result
         let response = proto::QueryResponse {
@@ -1385,6 +1401,7 @@ mod tests {
         assert!(result.nodes().is_none());
         assert!(result.edges().is_none());
         assert!(result.similar().is_none());
+        assert!(result.spatial().is_none());
     }
 
     #[cfg(feature = "remote")]
@@ -2210,5 +2227,114 @@ mod tests {
             },
             other => panic!("Expected Internal error, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_remote_query_result_spatial() {
+        let response = proto::QueryResponse {
+            result: Some(proto::query_response::Result::Spatial(
+                proto::SpatialQueryResult {
+                    items: vec![
+                        proto::SpatialItem {
+                            key: "building_a".to_string(),
+                            distance: 1.5,
+                            x: 10.0,
+                            y: 20.0,
+                            width: 5.0,
+                            height: 3.0,
+                        },
+                        proto::SpatialItem {
+                            key: "building_b".to_string(),
+                            distance: 4.2,
+                            x: 30.0,
+                            y: 40.0,
+                            width: 8.0,
+                            height: 6.0,
+                        },
+                    ],
+                },
+            )),
+            error: None,
+        };
+        let result = RemoteQueryResult(response);
+        assert!(!result.is_empty());
+        let items = result.spatial().expect("should have spatial items");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].key, "building_a");
+        assert!((items[0].distance - 1.5).abs() < f32::EPSILON);
+        assert_eq!(items[1].key, "building_b");
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_remote_query_result_spatial_empty() {
+        let response = proto::QueryResponse {
+            result: Some(proto::query_response::Result::Spatial(
+                proto::SpatialQueryResult { items: vec![] },
+            )),
+            error: None,
+        };
+        let result = RemoteQueryResult(response);
+        let items = result.spatial().expect("should have spatial result");
+        assert!(items.is_empty());
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_spatial_item() {
+        use proto::query_response_chunk::Chunk;
+
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::SpatialItem(proto::SpatialChunk {
+                item: Some(proto::SpatialItem {
+                    key: "park".to_string(),
+                    distance: 2.0,
+                    x: 5.0,
+                    y: 6.0,
+                    width: 10.0,
+                    height: 10.0,
+                }),
+            })),
+            is_final: false,
+            sequence_number: None,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryChunk::SpatialItem(_)));
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_empty_spatial() {
+        use proto::query_response_chunk::Chunk;
+
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::SpatialItem(proto::SpatialChunk { item: None })),
+            is_final: false,
+            sequence_number: None,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty spatial")),
+            other => panic!("Expected Internal error, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_query_chunk_spatial_item_debug() {
+        let chunk = QueryChunk::SpatialItem(proto::SpatialItem {
+            key: "test_loc".to_string(),
+            distance: 3.14,
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        });
+        let debug = format!("{chunk:?}");
+        assert!(debug.contains("SpatialItem"));
+        assert!(debug.contains("test_loc"));
     }
 }

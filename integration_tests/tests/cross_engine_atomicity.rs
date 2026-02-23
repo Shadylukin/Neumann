@@ -21,37 +21,45 @@ fn test_relational_graph_consistent_insert() {
 
     // Insert a row into a relational table
     router
-        .execute("CREATE TABLE rg_users (id:INT, name:TEXT)")
+        .execute("CREATE TABLE rg_users (id INT, name TEXT)")
         .unwrap();
     router
-        .execute("INSERT rg_users id=1, name='Alice'")
+        .execute("INSERT INTO rg_users (id, name) VALUES (1, 'Alice')")
         .unwrap();
-    router.execute("INSERT rg_users id=2, name='Bob'").unwrap();
+    router
+        .execute("INSERT INTO rg_users (id, name) VALUES (2, 'Bob')")
+        .unwrap();
 
     // Create corresponding graph nodes
-    let node1 = match router.execute("NODE CREATE user name='Alice'").unwrap() {
+    let node1 = match router
+        .execute("NODE CREATE user { name: 'Alice' }")
+        .unwrap()
+    {
         QueryResult::Ids(ids) => ids[0],
         other => panic!("expected Ids, got {:?}", other),
     };
-    let node2 = match router.execute("NODE CREATE user name='Bob'").unwrap() {
+    let node2 = match router.execute("NODE CREATE user { name: 'Bob' }").unwrap() {
         QueryResult::Ids(ids) => ids[0],
         other => panic!("expected Ids, got {:?}", other),
     };
 
     // Create an edge between them
     router
-        .execute(&format!("EDGE CREATE {} -> {} friends", node1, node2))
+        .execute(&format!("EDGE CREATE {} -> {} : friends", node1, node2))
         .unwrap();
 
     // Verify relational data
-    let rows = match router.execute("SELECT rg_users").unwrap() {
+    let rows = match router.execute("SELECT * FROM rg_users").unwrap() {
         QueryResult::Rows(rows) => rows,
         other => panic!("expected Rows, got {:?}", other),
     };
     assert_eq!(rows.len(), 2);
 
     // Verify graph data
-    let neighbors = match router.execute(&format!("NEIGHBORS {} OUT", node1)).unwrap() {
+    let neighbors = match router
+        .execute(&format!("NEIGHBORS {} OUTGOING", node1))
+        .unwrap()
+    {
         QueryResult::Ids(ids) => ids,
         other => panic!("expected Ids, got {:?}", other),
     };
@@ -65,13 +73,13 @@ fn test_relational_vector_consistent_embed() {
 
     // Insert relational data
     router
-        .execute("CREATE TABLE rv_docs (id:INT, title:TEXT)")
+        .execute("CREATE TABLE rv_docs (id INT, title TEXT)")
         .unwrap();
     router
-        .execute("INSERT rv_docs id=1, title='document_alpha'")
+        .execute("INSERT INTO rv_docs (id, title) VALUES (1, 'document_alpha')")
         .unwrap();
     router
-        .execute("INSERT rv_docs id=2, title='document_beta'")
+        .execute("INSERT INTO rv_docs (id, title) VALUES (2, 'document_beta')")
         .unwrap();
 
     // Store embeddings for those documents
@@ -79,21 +87,21 @@ fn test_relational_vector_consistent_embed() {
     let emb1_str = format_embedding(&embs[0]);
     let emb2_str = format_embedding(&embs[1]);
     router
-        .execute(&format!("EMBED doc:1 {}", emb1_str))
+        .execute(&format!("EMBED STORE 'doc:1' [{}]", emb1_str))
         .unwrap();
     router
-        .execute(&format!("EMBED doc:2 {}", emb2_str))
+        .execute(&format!("EMBED STORE 'doc:2' [{}]", emb2_str))
         .unwrap();
 
     // Verify relational query
-    let rows = match router.execute("SELECT rv_docs").unwrap() {
+    let rows = match router.execute("SELECT * FROM rv_docs").unwrap() {
         QueryResult::Rows(r) => r,
         other => panic!("expected Rows, got {:?}", other),
     };
     assert_eq!(rows.len(), 2);
 
     // Verify vector similarity finds both documents
-    let similar = match router.execute("SIMILAR doc:1 TOP 2").unwrap() {
+    let similar = match router.execute("SIMILAR 'doc:1' TOP 2").unwrap() {
         QueryResult::Similar(s) => s,
         other => panic!("expected Similar, got {:?}", other),
     };
@@ -160,18 +168,23 @@ fn test_checkpoint_across_engines() {
 
     // Insert data across engines
     router
-        .execute("CREATE TABLE cp_users (id:INT, name:TEXT)")
+        .execute("CREATE TABLE cp_users (id INT, name TEXT)")
         .unwrap();
     router
-        .execute("INSERT cp_users id=1, name='Alice'")
+        .execute("INSERT INTO cp_users (id, name) VALUES (1, 'Alice')")
         .unwrap();
 
-    match router.execute("NODE CREATE person name='Alice'").unwrap() {
+    match router
+        .execute("NODE CREATE person { name: 'Alice' }")
+        .unwrap()
+    {
         QueryResult::Ids(ids) => assert!(!ids.is_empty()),
         other => panic!("expected Ids, got {:?}", other),
     };
 
-    router.execute("EMBED cp_vec1 1.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'cp_vec1' [1.0, 0.0, 0.0]")
+        .unwrap();
 
     // Create a named checkpoint
     let cp_result = router.execute_parsed("CHECKPOINT 'cross_engine_cp'");
@@ -182,15 +195,22 @@ fn test_checkpoint_across_engines() {
     );
 
     // Add more data after checkpoint
-    router.execute("INSERT cp_users id=2, name='Bob'").unwrap();
-    let bob_node = match router.execute("NODE CREATE person name='Bob'").unwrap() {
+    router
+        .execute("INSERT INTO cp_users (id, name) VALUES (2, 'Bob')")
+        .unwrap();
+    let bob_node = match router
+        .execute("NODE CREATE person { name: 'Bob' }")
+        .unwrap()
+    {
         QueryResult::Ids(ids) => ids[0],
         other => panic!("expected Ids, got {:?}", other),
     };
-    router.execute("EMBED cp_vec2 0.0, 1.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'cp_vec2' [0.0, 1.0, 0.0]")
+        .unwrap();
 
     // Verify both entries exist before rollback
-    let rows_before = match router.execute("SELECT cp_users").unwrap() {
+    let rows_before = match router.execute("SELECT * FROM cp_users").unwrap() {
         QueryResult::Rows(r) => r,
         other => panic!("expected Rows, got {:?}", other),
     };
@@ -295,13 +315,16 @@ fn test_multi_engine_query_consistency() {
 
     // Create the same logical entity across all three engines
     router
-        .execute("CREATE TABLE me_entities (id:INT, kind:TEXT)")
+        .execute("CREATE TABLE me_entities (id INT, kind TEXT)")
         .unwrap();
     router
-        .execute("INSERT me_entities id=100, kind='product'")
+        .execute("INSERT INTO me_entities (id, kind) VALUES (100, 'product')")
         .unwrap();
 
-    let node_id = match router.execute("NODE CREATE product entity_id=100").unwrap() {
+    let node_id = match router
+        .execute("NODE CREATE product { entity_id: 100 }")
+        .unwrap()
+    {
         QueryResult::Ids(ids) => ids[0],
         other => panic!("expected Ids, got {:?}", other),
     };
@@ -309,11 +332,11 @@ fn test_multi_engine_query_consistency() {
     let embs = sample_embeddings(1, 4);
     let emb_str = format_embedding(&embs[0]);
     router
-        .execute(&format!("EMBED product:100 {}", emb_str))
+        .execute(&format!("EMBED STORE 'product:100' [{}]", emb_str))
         .unwrap();
 
     // Query through relational path
-    let rel_result = match router.execute("SELECT me_entities").unwrap() {
+    let rel_result = match router.execute("SELECT * FROM me_entities").unwrap() {
         QueryResult::Rows(r) => r,
         other => panic!("expected Rows, got {:?}", other),
     };
@@ -324,7 +347,7 @@ fn test_multi_engine_query_consistency() {
     assert!(node_result.is_ok(), "graph node should be queryable");
 
     // Query through vector path
-    let similar = match router.execute("SIMILAR product:100 TOP 1").unwrap() {
+    let similar = match router.execute("SIMILAR 'product:100' TOP 1").unwrap() {
         QueryResult::Similar(s) => s,
         other => panic!("expected Similar, got {:?}", other),
     };

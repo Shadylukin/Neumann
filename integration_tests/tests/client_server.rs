@@ -55,7 +55,7 @@ async fn test_client_connect_and_execute() {
     assert!(client.is_connected());
 
     // Execute query
-    let result = client.execute("CREATE TABLE test (x:int)").await;
+    let result = client.execute("CREATE TABLE test (x int)").await;
     assert!(result.is_ok(), "Query should succeed: {:?}", result.err());
 
     let result = result.unwrap();
@@ -76,7 +76,7 @@ async fn test_client_execute_with_identity() {
         .expect("should connect");
 
     let result = client
-        .execute_with_identity("CREATE TABLE id_test (x:int)", Some("user:alice"))
+        .execute_with_identity("CREATE TABLE id_test (x int)", Some("user:alice"))
         .await;
     assert!(result.is_ok());
 
@@ -93,11 +93,15 @@ async fn test_client_execute_batch() {
         .expect("should connect");
 
     // Create table first
-    let _ = client.execute("CREATE TABLE batch (x:int)").await;
+    let _ = client.execute("CREATE TABLE batch (x int)").await;
 
     // Execute batch
     let results = client
-        .execute_batch(&["INSERT batch x=1", "INSERT batch x=2", "SELECT batch"])
+        .execute_batch(&[
+            "INSERT INTO batch (x) VALUES (1)",
+            "INSERT INTO batch (x) VALUES (2)",
+            "SELECT * FROM batch",
+        ])
         .await
         .expect("batch should succeed");
 
@@ -116,7 +120,7 @@ async fn test_client_execute_batch_with_identity() {
         .expect("should connect");
 
     let results = client
-        .execute_batch_with_identity(&["CREATE TABLE batch_id (x:int)"], Some("user:bob"))
+        .execute_batch_with_identity(&["CREATE TABLE batch_id (x int)"], Some("user:bob"))
         .await
         .expect("batch should succeed");
 
@@ -152,13 +156,17 @@ async fn test_client_select_rows() {
 
     // Setup
     let _ = client
-        .execute("CREATE TABLE users (name:string, age:int)")
+        .execute("CREATE TABLE users (name string, age int)")
         .await;
-    let _ = client.execute("INSERT users name=\"Alice\", age=30").await;
-    let _ = client.execute("INSERT users name=\"Bob\", age=25").await;
+    let _ = client
+        .execute("INSERT INTO users (name, age) VALUES ('Alice', 30)")
+        .await;
+    let _ = client
+        .execute("INSERT INTO users (name, age) VALUES ('Bob', 25)")
+        .await;
 
     // Select
-    let result = client.execute("SELECT users").await.unwrap();
+    let result = client.execute("SELECT * FROM users").await.unwrap();
     assert!(!result.has_error());
     assert!(!result.is_empty());
     assert!(result.rows().is_some());
@@ -177,20 +185,20 @@ async fn test_client_delete() {
         .expect("should connect");
 
     // Create and populate table
-    let _ = client.execute("CREATE TABLE del_test (x:int)").await;
-    let _ = client.execute("INSERT del_test x=1").await;
-    let _ = client.execute("INSERT del_test x=2").await;
+    let _ = client.execute("CREATE TABLE del_test (x int)").await;
+    let _ = client.execute("INSERT INTO del_test (x) VALUES (1)").await;
+    let _ = client.execute("INSERT INTO del_test (x) VALUES (2)").await;
 
     // Verify rows exist
-    let result = client.execute("SELECT del_test").await.unwrap();
+    let result = client.execute("SELECT * FROM del_test").await.unwrap();
     assert_eq!(result.rows().unwrap().len(), 2);
 
     // Delete one row
-    let result = client.execute("DELETE del_test WHERE x = 1").await;
+    let result = client.execute("DELETE FROM del_test WHERE x = 1").await;
     assert!(result.is_ok());
 
     // Verify only one row remains
-    let result = client.execute("SELECT del_test").await.unwrap();
+    let result = client.execute("SELECT * FROM del_test").await.unwrap();
     assert_eq!(result.rows().unwrap().len(), 1);
 
     drop(shutdown);
@@ -223,7 +231,7 @@ async fn test_client_with_api_key() {
         .await
         .expect("should connect");
 
-    let result = client.execute("CREATE TABLE api_test (x:int)").await;
+    let result = client.execute("CREATE TABLE api_test (x int)").await;
     assert!(result.is_ok());
 
     drop(shutdown);
@@ -244,7 +252,7 @@ async fn test_client_close() {
     assert!(!client.is_connected());
 
     // Execute after close should fail
-    let result = client.execute("SELECT test").await;
+    let result = client.execute("SELECT * FROM test").await;
     assert!(result.is_err());
 
     drop(shutdown);
@@ -255,14 +263,14 @@ async fn test_embedded_client_sync_operations() {
     let client = NeumannClient::embedded().expect("should create embedded client");
 
     // Create table
-    let result = client.execute_sync("CREATE TABLE embed_test (x:int)");
+    let result = client.execute_sync("CREATE TABLE embed_test (x int)");
     assert!(result.is_ok());
 
     // Insert
-    let result = client.execute_sync("INSERT embed_test x=42");
+    let result = client.execute_sync("INSERT INTO embed_test (x) VALUES (42)");
     assert!(result.is_ok());
 
     // Select
-    let result = client.execute_sync("SELECT embed_test");
+    let result = client.execute_sync("SELECT * FROM embed_test");
     assert!(result.is_ok());
 }

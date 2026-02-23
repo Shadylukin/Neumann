@@ -11,11 +11,13 @@ fn test_cache_cleared_on_insert() {
 
     // Create table
     router
-        .execute("CREATE TABLE items (id:INT, name:TEXT)")
+        .execute("CREATE TABLE items (id INT, name TEXT)")
         .unwrap();
 
     // Insert initial data
-    router.execute("INSERT items id=1, name='First'").unwrap();
+    router
+        .execute("INSERT INTO items (id, name) VALUES (1, 'First')")
+        .unwrap();
 
     // Execute SELECT using parsed (uses cache)
     let result1 = router.execute_parsed("SELECT * FROM items").unwrap();
@@ -34,10 +36,12 @@ fn test_cache_cleared_on_insert() {
     assert_eq!(rows2.len(), 1);
 
     // Insert new row
-    router.execute("INSERT items id=2, name='Second'").unwrap();
+    router
+        .execute("INSERT INTO items (id, name) VALUES (2, 'Second')")
+        .unwrap();
 
     // SELECT again using execute() directly (bypasses cache) to verify data
-    let result3 = router.execute("SELECT items").unwrap();
+    let result3 = router.execute("SELECT * FROM items").unwrap();
     let rows3 = match result3 {
         query_router::QueryResult::Rows(r) => r,
         _ => panic!("Expected Rows"),
@@ -55,10 +59,10 @@ fn test_cache_cleared_on_update() {
 
     // Create and populate table
     router
-        .execute("CREATE TABLE data (id:INT, value:TEXT)")
+        .execute("CREATE TABLE data (id INT, value TEXT)")
         .unwrap();
     router
-        .execute("INSERT data id=1, value='original'")
+        .execute("INSERT INTO data (id, value) VALUES (1, 'original')")
         .unwrap();
 
     // Cache the SELECT result
@@ -96,11 +100,14 @@ fn test_cache_cleared_on_delete() {
 
     // Create and populate table
     router
-        .execute("CREATE TABLE records (id:INT, name:TEXT)")
+        .execute("CREATE TABLE records (id INT, name TEXT)")
         .unwrap();
     for i in 0..5 {
         router
-            .execute(&format!("INSERT records id={}, name='Record{}'", i, i))
+            .execute(&format!(
+                "INSERT INTO records (id, name) VALUES ({}, 'Record{}')",
+                i, i
+            ))
             .unwrap();
     }
 
@@ -132,9 +139,11 @@ fn test_cache_persists_without_writes() {
 
     // Create and populate table
     router
-        .execute("CREATE TABLE stable (id:INT, data:TEXT)")
+        .execute("CREATE TABLE stable (id INT, data TEXT)")
         .unwrap();
-    router.execute("INSERT stable id=1, data='test'").unwrap();
+    router
+        .execute("INSERT INTO stable (id, data) VALUES (1, 'test')")
+        .unwrap();
 
     // Execute SELECT multiple times - all should hit cache after first
     for _ in 0..10 {
@@ -160,7 +169,9 @@ fn test_cache_cleared_on_graph_mutation() {
     let router = create_router_with_cache();
 
     // Create nodes
-    let node1_result = router.execute("NODE CREATE person name='Alice'").unwrap();
+    let node1_result = router
+        .execute("NODE CREATE person { name: 'Alice' }")
+        .unwrap();
     let node1_id = match node1_result {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
@@ -168,7 +179,7 @@ fn test_cache_cleared_on_graph_mutation() {
 
     // Cache a NEIGHBORS query
     let neighbors1 = router
-        .execute(&format!("NEIGHBORS {} OUT", node1_id))
+        .execute(&format!("NEIGHBORS {} OUTGOING", node1_id))
         .unwrap();
     let ids1 = match neighbors1 {
         query_router::QueryResult::Ids(ids) => ids,
@@ -177,19 +188,21 @@ fn test_cache_cleared_on_graph_mutation() {
     assert_eq!(ids1.len(), 0);
 
     // Create another node and edge
-    let node2_result = router.execute("NODE CREATE person name='Bob'").unwrap();
+    let node2_result = router
+        .execute("NODE CREATE person { name: 'Bob' }")
+        .unwrap();
     let node2_id = match node2_result {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
 
     router
-        .execute(&format!("EDGE CREATE {} -> {} knows", node1_id, node2_id))
+        .execute(&format!("EDGE CREATE {} -> {} : knows", node1_id, node2_id))
         .unwrap();
 
     // Query again - cache should be invalidated
     let neighbors2 = router
-        .execute(&format!("NEIGHBORS {} OUT", node1_id))
+        .execute(&format!("NEIGHBORS {} OUTGOING", node1_id))
         .unwrap();
     let ids2 = match neighbors2 {
         query_router::QueryResult::Ids(ids) => ids,
@@ -204,10 +217,12 @@ fn test_cache_cleared_on_vector_mutation() {
     let router = create_router_with_cache();
 
     // Store initial embeddings
-    router.execute("EMBED doc:1 1.0, 0.5, 0.3, 0.1").unwrap();
+    router
+        .execute("EMBED STORE 'doc:1' [1.0, 0.5, 0.3, 0.1]")
+        .unwrap();
 
     // Cache a SIMILAR query
-    let similar1 = router.execute("SIMILAR doc:1 TOP 5").unwrap();
+    let similar1 = router.execute("SIMILAR 'doc:1' TOP 5").unwrap();
     let results1 = match similar1 {
         query_router::QueryResult::Similar(r) => r,
         _ => panic!("Expected Similar"),
@@ -215,11 +230,15 @@ fn test_cache_cleared_on_vector_mutation() {
     assert!(!results1.is_empty());
 
     // Store more embeddings
-    router.execute("EMBED doc:2 0.9, 0.6, 0.2, 0.2").unwrap();
-    router.execute("EMBED doc:3 0.8, 0.7, 0.1, 0.3").unwrap();
+    router
+        .execute("EMBED STORE 'doc:2' [0.9, 0.6, 0.2, 0.2]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'doc:3' [0.8, 0.7, 0.1, 0.3]")
+        .unwrap();
 
     // Query again - should include new embeddings
-    let similar2 = router.execute("SIMILAR doc:1 TOP 5").unwrap();
+    let similar2 = router.execute("SIMILAR 'doc:1' TOP 5").unwrap();
     let results2 = match similar2 {
         query_router::QueryResult::Similar(r) => r,
         _ => panic!("Expected Similar"),
@@ -236,13 +255,16 @@ fn test_concurrent_write_cache_invalidation() {
 
     // Create table
     router
-        .execute("CREATE TABLE concurrent (id:INT, value:TEXT)")
+        .execute("CREATE TABLE concurrent (id INT, value TEXT)")
         .unwrap();
 
     // Insert initial data
     for i in 0..10 {
         router
-            .execute(&format!("INSERT concurrent id={}, value='v{}'", i, i))
+            .execute(&format!(
+                "INSERT INTO concurrent (id, value) VALUES ({}, 'v{}')",
+                i, i
+            ))
             .unwrap();
     }
 
@@ -271,8 +293,11 @@ fn test_concurrent_write_cache_invalidation() {
         handles.push(thread::spawn(move || {
             for i in 0..25 {
                 let id = 100 + t * 100 + i;
-                if r.execute(&format!("INSERT concurrent id={}, value='new{}'", id, id))
-                    .is_ok()
+                if r.execute(&format!(
+                    "INSERT INTO concurrent (id, value) VALUES ({}, 'new{}')",
+                    id, id
+                ))
+                .is_ok()
                 {
                     wc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }

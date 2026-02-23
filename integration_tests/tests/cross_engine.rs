@@ -430,41 +430,45 @@ async fn test_blob_links_to_graph_entities() {
 fn test_query_router_cross_engine_operations() {
     let router = create_shared_router();
 
-    // Create table through router (uses col:type syntax for execute())
+    // Create table through router
     router
-        .execute("CREATE TABLE employees (id:INT, name:TEXT, dept:TEXT)")
+        .execute("CREATE TABLE employees (id INT, name TEXT, dept TEXT)")
         .unwrap();
 
     // Insert data
     router
-        .execute("INSERT employees id=1, name='Alice', dept='Engineering'")
+        .execute("INSERT INTO employees (id, name, dept) VALUES (1, 'Alice', 'Engineering')")
         .unwrap();
     router
-        .execute("INSERT employees id=2, name='Bob', dept='Sales'")
+        .execute("INSERT INTO employees (id, name, dept) VALUES (2, 'Bob', 'Sales')")
         .unwrap();
 
     // Create graph nodes and capture IDs
-    let node1_id = match router.execute("NODE CREATE employee id=1").unwrap() {
+    let node1_id = match router.execute("NODE CREATE employee { id: 1 }").unwrap() {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids result"),
     };
-    let node2_id = match router.execute("NODE CREATE employee id=2").unwrap() {
+    let node2_id = match router.execute("NODE CREATE employee { id: 2 }").unwrap() {
         query_router::QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids result"),
     };
     router
         .execute(&format!(
-            "EDGE CREATE {} -> {} reports_to",
+            "EDGE CREATE {} -> {} : reports_to",
             node1_id, node2_id
         ))
         .unwrap();
 
     // Store embeddings
-    router.execute("EMBED emp:1 1.0, 0.5, 0.3, 0.1").unwrap();
-    router.execute("EMBED emp:2 0.9, 0.6, 0.2, 0.2").unwrap();
+    router
+        .execute("EMBED STORE 'emp:1' [1.0, 0.5, 0.3, 0.1]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'emp:2' [0.9, 0.6, 0.2, 0.2]")
+        .unwrap();
 
     // Query relational
-    let result = router.execute("SELECT employees").unwrap();
+    let result = router.execute("SELECT * FROM employees").unwrap();
     match result {
         query_router::QueryResult::Rows(rows) => {
             assert_eq!(rows.len(), 2);
@@ -474,7 +478,7 @@ fn test_query_router_cross_engine_operations() {
 
     // Query graph
     let result = router
-        .execute(&format!("NEIGHBORS {} OUT", node1_id))
+        .execute(&format!("NEIGHBORS {} OUTGOING", node1_id))
         .unwrap();
     match result {
         query_router::QueryResult::Ids(ids) => {
@@ -484,8 +488,8 @@ fn test_query_router_cross_engine_operations() {
         _ => panic!("Expected Ids result"),
     }
 
-    // Query vector
-    let result = router.execute("SIMILAR emp:1 TOP 2").unwrap();
+    // Query vector (emp:1 contains colon, must be quoted)
+    let result = router.execute("SIMILAR 'emp:1' TOP 2").unwrap();
     match result {
         query_router::QueryResult::Similar(results) => {
             assert!(!results.is_empty());

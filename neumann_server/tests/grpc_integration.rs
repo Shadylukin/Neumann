@@ -109,7 +109,7 @@ async fn test_grpc_execute_create_table() {
 
     let response = query
         .execute(QueryRequest {
-            query: "CREATE TABLE grpc_test (name:string, age:int)".to_string(),
+            query: "CREATE TABLE grpc_test (name text, age int)".to_string(),
             identity: None,
         })
         .await
@@ -129,7 +129,7 @@ async fn test_grpc_execute_insert_and_select() {
     // Create table
     let _ = query
         .execute(QueryRequest {
-            query: "CREATE TABLE users (name:string, age:int)".to_string(),
+            query: "CREATE TABLE users (name text, age int)".to_string(),
             identity: None,
         })
         .await
@@ -138,7 +138,7 @@ async fn test_grpc_execute_insert_and_select() {
     // Insert data
     let _ = query
         .execute(QueryRequest {
-            query: "INSERT users name=\"Alice\", age=30".to_string(),
+            query: "INSERT INTO users (name, age) VALUES ('Alice', 30)".to_string(),
             identity: None,
         })
         .await
@@ -147,7 +147,7 @@ async fn test_grpc_execute_insert_and_select() {
     // Select data
     let response = query
         .execute(QueryRequest {
-            query: "SELECT users".to_string(),
+            query: "SELECT * FROM users".to_string(),
             identity: None,
         })
         .await
@@ -190,19 +190,19 @@ async fn test_grpc_execute_batch() {
         .execute_batch(BatchQueryRequest {
             queries: vec![
                 QueryRequest {
-                    query: "CREATE TABLE batch (x:int)".to_string(),
+                    query: "CREATE TABLE batch_tbl (x int)".to_string(),
                     identity: None,
                 },
                 QueryRequest {
-                    query: "INSERT batch x=1".to_string(),
+                    query: "INSERT INTO batch_tbl (x) VALUES (1)".to_string(),
                     identity: None,
                 },
                 QueryRequest {
-                    query: "INSERT batch x=2".to_string(),
+                    query: "INSERT INTO batch_tbl (x) VALUES (2)".to_string(),
                     identity: None,
                 },
                 QueryRequest {
-                    query: "SELECT batch".to_string(),
+                    query: "SELECT * FROM batch_tbl".to_string(),
                     identity: None,
                 },
             ],
@@ -213,12 +213,17 @@ async fn test_grpc_execute_batch() {
     let inner = response.into_inner();
     assert_eq!(inner.results.len(), 4);
 
+    // Check each result for errors
+    for (i, r) in inner.results.iter().enumerate() {
+        assert!(r.error.is_none(), "Query {i} failed: {:?}", r.error);
+    }
+
     // Last result should have rows
     let last = &inner.results[3];
     if let Some(neumann_server::proto::query_response::Result::Rows(rows)) = &last.result {
         assert_eq!(rows.rows.len(), 2);
     } else {
-        panic!("Expected Rows result for SELECT");
+        panic!("Expected Rows result for SELECT, got: {:?}", last.result);
     }
 
     drop(shutdown);
@@ -233,7 +238,7 @@ async fn test_grpc_execute_stream_rows() {
     // Setup: create table and insert data
     let _ = query
         .execute(QueryRequest {
-            query: "CREATE TABLE stream (name:string)".to_string(),
+            query: "CREATE TABLE stream (name text)".to_string(),
             identity: None,
         })
         .await
@@ -241,7 +246,7 @@ async fn test_grpc_execute_stream_rows() {
 
     let _ = query
         .execute(QueryRequest {
-            query: "INSERT stream name=\"Alice\"".to_string(),
+            query: "INSERT INTO stream (name) VALUES ('Alice')".to_string(),
             identity: None,
         })
         .await
@@ -249,7 +254,7 @@ async fn test_grpc_execute_stream_rows() {
 
     let _ = query
         .execute(QueryRequest {
-            query: "INSERT stream name=\"Bob\"".to_string(),
+            query: "INSERT INTO stream (name) VALUES ('Bob')".to_string(),
             identity: None,
         })
         .await
@@ -258,7 +263,7 @@ async fn test_grpc_execute_stream_rows() {
     // Execute streaming query
     let response = query
         .execute_stream(QueryRequest {
-            query: "SELECT stream".to_string(),
+            query: "SELECT * FROM stream".to_string(),
             identity: None,
         })
         .await
@@ -297,7 +302,7 @@ async fn test_grpc_auth_rejection_without_key() {
     // Request without auth should fail
     let result = query
         .execute(QueryRequest {
-            query: "CREATE TABLE auth_test (x:int)".to_string(),
+            query: "CREATE TABLE auth_test (x int)".to_string(),
             identity: None,
         })
         .await;
@@ -324,7 +329,7 @@ async fn test_grpc_auth_success_with_key() {
 
     // Request with valid auth should succeed
     let mut request = tonic::Request::new(QueryRequest {
-        query: "CREATE TABLE auth_success (x:int)".to_string(),
+        query: "CREATE TABLE auth_success (x int)".to_string(),
         identity: None,
     });
     request.metadata_mut().insert(
@@ -353,7 +358,7 @@ async fn test_grpc_rate_limiting() {
     // First request should succeed
     let result = query
         .execute(QueryRequest {
-            query: "CREATE TABLE rate_test (x:int)".to_string(),
+            query: "CREATE TABLE rate_test (x int)".to_string(),
             identity: None,
         })
         .await;
@@ -375,7 +380,7 @@ async fn test_grpc_graceful_shutdown() {
     // Execute a query to verify server is working
     let _ = query
         .execute(QueryRequest {
-            query: "CREATE TABLE shutdown_test (x:int)".to_string(),
+            query: "CREATE TABLE shutdown_test (x int)".to_string(),
             identity: None,
         })
         .await
@@ -477,7 +482,7 @@ async fn test_grpc_multiple_concurrent_requests() {
     let mut q = query.clone();
     let _ = q
         .execute(QueryRequest {
-            query: "CREATE TABLE concurrent (id:int, value:string)".to_string(),
+            query: "CREATE TABLE concurrent (id int, value text)".to_string(),
             identity: None,
         })
         .await
@@ -490,7 +495,7 @@ async fn test_grpc_multiple_concurrent_requests() {
         handles.push(tokio::spawn(async move {
             client
                 .execute(QueryRequest {
-                    query: format!("INSERT concurrent id={i}, value=\"test{i}\""),
+                    query: format!("INSERT INTO concurrent (id, value) VALUES ({i}, 'test{i}')"),
                     identity: None,
                 })
                 .await
@@ -509,7 +514,7 @@ async fn test_grpc_multiple_concurrent_requests() {
     let mut q = query.clone();
     let response = q
         .execute(QueryRequest {
-            query: "SELECT concurrent".to_string(),
+            query: "SELECT * FROM concurrent".to_string(),
             identity: None,
         })
         .await
@@ -538,7 +543,7 @@ async fn test_grpc_connection_with_http2_settings() {
     // Verify server starts and accepts requests with HTTP/2 settings
     let response = query
         .execute(QueryRequest {
-            query: "CREATE TABLE http2_test (x:int)".to_string(),
+            query: "CREATE TABLE http2_test (x int)".to_string(),
             identity: None,
         })
         .await

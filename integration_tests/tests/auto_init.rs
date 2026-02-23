@@ -184,15 +184,17 @@ fn test_engines_work_without_optional_modules() {
     let router = create_shared_router();
 
     // Core engines should work without vault/cache/blob
-    router.execute("CREATE TABLE test (id:INT)").unwrap();
-    router.execute("INSERT test id=1").unwrap();
+    router.execute("CREATE TABLE test (id int)").unwrap();
+    router.execute("INSERT INTO test (id) VALUES (1)").unwrap();
 
-    router.execute("NODE CREATE user name='Test'").unwrap();
+    router.execute("NODE CREATE user { name: 'Test' }").unwrap();
 
-    router.execute("EMBED key1 0.5, 0.5, 0.5, 0.5").unwrap();
+    router
+        .execute("EMBED STORE 'key1' [0.5, 0.5, 0.5, 0.5]")
+        .unwrap();
 
     // All core operations work
-    let result = router.execute("SELECT test");
+    let result = router.execute("SELECT * FROM test");
     assert!(result.is_ok());
 }
 
@@ -242,7 +244,7 @@ fn test_init_with_shared_store() {
 
     // Data stored via one path should be in the shared store
     router
-        .execute("EMBED shared:key 1.0, 0.0, 0.0, 0.0")
+        .execute("EMBED STORE 'shared:key' [1.0, 0.0, 0.0, 0.0]")
         .unwrap();
 
     // Vector engine should see it

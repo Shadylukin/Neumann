@@ -138,7 +138,9 @@ fn test_checkpoint_create_and_rollback() {
     router.init_checkpoint().unwrap();
 
     // Insert some data via embeddings (avoids CREATE TABLE syntax issues)
-    router.execute("EMBED cp_key 1.0, 2.0, 3.0").unwrap();
+    router
+        .execute("EMBED STORE 'cp_key' [1.0, 2.0, 3.0]")
+        .unwrap();
 
     // Create checkpoint
     let result = router.execute_parsed("CHECKPOINT 'before-change'").unwrap();
@@ -151,7 +153,9 @@ fn test_checkpoint_create_and_rollback() {
     };
 
     // Modify data
-    router.execute("EMBED cp_key 99.0, 99.0, 99.0").unwrap();
+    router
+        .execute("EMBED STORE 'cp_key' [99.0, 99.0, 99.0]")
+        .unwrap();
 
     // Rollback
     let result = router
@@ -427,7 +431,7 @@ fn test_graph_pagerank_with_edge_type() {
 fn test_graph_constraint_create_unique() {
     let router = create_shared_router();
 
-    router.execute("NODE CREATE User name='Alice'").unwrap();
+    router.execute("NODE CREATE User {name: 'Alice'}").unwrap();
 
     let result = router
         .execute_parsed("CONSTRAINT CREATE email_uniq ON NODE User PROPERTY email UNIQUE")
@@ -439,7 +443,7 @@ fn test_graph_constraint_create_unique() {
 fn test_graph_constraint_create_exists() {
     let router = create_shared_router();
 
-    router.execute("NODE CREATE Person name='Bob'").unwrap();
+    router.execute("NODE CREATE Person {name: 'Bob'}").unwrap();
 
     let result = router
         .execute_parsed("CONSTRAINT CREATE name_exists ON NODE Person PROPERTY name EXISTS")
@@ -462,7 +466,7 @@ fn test_graph_constraint_list() {
 fn test_graph_index_create_node_property() {
     let router = create_shared_router();
 
-    router.execute("NODE CREATE Person name='Test'").unwrap();
+    router.execute("NODE CREATE Person {name: 'Test'}").unwrap();
 
     let result = router
         .execute_parsed("GRAPH INDEX CREATE ON NODE PROPERTY name")
@@ -586,7 +590,7 @@ fn test_cypher_match_with_where() {
 fn test_cypher_delete() {
     let router = create_shared_router();
     router
-        .execute("NODE CREATE test_label name='ToDelete'")
+        .execute("NODE CREATE test_label {name: 'ToDelete'}")
         .unwrap();
 
     let result = router.execute_parsed("MATCH (n:test_label) DELETE n");
@@ -599,9 +603,9 @@ fn test_cypher_delete() {
 fn test_pagination_first_page() {
     let router = create_shared_router();
 
-    // Create table with correct syntax (name:type)
+    // Create table with column definitions
     router
-        .execute("CREATE TABLE paged (id:int, val:string)")
+        .execute("CREATE TABLE paged (id INT, val TEXT)")
         .unwrap();
     for i in 0..25 {
         router
@@ -632,7 +636,7 @@ fn test_pagination_with_cursor() {
     let router = create_shared_router();
 
     router
-        .execute("CREATE TABLE paged2 (id:int, val:string)")
+        .execute("CREATE TABLE paged2 (id INT, val TEXT)")
         .unwrap();
     for i in 0..15 {
         router
@@ -674,7 +678,7 @@ fn test_pagination_with_cursor() {
 fn test_pagination_empty_result() {
     let router = create_shared_router();
 
-    router.execute("CREATE TABLE paged_empty (id:int)").unwrap();
+    router.execute("CREATE TABLE paged_empty (id INT)").unwrap();
 
     let options = PaginationOptions {
         page_size: Some(10),
@@ -697,7 +701,7 @@ fn test_pagination_empty_result() {
 fn test_show_tables() {
     let router = create_shared_router();
 
-    router.execute("CREATE TABLE show_test (id:int)").unwrap();
+    router.execute("CREATE TABLE show_test (id INT)").unwrap();
 
     let result = router.execute_parsed("SHOW TABLES").unwrap();
     match result {
@@ -711,7 +715,9 @@ fn test_show_tables() {
 #[test]
 fn test_show_embeddings() {
     let router = create_shared_router();
-    router.execute("EMBED vec_a 1.0, 2.0, 3.0").unwrap();
+    router
+        .execute("EMBED STORE 'vec_a' [1.0, 2.0, 3.0]")
+        .unwrap();
 
     let result = router.execute_parsed("SHOW EMBEDDINGS").unwrap();
     match result {
@@ -723,8 +729,8 @@ fn test_show_embeddings() {
 #[test]
 fn test_count_embeddings() {
     let router = create_shared_router();
-    router.execute("EMBED count_a 1.0, 2.0").unwrap();
-    router.execute("EMBED count_b 3.0, 4.0").unwrap();
+    router.execute("EMBED STORE 'count_a' [1.0, 2.0]").unwrap();
+    router.execute("EMBED STORE 'count_b' [3.0, 4.0]").unwrap();
 
     let result = router.execute_parsed("COUNT EMBEDDINGS").unwrap();
     match result {
@@ -741,7 +747,9 @@ fn test_checkpoint_roundtrip_with_data() {
     router.init_checkpoint().unwrap();
 
     // Store embedding data
-    router.execute("EMBED cp_emb 1.0, 2.0, 3.0").unwrap();
+    router
+        .execute("EMBED STORE 'cp_emb' [1.0, 2.0, 3.0]")
+        .unwrap();
 
     // Create checkpoint
     let cp_result = router.execute_parsed("CHECKPOINT 'embed-snap'").unwrap();
@@ -751,7 +759,9 @@ fn test_checkpoint_roundtrip_with_data() {
     };
 
     // Overwrite the embedding
-    router.execute("EMBED cp_emb 99.0, 99.0, 99.0").unwrap();
+    router
+        .execute("EMBED STORE 'cp_emb' [99.0, 99.0, 99.0]")
+        .unwrap();
 
     // Rollback
     let rb = router

@@ -20,6 +20,7 @@ use crate::rate_limit::RateLimiter;
 pub mod collections;
 pub mod error;
 pub mod points;
+pub mod spatial;
 pub mod types;
 
 pub use error::{ApiError, ApiResult};
@@ -40,6 +41,8 @@ pub struct VectorApiContext {
     pub audit_logger: Option<Arc<AuditLogger>>,
     /// Server metrics.
     pub metrics: Option<Arc<ServerMetrics>>,
+    /// Shared spatial index (None if spatial not configured).
+    pub spatial: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>>,
 }
 
 impl VectorApiContext {
@@ -52,6 +55,7 @@ impl VectorApiContext {
             rate_limiter: None,
             audit_logger: None,
             metrics: None,
+            spatial: None,
         }
     }
 
@@ -80,6 +84,16 @@ impl VectorApiContext {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Option<Arc<ServerMetrics>>) -> Self {
         self.metrics = metrics;
+        self
+    }
+
+    /// Add shared spatial index.
+    #[must_use]
+    pub fn with_spatial(
+        mut self,
+        spatial: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>>,
+    ) -> Self {
+        self.spatial = spatial;
         self
     }
 }
@@ -156,6 +170,17 @@ pub fn router_with_config(ctx: Arc<VectorApiContext>, config: &RestConfig) -> Ro
         .route("/collections/{name}", get(collections::get))
         .route("/collections/{name}", delete(collections::delete))
         .route("/collections", get(collections::list))
+        // Spatial endpoints
+        .route(
+            "/collections/{name}/spatial/insert",
+            post(spatial::insert),
+        )
+        .route("/collections/{name}/spatial/query", post(spatial::query))
+        .route(
+            "/collections/{name}/spatial/delete",
+            post(spatial::delete),
+        )
+        .route("/collections/{name}/spatial/count", get(spatial::count))
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(config.max_body_size))

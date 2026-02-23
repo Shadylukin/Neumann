@@ -60,7 +60,7 @@ async fn test_remote_connect_and_execute() {
     assert_eq!(client.mode(), neumann_client::ClientMode::Remote);
 
     // Execute query
-    let result = client.execute("CREATE TABLE remote_test (x:int)").await;
+    let result = client.execute("CREATE TABLE remote_test (x int)").await;
     assert!(result.is_ok(), "Query should succeed: {:?}", result.err());
 
     let result = result.unwrap();
@@ -81,7 +81,7 @@ async fn test_remote_execute_with_identity() {
         .expect("should connect");
 
     let result = client
-        .execute_with_identity("CREATE TABLE id_remote (x:int)", Some("user:alice"))
+        .execute_with_identity("CREATE TABLE id_remote (x int)", Some("user:alice"))
         .await;
     assert!(result.is_ok());
 
@@ -98,14 +98,14 @@ async fn test_remote_execute_batch() {
         .expect("should connect");
 
     // Create table first
-    let _ = client.execute("CREATE TABLE batch_remote (x:int)").await;
+    let _ = client.execute("CREATE TABLE batch_remote (x int)").await;
 
     // Execute batch
     let results = client
         .execute_batch(&[
-            "INSERT batch_remote x=1",
-            "INSERT batch_remote x=2",
-            "SELECT batch_remote",
+            "INSERT INTO batch_remote (x) VALUES (1)",
+            "INSERT INTO batch_remote (x) VALUES (2)",
+            "SELECT * FROM batch_remote",
         ])
         .await
         .expect("batch should succeed");
@@ -125,7 +125,7 @@ async fn test_remote_execute_batch_with_identity() {
         .expect("should connect");
 
     let results = client
-        .execute_batch_with_identity(&["CREATE TABLE batch_id_remote (x:int)"], Some("user:bob"))
+        .execute_batch_with_identity(&["CREATE TABLE batch_id_remote (x int)"], Some("user:bob"))
         .await
         .expect("batch should succeed");
 
@@ -161,17 +161,17 @@ async fn test_remote_select_rows() {
 
     // Setup
     let _ = client
-        .execute("CREATE TABLE users_remote (name:string, age:int)")
+        .execute("CREATE TABLE users_remote (name string, age int)")
         .await;
     let _ = client
-        .execute("INSERT users_remote name=\"Alice\", age=30")
+        .execute("INSERT INTO users_remote (name, age) VALUES ('Alice', 30)")
         .await;
     let _ = client
-        .execute("INSERT users_remote name=\"Bob\", age=25")
+        .execute("INSERT INTO users_remote (name, age) VALUES ('Bob', 25)")
         .await;
 
     // Select
-    let result = client.execute("SELECT users_remote").await.unwrap();
+    let result = client.execute("SELECT * FROM users_remote").await.unwrap();
     assert!(!result.has_error());
     assert!(!result.is_empty());
     assert!(result.rows().is_some());
@@ -207,7 +207,7 @@ async fn test_remote_with_api_key() {
         .await
         .expect("should connect");
 
-    let result = client.execute("CREATE TABLE api_remote (x:int)").await;
+    let result = client.execute("CREATE TABLE api_remote (x int)").await;
     assert!(result.is_ok());
 
     drop(shutdown);
@@ -224,11 +224,14 @@ async fn test_remote_batch_with_api_key() {
         .await
         .expect("should connect");
 
-    let _ = client.execute("CREATE TABLE batch_api_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE batch_api_test (x int)").await;
 
     // Execute batch with API key
     let result = client
-        .execute_batch(&["INSERT batch_api_test x=1", "INSERT batch_api_test x=2"])
+        .execute_batch(&[
+            "INSERT INTO batch_api_test (x) VALUES (1)",
+            "INSERT INTO batch_api_test (x) VALUES (2)",
+        ])
         .await;
     assert!(result.is_ok());
 
@@ -246,10 +249,10 @@ async fn test_remote_stream_with_api_key() {
         .await
         .expect("should connect");
 
-    let _ = client.execute("CREATE TABLE stream_api_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE stream_api_test (x int)").await;
 
     // Execute stream with API key
-    let stream_result = client.execute_stream("SELECT stream_api_test").await;
+    let stream_result = client.execute_stream("SELECT * FROM stream_api_test").await;
     // The test passes if we can create the stream request
     assert!(stream_result.is_ok() || stream_result.is_err());
 
@@ -367,15 +370,15 @@ async fn test_remote_update_query() {
         .expect("should connect");
 
     // Create and populate table
-    let _ = client.execute("CREATE TABLE upd_test (x:int)").await;
-    let _ = client.execute("INSERT upd_test x=1").await;
+    let _ = client.execute("CREATE TABLE upd_test (x int)").await;
+    let _ = client.execute("INSERT INTO upd_test (x) VALUES (1)").await;
 
     // Update
     let result = client.execute("UPDATE upd_test SET x=10 WHERE x = 1").await;
     assert!(result.is_ok());
 
     // Verify
-    let result = client.execute("SELECT upd_test").await.unwrap();
+    let result = client.execute("SELECT * FROM upd_test").await.unwrap();
     let rows = result.rows().unwrap();
     assert_eq!(rows.len(), 1);
 
@@ -392,14 +395,14 @@ async fn test_remote_drop_table() {
         .expect("should connect");
 
     // Create table
-    let _ = client.execute("CREATE TABLE drop_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE drop_test (x int)").await;
 
     // Drop table
     let result = client.execute("DROP TABLE drop_test").await;
     assert!(result.is_ok());
 
     // Verify it's gone - should error
-    let result = client.execute("SELECT drop_test").await;
+    let result = client.execute("SELECT * FROM drop_test").await;
     assert!(result.is_err());
 
     drop(shutdown);
@@ -416,16 +419,16 @@ async fn test_remote_insert_and_select_multiple_columns() {
 
     // Create table with multiple columns
     let _ = client
-        .execute("CREATE TABLE multi_col (name:string, age:int, active:bool)")
+        .execute("CREATE TABLE multi_col (name string, age int, active bool)")
         .await;
 
     // Insert
     let _ = client
-        .execute("INSERT multi_col name=\"Alice\", age=30, active=true")
+        .execute("INSERT INTO multi_col (name, age, active) VALUES ('Alice', 30, true)")
         .await;
 
     // Select
-    let result = client.execute("SELECT multi_col").await.unwrap();
+    let result = client.execute("SELECT * FROM multi_col").await.unwrap();
     assert!(result.rows().is_some());
     assert_eq!(result.rows().unwrap().len(), 1);
 
@@ -442,13 +445,17 @@ async fn test_remote_execute_stream() {
         .expect("should connect");
 
     // Setup data
-    let _ = client.execute("CREATE TABLE stream_test (x:int)").await;
-    let _ = client.execute("INSERT stream_test x=1").await;
-    let _ = client.execute("INSERT stream_test x=2").await;
+    let _ = client.execute("CREATE TABLE stream_test (x int)").await;
+    let _ = client
+        .execute("INSERT INTO stream_test (x) VALUES (1)")
+        .await;
+    let _ = client
+        .execute("INSERT INTO stream_test (x) VALUES (2)")
+        .await;
 
     // Stream query - the server may or may not support streaming,
     // so we just verify the method works
-    let stream_result = client.execute_stream("SELECT stream_test").await;
+    let stream_result = client.execute_stream("SELECT * FROM stream_test").await;
     // The test passes if we can create the stream request
     assert!(stream_result.is_ok() || stream_result.is_err());
 
@@ -464,10 +471,10 @@ async fn test_remote_execute_stream_with_identity() {
         .await
         .expect("should connect");
 
-    let _ = client.execute("CREATE TABLE stream_id_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE stream_id_test (x int)").await;
 
     let stream_result = client
-        .execute_stream_with_identity("SELECT stream_id_test", Some("user:test"))
+        .execute_stream_with_identity("SELECT * FROM stream_id_test", Some("user:test"))
         .await;
     // The test passes if we can create the stream request
     assert!(stream_result.is_ok() || stream_result.is_err());
@@ -596,11 +603,13 @@ async fn test_streaming_query_result_debug() {
         .expect("should connect");
 
     let _ = client
-        .execute("CREATE TABLE debug_stream_test (x:int)")
+        .execute("CREATE TABLE debug_stream_test (x int)")
         .await;
 
     // Get a streaming result and format it for debug
-    let stream_result = client.execute_stream("SELECT debug_stream_test").await;
+    let stream_result = client
+        .execute_stream("SELECT * FROM debug_stream_test")
+        .await;
     if let Ok(stream) = stream_result {
         // Test Debug format
         let debug_str = format!("{stream:?}");
@@ -621,13 +630,19 @@ async fn test_streaming_query_result_next() {
 
     // Create table and insert data
     let _ = client
-        .execute("CREATE TABLE next_stream_test (x:int)")
+        .execute("CREATE TABLE next_stream_test (x int)")
         .await;
-    let _ = client.execute("INSERT next_stream_test x=1").await;
-    let _ = client.execute("INSERT next_stream_test x=2").await;
+    let _ = client
+        .execute("INSERT INTO next_stream_test (x) VALUES (1)")
+        .await;
+    let _ = client
+        .execute("INSERT INTO next_stream_test (x) VALUES (2)")
+        .await;
 
     // Get a streaming result and iterate over it
-    let stream_result = client.execute_stream("SELECT next_stream_test").await;
+    let stream_result = client
+        .execute_stream("SELECT * FROM next_stream_test")
+        .await;
     if let Ok(mut stream) = stream_result {
         // Try to get next items from the stream
         let mut count = 0;
@@ -681,11 +696,13 @@ async fn test_streaming_empty_table() {
 
     // Create an empty table
     let _ = client
-        .execute("CREATE TABLE empty_stream_test (x:int)")
+        .execute("CREATE TABLE empty_stream_test (x int)")
         .await;
 
     // Stream from empty table - should return None immediately or after final chunk
-    let stream_result = client.execute_stream("SELECT empty_stream_test").await;
+    let stream_result = client
+        .execute_stream("SELECT * FROM empty_stream_test")
+        .await;
     if let Ok(mut stream) = stream_result {
         // Try to get next - should return None (empty result)
         let first = stream.next().await;
@@ -707,12 +724,16 @@ async fn test_streaming_iterate_to_end() {
 
     // Create table with data
     let _ = client
-        .execute("CREATE TABLE iterate_stream_test (x:int)")
+        .execute("CREATE TABLE iterate_stream_test (x int)")
         .await;
-    let _ = client.execute("INSERT iterate_stream_test x=1").await;
+    let _ = client
+        .execute("INSERT INTO iterate_stream_test (x) VALUES (1)")
+        .await;
 
     // Stream and iterate to completion
-    let stream_result = client.execute_stream("SELECT iterate_stream_test").await;
+    let stream_result = client
+        .execute_stream("SELECT * FROM iterate_stream_test")
+        .await;
     if let Ok(mut stream) = stream_result {
         // Keep getting items until None is returned
         loop {
@@ -737,13 +758,17 @@ async fn test_remote_execute_paginated() {
         .expect("should connect");
 
     // Create table with many rows
-    let _ = client.execute("CREATE TABLE page_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE page_test (x int)").await;
     for i in 0..25 {
-        let _ = client.execute(&format!("INSERT page_test x={i}")).await;
+        let _ = client
+            .execute(&format!("INSERT INTO page_test (x) VALUES ({i})"))
+            .await;
     }
 
     // Execute paginated query
-    let result = client.execute_paginated("SELECT page_test", 10).await;
+    let result = client
+        .execute_paginated("SELECT * FROM page_test", 10)
+        .await;
     // The server may or may not support pagination, so we just verify the method works
     assert!(result.is_ok() || result.is_err());
 
@@ -769,11 +794,11 @@ async fn test_remote_execute_paginated_with_identity() {
         .await
         .expect("should connect");
 
-    let _ = client.execute("CREATE TABLE page_id_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE page_id_test (x int)").await;
 
     // Execute paginated query with identity
     let result = client
-        .execute_paginated_with_identity("SELECT page_id_test", Some("user:alice"), 10)
+        .execute_paginated_with_identity("SELECT * FROM page_id_test", Some("user:alice"), 10)
         .await;
     // The server may or may not support pagination
     assert!(result.is_ok() || result.is_err());
@@ -807,12 +832,12 @@ async fn test_remote_execute_paginated_with_options() {
         .await
         .expect("should connect");
 
-    let _ = client.execute("CREATE TABLE page_opts_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE page_opts_test (x int)").await;
 
     // Execute paginated query with full options
     let result = client
         .execute_paginated_with_options(
-            "SELECT page_opts_test",
+            "SELECT * FROM page_opts_test",
             Some("user:bob"),
             None,
             Some(5),
@@ -934,10 +959,12 @@ async fn test_remote_execute_paginated_with_valid_api_key() {
         .await
         .expect("should connect");
 
-    let _ = client.execute("CREATE TABLE page_api_test (x:int)").await;
+    let _ = client.execute("CREATE TABLE page_api_test (x int)").await;
 
     // Execute paginated query with valid API key
-    let result = client.execute_paginated("SELECT page_api_test", 10).await;
+    let result = client
+        .execute_paginated("SELECT * FROM page_api_test", 10)
+        .await;
     // Should succeed or fail with query error (not InvalidArgument)
     match &result {
         Ok(_) => {},

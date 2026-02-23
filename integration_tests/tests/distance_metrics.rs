@@ -40,9 +40,15 @@ fn test_similar_default_metric() {
     let router = create_shared_router();
 
     // Store embeddings
-    router.execute("EMBED vec:1 1.0, 0.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED vec:2 0.9, 0.1, 0.0, 0.0").unwrap();
-    router.execute("EMBED vec:3 0.0, 1.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'vec:1' [1.0, 0.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'vec:2' [0.9, 0.1, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'vec:3' [0.0, 1.0, 0.0, 0.0]")
+        .unwrap();
 
     // Default metric (cosine)
     let result = router.execute_parsed("SIMILAR 'vec:1' LIMIT 3");
@@ -64,11 +70,15 @@ fn test_similar_cosine_metric() {
     let router = create_shared_router();
 
     // Store normalized embeddings for cosine similarity
-    router.execute("EMBED cos:1 1.0, 0.0, 0.0, 0.0").unwrap();
     router
-        .execute("EMBED cos:2 0.707, 0.707, 0.0, 0.0")
+        .execute("EMBED STORE 'cos:1' [1.0, 0.0, 0.0, 0.0]")
         .unwrap();
-    router.execute("EMBED cos:3 0.0, 1.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'cos:2' [0.707, 0.707, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'cos:3' [0.0, 1.0, 0.0, 0.0]")
+        .unwrap();
 
     // Explicit COSINE metric
     let result = router.execute_parsed("SIMILAR 'cos:1' LIMIT 3 COSINE");
@@ -86,9 +96,15 @@ fn test_similar_euclidean_metric() {
     let router = create_shared_router();
 
     // Store embeddings for euclidean distance
-    router.execute("EMBED euc:1 0.5, 0.5, 0.5, 0.5").unwrap();
-    router.execute("EMBED euc:2 0.6, 0.5, 0.5, 0.5").unwrap();
-    router.execute("EMBED euc:3 1.0, 1.0, 1.0, 1.0").unwrap();
+    router
+        .execute("EMBED STORE 'euc:1' [0.5, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'euc:2' [0.6, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'euc:3' [1.0, 1.0, 1.0, 1.0]")
+        .unwrap();
 
     // EUCLIDEAN metric - query should parse and execute
     let result = router.execute_parsed("SIMILAR 'euc:1' LIMIT 3 EUCLIDEAN");
@@ -108,9 +124,15 @@ fn test_similar_dot_product_metric() {
     let router = create_shared_router();
 
     // Store embeddings for dot product
-    router.execute("EMBED dot:1 1.0, 0.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED dot:2 0.5, 0.5, 0.0, 0.0").unwrap();
-    router.execute("EMBED dot:3 0.0, 0.0, 1.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'dot:1' [1.0, 0.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'dot:2' [0.5, 0.5, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'dot:3' [0.0, 0.0, 1.0, 0.0]")
+        .unwrap();
 
     // DotProduct metric - query should parse and execute
     let result = router.execute_parsed("SIMILAR 'dot:1' LIMIT 3 DOT_PRODUCT");
@@ -129,9 +151,15 @@ fn test_similar_vector_with_cosine() {
     let router = create_shared_router();
 
     // Store embeddings
-    router.execute("EMBED target:1 1.0, 0.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED target:2 0.8, 0.2, 0.0, 0.0").unwrap();
-    router.execute("EMBED target:3 0.0, 0.0, 1.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'target:1' [1.0, 0.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'target:2' [0.8, 0.2, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'target:3' [0.0, 0.0, 1.0, 0.0]")
+        .unwrap();
 
     // Search by vector with COSINE metric
     let result = router.execute_parsed("SIMILAR [1.0, 0.0, 0.0, 0.0] LIMIT 3 COSINE");
@@ -150,10 +178,14 @@ fn test_similar_vector_with_euclidean() {
 
     // Store embeddings
     router
-        .execute("EMBED pt:origin 0.5, 0.5, 0.5, 0.5")
+        .execute("EMBED STORE 'pt:origin' [0.5, 0.5, 0.5, 0.5]")
         .unwrap();
-    router.execute("EMBED pt:near 0.6, 0.5, 0.5, 0.5").unwrap();
-    router.execute("EMBED pt:far 1.0, 1.0, 1.0, 1.0").unwrap();
+    router
+        .execute("EMBED STORE 'pt:near' [0.6, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'pt:far' [1.0, 1.0, 1.0, 1.0]")
+        .unwrap();
 
     // Search by vector with EUCLIDEAN metric
     let result = router.execute_parsed("SIMILAR [0.5, 0.5, 0.5, 0.5] LIMIT 3 EUCLIDEAN");
@@ -172,11 +204,15 @@ fn test_similar_vector_with_dot_product() {
     let router = create_shared_router();
 
     // Store embeddings
-    router.execute("EMBED dp:high 1.0, 1.0, 1.0, 1.0").unwrap();
     router
-        .execute("EMBED dp:medium 0.5, 0.5, 0.5, 0.5")
+        .execute("EMBED STORE 'dp:high' [1.0, 1.0, 1.0, 1.0]")
         .unwrap();
-    router.execute("EMBED dp:low 0.1, 0.1, 0.1, 0.1").unwrap();
+    router
+        .execute("EMBED STORE 'dp:medium' [0.5, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'dp:low' [0.1, 0.1, 0.1, 0.1]")
+        .unwrap();
 
     // Search by vector with DotProduct metric
     let result = router.execute_parsed("SIMILAR [1.0, 1.0, 1.0, 1.0] LIMIT 3 DOT_PRODUCT");
@@ -194,7 +230,9 @@ fn test_similar_vector_with_dot_product() {
 fn test_metric_case_insensitive() {
     let router = create_shared_router();
 
-    router.execute("EMBED case:1 1.0, 0.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'case:1' [1.0, 0.0, 0.0, 0.0]")
+        .unwrap();
 
     // Test lowercase - parser expects uppercase keywords
     let result1 = router.execute_parsed("SIMILAR 'case:1' LIMIT 1 COSINE");
@@ -242,7 +280,10 @@ fn test_neighbors_by_similarity_with_metric() {
     let router = create_shared_router();
 
     // Create a central entity
-    let alice_id = match router.execute("NODE CREATE user name='Alice'").unwrap() {
+    let alice_id = match router
+        .execute("NODE CREATE user { name: 'Alice' }")
+        .unwrap()
+    {
         QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
@@ -250,7 +291,7 @@ fn test_neighbors_by_similarity_with_metric() {
     // Create neighbors with embeddings
     for i in 0..3 {
         let neighbor_id = match router
-            .execute(&format!("NODE CREATE item name='Item{}'", i))
+            .execute(&format!("NODE CREATE item {{ name: 'Item{}' }}", i))
             .unwrap()
         {
             QueryResult::Ids(ids) => ids[0],
@@ -258,13 +299,16 @@ fn test_neighbors_by_similarity_with_metric() {
         };
 
         router
-            .execute(&format!("EDGE CREATE {} -> {} owns", alice_id, neighbor_id))
+            .execute(&format!(
+                "EDGE CREATE {} -> {} : owns",
+                alice_id, neighbor_id
+            ))
             .unwrap();
 
         let v = (i as f32) / 3.0;
         router
             .execute(&format!(
-                "EMBED node:{} {:.2}, {:.2}, 0.5, 0.5",
+                "EMBED STORE 'node:{}' [{:.2}, {:.2}, 0.5, 0.5]",
                 neighbor_id,
                 v,
                 1.0 - v
@@ -286,10 +330,18 @@ fn test_metric_ordering_consistency() {
     let router = create_shared_router();
 
     // Store embeddings with known relationships
-    router.execute("EMBED order:a 1.0, 0.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED order:b 0.9, 0.1, 0.0, 0.0").unwrap();
-    router.execute("EMBED order:c 0.8, 0.2, 0.0, 0.0").unwrap();
-    router.execute("EMBED order:d 0.0, 1.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'order:a' [1.0, 0.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'order:b' [0.9, 0.1, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'order:c' [0.8, 0.2, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'order:d' [0.0, 1.0, 0.0, 0.0]")
+        .unwrap();
 
     // Multiple queries should return consistent ordering
     for _ in 0..3 {
@@ -312,9 +364,15 @@ fn test_euclidean_metric_parses() {
     let router = create_shared_router();
 
     // Store embeddings
-    router.execute("EMBED dist:a 0.5, 0.5, 0.5, 0.5").unwrap();
-    router.execute("EMBED dist:b 0.6, 0.5, 0.5, 0.5").unwrap();
-    router.execute("EMBED dist:c 1.0, 1.0, 1.0, 1.0").unwrap();
+    router
+        .execute("EMBED STORE 'dist:a' [0.5, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'dist:b' [0.6, 0.5, 0.5, 0.5]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'dist:c' [1.0, 1.0, 1.0, 1.0]")
+        .unwrap();
 
     // EUCLIDEAN metric should parse and execute without error
     let result = router.execute_parsed("SIMILAR 'dist:a' LIMIT 3 EUCLIDEAN");
@@ -327,13 +385,13 @@ fn test_euclidean_distance_values() {
 
     // Store embeddings at known distances from origin
     router
-        .execute("EMBED edist:origin 0.0, 0.0, 0.0, 0.0")
+        .execute("EMBED STORE 'edist:origin' [0.0, 0.0, 0.0, 0.0]")
         .unwrap();
     router
-        .execute("EMBED edist:unit 1.0, 0.0, 0.0, 0.0")
+        .execute("EMBED STORE 'edist:unit' [1.0, 0.0, 0.0, 0.0]")
         .unwrap();
     router
-        .execute("EMBED edist:diag 1.0, 1.0, 0.0, 0.0")
+        .execute("EMBED STORE 'edist:diag' [1.0, 1.0, 0.0, 0.0]")
         .unwrap();
 
     // Search for vectors near origin using EUCLIDEAN
@@ -362,13 +420,13 @@ fn test_dot_product_values() {
 
     // Store vectors with known dot products to [1,1,0,0]
     router
-        .execute("EMBED dprod:high 2.0, 2.0, 0.0, 0.0")
+        .execute("EMBED STORE 'dprod:high' [2.0, 2.0, 0.0, 0.0]")
         .unwrap(); // dot = 4
     router
-        .execute("EMBED dprod:med 1.0, 1.0, 0.0, 0.0")
+        .execute("EMBED STORE 'dprod:med' [1.0, 1.0, 0.0, 0.0]")
         .unwrap(); // dot = 2
     router
-        .execute("EMBED dprod:low 0.5, 0.5, 0.0, 0.0")
+        .execute("EMBED STORE 'dprod:low' [0.5, 0.5, 0.0, 0.0]")
         .unwrap(); // dot = 1
 
     // Search with DotProduct metric
@@ -397,12 +455,14 @@ fn test_euclidean_vs_cosine_different_ordering() {
     // Cosine: [1,0] is most similar to [2,0] and [0.5,0] equally (all cos=1)
     // Euclidean: [1,0] is closest to [0.5,0] (dist=0.5) then [2,0] (dist=1)
     router
-        .execute("EMBED diff:query 1.0, 0.0, 0.0, 0.0")
+        .execute("EMBED STORE 'diff:query' [1.0, 0.0, 0.0, 0.0]")
         .unwrap();
     router
-        .execute("EMBED diff:close 0.5, 0.0, 0.0, 0.0")
+        .execute("EMBED STORE 'diff:close' [0.5, 0.0, 0.0, 0.0]")
         .unwrap();
-    router.execute("EMBED diff:far 2.0, 0.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'diff:far' [2.0, 0.0, 0.0, 0.0]")
+        .unwrap();
 
     // With EUCLIDEAN, diff:close should be ranked higher than diff:far
     let result = router.execute_parsed("SIMILAR 'diff:query' LIMIT 3 EUCLIDEAN");
@@ -450,10 +510,14 @@ fn test_cosine_similarity_values() {
     let router = create_shared_router();
 
     // Store orthogonal and parallel vectors
-    router.execute("EMBED sim:x 1.0, 0.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED sim:y 0.0, 1.0, 0.0, 0.0").unwrap();
     router
-        .execute("EMBED sim:xy 0.707, 0.707, 0.0, 0.0")
+        .execute("EMBED STORE 'sim:x' [1.0, 0.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'sim:y' [0.0, 1.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'sim:xy' [0.707, 0.707, 0.0, 0.0]")
         .unwrap();
 
     let result = router.execute_parsed("SIMILAR 'sim:x' LIMIT 3 COSINE");
@@ -483,9 +547,15 @@ fn test_dot_product_metric_parses() {
     let router = create_shared_router();
 
     // Store vectors for dot product
-    router.execute("EMBED prod:a 1.0, 2.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED prod:b 2.0, 1.0, 0.0, 0.0").unwrap();
-    router.execute("EMBED prod:c 0.0, 0.0, 1.0, 0.0").unwrap();
+    router
+        .execute("EMBED STORE 'prod:a' [1.0, 2.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'prod:b' [2.0, 1.0, 0.0, 0.0]")
+        .unwrap();
+    router
+        .execute("EMBED STORE 'prod:c' [0.0, 0.0, 1.0, 0.0]")
+        .unwrap();
 
     // DotProduct metric should parse and execute without error
     let result = router.execute_parsed("SIMILAR [1.0, 1.0, 0.0, 0.0] LIMIT 3 DOT_PRODUCT");

@@ -516,6 +516,17 @@ impl<'a> Parser<'a> {
         Ok(items)
     }
 
+    /// Parse a collection name (identifier or string literal).
+    fn parse_collection_name(&mut self) -> ParseResult<String> {
+        if let TokenKind::String(s) = &self.current().kind {
+            let name = s.clone();
+            self.advance();
+            Ok(name)
+        } else {
+            Ok(self.expect_ident()?.name)
+        }
+    }
+
     fn parse_case_expr(&mut self) -> ParseResult<Expr> {
         let start = self.expect(&TokenKind::Case)?.span;
         let operand = if !self.check(&TokenKind::When) {
@@ -1024,7 +1035,7 @@ impl<'a> Parser<'a> {
         let columns = if self.eat(&TokenKind::LParen) {
             let mut cols = Vec::new();
             loop {
-                cols.push(self.expect_ident()?);
+                cols.push(self.expect_ident_or_keyword()?);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -1082,7 +1093,7 @@ impl<'a> Parser<'a> {
 
         let mut assignments = Vec::new();
         loop {
-            let column = self.expect_ident()?;
+            let column = self.expect_ident_or_keyword()?;
             self.expect(&TokenKind::Eq)?;
             let value = self.parse_expr()?;
             assignments.push(Assignment { column, value });
@@ -1106,7 +1117,7 @@ impl<'a> Parser<'a> {
 
     fn parse_delete(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Delete)?;
-        self.expect(&TokenKind::From)?;
+        self.eat(&TokenKind::From);
         let table = self.expect_ident()?;
 
         let where_clause = if self.eat(&TokenKind::Where) {
@@ -1626,8 +1637,14 @@ impl<'a> Parser<'a> {
             let from_id = self.parse_expr()?;
             self.expect(&TokenKind::Arrow)?;
             let to_id = self.parse_expr()?;
-            self.expect(&TokenKind::Colon)?;
-            let edge_type = self.expect_ident()?;
+            let edge_type = if self.eat(&TokenKind::Colon) {
+                self.expect_ident()?
+            } else {
+                Ident {
+                    name: "edge".to_string(),
+                    span: self.current().span,
+                }
+            };
             let properties = self.parse_properties()?;
             EdgeOp::Create {
                 from_id,
@@ -1711,10 +1728,10 @@ impl<'a> Parser<'a> {
             Direction::Outgoing
         } else if self.eat(&TokenKind::Incoming) {
             Direction::Incoming
-        } else if self.eat(&TokenKind::Both) {
-            Direction::Both
         } else {
-            Direction::Outgoing
+            // Consume explicit BOTH if present; default to Both either way
+            self.eat(&TokenKind::Both);
+            Direction::Both
         };
 
         let edge_type = if self.eat(&TokenKind::Colon) {
@@ -1833,6 +1850,21 @@ impl<'a> Parser<'a> {
             }
             self.expect(&TokenKind::RBracket)?;
             EmbedOp::Batch { items }
+        } else if !self.current().is_eof() && !self.check(&TokenKind::Semicolon) {
+            // Shorthand: EMBED key [vec] or EMBED 'key' [vec]
+            let key = self.parse_expr()?;
+            let vector = if self.check(&TokenKind::LBracket) {
+                self.parse_vector_literal()?
+            } else {
+                // Unbracketed: parse comma-separated float expressions
+                let mut vals = Vec::new();
+                vals.push(self.parse_expr()?);
+                while self.eat(&TokenKind::Comma) {
+                    vals.push(self.parse_expr()?);
+                }
+                vals
+            };
+            EmbedOp::Store { key, vector }
         } else {
             return Err(ParseError::invalid(
                 "expected STORE, GET, DELETE, BUILD INDEX, or BATCH after EMBED",
@@ -1840,9 +1872,15 @@ impl<'a> Parser<'a> {
             ));
         };
 
-        // Parse optional INTO collection_name
+        // Parse optional INTO or COLLECTION collection_name
         let collection = if self.eat(&TokenKind::Into) {
-            Some(self.expect_ident()?.name)
+            Some(self.parse_collection_name()?)
+        } else if matches!(
+            &self.current().kind,
+            TokenKind::Ident(s) if s.eq_ignore_ascii_case("COLLECTION")
+        ) {
+            self.advance();
+            Some(self.parse_collection_name()?)
         } else {
             None
         };
@@ -1881,25 +1919,40 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let limit = if self.eat(&TokenKind::Limit) {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
+        // Parse limit and metric in either order
+        let mut limit = None;
+        let mut metric = None;
 
-        let metric = if self.eat(&TokenKind::Cosine) {
-            Some(DistanceMetric::Cosine)
-        } else if self.eat(&TokenKind::Euclidean) {
-            Some(DistanceMetric::Euclidean)
-        } else if self.eat(&TokenKind::DotProduct) {
-            Some(DistanceMetric::DotProduct)
-        } else {
-            None
-        };
+        for _ in 0..2 {
+            if limit.is_none()
+                && (self.check(&TokenKind::Limit)
+                    || matches!(
+                        &self.current().kind,
+                        TokenKind::Ident(s) if s.eq_ignore_ascii_case("TOP")
+                    ))
+            {
+                self.advance();
+                limit = Some(self.parse_expr()?);
+            } else if metric.is_none() {
+                if self.eat(&TokenKind::Cosine) {
+                    metric = Some(DistanceMetric::Cosine);
+                } else if self.eat(&TokenKind::Euclidean) {
+                    metric = Some(DistanceMetric::Euclidean);
+                } else if self.eat(&TokenKind::DotProduct) {
+                    metric = Some(DistanceMetric::DotProduct);
+                }
+            }
+        }
 
-        // Parse optional INTO collection_name
+        // Parse optional INTO or COLLECTION collection_name
         let collection = if self.eat(&TokenKind::Into) {
-            Some(self.expect_ident()?.name)
+            Some(self.parse_collection_name()?)
+        } else if matches!(
+            &self.current().kind,
+            TokenKind::Ident(s) if s.eq_ignore_ascii_case("COLLECTION")
+        ) {
+            self.advance();
+            Some(self.parse_collection_name()?)
         } else {
             None
         };
@@ -1993,8 +2046,11 @@ impl<'a> Parser<'a> {
     fn parse_find(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Find)?;
 
-        // Parse pattern
-        let pattern = if self.eat(&TokenKind::Node) || self.eat(&TokenKind::Vertex) {
+        // Parse pattern (accept both singular and plural: NODE/NODES, EDGE/EDGES)
+        let pattern = if self.eat(&TokenKind::Node)
+            || self.eat(&TokenKind::Nodes)
+            || self.eat(&TokenKind::Vertex)
+        {
             let label = if !self.check(&TokenKind::Where)
                 && !self.check(&TokenKind::Return)
                 && !self.check(&TokenKind::Limit)
@@ -2005,7 +2061,7 @@ impl<'a> Parser<'a> {
                 None
             };
             FindPattern::Nodes { label }
-        } else if self.eat(&TokenKind::Edge) {
+        } else if self.eat(&TokenKind::Edge) || self.eat(&TokenKind::Edges) {
             let edge_type = if !self.check(&TokenKind::Where)
                 && !self.check(&TokenKind::Return)
                 && !self.check(&TokenKind::Limit)
@@ -3160,6 +3216,8 @@ impl<'a> Parser<'a> {
                 let label = if self.eat(&TokenKind::By) {
                     self.expect(&TokenKind::Label)?;
                     Some(self.expect_ident_or_keyword()?)
+                } else if self.eat(&TokenKind::On) {
+                    Some(self.expect_ident_or_keyword()?)
                 } else {
                     None
                 };
@@ -3188,6 +3246,8 @@ impl<'a> Parser<'a> {
 
                 let edge_type = if self.eat(&TokenKind::By) {
                     self.expect(&TokenKind::Type)?;
+                    Some(self.expect_ident_or_keyword()?)
+                } else if self.eat(&TokenKind::On) {
                     Some(self.expect_ident_or_keyword()?)
                 } else {
                     None
@@ -3600,7 +3660,16 @@ impl<'a> Parser<'a> {
 /// Returns an error if the input is not a valid statement.
 pub fn parse(source: &str) -> ParseResult<Statement> {
     let mut parser = Parser::new(source);
-    parser.parse_statement()
+    let stmt = parser.parse_statement()?;
+    while parser.eat(&TokenKind::Semicolon) {}
+    if !parser.current().is_eof() {
+        return Err(ParseError::unexpected(
+            parser.current().kind.clone(),
+            parser.current().span,
+            "end of input",
+        ));
+    }
+    Ok(stmt)
 }
 
 /// Parses multiple statements from source text.
@@ -4417,9 +4486,14 @@ mod tests {
     }
 
     #[test]
-    fn test_error_missing_colon_in_edge() {
-        let result = parse("EDGE CREATE 1 -> 2 type");
-        assert!(result.is_err());
+    fn test_edge_create_without_colon_defaults_label() {
+        // EDGE CREATE 1 -> 2 now succeeds with default label "edge"
+        let stmt = parse_stmt("EDGE CREATE 1 -> 2");
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::Create { edge_type, .. } = edge.operation else {
+            panic!("expected EDGE CREATE");
+        };
+        assert_eq!(edge_type.name, "edge");
     }
 
     #[test]
@@ -5720,10 +5794,10 @@ mod tests {
     }
 
     #[test]
-    fn test_neighbors_default_outgoing() {
+    fn test_neighbors_default_both() {
         let stmt = parse_stmt("NEIGHBORS 1");
         if let StatementKind::Neighbors(neighbors) = stmt.kind {
-            assert_eq!(neighbors.direction, Direction::Outgoing);
+            assert_eq!(neighbors.direction, Direction::Both);
         }
     }
 
@@ -7278,9 +7352,9 @@ mod tests {
     }
 
     #[test]
-    fn test_array_subscript_expr() {
-        let stmt = parse_stmt("SELECT arr[0]");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_array_subscript_expr_trailing_error() {
+        // Array subscript not yet implemented as postfix operator
+        assert!(parse("SELECT arr[0]").is_err());
     }
 
     #[test]
@@ -7453,9 +7527,9 @@ mod tests {
     }
 
     #[test]
-    fn test_select_with_union() {
-        let stmt = parse_stmt("SELECT name FROM users UNION SELECT name FROM admins");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_select_with_union_trailing_error() {
+        // Set operations not yet implemented; EOF enforcement catches trailing UNION
+        assert!(parse("SELECT name FROM users UNION SELECT name FROM admins").is_err());
     }
 
     #[test]
@@ -7548,21 +7622,18 @@ mod tests {
     }
 
     #[test]
-    fn test_intersect_set_op() {
-        let stmt = parse_stmt("SELECT name FROM users INTERSECT SELECT name FROM admins");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_intersect_set_op_trailing_error() {
+        assert!(parse("SELECT name FROM users INTERSECT SELECT name FROM admins").is_err());
     }
 
     #[test]
-    fn test_except_set_op() {
-        let stmt = parse_stmt("SELECT name FROM users EXCEPT SELECT name FROM banned");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_except_set_op_trailing_error() {
+        assert!(parse("SELECT name FROM users EXCEPT SELECT name FROM banned").is_err());
     }
 
     #[test]
-    fn test_all_distinct_in_union() {
-        let stmt = parse_stmt("SELECT name FROM users UNION ALL SELECT name FROM admins");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_all_distinct_in_union_trailing_error() {
+        assert!(parse("SELECT name FROM users UNION ALL SELECT name FROM admins").is_err());
     }
 
     #[test]
@@ -9388,21 +9459,19 @@ mod tests {
     }
 
     #[test]
-    fn test_select_union() {
-        let stmt = parse_stmt("SELECT a FROM t1 UNION SELECT b FROM t2");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_select_union_trailing_error() {
+        // Set operations not yet implemented; EOF enforcement catches trailing UNION
+        assert!(parse("SELECT a FROM t1 UNION SELECT b FROM t2").is_err());
     }
 
     #[test]
-    fn test_select_intersect() {
-        let stmt = parse_stmt("SELECT a FROM t1 INTERSECT SELECT b FROM t2");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_select_intersect_trailing_error() {
+        assert!(parse("SELECT a FROM t1 INTERSECT SELECT b FROM t2").is_err());
     }
 
     #[test]
-    fn test_select_except() {
-        let stmt = parse_stmt("SELECT a FROM t1 EXCEPT SELECT b FROM t2");
-        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    fn test_select_except_trailing_error() {
+        assert!(parse("SELECT a FROM t1 EXCEPT SELECT b FROM t2").is_err());
     }
 
     #[test]
@@ -9793,8 +9862,11 @@ mod tests {
     }
 
     #[test]
-    fn test_embed_unknown_operation() {
-        parse_fails("EMBED UNKNOWN 'key'");
+    fn test_embed_shorthand_parses_as_store() {
+        // EMBED key [vec] shorthand: previously errored, now parses as Store
+        let stmt = parse_stmt("EMBED 'mykey' [1.0, 2.0]");
+        let embed = unwrap_embed(stmt);
+        assert!(matches!(embed.operation, EmbedOp::Store { .. }));
     }
 
     #[test]
@@ -10333,5 +10405,579 @@ mod tests {
     fn test_parse_spatial_invalid_op() {
         let result = parse("SPATIAL UNKNOWN");
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // EOF enforcement in parse()
+    // =========================================================================
+
+    #[test]
+    fn test_eof_enforcement_trailing_garbage() {
+        // "SELECT 1 FROM t SELECT" -- the second SELECT is unparsed trailing input
+        let result = parse("SELECT 1 FROM t SELECT");
+        assert!(result.is_err(), "trailing garbage should cause an error");
+    }
+
+    #[test]
+    fn test_eof_enforcement_trailing_semicolon() {
+        let stmt = parse_stmt("SELECT 1;");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_eof_enforcement_multiple_semicolons() {
+        let stmt = parse_stmt("SELECT 1;;");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_eof_enforcement_no_trailing() {
+        let stmt = parse_stmt("SELECT 1");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_eof_enforcement_garbage_after_semicolon() {
+        let result = parse("SELECT 1; GARBAGE");
+        assert!(result.is_err(), "garbage after semicolons should fail");
+    }
+
+    // =========================================================================
+    // parse_collection_name() -- string literal vs identifier
+    // =========================================================================
+
+    #[test]
+    fn test_collection_name_string_literal_embed() {
+        let stmt = parse_stmt("EMBED STORE 'k' [1.0] INTO 'my_collection'");
+        let embed = unwrap_embed(stmt);
+        assert_eq!(embed.collection, Some("my_collection".to_string()));
+    }
+
+    #[test]
+    fn test_collection_name_ident_embed() {
+        let stmt = parse_stmt("EMBED STORE 'k' [1.0] INTO my_collection");
+        let embed = unwrap_embed(stmt);
+        assert_eq!(embed.collection, Some("my_collection".to_string()));
+    }
+
+    #[test]
+    fn test_collection_name_string_literal_similar() {
+        let stmt = parse_stmt("SIMILAR 'k' INTO 'my_group'");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.collection, Some("my_group".to_string()));
+    }
+
+    #[test]
+    fn test_collection_name_ident_similar() {
+        let stmt = parse_stmt("SIMILAR 'k' INTO my_group");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.collection, Some("my_group".to_string()));
+    }
+
+    // =========================================================================
+    // DELETE without FROM
+    // =========================================================================
+
+    #[test]
+    fn test_delete_without_from() {
+        let stmt = parse_stmt("DELETE users WHERE id = 1");
+        let delete = unwrap_delete(stmt);
+        assert_eq!(delete.table.name, "users");
+        assert!(delete.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_delete_with_from() {
+        let stmt = parse_stmt("DELETE FROM users WHERE id = 1");
+        let delete = unwrap_delete(stmt);
+        assert_eq!(delete.table.name, "users");
+        assert!(delete.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_delete_without_from_no_where() {
+        let stmt = parse_stmt("DELETE users");
+        let delete = unwrap_delete(stmt);
+        assert_eq!(delete.table.name, "users");
+        assert!(delete.where_clause.is_none());
+    }
+
+    // =========================================================================
+    // INSERT with keyword column names
+    // =========================================================================
+
+    #[test]
+    fn test_insert_keyword_column_status() {
+        let stmt = parse_stmt("INSERT INTO t (status) VALUES (1)");
+        let insert = unwrap_insert(stmt);
+        assert_eq!(insert.table.name, "t");
+        let cols = insert.columns.unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(cols[0].name, "status");
+    }
+
+    #[test]
+    fn test_insert_keyword_columns_type_status() {
+        let stmt = parse_stmt("INSERT INTO t (type, status) VALUES ('a', 1)");
+        let insert = unwrap_insert(stmt);
+        let cols = insert.columns.unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0].name, "type");
+        assert_eq!(cols[1].name, "status");
+    }
+
+    #[test]
+    fn test_insert_keyword_column_property() {
+        let stmt = parse_stmt("INSERT INTO t (property) VALUES ('x')");
+        let insert = unwrap_insert(stmt);
+        let cols = insert.columns.unwrap();
+        assert_eq!(cols[0].name, "property");
+    }
+
+    // =========================================================================
+    // UPDATE with keyword column names
+    // =========================================================================
+
+    #[test]
+    fn test_update_keyword_column_status() {
+        let stmt = parse_stmt("UPDATE t SET status = 1 WHERE id = 1");
+        let update = unwrap_update(stmt);
+        assert_eq!(update.table.name, "t");
+        assert_eq!(update.assignments[0].column.name, "status");
+        assert!(update.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_update_keyword_column_type() {
+        let stmt = parse_stmt("UPDATE t SET type = 'a' WHERE id = 1");
+        let update = unwrap_update(stmt);
+        assert_eq!(update.assignments[0].column.name, "type");
+    }
+
+    #[test]
+    fn test_update_keyword_column_property() {
+        let stmt = parse_stmt("UPDATE t SET property = 'person' WHERE id = 1");
+        let update = unwrap_update(stmt);
+        assert_eq!(update.assignments[0].column.name, "property");
+    }
+
+    #[test]
+    fn test_update_multiple_keyword_columns() {
+        let stmt = parse_stmt("UPDATE t SET status = 1, type = 'a'");
+        let update = unwrap_update(stmt);
+        assert_eq!(update.assignments.len(), 2);
+        assert_eq!(update.assignments[0].column.name, "status");
+        assert_eq!(update.assignments[1].column.name, "type");
+    }
+
+    // =========================================================================
+    // EDGE CREATE with optional label
+    // =========================================================================
+
+    #[test]
+    fn test_edge_create_default_label() {
+        let stmt = parse_stmt("EDGE CREATE 1 -> 2");
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::Create { edge_type, .. } = edge.operation else {
+            panic!("expected EDGE CREATE")
+        };
+        assert_eq!(edge_type.name, "edge");
+    }
+
+    #[test]
+    fn test_edge_create_explicit_label() {
+        let stmt = parse_stmt("EDGE CREATE 1 -> 2 : knows");
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::Create { edge_type, .. } = edge.operation else {
+            panic!("expected EDGE CREATE")
+        };
+        assert_eq!(edge_type.name, "knows");
+    }
+
+    #[test]
+    fn test_edge_create_default_label_with_properties() {
+        let stmt = parse_stmt("EDGE CREATE 1 -> 2 {weight: 0.5}");
+        let edge = unwrap_edge(stmt);
+        let EdgeOp::Create {
+            edge_type,
+            properties,
+            ..
+        } = edge.operation
+        else {
+            panic!("expected EDGE CREATE")
+        };
+        assert_eq!(edge_type.name, "edge");
+        assert_eq!(properties.len(), 1);
+    }
+
+    // =========================================================================
+    // NEIGHBORS default direction = Both
+    // =========================================================================
+
+    #[test]
+    fn test_neighbors_default_direction_both() {
+        let stmt = parse_stmt("NEIGHBORS 1");
+        let neighbors = unwrap_neighbors(stmt);
+        assert_eq!(neighbors.direction, Direction::Both);
+    }
+
+    #[test]
+    fn test_neighbors_explicit_outgoing() {
+        let stmt = parse_stmt("NEIGHBORS 1 OUTGOING");
+        let neighbors = unwrap_neighbors(stmt);
+        assert_eq!(neighbors.direction, Direction::Outgoing);
+    }
+
+    #[test]
+    fn test_neighbors_explicit_incoming() {
+        let stmt = parse_stmt("NEIGHBORS 1 INCOMING");
+        let neighbors = unwrap_neighbors(stmt);
+        assert_eq!(neighbors.direction, Direction::Incoming);
+    }
+
+    #[test]
+    fn test_neighbors_explicit_both() {
+        let stmt = parse_stmt("NEIGHBORS 1 BOTH");
+        let neighbors = unwrap_neighbors(stmt);
+        assert_eq!(neighbors.direction, Direction::Both);
+    }
+
+    // =========================================================================
+    // EMBED shorthand
+    // =========================================================================
+
+    #[test]
+    fn test_embed_shorthand_string_key() {
+        let stmt = parse_stmt("EMBED 'mykey' [1.0, 2.0]");
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Store { key, vector } = embed.operation else {
+            panic!("expected EMBED STORE (shorthand)")
+        };
+        assert!(matches!(key.kind, ExprKind::Literal(Literal::String(ref s)) if s == "mykey"));
+        assert_eq!(vector.len(), 2);
+    }
+
+    #[test]
+    fn test_embed_shorthand_ident_key() {
+        let stmt = parse_stmt("EMBED myident [1.0, 2.0]");
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Store { key, vector } = embed.operation else {
+            panic!("expected EMBED STORE (shorthand)")
+        };
+        assert!(matches!(key.kind, ExprKind::Ident(_)));
+        assert_eq!(vector.len(), 2);
+    }
+
+    #[test]
+    fn test_embed_shorthand_three_element_vector() {
+        let stmt = parse_stmt("EMBED 'k' [1.0, 2.0, 3.0]");
+        let embed = unwrap_embed(stmt);
+        let EmbedOp::Store { vector, .. } = embed.operation else {
+            panic!("expected EMBED STORE (shorthand)")
+        };
+        assert_eq!(vector.len(), 3);
+    }
+
+    #[test]
+    fn test_embed_shorthand_with_collection() {
+        let stmt = parse_stmt("EMBED 'k' [1.0, 2.0] INTO grp");
+        let embed = unwrap_embed(stmt);
+        assert!(matches!(embed.operation, EmbedOp::Store { .. }));
+        assert_eq!(embed.collection, Some("grp".to_string()));
+    }
+
+    // =========================================================================
+    // EMBED COLLECTION keyword
+    // =========================================================================
+
+    #[test]
+    fn test_embed_collection_keyword() {
+        let stmt = parse_stmt("EMBED STORE 'k' [1.0] COLLECTION grp");
+        let embed = unwrap_embed(stmt);
+        assert_eq!(embed.collection, Some("grp".to_string()));
+    }
+
+    #[test]
+    fn test_embed_into_keyword() {
+        let stmt = parse_stmt("EMBED STORE 'k' [1.0] INTO grp");
+        let embed = unwrap_embed(stmt);
+        assert_eq!(embed.collection, Some("grp".to_string()));
+    }
+
+    #[test]
+    fn test_embed_collection_string_name() {
+        let stmt = parse_stmt("EMBED STORE 'k' [1.0] COLLECTION 'my group'");
+        let embed = unwrap_embed(stmt);
+        assert_eq!(embed.collection, Some("my group".to_string()));
+    }
+
+    #[test]
+    fn test_embed_no_collection() {
+        let stmt = parse_stmt("EMBED STORE 'k' [1.0]");
+        let embed = unwrap_embed(stmt);
+        assert!(embed.collection.is_none());
+    }
+
+    // =========================================================================
+    // SIMILAR with TOP keyword
+    // =========================================================================
+
+    #[test]
+    fn test_similar_top_keyword() {
+        let stmt = parse_stmt("SIMILAR 'k' TOP 5");
+        let similar = unwrap_similar(stmt);
+        assert!(similar.limit.is_some());
+        assert!(matches!(
+            similar.limit.unwrap().kind,
+            ExprKind::Literal(Literal::Integer(5))
+        ));
+    }
+
+    #[test]
+    fn test_similar_limit_keyword() {
+        let stmt = parse_stmt("SIMILAR 'k' LIMIT 5");
+        let similar = unwrap_similar(stmt);
+        assert!(similar.limit.is_some());
+        assert!(matches!(
+            similar.limit.unwrap().kind,
+            ExprKind::Literal(Literal::Integer(5))
+        ));
+    }
+
+    #[test]
+    fn test_similar_cosine_limit() {
+        let stmt = parse_stmt("SIMILAR 'k' COSINE LIMIT 5");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.metric, Some(DistanceMetric::Cosine));
+        assert!(similar.limit.is_some());
+    }
+
+    #[test]
+    fn test_similar_limit_cosine() {
+        let stmt = parse_stmt("SIMILAR 'k' LIMIT 5 COSINE");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.metric, Some(DistanceMetric::Cosine));
+        assert!(similar.limit.is_some());
+    }
+
+    #[test]
+    fn test_similar_top_cosine() {
+        let stmt = parse_stmt("SIMILAR 'k' TOP 5 COSINE");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.metric, Some(DistanceMetric::Cosine));
+        assert!(similar.limit.is_some());
+    }
+
+    #[test]
+    fn test_similar_top_euclidean() {
+        let stmt = parse_stmt("SIMILAR 'k' TOP 10 EUCLIDEAN");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.metric, Some(DistanceMetric::Euclidean));
+        assert!(matches!(
+            similar.limit.unwrap().kind,
+            ExprKind::Literal(Literal::Integer(10))
+        ));
+    }
+
+    // =========================================================================
+    // SIMILAR COLLECTION keyword
+    // =========================================================================
+
+    #[test]
+    fn test_similar_collection_keyword() {
+        let stmt = parse_stmt("SIMILAR 'k' COLLECTION grp");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.collection, Some("grp".to_string()));
+    }
+
+    #[test]
+    fn test_similar_into_keyword() {
+        let stmt = parse_stmt("SIMILAR 'k' INTO grp");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.collection, Some("grp".to_string()));
+    }
+
+    #[test]
+    fn test_similar_collection_string_name() {
+        let stmt = parse_stmt("SIMILAR 'k' COLLECTION 'my group'");
+        let similar = unwrap_similar(stmt);
+        assert_eq!(similar.collection, Some("my group".to_string()));
+    }
+
+    #[test]
+    fn test_similar_top_with_collection() {
+        let stmt = parse_stmt("SIMILAR 'k' TOP 5 INTO grp");
+        let similar = unwrap_similar(stmt);
+        assert!(similar.limit.is_some());
+        assert_eq!(similar.collection, Some("grp".to_string()));
+    }
+
+    // =========================================================================
+    // FIND NODES/EDGES plural
+    // =========================================================================
+
+    #[test]
+    fn test_find_nodes_plural() {
+        let stmt = parse_stmt("FIND NODES person WHERE age > 25");
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes {
+                label: Some(ref l)
+            } if l.name == "person"
+        ));
+        assert!(find.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_find_edges_plural() {
+        let stmt = parse_stmt("FIND EDGES knows WHERE weight > 0.5");
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Edges {
+                edge_type: Some(ref t)
+            } if t.name == "knows"
+        ));
+        assert!(find.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_find_nodes_plural_no_label() {
+        let stmt = parse_stmt("FIND NODES WHERE active = true");
+        let find = unwrap_find(stmt);
+        assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
+        assert!(find.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_find_edges_plural_no_type() {
+        let stmt = parse_stmt("FIND EDGES WHERE weight > 0");
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Edges { edge_type: None }
+        ));
+    }
+
+    #[test]
+    fn test_find_nodes_plural_with_limit() {
+        let stmt = parse_stmt("FIND NODES person LIMIT 10");
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes { label: Some(_) }
+        ));
+        assert!(find.limit.is_some());
+    }
+
+    // =========================================================================
+    // AGGREGATE ON keyword
+    // =========================================================================
+
+    #[test]
+    fn test_aggregate_on_node_property() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM ON person");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty {
+            function,
+            property,
+            label,
+            ..
+        } = agg.operation
+        else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert_eq!(function, AggregateFunction::Sum);
+        assert_eq!(property.name, "age");
+        assert!(label.is_some());
+        assert_eq!(label.unwrap().name, "person");
+    }
+
+    #[test]
+    fn test_aggregate_on_edge_property() {
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight SUM ON knows");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateEdgeProperty {
+            function,
+            property,
+            edge_type,
+            ..
+        } = agg.operation
+        else {
+            panic!("expected AggregateEdgeProperty")
+        };
+        assert_eq!(function, AggregateFunction::Sum);
+        assert_eq!(property.name, "weight");
+        assert!(edge_type.is_some());
+        assert_eq!(edge_type.unwrap().name, "knows");
+    }
+
+    #[test]
+    fn test_aggregate_on_node_avg() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY salary AVG ON employee");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty {
+            function, label, ..
+        } = agg.operation
+        else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert_eq!(function, AggregateFunction::Avg);
+        assert_eq!(label.unwrap().name, "employee");
+    }
+
+    #[test]
+    fn test_aggregate_on_edge_with_filter() {
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight AVG ON knows WHERE weight > 0.5");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateEdgeProperty {
+            edge_type, filter, ..
+        } = agg.operation
+        else {
+            panic!("expected AggregateEdgeProperty")
+        };
+        assert_eq!(edge_type.unwrap().name, "knows");
+        assert!(filter.is_some());
+    }
+
+    #[test]
+    fn test_aggregate_on_node_with_filter() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY age COUNT ON person WHERE age > 18");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty {
+            function,
+            label,
+            filter,
+            ..
+        } = agg.operation
+        else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert_eq!(function, AggregateFunction::Count);
+        assert_eq!(label.unwrap().name, "person");
+        assert!(filter.is_some());
+    }
+
+    #[test]
+    fn test_aggregate_by_label_still_works() {
+        // Ensure BY LABEL still works alongside ON
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM BY LABEL person");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateNodeProperty { label, .. } = agg.operation else {
+            panic!("expected AggregateNodeProperty")
+        };
+        assert_eq!(label.unwrap().name, "person");
+    }
+
+    #[test]
+    fn test_aggregate_by_type_still_works() {
+        // Ensure BY TYPE still works alongside ON
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight AVG BY TYPE follows");
+        let agg = unwrap_graphaggregate(stmt);
+        let GraphAggregateOp::AggregateEdgeProperty { edge_type, .. } = agg.operation else {
+            panic!("expected AggregateEdgeProperty")
+        };
+        assert_eq!(edge_type.unwrap().name, "follows");
     }
 }

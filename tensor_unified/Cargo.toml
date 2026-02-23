@@ -16,9 +16,11 @@ description = "Cross-engine unified query execution for Neumann"
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }
+tensor_spatial = { path = "../tensor_spatial" }
 relational_engine = { path = "../relational_engine" }
 graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros"] }

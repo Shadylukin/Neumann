@@ -18,7 +18,7 @@ use crate::auth;
 use crate::config::AuthConfig;
 use crate::convert::{
     edge_to_proto, node_to_proto, paged_query_result_to_proto, query_result_to_proto, row_to_proto,
-    similar_to_proto,
+    similar_to_proto, spatial_to_proto,
 };
 use crate::metrics::ServerMetrics;
 use crate::proto::{
@@ -455,6 +455,23 @@ impl QueryService for QueryServiceImpl {
                     }
                     true
                 },
+                QueryResult::Spatial(items) => {
+                    for item in items {
+                        let chunk = QueryResponseChunk {
+                            chunk: Some(proto::query_response_chunk::Chunk::SpatialItem(
+                                proto::SpatialChunk {
+                                    item: Some(spatial_to_proto(item)),
+                                },
+                            )),
+                            is_final: false,
+                            sequence_number: None,
+                        };
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            return;
+                        }
+                    }
+                    true
+                },
                 _ => {
                     // For non-streaming results, send error
                     let chunk = QueryResponseChunk {
@@ -787,7 +804,7 @@ mod tests {
         let service = QueryServiceImpl::new(router);
 
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE users (name:string, age:int)".to_string(),
+            query: "CREATE TABLE users (name text, age int)".to_string(),
             identity: None,
         });
 
@@ -816,15 +833,16 @@ mod tests {
         // Setup: create table and insert data
         {
             let r = router.write();
-            r.execute("CREATE TABLE users (name:string, age:int)")
+            r.execute("CREATE TABLE users (name text, age int)")
                 .unwrap();
-            r.execute("INSERT users name=\"Alice\", age=30").unwrap();
+            r.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)")
+                .unwrap();
         }
 
         let service = QueryServiceImpl::new(router);
 
         let request = Request::new(QueryRequest {
-            query: "SELECT users".to_string(),
+            query: "SELECT * FROM users".to_string(),
             identity: None,
         });
 
@@ -845,15 +863,15 @@ mod tests {
         let request = Request::new(BatchQueryRequest {
             queries: vec![
                 QueryRequest {
-                    query: "CREATE TABLE batch_test (x:int)".to_string(),
+                    query: "CREATE TABLE batch_test (x int)".to_string(),
                     identity: None,
                 },
                 QueryRequest {
-                    query: "INSERT batch_test x=1".to_string(),
+                    query: "INSERT INTO batch_test (x) VALUES (1)".to_string(),
                     identity: None,
                 },
                 QueryRequest {
-                    query: "SELECT batch_test".to_string(),
+                    query: "SELECT * FROM batch_test".to_string(),
                     identity: None,
                 },
             ],
@@ -883,7 +901,7 @@ mod tests {
         // Request without auth should fail
         let request = Request::new(BatchQueryRequest {
             queries: vec![QueryRequest {
-                query: "CREATE TABLE batch_auth (x:int)".to_string(),
+                query: "CREATE TABLE batch_auth (x int)".to_string(),
                 identity: None,
             }],
         });
@@ -895,7 +913,7 @@ mod tests {
         // Request with valid auth should succeed
         let mut request = Request::new(BatchQueryRequest {
             queries: vec![QueryRequest {
-                query: "CREATE TABLE batch_auth (x:int)".to_string(),
+                query: "CREATE TABLE batch_auth (x int)".to_string(),
                 identity: None,
             }],
         });
@@ -927,7 +945,7 @@ mod tests {
         // Attempt to execute batch with different identity in query
         let mut request = Request::new(BatchQueryRequest {
             queries: vec![QueryRequest {
-                query: "CREATE TABLE priv_test (x:int)".to_string(),
+                query: "CREATE TABLE priv_test (x int)".to_string(),
                 identity: Some("user:evil".to_string()), // Attacker tries to impersonate
             }],
         });
@@ -975,7 +993,7 @@ mod tests {
 
         // Execute valid query - should stay healthy
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE health_test (x:int)".to_string(),
+            query: "CREATE TABLE health_test (x int)".to_string(),
             identity: None,
         });
         let _ = service.execute(request).await;
@@ -995,7 +1013,7 @@ mod tests {
 
         // Successful query should restore health
         let request = Request::new(QueryRequest {
-            query: "SELECT health_test".to_string(),
+            query: "SELECT * FROM health_test".to_string(),
             identity: None,
         });
         let _ = service.execute(request).await;
@@ -1035,7 +1053,7 @@ mod tests {
         let service = QueryServiceImpl::new(router);
 
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE id_test (x:int)".to_string(),
+            query: "CREATE TABLE id_test (x int)".to_string(),
             identity: Some("test-user".to_string()),
         });
 
@@ -1050,18 +1068,18 @@ mod tests {
         // Setup: create table and insert data
         {
             let r = router.write();
-            r.execute("CREATE TABLE stream_test (name:string, age:int)")
+            r.execute("CREATE TABLE stream_test (name text, age int)")
                 .unwrap();
-            r.execute("INSERT stream_test name=\"Alice\", age=30")
+            r.execute("INSERT INTO stream_test (name, age) VALUES ('Alice', 30)")
                 .unwrap();
-            r.execute("INSERT stream_test name=\"Bob\", age=25")
+            r.execute("INSERT INTO stream_test (name, age) VALUES ('Bob', 25)")
                 .unwrap();
         }
 
         let service = QueryServiceImpl::with_config(router, None, 10);
 
         let request = Request::new(QueryRequest {
-            query: "SELECT stream_test".to_string(),
+            query: "SELECT * FROM stream_test".to_string(),
             identity: None,
         });
 
@@ -1088,7 +1106,7 @@ mod tests {
 
         // Empty result doesn't stream well
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE stream_empty (x:int)".to_string(),
+            query: "CREATE TABLE stream_empty (x int)".to_string(),
             identity: None,
         });
 
@@ -1124,7 +1142,7 @@ mod tests {
 
         // Without auth should fail
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE auth_test (x:int)".to_string(),
+            query: "CREATE TABLE auth_test (x int)".to_string(),
             identity: None,
         });
 
@@ -1134,7 +1152,7 @@ mod tests {
 
         // With auth should succeed
         let mut request = Request::new(QueryRequest {
-            query: "CREATE TABLE auth_test (x:int)".to_string(),
+            query: "CREATE TABLE auth_test (x int)".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1247,7 +1265,7 @@ mod tests {
         );
 
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE metrics_test (x:int)".to_string(),
+            query: "CREATE TABLE metrics_test (x int)".to_string(),
             identity: None,
         });
 
@@ -1279,7 +1297,7 @@ mod tests {
         );
 
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE latency_test (x:int)".to_string(),
+            query: "CREATE TABLE latency_test (x int)".to_string(),
             identity: None,
         });
 
@@ -1319,7 +1337,7 @@ mod tests {
 
         // Request without auth should fail and record auth failure
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE auth_fail_test (x:int)".to_string(),
+            query: "CREATE TABLE auth_fail_test (x int)".to_string(),
             identity: None,
         });
 
@@ -1364,7 +1382,7 @@ mod tests {
 
         // First request should succeed (with valid API key)
         let mut request = Request::new(QueryRequest {
-            query: "CREATE TABLE rate_test (x:int)".to_string(),
+            query: "CREATE TABLE rate_test (x int)".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1376,7 +1394,7 @@ mod tests {
 
         // Second request should be rate limited and recorded
         let mut request = Request::new(QueryRequest {
-            query: "SELECT rate_test".to_string(),
+            query: "SELECT * FROM rate_test".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1470,7 +1488,7 @@ mod tests {
 
         // Execute a query with valid auth
         let mut request = Request::new(QueryRequest {
-            query: "CREATE TABLE audit_test (x:int)".to_string(),
+            query: "CREATE TABLE audit_test (x int)".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1512,7 +1530,7 @@ mod tests {
 
         // Execute with invalid API key
         let mut request = Request::new(QueryRequest {
-            query: "CREATE TABLE invalid_auth (x:int)".to_string(),
+            query: "CREATE TABLE invalid_auth (x int)".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1551,7 +1569,7 @@ mod tests {
 
         // Execute without API key when it's required
         let request = Request::new(QueryRequest {
-            query: "CREATE TABLE missing_auth (x:int)".to_string(),
+            query: "CREATE TABLE missing_auth (x int)".to_string(),
             identity: None,
         });
 
@@ -1595,7 +1613,7 @@ mod tests {
         // First two requests should succeed
         for i in 0..2 {
             let mut request = Request::new(QueryRequest {
-                query: format!("CREATE TABLE rate{i} (x:int)"),
+                query: format!("CREATE TABLE rate{i} (x int)"),
                 identity: None,
             });
             request.metadata_mut().insert(
@@ -1608,7 +1626,7 @@ mod tests {
 
         // Third request should be rate limited
         let mut request = Request::new(QueryRequest {
-            query: "CREATE TABLE rate_exceeded (x:int)".to_string(),
+            query: "CREATE TABLE rate_exceeded (x int)".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1654,7 +1672,7 @@ mod tests {
 
         // Execute with all components active
         let mut request = Request::new(QueryRequest {
-            query: "CREATE TABLE integrated_test (x:int)".to_string(),
+            query: "CREATE TABLE integrated_test (x int)".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1673,11 +1691,13 @@ mod tests {
         // Setup: create table with data
         {
             let r = router.write();
-            r.execute("CREATE TABLE paginated (name:string, val:int)")
+            r.execute("CREATE TABLE paginated (name text, val int)")
                 .unwrap();
             for i in 0..20 {
-                r.execute(&format!("INSERT paginated name=\"item{i}\", val={i}"))
-                    .unwrap();
+                r.execute(&format!(
+                    "INSERT INTO paginated (name, val) VALUES ('item{i}', {i})"
+                ))
+                .unwrap();
             }
         }
 
@@ -1685,7 +1705,7 @@ mod tests {
 
         // Test paginated query with page size 5
         let request = Request::new(PaginatedQueryRequest {
-            query: "SELECT paginated".to_string(),
+            query: "SELECT * FROM paginated".to_string(),
             page_size: Some(5),
             cursor: None,
             identity: None,
@@ -1708,15 +1728,15 @@ mod tests {
         // Setup: create table with small amount of data
         {
             let r = router.write();
-            r.execute("CREATE TABLE small_page (x:int)").unwrap();
-            r.execute("INSERT small_page x=1").unwrap();
+            r.execute("CREATE TABLE small_page (x int)").unwrap();
+            r.execute("INSERT INTO small_page (x) VALUES (1)").unwrap();
         }
 
         let service = QueryServiceImpl::new(router);
 
         // Test paginated query with large page size
         let request = Request::new(PaginatedQueryRequest {
-            query: "SELECT small_page".to_string(),
+            query: "SELECT * FROM small_page".to_string(),
             page_size: Some(100),
             cursor: None,
             identity: None,
@@ -1739,9 +1759,10 @@ mod tests {
         // Setup: create table with data
         {
             let r = router.write();
-            r.execute("CREATE TABLE cursor_test (x:int)").unwrap();
+            r.execute("CREATE TABLE cursor_test (x int)").unwrap();
             for i in 0..10 {
-                r.execute(&format!("INSERT cursor_test x={i}")).unwrap();
+                r.execute(&format!("INSERT INTO cursor_test (x) VALUES ({i})"))
+                    .unwrap();
             }
         }
 
@@ -1749,7 +1770,7 @@ mod tests {
 
         // First, create a cursor via paginated query
         let request = Request::new(PaginatedQueryRequest {
-            query: "SELECT cursor_test".to_string(),
+            query: "SELECT * FROM cursor_test".to_string(),
             page_size: Some(3),
             cursor: None,
             identity: None,
@@ -1799,8 +1820,8 @@ mod tests {
         // Setup data
         {
             let r = router.write();
-            r.execute("CREATE TABLE stream_auth (x:int)").unwrap();
-            r.execute("INSERT stream_auth x=1").unwrap();
+            r.execute("CREATE TABLE stream_auth (x int)").unwrap();
+            r.execute("INSERT INTO stream_auth (x) VALUES (1)").unwrap();
         }
 
         let auth_config = AuthConfig::new()
@@ -1814,7 +1835,7 @@ mod tests {
 
         // Without auth should fail
         let request = Request::new(QueryRequest {
-            query: "SELECT stream_auth".to_string(),
+            query: "SELECT * FROM stream_auth".to_string(),
             identity: None,
         });
         let response = service.execute_stream(request).await;
@@ -1822,7 +1843,7 @@ mod tests {
 
         // With auth should succeed
         let mut request = Request::new(QueryRequest {
-            query: "SELECT stream_auth".to_string(),
+            query: "SELECT * FROM stream_auth".to_string(),
             identity: None,
         });
         request.metadata_mut().insert(
@@ -1843,8 +1864,8 @@ mod tests {
         // Setup data
         {
             let r = router.write();
-            r.execute("CREATE TABLE page_auth (x:int)").unwrap();
-            r.execute("INSERT page_auth x=1").unwrap();
+            r.execute("CREATE TABLE page_auth (x int)").unwrap();
+            r.execute("INSERT INTO page_auth (x) VALUES (1)").unwrap();
         }
 
         let auth_config = AuthConfig::new()
@@ -1858,7 +1879,7 @@ mod tests {
 
         // Without auth should fail
         let request = Request::new(PaginatedQueryRequest {
-            query: "SELECT page_auth".to_string(),
+            query: "SELECT * FROM page_auth".to_string(),
             page_size: Some(10),
             cursor: None,
             identity: None,
@@ -1870,7 +1891,7 @@ mod tests {
 
         // With auth should succeed
         let mut request = Request::new(PaginatedQueryRequest {
-            query: "SELECT page_auth".to_string(),
+            query: "SELECT * FROM page_auth".to_string(),
             page_size: Some(10),
             cursor: None,
             identity: None,
@@ -1927,18 +1948,20 @@ mod tests {
         // Setup: create table with multiple rows
         {
             let r = router.write();
-            r.execute("CREATE TABLE stream_rows (name:string, value:int)")
+            r.execute("CREATE TABLE stream_rows (name text, value int)")
                 .unwrap();
             for i in 0..5 {
-                r.execute(&format!("INSERT stream_rows name=\"row{i}\", value={i}"))
-                    .unwrap();
+                r.execute(&format!(
+                    "INSERT INTO stream_rows (name, value) VALUES ('row{i}', {i})"
+                ))
+                .unwrap();
             }
         }
 
         let service = QueryServiceImpl::new(router);
 
         let request = Request::new(QueryRequest {
-            query: "SELECT stream_rows".to_string(),
+            query: "SELECT * FROM stream_rows".to_string(),
             identity: None,
         });
 
@@ -1962,16 +1985,17 @@ mod tests {
         // Setup: create table with data
         {
             let r = router.write();
-            r.execute("CREATE TABLE filtered_stream (x:int)").unwrap();
+            r.execute("CREATE TABLE filtered_stream (x int)").unwrap();
             for i in 0..10 {
-                r.execute(&format!("INSERT filtered_stream x={i}")).unwrap();
+                r.execute(&format!("INSERT INTO filtered_stream (x) VALUES ({i})"))
+                    .unwrap();
             }
         }
 
         let service = QueryServiceImpl::new(router);
 
         let request = Request::new(QueryRequest {
-            query: "SELECT filtered_stream WHERE x > 5".to_string(),
+            query: "SELECT * FROM filtered_stream WHERE x > 5".to_string(),
             identity: None,
         });
 
@@ -2006,17 +2030,21 @@ mod tests {
     async fn test_execute_stream_nodes() {
         let router = create_test_router();
 
-        // Setup: create graph nodes via keyword routing
+        // Setup: create table with data (avoids runtime-in-runtime conflict
+        // that NODE LIST triggers via UnifiedEngine block_on)
         {
             let r = router.write();
-            r.execute("NODE CREATE person{name:\"Alice\"}").unwrap();
-            r.execute("NODE CREATE person{name:\"Bob\"}").unwrap();
+            r.execute("CREATE TABLE stream_nodes (name text)").unwrap();
+            r.execute("INSERT INTO stream_nodes (name) VALUES ('Alice')")
+                .unwrap();
+            r.execute("INSERT INTO stream_nodes (name) VALUES ('Bob')")
+                .unwrap();
         }
 
         let service = QueryServiceImpl::with_config(router, None, 10);
 
         let request = Request::new(QueryRequest {
-            query: "NODE LIST".to_string(),
+            query: "SELECT * FROM stream_nodes".to_string(),
             identity: None,
         });
 
@@ -2036,9 +2064,9 @@ mod tests {
         // Setup: create graph nodes and an edge
         {
             let r = router.write();
-            r.execute("NODE CREATE person{name:\"Alice\"}").unwrap();
-            r.execute("NODE CREATE person{name:\"Bob\"}").unwrap();
-            r.execute("EDGE CREATE 1 -> 2 knows").unwrap();
+            r.execute("NODE CREATE person { name: 'Alice' }").unwrap();
+            r.execute("NODE CREATE person { name: 'Bob' }").unwrap();
+            r.execute("EDGE CREATE 1 -> 2 : knows").unwrap();
         }
 
         let service = QueryServiceImpl::with_config(router, None, 10);

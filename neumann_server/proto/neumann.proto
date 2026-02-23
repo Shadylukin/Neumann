@@ -80,6 +80,7 @@ message QueryResponseChunk {
     EdgeChunk edge = 3;
     SimilarChunk similar_item = 4;
     bytes blob_data = 5;
+    SpatialChunk spatial_item = 6;
     ErrorInfo error = 10;
     StreamCursorInfo cursor_info = 11;
   }
@@ -234,6 +235,10 @@ message SimilarItem {
 
 message SimilarChunk {
   SimilarItem item = 1;
+}
+
+message SpatialChunk {
+  SpatialItem item = 1;
 }
 
 // === Graph Algorithm Result Types ===

@@ -174,7 +174,10 @@ fn test_neighbors_by_similarity() {
     let router = create_shared_router();
 
     // Create a central entity
-    let alice_id = match router.execute("NODE CREATE user name='Alice'").unwrap() {
+    let alice_id = match router
+        .execute("NODE CREATE user { name: 'Alice' }")
+        .unwrap()
+    {
         QueryResult::Ids(ids) => ids[0],
         _ => panic!("Expected Ids"),
     };
@@ -182,7 +185,7 @@ fn test_neighbors_by_similarity() {
     // Create neighbors with embeddings (using non-negative values)
     for i in 0..5 {
         let neighbor_id = match router
-            .execute(&format!("NODE CREATE doc name='Doc{}'", i))
+            .execute(&format!("NODE CREATE doc {{ name: 'Doc{}' }}", i))
             .unwrap()
         {
             QueryResult::Ids(ids) => ids[0],
@@ -191,14 +194,17 @@ fn test_neighbors_by_similarity() {
 
         // Connect to Alice
         router
-            .execute(&format!("EDGE CREATE {} -> {} owns", alice_id, neighbor_id))
+            .execute(&format!(
+                "EDGE CREATE {} -> {} : owns",
+                alice_id, neighbor_id
+            ))
             .unwrap();
 
         // Store embedding using simple non-negative values
         let v = (i as f32) / 5.0;
         router
             .execute(&format!(
-                "EMBED node:{} {:.2}, {:.2}, 0.5, 0.5",
+                "EMBED STORE 'node:{}' [{:.2}, {:.2}, 0.5, 0.5]",
                 neighbor_id,
                 v,
                 1.0 - v
