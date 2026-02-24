@@ -567,10 +567,10 @@ impl UnifiedEngine {
             .take(max_items)
             .map(|(entry, distance)| {
                 let mut data = HashMap::new();
-                data.insert("x".to_string(), entry.bounds.x.to_string());
-                data.insert("y".to_string(), entry.bounds.y.to_string());
-                data.insert("width".to_string(), entry.bounds.width.to_string());
-                data.insert("height".to_string(), entry.bounds.height.to_string());
+                data.insert("x".to_string(), entry.bounds.x().to_string());
+                data.insert("y".to_string(), entry.bounds.y().to_string());
+                data.insert("width".to_string(), entry.bounds.width().to_string());
+                data.insert("height".to_string(), entry.bounds.height().to_string());
                 UnifiedItem {
                     source: "spatial".to_string(),
                     id: entry.data.clone(),
@@ -609,10 +609,10 @@ impl UnifiedEngine {
             .into_iter()
             .map(|e| {
                 let mut data = HashMap::new();
-                data.insert("x".to_string(), e.bounds.x.to_string());
-                data.insert("y".to_string(), e.bounds.y.to_string());
-                data.insert("width".to_string(), e.bounds.width.to_string());
-                data.insert("height".to_string(), e.bounds.height.to_string());
+                data.insert("x".to_string(), e.bounds.x().to_string());
+                data.insert("y".to_string(), e.bounds.y().to_string());
+                data.insert("width".to_string(), e.bounds.width().to_string());
+                data.insert("height".to_string(), e.bounds.height().to_string());
                 UnifiedItem {
                     source: "spatial".to_string(),
                     id: e.data.clone(),

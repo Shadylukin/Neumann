@@ -219,10 +219,10 @@ pub async fn query(
         .map(|(e, dist)| SpatialResultItem {
             key: e.data.clone(),
             distance: dist,
-            x: e.bounds.x,
-            y: e.bounds.y,
-            width: e.bounds.width,
-            height: e.bounds.height,
+            x: e.bounds.x(),
+            y: e.bounds.y(),
+            width: e.bounds.width(),
+            height: e.bounds.height(),
         })
         .collect();
     drop(guard);
