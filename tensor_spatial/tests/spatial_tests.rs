@@ -2861,3 +2861,62 @@ fn test_split_strategy_default() {
     let s = SplitStrategy::default();
     assert_eq!(s, SplitStrategy::RStar);
 }
+
+// ---------------------------------------------------------------------------
+// Bug regression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_remove_respects_region_with_duplicate_data() {
+    // Regression: remove used to match only on `pred`, ignoring `region`,
+    // so duplicate payloads at different locations could remove the wrong entry.
+    let mut index = SpatialIndex::new();
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(100.0, 100.0, 1.0, 1.0).unwrap(),
+        data: "A",
+    });
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+        data: "A",
+    });
+    assert_eq!(index.len(), 2);
+
+    // Remove only the entry at (0,0).
+    let region = BoundingBox::new(0.0, 0.0, 1.0, 1.0).unwrap();
+    index.remove(region, |e| e.data == "A").unwrap();
+    assert_eq!(index.len(), 1);
+
+    // The remaining entry must be the one at (100,100), not (0,0).
+    let remaining = index.iter().next().unwrap();
+    assert!(
+        (remaining.bounds.x() - 100.0).abs() < f32::EPSILON,
+        "expected entry at x=100, got x={}",
+        remaining.bounds.x()
+    );
+}
+
+#[test]
+fn test_bounding_box_2d_serde_rejects_negative_width() {
+    // Regression: 2D deserialization used to skip extent validation.
+    let bytes = bitcode::serialize(&(0.0_f32, 0.0_f32, -1.0_f32, 1.0_f32)).unwrap();
+    let result: Result<BoundingBox, _> = bitcode::deserialize(&bytes);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_bounding_box_2d_serde_rejects_negative_height() {
+    let bytes = bitcode::serialize(&(0.0_f32, 0.0_f32, 1.0_f32, -1.0_f32)).unwrap();
+    let result: Result<BoundingBox, _> = bitcode::deserialize(&bytes);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_bounding_box_nd_serde_rejects_negative_extent() {
+    // 4D negative extent via serde.
+    let bytes = bitcode::serialize(&(
+        0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32, 1.0_f32, -1.0_f32, 1.0_f32, 1.0_f32,
+    ))
+    .unwrap();
+    let result: Result<BoundingBoxN<4>, _> = bitcode::deserialize(&bytes);
+    assert!(result.is_err());
+}

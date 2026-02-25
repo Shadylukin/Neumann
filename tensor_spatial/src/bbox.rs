@@ -360,15 +360,12 @@ impl<'de, const D: usize> Deserialize<'de> for BoundingBoxN<D> {
                         .next_element()?
                         .ok_or_else(|| serde::de::Error::invalid_length(D, &self))?;
                 }
-                let bb = BoundingBoxN::from_raw_unchecked(origin, extent);
-                // Preserve current 3D validation: reject negative extents on
-                // deserialization. 2D (and other dims) skip this check.
-                if D == 3 && extent.iter().any(|e| *e < 0.0) {
+                if extent.iter().any(|e| *e < 0.0) {
                     return Err(serde::de::Error::custom(
-                        "invalid 3D bounding box: width, height, and depth must be non-negative",
+                        "invalid bounding box: all extents must be non-negative",
                     ));
                 }
-                Ok(bb)
+                Ok(BoundingBoxN::from_raw_unchecked(origin, extent))
             }
         }
 

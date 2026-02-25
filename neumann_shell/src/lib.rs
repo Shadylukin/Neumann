@@ -723,12 +723,8 @@ impl Shell {
 
     /// Set current identity for vault access control.
     fn handle_vault_identity(&self, input: &str) -> CommandResult {
-        let rest = input
-            .to_lowercase()
-            .strip_prefix("vault identity")
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let prefix_len = "vault identity".len();
+        let rest = input.get(prefix_len..).unwrap_or("").trim().to_string();
 
         let identity = if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() > 2 {
             &rest[1..rest.len() - 1]
@@ -3970,6 +3966,35 @@ mod tests {
         assert!(matches!(result, CommandResult::Output(_)));
         if let CommandResult::Output(msg) = result {
             assert!(msg.contains("Identity set"));
+        }
+    }
+
+    #[test]
+    fn test_handle_vault_identity_preserves_case() {
+        // Regression: handler used to lowercase the identity.
+        let shell = Shell::new();
+        let result = shell.handle_vault_identity("VAULT IDENTITY Alice:Prod");
+        if let CommandResult::Output(msg) = result {
+            assert!(
+                msg.contains("Alice:Prod"),
+                "identity should preserve case, got: {msg}"
+            );
+        } else {
+            panic!("expected Output");
+        }
+    }
+
+    #[test]
+    fn test_handle_vault_identity_preserves_quoted_case() {
+        let shell = Shell::new();
+        let result = shell.handle_vault_identity("vault identity 'Bob:Admin'");
+        if let CommandResult::Output(msg) = result {
+            assert!(
+                msg.contains("Bob:Admin"),
+                "quoted identity should preserve case, got: {msg}"
+            );
+        } else {
+            panic!("expected Output");
         }
     }
 

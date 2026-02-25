@@ -9,7 +9,7 @@ fn main() {
     let cli = Cli::parse();
 
     let config = ShellConfig {
-        no_color: cli.no_color,
+        no_color: cli.no_color.is_some(),
         no_boot: cli.no_boot,
         quiet: cli.quiet,
         ..Default::default()

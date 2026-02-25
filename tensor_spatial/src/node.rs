@@ -246,7 +246,10 @@ impl<const D: usize, T> NodeN<D, T> {
     {
         match self {
             Self::Leaf { entries } => {
-                let Some(pos) = entries.iter().position(pred) else {
+                let Some(pos) = entries
+                    .iter()
+                    .position(|e| e.bounds.intersects(region) && pred(e))
+                else {
                     return (false, Vec::new());
                 };
                 entries.remove(pos);
