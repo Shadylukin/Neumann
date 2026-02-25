@@ -65,5 +65,8 @@ required = true
 [crates.tensor_unified]
 required = true
 
+[crates.tensor_spatial]
+required = true
+
 [crates.tensor_checkpoint]
 required = true

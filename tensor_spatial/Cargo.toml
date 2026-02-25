@@ -20,7 +20,13 @@ serde.workspace = true
 
 [dev-dependencies]
 bitcode.workspace = true
+criterion.workspace = true
 parking_lot.workspace = true
+rand = "0.8"
+
+[[bench]]
+name = "spatial_bench"
+harness = false
 
 [lints]
 workspace = true

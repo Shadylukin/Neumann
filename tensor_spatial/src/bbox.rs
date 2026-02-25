@@ -116,6 +116,29 @@ impl<const D: usize> BoundingBoxN<D> {
         Self { origin, extent }
     }
 
+    /// Returns the margin (sum of all extents).
+    ///
+    /// For 2D this is the semi-perimeter; used by the R\*-tree axis selection.
+    #[must_use]
+    pub fn margin(self) -> f32 {
+        self.extent.iter().sum()
+    }
+
+    /// Returns the hypervolume of the intersection with `other`.
+    ///
+    /// Returns 0 if the boxes do not overlap on any axis.
+    #[must_use]
+    pub fn overlap_volume(self, other: Self) -> f32 {
+        let mut vol = 1.0_f32;
+        for i in 0..D {
+            let lo = self.origin[i].max(other.origin[i]);
+            let hi = (self.origin[i] + self.extent[i]).min(other.origin[i] + other.extent[i]);
+            let overlap = (hi - lo).max(0.0);
+            vol *= overlap;
+        }
+        vol
+    }
+
     /// Returns `true` if any extent is zero (the box has zero hypervolume).
     #[must_use]
     pub fn is_empty(self) -> bool {
