@@ -22,7 +22,7 @@ serde.workspace = true
 bitcode.workspace = true
 criterion.workspace = true
 parking_lot.workspace = true
-rand = "0.8"
+rand = "0.9"
 
 [[bench]]
 name = "spatial_bench"
