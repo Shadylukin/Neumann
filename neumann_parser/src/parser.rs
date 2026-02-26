@@ -2011,6 +2011,15 @@ impl<'a> Parser<'a> {
                 radius,
                 limit,
             }
+        } else if self.eat(&TokenKind::Nearest) {
+            let x = self.parse_expr()?;
+            let y = self.parse_expr()?;
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            SpatialOp::Nearest { x, y, limit }
         } else if self.eat(&TokenKind::Delete) {
             let key = self.parse_expr()?;
             self.expect(&TokenKind::Bounds)?;
@@ -2030,7 +2039,7 @@ impl<'a> Parser<'a> {
         } else {
             return Err(ParseError::new(
                 ParseErrorKind::InvalidSyntax(
-                    "expected INSERT, WITHIN, DELETE, or COUNT after SPATIAL".to_string(),
+                    "expected INSERT, WITHIN, NEAREST, DELETE, or COUNT after SPATIAL".to_string(),
                 ),
                 self.current.span,
             ));
@@ -10399,6 +10408,54 @@ mod tests {
     fn test_parse_spatial_count() {
         let stmt = unwrap_spatial(parse_stmt("SPATIAL COUNT"));
         assert!(matches!(stmt.op, SpatialOp::Count));
+    }
+
+    #[test]
+    fn test_parse_spatial_nearest() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL NEAREST 500 500"));
+        match stmt.op {
+            SpatialOp::Nearest { x, y, limit } => {
+                assert!(matches!(x.kind, ExprKind::Literal(Literal::Integer(500))));
+                assert!(matches!(y.kind, ExprKind::Literal(Literal::Integer(500))));
+                assert!(limit.is_none());
+            },
+            other => panic!("expected Nearest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spatial_nearest_with_limit() {
+        let stmt = unwrap_spatial(parse_stmt("SPATIAL NEAREST 1.0 2.0 LIMIT 10"));
+        match stmt.op {
+            SpatialOp::Nearest { x, y, limit } => {
+                assert!(
+                    matches!(x.kind, ExprKind::Literal(Literal::Float(v)) if (v - 1.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(y.kind, ExprKind::Literal(Literal::Float(v)) if (v - 2.0).abs() < f64::EPSILON)
+                );
+                let lim = limit.expect("expected LIMIT");
+                assert!(matches!(lim.kind, ExprKind::Literal(Literal::Integer(10))));
+            },
+            other => panic!("expected Nearest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_nearest_keyword_as_identifier() {
+        // NEAREST is a contextual keyword -- it should parse as an identifier
+        // in expression contexts like SELECT column lists.
+        let stmt = parse_stmt("SELECT nearest FROM t");
+        match stmt.kind {
+            StatementKind::Select(sel) => {
+                assert_eq!(sel.columns.len(), 1);
+                match &sel.columns[0].expr.kind {
+                    ExprKind::Ident(ident) => assert_eq!(ident.name, "nearest"),
+                    other => panic!("expected Ident, got {other:?}"),
+                }
+            },
+            other => panic!("expected Select, got {other:?}"),
+        }
     }
 
     #[test]

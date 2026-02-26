@@ -402,7 +402,7 @@ pub struct SimilarResult {
 pub struct SpatialResult {
     /// Key of the spatial entry.
     pub key: String,
-    /// Minimum distance from query point to closest point on bounding box.
+    /// Distance from query point to the entry (edge distance for WITHIN, centroid distance for NEAREST).
     pub distance: f32,
     /// Bounding box x coordinate.
     pub x: f32,
@@ -6284,11 +6284,42 @@ impl QueryRouter {
                     .map_err(|e| RouterError::NotFound(e.to_string()))?;
                 Ok(QueryResult::Empty)
             },
+            SpatialOp::Nearest { x, y, limit } => self.exec_spatial_nearest(x, y, limit.as_ref()),
             SpatialOp::Count => {
                 let count = self.spatial.read().len();
                 Ok(QueryResult::Count(count))
             },
         }
+    }
+
+    /// Executes a `SPATIAL NEAREST` centroid-distance query.
+    fn exec_spatial_nearest(
+        &self,
+        x: &Expr,
+        y: &Expr,
+        limit: Option<&Expr>,
+    ) -> Result<QueryResult> {
+        let cx = self.expr_to_f32(x)?;
+        let cy = self.expr_to_f32(y)?;
+        let k = limit
+            .map(|e| self.expr_to_usize(e))
+            .transpose()?
+            .unwrap_or(1);
+        let results: Vec<SpatialResult> = self
+            .spatial
+            .read()
+            .query_nearest_by_centroid(cx, cy, k)
+            .into_iter()
+            .map(|e| SpatialResult {
+                key: e.data.clone(),
+                distance: e.bounds.center_dist_sq(cx, cy).sqrt(),
+                x: e.bounds.x(),
+                y: e.bounds.y(),
+                width: e.bounds.width(),
+                height: e.bounds.height(),
+            })
+            .collect();
+        Ok(QueryResult::Spatial(results))
     }
 
     /// Extracts column names from a JOIN ON condition like `a.col = b.col`.
@@ -11223,7 +11254,10 @@ mod tests {
             );
         }
 
-        let reads = ["SPATIAL WITHIN 5.0 10.0 RADIUS 25.0"];
+        let reads = [
+            "SPATIAL WITHIN 5.0 10.0 RADIUS 25.0",
+            "SPATIAL NEAREST 5.0 10.0 LIMIT 3",
+        ];
         for query in &reads {
             let stmt = parser::parse(query).unwrap();
             assert!(
@@ -21055,6 +21089,74 @@ mod tests {
             .unwrap();
         match result {
             QueryResult::Spatial(items) => assert_eq!(items.len(), 2),
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_nearest_basic() {
+        let router = QueryRouter::new();
+        router
+            .execute("SPATIAL INSERT 'a' BOUNDS 10.0 10.0 5.0 5.0")
+            .unwrap();
+        router
+            .execute("SPATIAL INSERT 'b' BOUNDS 100.0 100.0 5.0 5.0")
+            .unwrap();
+        // Query point (12, 12) is near 'a' (centroid 12.5, 12.5)
+        let result = router.execute("SPATIAL NEAREST 12 12").unwrap();
+        match result {
+            QueryResult::Spatial(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].key, "a");
+            },
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_nearest_with_limit() {
+        let router = QueryRouter::new();
+        router
+            .execute("SPATIAL INSERT 'p1' BOUNDS 0.0 0.0 2.0 2.0")
+            .unwrap();
+        router
+            .execute("SPATIAL INSERT 'p2' BOUNDS 10.0 10.0 2.0 2.0")
+            .unwrap();
+        router
+            .execute("SPATIAL INSERT 'p3' BOUNDS 20.0 20.0 2.0 2.0")
+            .unwrap();
+        // LIMIT 2 should return only 2 nearest entries
+        let result = router.execute("SPATIAL NEAREST 0.0 0.0 LIMIT 2").unwrap();
+        match result {
+            QueryResult::Spatial(items) => {
+                assert_eq!(items.len(), 2);
+                // Nearest first: p1 (centroid 1,1) then p2 (centroid 11,11)
+                assert_eq!(items[0].key, "p1");
+                assert_eq!(items[1].key, "p2");
+            },
+            other => panic!("Expected Spatial result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spatial_nearest_prefers_small_centroid() {
+        let router = QueryRouter::new();
+        // Large box: centroid at (50, 50)
+        router
+            .execute("SPATIAL INSERT 'big' BOUNDS 0.0 0.0 100.0 100.0")
+            .unwrap();
+        // Small box near query: centroid at (6, 6)
+        router
+            .execute("SPATIAL INSERT 'small' BOUNDS 4.0 4.0 4.0 4.0")
+            .unwrap();
+        // Query at (5, 5) -- small centroid (6,6) is nearer than big centroid (50,50)
+        let result = router.execute("SPATIAL NEAREST 5 5 LIMIT 2").unwrap();
+        match result {
+            QueryResult::Spatial(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].key, "small");
+                assert_eq!(items[1].key, "big");
+            },
             other => panic!("Expected Spatial result, got: {other:?}"),
         }
     }

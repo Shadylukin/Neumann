@@ -801,6 +801,15 @@ pub enum SpatialOp {
         /// Bounding box height.
         height: Expr,
     },
+    /// Nearest centroid query: `SPATIAL NEAREST x y [LIMIT k]`
+    Nearest {
+        /// X coordinate of query point.
+        x: Expr,
+        /// Y coordinate of query point.
+        y: Expr,
+        /// Maximum results to return (defaults to 1 at execution).
+        limit: Option<Expr>,
+    },
     /// Count entries: `SPATIAL COUNT`
     Count,
 }

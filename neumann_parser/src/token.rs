@@ -325,6 +325,8 @@ pub enum TokenKind {
     Spatial,
     /// Spatial `WITHIN` keyword.
     Within,
+    /// Spatial `NEAREST` keyword.
+    Nearest,
     /// Spatial `RADIUS` keyword.
     Radius,
     /// Spatial `BOUNDS` keyword.
@@ -732,6 +734,7 @@ impl TokenKind {
                 | Batch
                 | Spatial
                 | Within
+                | Nearest
                 | Radius
                 | Bounds
                 | Find
@@ -871,6 +874,8 @@ impl TokenKind {
             | Damping | Tolerance | Iterations | Sampling | Resolution | Passes
             // Graph extended (can be used as identifiers)
             | Weighted | Variable | Hops | Depth | Skip | Total | Pattern | Aggregate | Property | Type | Graph
+            // Spatial (can be used as identifiers)
+            | Nearest
             // Data types (can be used as identifiers)
             | Int | Float_ | Boolean | Text
         )
@@ -1020,6 +1025,7 @@ impl TokenKind {
             // Spatial keywords
             "SPATIAL" => Self::Spatial,
             "WITHIN" => Self::Within,
+            "NEAREST" => Self::Nearest,
             "RADIUS" => Self::Radius,
             "BOUNDS" => Self::Bounds,
 
@@ -1263,6 +1269,7 @@ impl TokenKind {
             Batch => "BATCH",
             Spatial => "SPATIAL",
             Within => "WITHIN",
+            Nearest => "NEAREST",
             Radius => "RADIUS",
             Bounds => "BOUNDS",
             Find => "FIND",
@@ -1503,6 +1510,7 @@ mod tests {
         assert!(TokenKind::From.is_keyword());
         assert!(TokenKind::Node.is_keyword());
         assert!(TokenKind::Embed.is_keyword());
+        assert!(TokenKind::Nearest.is_keyword());
         assert!(TokenKind::True.is_keyword());
         assert!(TokenKind::Null.is_keyword());
         assert!(!TokenKind::Ident("foo".to_string()).is_keyword());
@@ -1639,6 +1647,13 @@ mod tests {
         assert_eq!(TokenKind::Vertex.as_str(), "VERTEX");
         assert_eq!(TokenKind::Vertices.as_str(), "VERTICES");
         assert_eq!(TokenKind::Edges.as_str(), "EDGES");
+
+        // Spatial
+        assert_eq!(TokenKind::Spatial.as_str(), "SPATIAL");
+        assert_eq!(TokenKind::Within.as_str(), "WITHIN");
+        assert_eq!(TokenKind::Nearest.as_str(), "NEAREST");
+        assert_eq!(TokenKind::Radius.as_str(), "RADIUS");
+        assert_eq!(TokenKind::Bounds.as_str(), "BOUNDS");
 
         // Vector
         assert_eq!(TokenKind::Embed.as_str(), "EMBED");
@@ -1992,6 +2007,7 @@ mod tests {
         // Spatial keywords
         assert!(TokenKind::keyword_from_str("SPATIAL").is_some());
         assert!(TokenKind::keyword_from_str("WITHIN").is_some());
+        assert!(TokenKind::keyword_from_str("NEAREST").is_some());
         assert!(TokenKind::keyword_from_str("RADIUS").is_some());
         assert!(TokenKind::keyword_from_str("BOUNDS").is_some());
         // Aggregates
