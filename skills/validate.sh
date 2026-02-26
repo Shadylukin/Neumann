@@ -158,12 +158,58 @@ for skill_file in "${SKILL_FILES[@]}"; do
     if [[ ! -f "$openai_yaml" ]]; then
         errors+=("Missing agents/openai.yaml")
     else
-        # Verify required keys exist (may be nested under interface:)
-        for required_key in display_name short_description default_prompt; do
-            if ! grep -qE "^[[:space:]]*${required_key}:" "$openai_yaml" 2>/dev/null; then
-                errors+=("agents/openai.yaml missing required key: $required_key")
-            fi
-        done
+        # Validate required keys exist under interface:, ignoring block scalars.
+        # Block scalar indicators: | > and variants |- |+ |2 >- >+ >2 etc.
+        missing=$(awk '
+            BEGIN { scalar_indent = -1; iface = 0; iface_indent = -1
+                    need["display_name"] = 1
+                    need["short_description"] = 1
+                    need["default_prompt"] = 1 }
+            {
+                # Measure leading whitespace
+                match($0, /^[[:space:]]*/); indent = RLENGTH
+
+                # Exit block scalar when a non-blank line at <= opener indent
+                if (scalar_indent >= 0) {
+                    if (indent <= scalar_indent && $0 !~ /^[[:space:]]*$/) {
+                        scalar_indent = -1
+                    } else {
+                        next
+                    }
+                }
+
+                # Detect block scalar opener: key: | or key: > (with optional
+                # chomp/indent modifiers like |- |+ |2 >- >+ >2)
+                if ($0 ~ /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*:[[:space:]]*[|>]([0-9]*[-+]?|[-+][0-9]*)([[:space:]]*#.*)?[[:space:]]*$/) {
+                    scalar_indent = indent
+                }
+
+                # Detect interface: key (top-level or nested)
+                if ($0 ~ /^[[:space:]]*interface:[[:space:]]*(#.*)?$/) {
+                    iface = 1; iface_indent = indent; next
+                }
+
+                # If inside interface block, check for required keys
+                if (iface && indent > iface_indent) {
+                    for (k in need) {
+                        pat = "^[[:space:]]*" k ":"
+                        if ($0 ~ pat) delete need[k]
+                    }
+                }
+
+                # If we hit a line at interface indent or less, exit interface block
+                if (iface && indent <= iface_indent && $0 !~ /^[[:space:]]*$/) {
+                    iface = 0
+                }
+            }
+            END { for (k in need) print k }
+        ' "$openai_yaml")
+
+        if [[ -n "$missing" ]]; then
+            while IFS= read -r key; do
+                errors+=("agents/openai.yaml missing required key under interface: $key")
+            done <<< "$missing"
+        fi
     fi
 
     # -- Report results -----------------------------------------------------

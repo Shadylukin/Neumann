@@ -34,7 +34,7 @@ PROJECT_ROOT=""
 find_project_root() {
     local dir="$PWD"
     while [[ "$dir" != "/" ]]; do
-        if [[ -d "$dir/.git" ]]; then
+        if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
             PROJECT_ROOT="$dir"
             return 0
         fi
@@ -112,12 +112,35 @@ for manifest in "${MANIFEST_PATHS[@]}"; do
     skills_removed=0
 
     for skill_path in "${skill_paths[@]}"; do
-        # Verify the path starts with one of the allowed roots
+        # Canonicalize skill_path (resolve symlinks + .. segments).
+        # If the path does not exist, there is nothing to delete (idempotent).
+        if [[ -d "$skill_path" ]]; then
+            resolved="$(cd "$skill_path" 2>/dev/null && pwd -P)" || true
+            if [[ -z "$resolved" ]]; then
+                warn "  Skipping $skill_path -- directory not accessible"
+                continue
+            fi
+            skill_path="$resolved"
+        else
+            continue
+        fi
+
+        # Verify leaf directory name starts with neumann-
+        leaf="$(basename "$skill_path")"
+        if [[ "$leaf" != neumann-* ]]; then
+            warn "  Skipping $skill_path -- not a neumann-* directory"
+            continue
+        fi
+
+        # Check against allowed roots (strict child, never the root itself)
         path_allowed=false
         for root in "${ALLOWED_ROOTS[@]}"; do
-            # Normalize: ensure root doesn't end with /
             root="${root%/}"
-            if [[ "$skill_path" == "$root"/* || "$skill_path" == "$root" ]]; then
+            if [[ -d "$root" ]]; then
+                resolved_root="$(cd "$root" 2>/dev/null && pwd -P)" || true
+                [[ -n "$resolved_root" ]] && root="$resolved_root"
+            fi
+            if [[ "$skill_path" == "$root"/* ]]; then
                 path_allowed=true
                 break
             fi
@@ -128,13 +151,9 @@ for manifest in "${MANIFEST_PATHS[@]}"; do
             continue
         fi
 
-        # Remove the skill directory if it exists (idempotent)
-        if [[ -d "$skill_path" ]]; then
-            rm -rf "$skill_path"
-            success "  Removed $(basename "$skill_path")"
-            ((skills_removed++)) || true
-        fi
-        # If it doesn't exist, skip silently (idempotent)
+        rm -rf "$skill_path"
+        success "  Removed $leaf"
+        ((skills_removed++)) || true
     done
 
     # Remove the manifest file itself

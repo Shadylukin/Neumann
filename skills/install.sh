@@ -91,6 +91,9 @@ SKILLS_SRC=""
 if [[ -d "$SCRIPT_DIR/neumann-query" && -d "$SCRIPT_DIR/neumann-schema" ]]; then
     LOCAL_MODE=true
     SKILLS_SRC="$SCRIPT_DIR"
+    if [[ -n "${NEUMANN_SKILLS_REF:-}" ]]; then
+        warn "NEUMANN_SKILLS_REF='$NEUMANN_SKILLS_REF' is ignored in local mode (skills are read from $SKILLS_SRC)"
+    fi
     info "Local mode: using skills from $SKILLS_SRC"
 else
     info "Remote mode: downloading skills from GitHub"
@@ -102,7 +105,7 @@ else
         info "Resolving latest release tag..."
         REF=$(curl -sSfL "https://api.github.com/repos/${REPO}/releases/latest" \
             | grep '"tag_name"' \
-            | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/')
+            | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
         if [[ -z "$REF" ]]; then
             error "Could not resolve latest release tag. Set NEUMANN_SKILLS_REF explicitly."
         fi
@@ -117,9 +120,9 @@ else
 
     info "Extracting skills directories..."
     # GitHub tarballs have a top-level directory like Shadylukin-Neumann-<sha>/
-    # We extract only the skills/neumann-*/ subtrees.
+    # Extract the full skills/ subtree (includes VERSION + neumann-*/ dirs).
     TAR_PREFIX=$(tar -tzf "$TARBALL" | head -1 | cut -d/ -f1)
-    tar -xzf "$TARBALL" -C "$TMPDIR_INSTALL" --include="${TAR_PREFIX}/skills/neumann-*/*"
+    tar -xzf "$TARBALL" -C "$TMPDIR_INSTALL" "${TAR_PREFIX}/skills/"
 
     SKILLS_SRC="$TMPDIR_INSTALL/${TAR_PREFIX}/skills"
 
@@ -153,7 +156,7 @@ PROJECT_ROOT=""
 find_project_root() {
     local dir="$PWD"
     while [[ "$dir" != "/" ]]; do
-        if [[ -d "$dir/.git" ]]; then
+        if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
             PROJECT_ROOT="$dir"
             return 0
         fi
@@ -222,7 +225,7 @@ fi
 # Codex only supports global scope
 if [[ "$INSTALL_CODEX" == true && "$SCOPE" == "project" ]]; then
     # If user explicitly requested codex, let it install to global location
-    if [[ -n "$TOOLS_INPUT" ]] && echo "$TOOLS_INPUT" | grep -qw "codex"; then
+    if [[ -n "$TOOLS_INPUT" ]] && echo "$TOOLS_INPUT" | grep -qwE "codex|all"; then
         warn "Codex does not support project-level skills. Installing to ~/.codex/skills/ instead."
     else
         warn "Codex does not support project-level skills. Skipping Codex."
