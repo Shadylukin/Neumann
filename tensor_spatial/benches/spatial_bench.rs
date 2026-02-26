@@ -368,6 +368,23 @@ fn bench_3d(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_nearest_centroid(c: &mut Criterion) {
+    let mut group = c.benchmark_group("nearest_centroid");
+
+    for &n in &[10_000, 100_000] {
+        let index = SpatialIndex::bulk_load(random_entries(n, 42));
+        group.bench_with_input(BenchmarkId::new("k10", n), &index, |b, index| {
+            b.iter(|| {
+                let results =
+                    index.query_nearest_by_centroid(black_box(500.0), black_box(500.0), 10);
+                black_box(results.len());
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_mixed_workload(c: &mut Criterion) {
     let mut group = c.benchmark_group("mixed_workload");
     group.sample_size(10);
@@ -422,6 +439,7 @@ criterion_group!(
     bench_split_strategies,
     bench_query_strategies,
     bench_nearest_k_sizes,
+    bench_nearest_centroid,
     bench_3d,
     bench_mixed_workload,
 );

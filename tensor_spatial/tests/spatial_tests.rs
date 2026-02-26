@@ -2920,3 +2920,301 @@ fn test_bounding_box_nd_serde_rejects_negative_extent() {
     let result: Result<BoundingBoxN<4>, _> = bitcode::deserialize(&bytes);
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Centroid-distance nearest-neighbor tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_nearest_by_centroid_prefers_small_over_container() {
+    let mut index = SpatialIndex::new();
+    // Large container: center at (500, 500)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(0.0, 0.0, 1000.0, 1000.0).unwrap(),
+        data: "large",
+    });
+    // Small box: center at (505, 505)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(500.0, 500.0, 10.0, 10.0).unwrap(),
+        data: "small",
+    });
+
+    // Query at (506, 506): closer to small center (505,505) than large center (500,500).
+    let results = index.query_nearest_by_centroid(506.0, 506.0, 2);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].data, "small");
+    assert_eq!(results[1].data, "large");
+
+    // Edge-distance query would rank large first (distance 0 since point is inside).
+    let edge_results = index.query_nearest(506.0, 506.0, 2);
+    assert_eq!(edge_results[0].data, "large");
+}
+
+#[test]
+fn test_nearest_by_centroid_nested_hierarchy() {
+    let mut index = SpatialIndex::new();
+    // Outermost: center (250, 250)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(0.0, 0.0, 500.0, 500.0).unwrap(),
+        data: "outer",
+    });
+    // Middle: center (200, 200)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(100.0, 100.0, 200.0, 200.0).unwrap(),
+        data: "middle",
+    });
+    // Inner: center (155, 155)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(150.0, 150.0, 10.0, 10.0).unwrap(),
+        data: "inner",
+    });
+
+    // Query at (156, 156): brute-force centroid distances:
+    //   inner:  (156-155)^2 + (156-155)^2 = 2
+    //   middle: (156-200)^2 + (156-200)^2 = 3872
+    //   outer:  (156-250)^2 + (156-250)^2 = 17672
+    let results = index.query_nearest_by_centroid(156.0, 156.0, 3);
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].data, "inner");
+    assert_eq!(results[1].data, "middle");
+    assert_eq!(results[2].data, "outer");
+}
+
+#[test]
+fn test_nearest_by_centroid_outside_point() {
+    let mut index = SpatialIndex::new();
+    // Box A: center (5, 5)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+        data: "a",
+    });
+    // Box B: center (50, 50)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(40.0, 40.0, 20.0, 20.0).unwrap(),
+        data: "b",
+    });
+    // Box C: center (100, 100)
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(90.0, 90.0, 20.0, 20.0).unwrap(),
+        data: "c",
+    });
+
+    // Query point far away at (200, 200), all boxes are external.
+    // Centroid distances: a=(200-5)^2+(200-5)^2=76050, b=(200-50)^2*2=45000, c=(200-100)^2*2=20000
+    let results = index.query_nearest_by_centroid(200.0, 200.0, 3);
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].data, "c");
+    assert_eq!(results[1].data, "b");
+    assert_eq!(results[2].data, "a");
+}
+
+#[test]
+fn test_nearest_by_centroid_empty_index() {
+    let index: SpatialIndex<u32> = SpatialIndex::new();
+    let results = index.query_nearest_by_centroid(0.0, 0.0, 5);
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_nearest_by_centroid_k_zero() {
+    let mut index = SpatialIndex::new();
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+        data: 1,
+    });
+    let results = index.query_nearest_by_centroid(5.0, 5.0, 0);
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_nearest_by_centroid_k_larger_than_n() {
+    let mut index = SpatialIndex::new();
+    for i in 0..3u32 {
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(i as f32 * 20.0, 0.0, 5.0, 5.0).unwrap(),
+            data: i,
+        });
+    }
+    let results = index.query_nearest_by_centroid(0.0, 0.0, 100);
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn test_nearest_by_centroid_3d() {
+    let mut index = SpatialIndex3D::new();
+    // Box A: center (5, 5, 5)
+    index.insert(SpatialEntry3D {
+        bounds: BoundingBox3D::new(0.0, 0.0, 0.0, 10.0, 10.0, 10.0).unwrap(),
+        data: "near",
+    });
+    // Box B: center (50, 50, 50)
+    index.insert(SpatialEntry3D {
+        bounds: BoundingBox3D::new(40.0, 40.0, 40.0, 20.0, 20.0, 20.0).unwrap(),
+        data: "far",
+    });
+
+    let results = index.query_nearest_by_centroid(6.0, 6.0, 6.0, 2);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].data, "near");
+    assert_eq!(results[1].data, "far");
+}
+
+#[test]
+fn test_nearest_by_centroid_brute_force() {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    let mut rng = StdRng::seed_from_u64(12345);
+    let mut index = SpatialIndex::new();
+    let mut entries = Vec::new();
+
+    for i in 0..1000u32 {
+        let x = rng.gen_range(0.0..1000.0_f32);
+        let y = rng.gen_range(0.0..1000.0_f32);
+        let w = rng.gen_range(1.0..50.0_f32);
+        let h = rng.gen_range(1.0..50.0_f32);
+        let entry = SpatialEntry {
+            bounds: BoundingBox::new(x, y, w, h).unwrap(),
+            data: i,
+        };
+        entries.push(entry.clone());
+        index.insert(entry);
+    }
+
+    let query = [500.0_f32, 500.0];
+    let k = 10;
+
+    // Brute-force: sort all entries by centroid distance.
+    let mut brute: Vec<(f32, u32)> = entries
+        .iter()
+        .map(|e| (e.bounds.center_dist_sq(query[0], query[1]), e.data))
+        .collect();
+    brute.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let brute_ids: Vec<u32> = brute.iter().take(k).map(|&(_, id)| id).collect();
+
+    let results = index.query_nearest_by_centroid(query[0], query[1], k);
+    let result_ids: Vec<u32> = results.iter().map(|e| e.data).collect();
+
+    assert_eq!(result_ids, brute_ids);
+}
+
+#[test]
+fn test_nearest_nd_k_zero() {
+    let mut index = SpatialIndex::new();
+    index.insert(SpatialEntry {
+        bounds: BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+        data: 1,
+    });
+    let results = index.query_nearest(5.0, 5.0, 0);
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_center_dist_sq_2d() {
+    let bb = BoundingBox::new(0.0, 0.0, 10.0, 10.0).unwrap();
+    // Center at (5, 5), point at (8, 9) -> (3^2 + 4^2) = 25
+    let dist = bb.center_dist_sq(8.0, 9.0);
+    assert!((dist - 25.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_center_dist_sq_3d() {
+    let bb = BoundingBox3D::new(0.0, 0.0, 0.0, 10.0, 10.0, 10.0).unwrap();
+    // Center at (5, 5, 5), point at (5, 5, 5) -> 0
+    let dist = bb.center_dist_sq(5.0, 5.0, 5.0);
+    assert!(dist.abs() < f32::EPSILON);
+    // Point at (8, 9, 5) -> (3^2 + 4^2 + 0) = 25
+    let dist2 = bb.center_dist_sq(8.0, 9.0, 5.0);
+    assert!((dist2 - 25.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_center_dist_sq_nd_4d() {
+    let bb = BoundingBoxN::<4>::from_extents([0.0; 4], [10.0; 4]).unwrap();
+    // Center at (5,5,5,5), point at (5,5,5,5) -> 0
+    let dist = bb.center_dist_sq_nd(&[5.0, 5.0, 5.0, 5.0]);
+    assert!(dist.abs() < f32::EPSILON);
+    // Point at (6,7,8,9): (1^2+2^2+3^2+4^2) = 30
+    let dist2 = bb.center_dist_sq_nd(&[6.0, 7.0, 8.0, 9.0]);
+    assert!((dist2 - 30.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_nearest_by_centroid_3d_brute_force() {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    let mut rng = StdRng::seed_from_u64(54321);
+    let mut index = SpatialIndex3D::new();
+    let mut entries = Vec::new();
+
+    for i in 0..200u32 {
+        let x = rng.gen_range(0.0..500.0_f32);
+        let y = rng.gen_range(0.0..500.0_f32);
+        let z = rng.gen_range(0.0..500.0_f32);
+        let w = rng.gen_range(1.0..30.0_f32);
+        let h = rng.gen_range(1.0..30.0_f32);
+        let d = rng.gen_range(1.0..30.0_f32);
+        let entry = SpatialEntry3D {
+            bounds: BoundingBox3D::new(x, y, z, w, h, d).unwrap(),
+            data: i,
+        };
+        entries.push(entry.clone());
+        index.insert(entry);
+    }
+
+    let query = [250.0_f32, 250.0, 250.0];
+    let k = 8;
+
+    let mut brute: Vec<(f32, u32)> = entries
+        .iter()
+        .map(|e| (e.bounds.center_dist_sq_nd(&query), e.data))
+        .collect();
+    brute.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let brute_ids: Vec<u32> = brute.iter().take(k).map(|&(_, id)| id).collect();
+
+    let results = index.query_nearest_by_centroid(query[0], query[1], query[2], k);
+    let result_ids: Vec<u32> = results.iter().map(|e| e.data).collect();
+
+    assert_eq!(result_ids, brute_ids);
+}
+
+#[test]
+fn test_nearest_by_centroid_nd_4d() {
+    let mut index = SpatialIndexN::<4, u32>::new();
+    // Entry A: center at (5,5,5,5)
+    index.insert(SpatialEntryN {
+        bounds: BoundingBoxN::<4>::from_extents([0.0; 4], [10.0; 4]).unwrap(),
+        data: 1,
+    });
+    // Entry B: center at (50,50,50,50)
+    index.insert(SpatialEntryN {
+        bounds: BoundingBoxN::<4>::from_extents([40.0; 4], [20.0; 4]).unwrap(),
+        data: 2,
+    });
+
+    let results = index.query_nearest_by_centroid_nd([6.0, 6.0, 6.0, 6.0], 2);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].data, 1);
+    assert_eq!(results[1].data, 2);
+}
+
+#[test]
+fn test_nearest_by_centroid_with_many_entries_triggers_pruning() {
+    // Insert enough entries to build a multi-level tree, ensuring internal-node
+    // pruning branches in query_nearest_by_centroid_heap are exercised.
+    let mut index = SpatialIndex::new();
+    for i in 0..100u32 {
+        let x = (i % 10) as f32 * 100.0;
+        let y = (i / 10) as f32 * 100.0;
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(x, y, 10.0, 10.0).unwrap(),
+            data: i,
+        });
+    }
+
+    let results = index.query_nearest_by_centroid(5.0, 5.0, 3);
+    assert_eq!(results.len(), 3);
+    // Nearest center is at (5, 5) for entry at (0,0,10,10)
+    assert_eq!(results[0].data, 0);
+}

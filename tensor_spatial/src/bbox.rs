@@ -155,6 +155,18 @@ impl<const D: usize> BoundingBoxN<D> {
         }
         sum
     }
+
+    /// Returns the squared distance from `point` to this box's center.
+    #[must_use]
+    pub fn center_dist_sq_nd(self, point: &[f32; D]) -> f32 {
+        let center = self.center_nd();
+        let mut sum = 0.0_f32;
+        for (&p, &c) in point.iter().zip(center.iter()) {
+            let d = p - c;
+            sum = d.mul_add(d, sum);
+        }
+        sum
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +229,12 @@ impl BoundingBoxN<2> {
     #[must_use]
     pub fn min_dist_sq(self, px: f32, py: f32) -> f32 {
         self.min_dist_sq_nd(&[px, py])
+    }
+
+    /// Returns the squared distance from point `(px, py)` to this box's center.
+    #[must_use]
+    pub fn center_dist_sq(self, px: f32, py: f32) -> f32 {
+        self.center_dist_sq_nd(&[px, py])
     }
 }
 
@@ -310,6 +328,14 @@ impl BoundingBoxN<3> {
     #[allow(clippy::similar_names)]
     pub fn min_dist_sq(self, px: f32, py: f32, pz: f32) -> f32 {
         self.min_dist_sq_nd(&[px, py, pz])
+    }
+
+    /// Returns the squared distance from point `(px, py, pz)` to this box's
+    /// center.
+    #[must_use]
+    #[allow(clippy::similar_names)]
+    pub fn center_dist_sq(self, px: f32, py: f32, pz: f32) -> f32 {
+        self.center_dist_sq_nd(&[px, py, pz])
     }
 }
 

@@ -124,6 +124,56 @@ impl<const D: usize, T> NodeN<D, T> {
         }
     }
 
+    /// Pushes candidate entries onto the nearest-neighbor heap using
+    /// centroid distance for leaf scoring.
+    ///
+    /// Internal-node pruning still uses `min_dist_sq_nd` (a valid lower bound
+    /// on centroid distance for any entry inside the subtree).
+    pub fn query_nearest_by_centroid_heap<'a>(
+        &'a self,
+        point: &[f32; D],
+        heap: &mut BinaryHeap<NearestCandidateN<'a, D, T>>,
+        k: usize,
+    ) {
+        match self {
+            Self::Leaf { entries } => {
+                for entry in entries {
+                    let dist_sq = entry.bounds.center_dist_sq_nd(point);
+                    if heap.len() < k {
+                        heap.push(NearestCandidateN { dist_sq, entry });
+                    } else if let Some(worst) = heap.peek() {
+                        if dist_sq < worst.dist_sq {
+                            heap.pop();
+                            heap.push(NearestCandidateN { dist_sq, entry });
+                        }
+                    }
+                }
+            },
+            Self::Internal { children } => {
+                let mut child_dists: Vec<(f32, usize)> = children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (b, _))| (b.min_dist_sq_nd(point), i))
+                    .collect();
+                child_dists
+                    .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+                for (min_dist, idx) in child_dists {
+                    if heap.len() >= k {
+                        if let Some(worst) = heap.peek() {
+                            if min_dist > worst.dist_sq {
+                                continue;
+                            }
+                        }
+                    }
+                    children[idx]
+                        .1
+                        .query_nearest_by_centroid_heap(point, heap, k);
+                }
+            },
+        }
+    }
+
     /// Collects entries within a squared radius from a point.
     pub fn query_within_radius<'a>(
         &'a self,
@@ -320,7 +370,7 @@ impl<const D: usize, T> NodeN<D, T> {
 
 /// Candidate entry for nearest-neighbor search (max-heap by distance).
 pub struct NearestCandidateN<'a, const D: usize, T> {
-    /// Squared distance from the query point to this entry's bounding box edge.
+    /// Squared distance from the query point to this entry.
     pub dist_sq: f32,
     /// Reference to the spatial entry.
     pub entry: &'a SpatialEntryN<D, T>,

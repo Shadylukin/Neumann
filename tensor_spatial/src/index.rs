@@ -172,12 +172,43 @@ impl<const D: usize, T> SpatialIndexN<D, T> {
     /// entry's bounding box. If fewer than `k` entries exist, all are returned.
     #[must_use]
     pub fn query_nearest_nd(&self, point: [f32; D], k: usize) -> Vec<&SpatialEntryN<D, T>> {
+        if k == 0 {
+            return Vec::new();
+        }
         let mut heap = BinaryHeap::new();
         self.root.query_nearest_heap(&point, &mut heap, k);
         let mut results: Vec<_> = heap.into_iter().map(|c| c.entry).collect();
         results.sort_by(|a, b| {
             let da = a.bounds.min_dist_sq_nd(&point);
             let db = b.bounds.min_dist_sq_nd(&point);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results
+    }
+
+    /// Returns the `k` entries whose bounding-box center is nearest
+    /// to `point`, ordered nearest-first.
+    ///
+    /// Unlike [`query_nearest_nd`](Self::query_nearest_nd), which measures to
+    /// the bbox edge (returning 0 for elements containing the point), this
+    /// measures to each element's centroid. Large containers whose center is
+    /// far from the query point are naturally deprioritized.
+    #[must_use]
+    pub fn query_nearest_by_centroid_nd(
+        &self,
+        point: [f32; D],
+        k: usize,
+    ) -> Vec<&SpatialEntryN<D, T>> {
+        if k == 0 {
+            return Vec::new();
+        }
+        let mut heap = BinaryHeap::new();
+        self.root
+            .query_nearest_by_centroid_heap(&point, &mut heap, k);
+        let mut results: Vec<_> = heap.into_iter().map(|c| c.entry).collect();
+        results.sort_by(|a, b| {
+            let da = a.bounds.center_dist_sq_nd(&point);
+            let db = b.bounds.center_dist_sq_nd(&point);
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         });
         results
@@ -292,6 +323,17 @@ impl<T> SpatialIndexN<2, T> {
         self.query_nearest_nd([x, y], k)
     }
 
+    /// Returns the `k` entries whose bounding-box center is nearest to the
+    /// point `(x, y)`, ordered nearest-first.
+    ///
+    /// Unlike [`query_nearest`](Self::query_nearest), which measures to the
+    /// bbox edge, this measures to each element's centroid so that large
+    /// containers are naturally deprioritized.
+    #[must_use]
+    pub fn query_nearest_by_centroid(&self, x: f32, y: f32, k: usize) -> Vec<&SpatialEntryN<2, T>> {
+        self.query_nearest_by_centroid_nd([x, y], k)
+    }
+
     /// Returns all entries within `r` pixels of the point `(x, y)`, sorted
     /// nearest-first by edge distance.
     ///
@@ -334,6 +376,24 @@ impl<T> SpatialIndexN<3, T> {
     #[must_use]
     pub fn query_nearest(&self, x: f32, y: f32, z: f32, k: usize) -> Vec<&SpatialEntryN<3, T>> {
         self.query_nearest_nd([x, y, z], k)
+    }
+
+    /// Returns the `k` entries whose bounding-box center is nearest to the
+    /// point `(x, y, z)`, ordered nearest-first.
+    ///
+    /// Unlike [`query_nearest`](Self::query_nearest), which measures to the
+    /// bbox edge, this measures to each element's centroid so that large
+    /// containers are naturally deprioritized.
+    #[must_use]
+    #[allow(clippy::similar_names)]
+    pub fn query_nearest_by_centroid(
+        &self,
+        x: f32,
+        y: f32,
+        z: f32,
+        k: usize,
+    ) -> Vec<&SpatialEntryN<3, T>> {
+        self.query_nearest_by_centroid_nd([x, y, z], k)
     }
 
     /// Returns all entries within `r` units of the point `(x, y, z)`, sorted
