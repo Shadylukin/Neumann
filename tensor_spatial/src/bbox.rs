@@ -150,13 +150,7 @@ impl<const D: usize> BoundingBoxN<D> {
     pub fn min_dist_sq_nd(self, point: &[f32; D]) -> f32 {
         let mut sum = 0.0_f32;
         for ((&p, &o), &e) in point.iter().zip(self.origin.iter()).zip(self.extent.iter()) {
-            let d = if p < o {
-                o - p
-            } else if p > o + e {
-                p - o - e
-            } else {
-                0.0
-            };
+            let d = (o - p).max(0.0) + (p - o - e).max(0.0);
             sum = d.mul_add(d, sum);
         }
         sum
