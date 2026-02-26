@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Vector Search"
+  short_description: "Build vector search and embedding pipelines with HNSW indexes"
+  default_prompt: "Help me implement vector search in Neumann for: "

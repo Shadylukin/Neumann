@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Deployment"
+  short_description: "Deploy Neumann with Docker Compose, Kubernetes, or bare metal"
+  default_prompt: "Help me deploy Neumann using: "

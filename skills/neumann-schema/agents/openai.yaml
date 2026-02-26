@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Schema Design"
+  short_description: "Design data models using Neumann's multi-engine architecture"
+  default_prompt: "Help me design a Neumann schema for: "

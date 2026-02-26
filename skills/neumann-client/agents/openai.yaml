@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Client SDK"
+  short_description: "Integrate Neumann using Rust, Python, or TypeScript client SDKs"
+  default_prompt: "Help me integrate Neumann into my application using: "

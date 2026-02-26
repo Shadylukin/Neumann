@@ -1,0 +1,116 @@
+# Reserved Keywords
+
+All keywords are case-insensitive. If your identifier (column name,
+table name, label) collides with any keyword below, rename the
+identifier. The parser does not support backtick or bracket quoting.
+
+## SQL
+
+SELECT, FROM, WHERE, AND, OR, NOT, IN, IS, LIKE, BETWEEN,
+CASE, WHEN, THEN, ELSE, END, AS, ON, JOIN, LEFT, RIGHT,
+INNER, OUTER, FULL, CROSS, NATURAL, USING, GROUP, BY,
+HAVING, ORDER, ASC, DESC, NULLS, FIRST, LAST, LIMIT,
+OFFSET, DISTINCT, ALL, UNION, INTERSECT, EXCEPT, EXISTS,
+CAST, ANY, INSERT, INTO, VALUES, UPDATE, SET, DELETE,
+CREATE, TABLE, INDEX, DROP, ALTER, ADD, COLUMN, PRIMARY,
+KEY, FOREIGN, REFERENCES, UNIQUE, CHECK, DEFAULT,
+CONSTRAINT, CASCADE, RESTRICT, IF, SHOW, TABLES, DESCRIBE,
+EMBEDDINGS
+
+## Types
+
+INT, INTEGER, BIGINT, SMALLINT, FLOAT, DOUBLE, REAL,
+DECIMAL, NUMERIC, VARCHAR, CHAR, TEXT, BOOLEAN, DATE, TIME,
+TIMESTAMP, BLOB
+
+## Aggregates
+
+COUNT, SUM, AVG, MIN, MAX
+
+## Graph
+
+NODE, EDGE, NEIGHBORS, PATH, GET, LIST, STORE, OUTGOING,
+INCOMING, BOTH, SHORTEST, PROPERTIES, LABEL, VERTEX,
+VERTICES, EDGES
+
+## Vector
+
+EMBED, SIMILAR, VECTOR, EMBEDDING, DIMENSION, DISTANCE,
+COSINE, EUCLIDEAN, DOT_PRODUCT, BUILD, BATCH
+
+## Spatial
+
+SPATIAL, WITHIN, RADIUS, BOUNDS
+
+## Unified
+
+FIND, WITH, RETURN, MATCH, ENTITY, CONNECTED, ROWS
+
+## Vault
+
+VAULT, GRANT, REVOKE, ROTATE
+
+## Cache
+
+CACHE, INIT, STATS, CLEAR, EVICT, PUT, SEMANTIC, THRESHOLD
+
+## Checkpoint
+
+CHECKPOINT, CHECKPOINTS, ROLLBACK
+
+## Chain
+
+CHAIN, BEGIN, COMMIT, TRANSACTION, HISTORY, DRIFT, CODEBOOK,
+GLOBAL, LOCAL, ANALYZE, HEIGHT, TRANSITIONS, TIP, BLOCK
+
+## Cluster
+
+CLUSTER, CONNECT, DISCONNECT, STATUS, NODES, LEADER
+
+## Blob
+
+BLOBS, INFO, LINK, UNLINK, LINKS, TAG, UNTAG, VERIFY, GC,
+REPAIR, TO, FOR, META, ARTIFACTS
+
+## Graph Algorithms
+
+PAGERANK, BETWEENNESS, CLOSENESS, EIGENVECTOR, CENTRALITY,
+LOUVAIN, COMMUNITIES, PROPAGATION, DAMPING, TOLERANCE,
+ITERATIONS, SAMPLING, RESOLUTION, PASSES
+
+## Graph Extended
+
+WEIGHTED, VARIABLE, HOPS, DEPTH, SKIP, TOTAL, PATTERN,
+AGGREGATE, PROPERTY, TYPE, GRAPH
+
+## Literals
+
+TRUE, FALSE, NULL
+
+## Contextual Keywords
+
+These keywords are reserved but can also be used as identifiers in
+certain contexts (e.g., column names in SELECT, property names).
+The parser handles this automatically in those positions:
+
+STATUS, NODES, LEADER, CONNECT, DISCONNECT, CLUSTER, BLOBS,
+INFO, LINK, UNLINK, LINKS, TAG, UNTAG, VERIFY, GC, REPAIR,
+META, ARTIFACTS, HEIGHT, TRANSITIONS, TIP, BLOCK, CODEBOOK,
+GLOBAL, LOCAL, DRIFT, ANALYZE, HISTORY, BEGIN, COMMIT,
+TRANSACTION, PAGERANK, BETWEENNESS, CLOSENESS, EIGENVECTOR,
+CENTRALITY, LOUVAIN, COMMUNITIES, PROPAGATION, DAMPING,
+TOLERANCE, ITERATIONS, SAMPLING, RESOLUTION, PASSES,
+WEIGHTED, VARIABLE, HOPS, DEPTH, SKIP, TOTAL, PATTERN,
+AGGREGATE, PROPERTY, TYPE, GRAPH, INT, FLOAT, BOOLEAN, TEXT
+
+## Total Count
+
+170+ reserved keywords. When naming tables, columns, labels, or
+edge types, avoid all of the above. Common collisions:
+
+- `node`, `edge`, `path`, `type` -- very common words, all reserved
+- `status`, `name`, `value` -- `status` is reserved; `name`/`value` are not
+- `key`, `index`, `table` -- all reserved
+- `label`, `property` -- both reserved
+- `text`, `date`, `time`, `blob` -- type keywords, all reserved
+- `count`, `sum`, `min`, `max`, `avg` -- aggregate keywords, all reserved
