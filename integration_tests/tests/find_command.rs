@@ -51,7 +51,7 @@ fn test_find_with_where_clause() {
 fn test_find_with_similar_to() {
     let router = create_shared_router();
 
-    // Store embeddings
+    // Create entities with embeddings
     let embeddings = sample_embeddings(5, 4);
     for i in 0..5 {
         let emb_str = embeddings[i]
@@ -60,29 +60,27 @@ fn test_find_with_similar_to() {
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute(&format!("EMBED 'doc:{}' [{emb_str}]", i))
+            .execute(&format!(
+                "ENTITY CREATE 'doc:{i}' {{ title: 'Doc{i}' }} EMBEDDING [{emb_str}]"
+            ))
             .unwrap();
     }
 
-    // FIND with SIMILAR TO
-    let result = router.execute("FIND posts SIMILAR TO \"doc:0\" TOP 3");
+    // FIND NODE SIMILAR TO 'doc:0'
+    let result = router
+        .execute_parsed("FIND NODE SIMILAR TO 'doc:0' LIMIT 3")
+        .unwrap();
 
     match result {
-        Ok(query_router::QueryResult::Similar(similar)) => {
-            assert!(!similar.is_empty());
-            // Most similar should be doc:0 itself
-            assert!(similar[0].key.contains("doc:0"));
+        QueryResult::Unified(unified) => {
+            assert!(!unified.items.is_empty());
+            assert!(unified.items.len() <= 3);
+            // All items should have similarity scores
+            for item in &unified.items {
+                assert!(item.score.is_some());
+            }
         },
-        Ok(query_router::QueryResult::Unified(_unified)) => {
-            // Unified result type
-        },
-        Ok(_) => {
-            // Other result types acceptable
-        },
-        Err(_e) => {
-            // FIND may not be fully implemented
-            // This documents expected vs actual behavior
-        },
+        other => panic!("Expected Unified, got {other:?}"),
     }
 }
 
@@ -90,53 +88,42 @@ fn test_find_with_similar_to() {
 fn test_find_with_connected_to() {
     let router = create_shared_router();
 
-    // Create graph structure
-    let alice = match router.execute("NODE CREATE user {name: 'Alice'}").unwrap() {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
-    let bob = match router.execute("NODE CREATE user {name: 'Bob'}").unwrap() {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
-    let post1 = match router.execute("NODE CREATE post {title: 'Post1'}").unwrap() {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
-    let post2 = match router.execute("NODE CREATE post {title: 'Post2'}").unwrap() {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
+    // Create entities
+    router
+        .execute("ENTITY CREATE 'user:alice' { name: 'Alice' }")
+        .unwrap();
+    router
+        .execute("ENTITY CREATE 'user:bob' { name: 'Bob' }")
+        .unwrap();
+    router
+        .execute("ENTITY CREATE 'post:1' { title: 'Post1' }")
+        .unwrap();
+    router
+        .execute("ENTITY CREATE 'post:2' { title: 'Post2' }")
+        .unwrap();
 
     // Alice wrote post1, Bob wrote post2
     router
-        .execute(&format!("EDGE CREATE {} -> {} : wrote", alice, post1))
+        .execute("ENTITY CONNECT 'user:alice' -> 'post:1' : wrote")
         .unwrap();
     router
-        .execute(&format!("EDGE CREATE {} -> {} : wrote", bob, post2))
+        .execute("ENTITY CONNECT 'user:bob' -> 'post:2' : wrote")
         .unwrap();
 
-    // FIND posts CONNECTED TO Alice
-    let result = router.execute(&format!("FIND posts CONNECTED TO {}", alice));
+    // FIND NODE CONNECTED TO alice — should find post:1
+    let result = router
+        .execute_parsed("FIND NODE CONNECTED TO 'user:alice'")
+        .unwrap();
 
     match result {
-        Ok(query_router::QueryResult::Nodes(nodes)) => {
-            // Should find post1
-            assert!(nodes.iter().any(|n| n.id == post1));
+        QueryResult::Unified(unified) => {
+            assert_eq!(unified.items.len(), 1);
+            assert!(unified.items[0]
+                .data
+                .get("entity_key")
+                .is_some_and(|ek| ek == "post:1"));
         },
-        Ok(query_router::QueryResult::Ids(ids)) => {
-            // Alternative result type
-            assert!(ids.contains(&post1));
-        },
-        Ok(query_router::QueryResult::Unified(_)) => {
-            // Unified result
-        },
-        Ok(_) => {
-            // Other types
-        },
-        Err(_) => {
-            // FIND CONNECTED TO may use different syntax
-        },
+        other => panic!("Expected Unified, got {other:?}"),
     }
 }
 
@@ -144,21 +131,9 @@ fn test_find_with_connected_to() {
 fn test_find_combined_where_similar() {
     let router = create_shared_router();
 
-    // Create table and embeddings
-    router
-        .execute("CREATE TABLE items (id INT, name TEXT, price FLOAT)")
-        .unwrap();
-
+    // Create entities with embeddings
     for i in 0..5 {
-        let price = 10.0 + (i as f64) * 5.0;
-        router
-            .execute(&format!(
-                "INSERT INTO items (id, name, price) VALUES ({}, 'Item{}', {:.1})",
-                i, i, price
-            ))
-            .unwrap();
-
-        // Store embedding for each item
+        let price = 10 + i * 5;
         let emb = sample_embeddings(1, 4)[0].clone();
         let emb_str = emb
             .iter()
@@ -166,24 +141,25 @@ fn test_find_combined_where_similar() {
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute(&format!("EMBED 'item:{}' [{emb_str}]", i))
+            .execute(&format!(
+                "ENTITY CREATE 'item:{i}' {{ name: 'Item{i}', price: '{price}' }} EMBEDDING [{emb_str}]"
+            ))
             .unwrap();
     }
 
-    // FIND with WHERE and SIMILAR
-    let result = router.execute("FIND items WHERE price > 20 SIMILAR TO \"item:0\"");
+    // FIND with WHERE and SIMILAR TO
+    let result = router
+        .execute_parsed("FIND NODE WHERE price = '20' SIMILAR TO 'item:0'")
+        .unwrap();
 
-    // This tests combined WHERE + SIMILAR functionality
     match result {
-        Ok(query_router::QueryResult::Unified(_unified)) => {
-            // Expected unified result combining table filter and similarity
+        QueryResult::Unified(unified) => {
+            // Should find items matching the price filter
+            for item in &unified.items {
+                assert!(item.score.is_some());
+            }
         },
-        Ok(_) => {
-            // Other result types
-        },
-        Err(_) => {
-            // Combined queries may not be fully implemented
-        },
+        other => panic!("Expected Unified, got {other:?}"),
     }
 }
 
@@ -191,62 +167,50 @@ fn test_find_combined_where_similar() {
 fn test_find_combined_all_clauses() {
     let router = create_shared_router();
 
-    // Setup: Create users, posts with embeddings and relationships
-    let alice = match router
-        .execute("NODE CREATE user {name: 'Alice', age: 30}")
-        .unwrap()
-    {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
-
-    let _bob = match router
-        .execute("NODE CREATE user {name: 'Bob', age: 25}")
-        .unwrap()
-    {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
-
-    // Create posts
-    let post1 = match router
-        .execute("NODE CREATE post {title: 'Tech Post'}")
-        .unwrap()
-    {
-        query_router::QueryResult::Ids(ids) => ids[0],
-        _ => panic!("Expected Ids"),
-    };
-
-    // Connect users to posts
+    // Create entities with embeddings
     router
-        .execute(&format!("EDGE CREATE {} -> {} : wrote", alice, post1))
-        .unwrap();
-
-    // Store embeddings
-    router
-        .execute("EMBED 'post:1' [0.5, 0.5, 0.5, 0.5]")
+        .execute("ENTITY CREATE 'user:alice' { name: 'Alice', role: 'engineer' } EMBEDDING [1.0, 0.0, 0.0]")
         .unwrap();
     router
-        .execute(&format!("EMBED 'node:{}' [0.6, 0.4, 0.5, 0.5]", post1))
+        .execute(
+            "ENTITY CREATE 'user:bob' { name: 'Bob', role: 'engineer' } EMBEDDING [0.9, 0.1, 0.0]",
+        )
+        .unwrap();
+    router
+        .execute("ENTITY CREATE 'user:carol' { name: 'Carol', role: 'manager' } EMBEDDING [0.0, 1.0, 0.0]")
+        .unwrap();
+    router
+        .execute("ENTITY CREATE 'user:hub' { name: 'Hub', role: 'director' }")
         .unwrap();
 
-    // FIND with all clauses: WHERE, SIMILAR TO, CONNECTED TO
-    let result = router.execute(&format!(
-        "FIND posts WHERE title = 'Tech Post' SIMILAR TO \"post:1\" CONNECTED TO {}",
-        alice
-    ));
+    // Graph: hub manages alice, bob, carol
+    router
+        .execute("ENTITY CONNECT 'user:hub' -> 'user:alice' : manages")
+        .unwrap();
+    router
+        .execute("ENTITY CONNECT 'user:hub' -> 'user:bob' : manages")
+        .unwrap();
+    router
+        .execute("ENTITY CONNECT 'user:hub' -> 'user:carol' : manages")
+        .unwrap();
 
-    // This is the most complex FIND query combining all three query types
+    // Hero query: engineers connected to hub, similar to alice
+    let result = router
+        .execute_parsed(
+            "FIND NODE WHERE role = 'engineer' SIMILAR TO 'user:alice' CONNECTED TO 'user:hub'",
+        )
+        .unwrap();
+
     match result {
-        Ok(query_router::QueryResult::Unified(_unified)) => {
-            // Full unified query result
+        QueryResult::Unified(unified) => {
+            // alice and bob are engineers connected to hub
+            assert_eq!(unified.items.len(), 2);
+            assert!(unified.items[0].score.is_some());
+            assert!(unified.items[1].score.is_some());
+            // alice should be ranked first (most similar to herself)
+            assert!(unified.items[0].score.unwrap() >= unified.items[1].score.unwrap());
         },
-        Ok(_) => {
-            // Other result types
-        },
-        Err(_) => {
-            // Full combined queries may not be implemented
-        },
+        other => panic!("Expected Unified, got {other:?}"),
     }
 }
 
@@ -254,7 +218,7 @@ fn test_find_combined_all_clauses() {
 fn test_find_with_limit() {
     let router = create_shared_router();
 
-    // Store many embeddings
+    // Create entities with embeddings
     for i in 0..20 {
         let emb = sample_embeddings(1, 4)[0].clone();
         let emb_str = emb
@@ -263,23 +227,22 @@ fn test_find_with_limit() {
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute(&format!("EMBED 'doc:{}' [{emb_str}]", i))
+            .execute(&format!(
+                "ENTITY CREATE 'doc:{i}' {{ title: 'Doc{i}' }} EMBEDDING [{emb_str}]"
+            ))
             .unwrap();
     }
 
-    // FIND with LIMIT (TOP)
-    let result = router.execute("FIND docs SIMILAR TO \"doc:0\" TOP 5");
+    // FIND NODE SIMILAR TO with LIMIT
+    let result = router
+        .execute_parsed("FIND NODE SIMILAR TO 'doc:0' LIMIT 5")
+        .unwrap();
 
     match result {
-        Ok(query_router::QueryResult::Similar(similar)) => {
-            // Should be limited to 5 results
-            assert!(similar.len() <= 5);
+        QueryResult::Unified(unified) => {
+            assert!(unified.items.len() <= 5);
         },
-        Ok(query_router::QueryResult::Unified(_unified)) => {
-            // Unified result with limit
-        },
-        Ok(_) => {},
-        Err(_) => {},
+        other => panic!("Expected Unified, got {other:?}"),
     }
 }
 
@@ -311,18 +274,9 @@ fn test_find_empty_results() {
         },
     }
 
-    // FIND SIMILAR on empty vector store
-    let result2 = router.execute("FIND docs SIMILAR TO \"nonexistent\" TOP 5");
-
-    match result2 {
-        Ok(query_router::QueryResult::Similar(similar)) => {
-            assert_eq!(similar.len(), 0);
-        },
-        Ok(_) => {},
-        Err(_) => {
-            // Error on nonexistent is also acceptable
-        },
-    }
+    // FIND NODE SIMILAR TO nonexistent key — should error (embedding not found)
+    let result2 = router.execute_parsed("FIND NODE SIMILAR TO 'nonexistent'");
+    assert!(result2.is_err());
 }
 
 // ========== Phase 6: Extended FIND Tests ==========

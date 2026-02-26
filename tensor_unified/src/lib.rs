@@ -1049,6 +1049,148 @@ impl UnifiedEngine {
 
     // ========== Cross-Engine Query Operations ==========
 
+    /// Finds nodes/entities matching a label and condition, optionally constrained
+    /// by graph connectivity and scored by vector similarity.
+    ///
+    /// Execution strategy:
+    /// - When `similar_to_key` is present, searches via the vector engine first to
+    ///   find entities with embeddings, then applies graph/property filters
+    /// - When only `connected_to_key` is present, starts from graph neighbors
+    /// - Falls back to graph-only scan otherwise
+    ///
+    /// This handles both unified entities (created via `ENTITY CREATE`, stored in
+    /// `TensorStore` / `VectorEngine`) and graph nodes (created via `NODE CREATE`,
+    /// stored in `GraphEngine`).
+    ///
+    /// # Errors
+    /// Returns an error if vector search, graph scanning, or property lookup fails.
+    #[allow(clippy::unused_async)]
+    pub async fn find_nodes_hybrid(
+        &self,
+        label: Option<&str>,
+        condition: Option<&Condition>,
+        similar_to_key: Option<&str>,
+        connected_to_key: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<UnifiedItem>> {
+        // Build connected-neighbor set if needed
+        let connected_neighbors: Option<std::collections::HashSet<String>> =
+            connected_to_key.map(|key| self.get_entity_neighbors(key).into_iter().collect());
+
+        // When SIMILAR TO is present, start from vector search
+        if let Some(query_key) = similar_to_key {
+            let query_embedding = self
+                .vector
+                .get_entity_embedding(query_key)
+                .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
+
+            // Search broadly to allow for filtering
+            let search_k = limit.saturating_mul(8).max(64);
+            let similar = self
+                .vector
+                .search_entities(&query_embedding, search_k)
+                .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
+
+            let mut items = Vec::new();
+            for result in similar {
+                // CONNECTED TO filter
+                if let Some(ref neighbors) = connected_neighbors {
+                    if !neighbors.contains(&result.key) {
+                        continue;
+                    }
+                }
+
+                // Build item from TensorStore data
+                let mut item = UnifiedItem::new("graph+vector", &result.key);
+                item.set("entity_key", result.key.clone());
+                item.score = Some(result.score);
+
+                // Load entity properties from TensorStore
+                if let Ok(tensor) = self.store.get(&result.key) {
+                    for (field, value) in tensor.iter() {
+                        if field != "embedding" {
+                            if let Some(s) = Self::tensor_value_to_string(value) {
+                                item.set(field.clone(), s);
+                            }
+                        }
+                    }
+                }
+
+                // WHERE filter on entity properties
+                if let Some(cond) = condition {
+                    if !Self::item_matches_condition(&item, cond) {
+                        continue;
+                    }
+                }
+
+                items.push(item);
+                if items.len() >= limit {
+                    break;
+                }
+            }
+
+            return Ok(items);
+        }
+
+        // When only CONNECTED TO is present (no SIMILAR TO)
+        if let Some(ref neighbors) = connected_neighbors {
+            if neighbors.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Start from graph scan, filter to connected neighbors
+            let mut items = self.find_nodes(label, condition).await?;
+            items.retain(|item| {
+                item.data
+                    .get("entity_key")
+                    .is_some_and(|ek| neighbors.contains(ek))
+            });
+
+            for item in &mut items {
+                item.source = "graph+connected".to_string();
+            }
+
+            items.truncate(limit);
+            return Ok(items);
+        }
+
+        // Fallback: graph-only scan
+        let mut items = self.find_nodes(label, condition).await?;
+        items.truncate(limit);
+        Ok(items)
+    }
+
+    /// Checks if a `UnifiedItem`'s data matches a relational condition.
+    fn item_matches_condition(item: &UnifiedItem, condition: &Condition) -> bool {
+        match condition {
+            Condition::Eq(field, value) => item
+                .data
+                .get(field)
+                .is_some_and(|v| Self::value_matches_string(v, value)),
+            Condition::And(left, right) => {
+                Self::item_matches_condition(item, left)
+                    && Self::item_matches_condition(item, right)
+            },
+            Condition::Or(left, right) => {
+                Self::item_matches_condition(item, left)
+                    || Self::item_matches_condition(item, right)
+            },
+            _ => true, // For unsupported conditions, include the item
+        }
+    }
+
+    /// Compares a string value from item data against a relational `Value`.
+    fn value_matches_string(data_val: &str, expected: &Value) -> bool {
+        match expected {
+            Value::String(s) => data_val == s,
+            Value::Int(i) => data_val == i.to_string(),
+            Value::Float(f) => data_val == f.to_string(),
+            Value::Bool(b) => data_val == b.to_string(),
+            Value::Null => data_val == "null",
+            _ => false,
+        }
+    }
+
     /// Finds entities similar to a query that are also connected via graph edges.
     ///
     /// Delegates to `find_similar_connected_with_hnsw` without pre-computed results.
@@ -5076,5 +5218,246 @@ mod tests {
 
         // Verify via the shared reference
         assert_eq!(spatial.read().len(), 1);
+    }
+
+    // =========================================================================
+    // find_nodes_hybrid tests
+    // =========================================================================
+
+    /// Helper: create an entity node with a label, entity_key, and optional properties.
+    fn create_entity_node(
+        engine: &UnifiedEngine,
+        entity_key: &str,
+        label: &str,
+        props: &[(&str, &str)],
+    ) {
+        let node_id = engine.get_or_create_entity_node(entity_key);
+        // Set label via graph engine
+        if let Ok(node) = engine.graph.get_node(node_id) {
+            // Re-create with correct label (get_or_create uses "UnifiedEntity")
+            let _ = engine.graph.delete_node(node_id);
+        }
+        let mut properties = HashMap::new();
+        properties.insert(
+            "entity_key".to_string(),
+            PropertyValue::String(entity_key.to_string()),
+        );
+        for (k, v) in props {
+            properties.insert((*k).to_string(), PropertyValue::String((*v).to_string()));
+        }
+        let _ = engine.graph.create_node(label, properties);
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_label_only() {
+        let engine = create_engine();
+        create_entity_node(&engine, "user:alice", "person", &[("name", "Alice")]);
+        create_entity_node(&engine, "user:bob", "person", &[("name", "Bob")]);
+        create_entity_node(&engine, "org:acme", "company", &[("name", "Acme")]);
+
+        let items = engine
+            .find_nodes_hybrid(Some("person"), None, None, None, 100)
+            .await
+            .unwrap();
+
+        // Should find 2 person nodes, not the company
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_with_connected_to() {
+        let engine = create_engine();
+        create_entity_node(&engine, "user:alice", "person", &[("role", "engineer")]);
+        create_entity_node(&engine, "user:bob", "person", &[("role", "manager")]);
+        create_entity_node(&engine, "user:carol", "person", &[("role", "designer")]);
+
+        // Connect alice -> bob, carol is isolated
+        add_test_edge(&engine.graph, "user:alice", "user:bob", "reports_to");
+
+        let items = engine
+            .find_nodes_hybrid(Some("person"), None, None, Some("user:alice"), 100)
+            .await
+            .unwrap();
+
+        // Only bob is connected to alice
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].data.get("entity_key").unwrap(), "user:bob");
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_with_similar_to() {
+        let engine = create_engine();
+
+        // Use create_entity to store data in TensorStore + VectorEngine
+        let alice_fields = HashMap::from([("name".to_string(), "Alice".to_string())]);
+        engine
+            .create_entity("user:alice", alice_fields, Some(vec![1.0, 0.0, 0.0]))
+            .await
+            .unwrap();
+        let bob_fields = HashMap::from([("name".to_string(), "Bob".to_string())]);
+        engine
+            .create_entity("user:bob", bob_fields, Some(vec![0.9, 0.1, 0.0]))
+            .await
+            .unwrap();
+
+        let items = engine
+            .find_nodes_hybrid(None, None, Some("user:alice"), None, 100)
+            .await
+            .unwrap();
+
+        // Both should have scores
+        assert_eq!(items.len(), 2);
+        assert!(items[0].score.is_some());
+        assert!(items[1].score.is_some());
+        // alice should be most similar to herself
+        assert!(items[0].score.unwrap() >= items[1].score.unwrap());
+        assert_eq!(items[0].source, "graph+vector");
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_full() {
+        let engine = create_engine();
+
+        // Create entities via unified engine (stores in TensorStore + VectorEngine)
+        let alice = HashMap::from([("role".to_string(), "engineer".to_string())]);
+        engine
+            .create_entity("user:alice", alice, Some(vec![1.0, 0.0, 0.0]))
+            .await
+            .unwrap();
+        let bob = HashMap::from([("role".to_string(), "engineer".to_string())]);
+        engine
+            .create_entity("user:bob", bob, Some(vec![0.9, 0.1, 0.0]))
+            .await
+            .unwrap();
+        let carol = HashMap::from([("role".to_string(), "manager".to_string())]);
+        engine
+            .create_entity("user:carol", carol, Some(vec![0.0, 1.0, 0.0]))
+            .await
+            .unwrap();
+
+        // Graph: hub -> alice, hub -> bob, hub -> carol
+        add_test_edge(&engine.graph, "user:hub", "user:alice", "manages");
+        add_test_edge(&engine.graph, "user:hub", "user:bob", "manages");
+        add_test_edge(&engine.graph, "user:hub", "user:carol", "manages");
+
+        // WHERE role = 'engineer': alice, bob
+        // CONNECTED TO 'user:hub': alice, bob, carol
+        // Intersection: alice, bob
+        // SIMILAR TO 'user:alice': both scored, alice highest
+        let condition = Condition::Eq("role".to_string(), Value::String("engineer".to_string()));
+        let items = engine
+            .find_nodes_hybrid(
+                None,
+                Some(&condition),
+                Some("user:alice"),
+                Some("user:hub"),
+                100,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(items.len(), 2);
+        // alice is most similar to herself
+        assert_eq!(items[0].data.get("entity_key").unwrap(), "user:alice");
+        assert!(items[0].score.unwrap() > items[1].score.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_no_entity_key() {
+        let engine = create_engine();
+
+        // Create a node without entity_key (plain graph node)
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Orphan".to_string()),
+        );
+        let _ = engine.graph.create_node("person", props);
+
+        // Also create a proper entity node
+        create_entity_node(&engine, "user:alice", "person", &[("name", "Alice")]);
+
+        // CONNECTED TO a key — the orphan node lacks entity_key and is excluded
+        add_test_edge(&engine.graph, "user:alice", "user:alice", "self_ref");
+
+        let items = engine
+            .find_nodes_hybrid(Some("person"), None, None, Some("user:alice"), 100)
+            .await
+            .unwrap();
+
+        // Only nodes with entity_key survive the CONNECTED TO filter
+        for item in &items {
+            assert!(item.data.contains_key("entity_key"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_empty_neighbors() {
+        let engine = create_engine();
+        create_entity_node(&engine, "user:alice", "person", &[("name", "Alice")]);
+
+        // No edges — CONNECTED TO should return empty
+        let items = engine
+            .find_nodes_hybrid(Some("person"), None, None, Some("user:alice"), 100)
+            .await
+            .unwrap();
+
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_nodes_hybrid_limit() {
+        let engine = create_engine();
+        create_entity_node(&engine, "user:a", "person", &[]);
+        create_entity_node(&engine, "user:b", "person", &[]);
+        create_entity_node(&engine, "user:c", "person", &[]);
+
+        let items = engine
+            .find_nodes_hybrid(Some("person"), None, None, None, 2)
+            .await
+            .unwrap();
+
+        assert!(items.len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn test_item_matches_condition_eq() {
+        let mut item = UnifiedItem::new("test", "1");
+        item.set("role", "engineer");
+        let cond = Condition::Eq("role".to_string(), Value::String("engineer".to_string()));
+        assert!(UnifiedEngine::item_matches_condition(&item, &cond));
+    }
+
+    #[tokio::test]
+    async fn test_item_matches_condition_no_match() {
+        let mut item = UnifiedItem::new("test", "1");
+        item.set("role", "manager");
+        let cond = Condition::Eq("role".to_string(), Value::String("engineer".to_string()));
+        assert!(!UnifiedEngine::item_matches_condition(&item, &cond));
+    }
+
+    #[tokio::test]
+    async fn test_item_matches_condition_missing_field() {
+        let item = UnifiedItem::new("test", "1");
+        let cond = Condition::Eq("role".to_string(), Value::String("engineer".to_string()));
+        assert!(!UnifiedEngine::item_matches_condition(&item, &cond));
+    }
+
+    #[tokio::test]
+    async fn test_value_matches_string_variants() {
+        assert!(UnifiedEngine::value_matches_string(
+            "hello",
+            &Value::String("hello".to_string())
+        ));
+        assert!(UnifiedEngine::value_matches_string("42", &Value::Int(42)));
+        assert!(UnifiedEngine::value_matches_string(
+            "true",
+            &Value::Bool(true)
+        ));
+        assert!(UnifiedEngine::value_matches_string("null", &Value::Null));
+        assert!(!UnifiedEngine::value_matches_string(
+            "wrong",
+            &Value::String("right".to_string())
+        ));
     }
 }

@@ -825,6 +825,10 @@ pub struct FindStmt {
     pub pattern: FindPattern,
     /// Optional WHERE filter.
     pub where_clause: Option<Box<Expr>>,
+    /// Optional SIMILAR TO clause for vector similarity ranking.
+    pub similar_to: Option<Expr>,
+    /// Optional CONNECTED TO clause for graph connectivity constraint.
+    pub connected_to: Option<Expr>,
     /// Items to return.
     pub return_items: Vec<SelectItem>,
     /// Maximum number of results.

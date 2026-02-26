@@ -5647,6 +5647,62 @@ impl QueryRouter {
             .map(|e| self.expr_to_usize(e))
             .transpose()?;
 
+        let has_similar = find.similar_to.is_some();
+        let has_connected = find.connected_to.is_some();
+
+        // SIMILAR TO and CONNECTED TO are only supported with FIND NODE
+        if (has_similar || has_connected) && !matches!(find.pattern, FindPattern::Nodes { .. }) {
+            return Err(RouterError::InvalidArgument(
+                "SIMILAR TO and CONNECTED TO are only supported with FIND NODE".to_string(),
+            ));
+        }
+
+        // Cross-engine path: delegate to find_nodes_hybrid
+        if has_similar || has_connected {
+            let FindPattern::Nodes { ref label } = find.pattern else {
+                unreachable!()
+            };
+
+            let condition = find
+                .where_clause
+                .as_ref()
+                .map(|expr| self.expr_to_condition(expr))
+                .transpose()?;
+
+            let similar_key = find
+                .similar_to
+                .as_ref()
+                .map(|e| self.expr_to_string(e))
+                .transpose()?;
+
+            let connected_key = find
+                .connected_to
+                .as_ref()
+                .map(|e| self.expr_to_string(e))
+                .transpose()?;
+
+            let effective_limit = limit.unwrap_or(100);
+            let label_filter = label.as_ref().map(|l| l.name.as_str());
+
+            let items = runtime
+                .block_on(unified.find_nodes_hybrid(
+                    label_filter,
+                    condition.as_ref(),
+                    similar_key.as_deref(),
+                    connected_key.as_deref(),
+                    effective_limit,
+                ))
+                .map_err(|e| RouterError::GraphError(e.to_string()))?;
+
+            let description = format!(
+                "Found {} node{}",
+                items.len(),
+                if items.len() == 1 { "" } else { "s" }
+            );
+
+            return Ok(QueryResult::Unified(UnifiedResult { description, items }));
+        }
+
         let pattern = self.convert_find_pattern(&find.pattern);
 
         // Handle WHERE clause by using find_nodes/find_edges/find_rows with condition
@@ -17955,6 +18011,177 @@ mod tests {
 
         let result = router.execute_parsed("FIND ROWS FROM nonexistent");
         assert!(result.is_err());
+    }
+
+    // ====== FIND SIMILAR TO / CONNECTED TO Tests ======
+
+    #[test]
+    fn test_find_node_similar_to_basic() {
+        let router = QueryRouter::new();
+
+        // Create entities with inline embeddings
+        router
+            .execute_parsed(
+                "ENTITY CREATE 'user:alice' {name: 'Alice', role: 'engineer'} EMBEDDING [1.0, 0.0, 0.0]",
+            )
+            .unwrap();
+        router
+            .execute_parsed(
+                "ENTITY CREATE 'user:bob' {name: 'Bob', role: 'engineer'} EMBEDDING [0.9, 0.1, 0.0]",
+            )
+            .unwrap();
+
+        // FIND NODE SIMILAR TO 'user:alice'
+        let result = router
+            .execute_parsed("FIND NODE SIMILAR TO 'user:alice'")
+            .unwrap();
+
+        match result {
+            QueryResult::Unified(unified) => {
+                assert!(!unified.items.is_empty());
+            },
+            other => panic!("Expected Unified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_find_node_connected_to_basic() {
+        let router = QueryRouter::new();
+
+        // Create entities
+        router
+            .execute_parsed("ENTITY CREATE 'user:alice' {name: 'Alice'}")
+            .unwrap();
+        router
+            .execute_parsed("ENTITY CREATE 'user:bob' {name: 'Bob'}")
+            .unwrap();
+        router
+            .execute_parsed("ENTITY CREATE 'user:carol' {name: 'Carol'}")
+            .unwrap();
+
+        // Connect alice -> bob
+        router
+            .execute_parsed("ENTITY CONNECT 'user:alice' -> 'user:bob' : reports_to")
+            .unwrap();
+
+        // FIND NODE CONNECTED TO alice
+        let result = router
+            .execute_parsed("FIND NODE CONNECTED TO 'user:alice'")
+            .unwrap();
+
+        match result {
+            QueryResult::Unified(unified) => {
+                assert_eq!(unified.items.len(), 1);
+                let item = &unified.items[0];
+                assert!(item
+                    .data
+                    .get("entity_key")
+                    .is_some_and(|ek| ek == "user:bob"));
+            },
+            other => panic!("Expected Unified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_find_node_hero_query() {
+        let router = QueryRouter::new();
+
+        // Create entities with embeddings
+        router
+            .execute_parsed(
+                "ENTITY CREATE 'user:alice' {name: 'Alice', role: 'engineer'} EMBEDDING [1.0, 0.0, 0.0]",
+            )
+            .unwrap();
+        router
+            .execute_parsed(
+                "ENTITY CREATE 'user:bob' {name: 'Bob', role: 'engineer'} EMBEDDING [0.9, 0.1, 0.0]",
+            )
+            .unwrap();
+        router
+            .execute_parsed(
+                "ENTITY CREATE 'user:carol' {name: 'Carol', role: 'manager'} EMBEDDING [0.0, 1.0, 0.0]",
+            )
+            .unwrap();
+        router
+            .execute_parsed("ENTITY CREATE 'user:hub' {name: 'Hub', role: 'director'}")
+            .unwrap();
+
+        // Graph: hub manages alice, bob, carol
+        router
+            .execute_parsed("ENTITY CONNECT 'user:hub' -> 'user:alice' : manages")
+            .unwrap();
+        router
+            .execute_parsed("ENTITY CONNECT 'user:hub' -> 'user:bob' : manages")
+            .unwrap();
+        router
+            .execute_parsed("ENTITY CONNECT 'user:hub' -> 'user:carol' : manages")
+            .unwrap();
+
+        // Hero query: engineers connected to hub, similar to alice
+        let result = router
+            .execute_parsed(
+                "FIND NODE WHERE role = 'engineer' SIMILAR TO 'user:alice' CONNECTED TO 'user:hub'",
+            )
+            .unwrap();
+
+        match result {
+            QueryResult::Unified(unified) => {
+                // alice and bob are engineers connected to hub
+                assert_eq!(unified.items.len(), 2);
+                assert!(unified.items[0].score.is_some());
+                assert!(unified.items[1].score.is_some());
+                assert!(unified.items[0].score.unwrap() >= unified.items[1].score.unwrap());
+            },
+            other => panic!("Expected Unified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_find_edge_similar_to_rejects() {
+        let router = QueryRouter::new();
+
+        let result = router.execute_parsed("FIND EDGE follows SIMILAR TO 'user:alice'");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("only supported with FIND NODE"));
+    }
+
+    #[test]
+    fn test_find_node_similar_connected_with_limit() {
+        let router = QueryRouter::new();
+
+        // Create entities with embeddings
+        for i in 0..5 {
+            router
+                .execute_parsed(&format!(
+                    "ENTITY CREATE 'user:{i}' {{name: 'User{i}'}} EMBEDDING [{}.0, 0.0, 0.0]",
+                    i + 1
+                ))
+                .unwrap();
+        }
+
+        // Connect hub to all
+        router
+            .execute_parsed("ENTITY CREATE 'user:hub' {name: 'Hub'}")
+            .unwrap();
+        for i in 0..5 {
+            router
+                .execute_parsed(&format!(
+                    "ENTITY CONNECT 'user:hub' -> 'user:{i}' : manages"
+                ))
+                .unwrap();
+        }
+
+        let result = router
+            .execute_parsed("FIND NODE SIMILAR TO 'user:0' CONNECTED TO 'user:hub' LIMIT 2")
+            .unwrap();
+
+        match result {
+            QueryResult::Unified(unified) => {
+                assert!(unified.items.len() <= 2);
+            },
+            other => panic!("Expected Unified, got {other:?}"),
+        }
     }
 
     // ====== Pagination Tests ======

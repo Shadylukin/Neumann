@@ -2063,6 +2063,8 @@ impl<'a> Parser<'a> {
             let label = if !self.check(&TokenKind::Where)
                 && !self.check(&TokenKind::Return)
                 && !self.check(&TokenKind::Limit)
+                && !self.check(&TokenKind::Similar)
+                && !self.check(&TokenKind::Connected)
                 && !self.current.is_eof()
             {
                 Some(self.expect_ident()?)
@@ -2074,6 +2076,8 @@ impl<'a> Parser<'a> {
             let edge_type = if !self.check(&TokenKind::Where)
                 && !self.check(&TokenKind::Return)
                 && !self.check(&TokenKind::Limit)
+                && !self.check(&TokenKind::Similar)
+                && !self.check(&TokenKind::Connected)
                 && !self.current.is_eof()
             {
                 Some(self.expect_ident()?)
@@ -2092,6 +2096,20 @@ impl<'a> Parser<'a> {
 
         let where_clause = if self.eat(&TokenKind::Where) {
             Some(Box::new(self.parse_expr()?))
+        } else {
+            None
+        };
+
+        let similar_to = if self.eat(&TokenKind::Similar) {
+            self.expect(&TokenKind::To)?;
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let connected_to = if self.eat(&TokenKind::Connected) {
+            self.expect(&TokenKind::To)?;
+            Some(self.parse_expr()?)
         } else {
             None
         };
@@ -2118,6 +2136,8 @@ impl<'a> Parser<'a> {
         Ok(StatementKind::Find(FindStmt {
             pattern,
             where_clause,
+            similar_to,
+            connected_to,
             return_items,
             limit,
         }))
@@ -3981,6 +4001,8 @@ mod tests {
             FindPattern::Nodes { label: Some(_) }
         ));
         assert!(find.where_clause.is_some());
+        assert!(find.similar_to.is_none());
+        assert!(find.connected_to.is_none());
         assert!(find.limit.is_some());
     }
 
@@ -10926,6 +10948,111 @@ mod tests {
             FindPattern::Nodes { label: Some(_) }
         ));
         assert!(find.limit.is_some());
+    }
+
+    // =========================================================================
+    // FIND with SIMILAR TO / CONNECTED TO
+    // =========================================================================
+
+    #[test]
+    fn test_find_node_similar_to() {
+        let stmt = parse_stmt("FIND NODE person SIMILAR TO 'user:alice'");
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes { label: Some(_) }
+        ));
+        assert!(find.similar_to.is_some());
+        assert!(find.connected_to.is_none());
+        assert!(find.where_clause.is_none());
+    }
+
+    #[test]
+    fn test_find_node_connected_to() {
+        let stmt = parse_stmt("FIND NODE person CONNECTED TO 'user:bob'");
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes { label: Some(_) }
+        ));
+        assert!(find.connected_to.is_some());
+        assert!(find.similar_to.is_none());
+        assert!(find.where_clause.is_none());
+    }
+
+    #[test]
+    fn test_find_node_hero_query() {
+        let stmt = parse_stmt(
+            "FIND NODE person WHERE role = 'engineer' SIMILAR TO 'user:alice' CONNECTED TO 'user:bob'",
+        );
+        let find = unwrap_find(stmt);
+        assert!(matches!(
+            find.pattern,
+            FindPattern::Nodes { label: Some(ref l) } if l.name == "person"
+        ));
+        assert!(find.where_clause.is_some());
+        assert!(find.similar_to.is_some());
+        assert!(find.connected_to.is_some());
+    }
+
+    #[test]
+    fn test_find_node_similar_without_label() {
+        let stmt = parse_stmt("FIND NODE SIMILAR TO 'key'");
+        let find = unwrap_find(stmt);
+        assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
+        assert!(find.similar_to.is_some());
+    }
+
+    #[test]
+    fn test_find_node_connected_without_label() {
+        let stmt = parse_stmt("FIND NODE CONNECTED TO 'key'");
+        let find = unwrap_find(stmt);
+        assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
+        assert!(find.connected_to.is_some());
+    }
+
+    #[test]
+    fn test_find_node_similar_connected_with_limit() {
+        let stmt =
+            parse_stmt("FIND NODE person SIMILAR TO 'user:alice' CONNECTED TO 'user:bob' LIMIT 5");
+        let find = unwrap_find(stmt);
+        assert!(find.similar_to.is_some());
+        assert!(find.connected_to.is_some());
+        assert!(find.limit.is_some());
+    }
+
+    #[test]
+    fn test_find_node_where_similar_no_connected() {
+        let stmt = parse_stmt("FIND NODE person WHERE age > 25 SIMILAR TO 'user:alice'");
+        let find = unwrap_find(stmt);
+        assert!(find.where_clause.is_some());
+        assert!(find.similar_to.is_some());
+        assert!(find.connected_to.is_none());
+    }
+
+    #[test]
+    fn test_find_node_where_connected_no_similar() {
+        let stmt = parse_stmt("FIND NODE person WHERE age > 25 CONNECTED TO 'user:bob'");
+        let find = unwrap_find(stmt);
+        assert!(find.where_clause.is_some());
+        assert!(find.connected_to.is_some());
+        assert!(find.similar_to.is_none());
+    }
+
+    #[test]
+    fn test_find_edge_similar_to_parses() {
+        let stmt = parse_stmt("FIND EDGE follows SIMILAR TO 'user:alice'");
+        let find = unwrap_find(stmt);
+        assert!(matches!(find.pattern, FindPattern::Edges { .. }));
+        assert!(find.similar_to.is_some());
+    }
+
+    #[test]
+    fn test_find_node_similar_to_with_return() {
+        let stmt = parse_stmt("FIND NODE person SIMILAR TO 'user:alice' RETURN name, score");
+        let find = unwrap_find(stmt);
+        assert!(find.similar_to.is_some());
+        assert_eq!(find.return_items.len(), 2);
     }
 
     // =========================================================================
