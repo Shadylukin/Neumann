@@ -6,7 +6,7 @@ deadlock prevention.
 
 Transactions in the relational engine operate within a single shard and do not
 coordinate with other nodes. For distributed transactions across multiple
-shards, see [Distributed Transactions](../concepts/distributed-transactions.md).
+shards, see [Distributed Transactions](../explanation/distributed-transactions.md).
 
 ## Architecture
 
@@ -332,7 +332,7 @@ let expired_locks = lock_manager.cleanup_expired();
 | Isolation | Row-level locks | Key-level locks |
 
 For cross-shard transactions, use `tensor_chain`'s
-[Distributed Transactions](../concepts/distributed-transactions.md).
+[Distributed Transactions](../explanation/distributed-transactions.md).
 
 ## Usage Examples
 

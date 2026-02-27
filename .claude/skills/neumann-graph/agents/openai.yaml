@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Graph Modeling"
+  short_description: "Model and query graph data with traversals, paths, and algorithms"
+  default_prompt: "Help me model graph data in Neumann for: "

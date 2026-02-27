@@ -29,7 +29,7 @@ neumann> \i samples/knowledge-base.nql
 ```
 
 Or paste sections individually to follow along with the
-[Quick Start](../docs/book/src/getting-started/quick-start.md).
+[Quick Start](../docs/book/src/tutorials/quick-start.md).
 
 ### Queries to try
 

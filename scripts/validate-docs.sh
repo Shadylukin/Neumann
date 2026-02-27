@@ -80,36 +80,119 @@ check_mermaid_deprecated() {
     # Don't fail on deprecated directives, just warn
 }
 
-# Check architecture docs have required sections
-check_architecture_docs() {
-    echo "Checking architecture document structure..."
-    local arch_dir="$DOCS_DIR/book/src/architecture"
+# Check reference/api docs have required sections
+check_reference_docs() {
+    echo "Checking reference API document structure..."
+    local ref_dir="$DOCS_DIR/book/src/reference/api"
     local issues=0
 
-    if [ -d "$arch_dir" ]; then
+    if [ -d "$ref_dir" ]; then
         while IFS= read -r -d '' file; do
             local missing=""
 
-            # Check for required sections
-            if ! grep -q "^## Overview" "$file" && ! grep -q "^# .*Overview" "$file"; then
-                missing="$missing Overview"
+            if ! grep -qi "see also" "$file"; then
+                missing="$missing SeeAlso"
             fi
 
             if [ -n "$missing" ]; then
                 echo -e "${YELLOW}Missing sections in $file:$missing${NC}"
             fi
-        done < <(find "$arch_dir" -name "*.md" -print0 2>/dev/null)
+        done < <(find "$ref_dir" -name "*.md" -print0 2>/dev/null)
     fi
 
     if [ "$issues" -eq 0 ]; then
-        echo -e "${GREEN}Architecture docs structure OK${NC}"
+        echo -e "${GREEN}Reference API docs structure OK${NC}"
+    fi
+}
+
+# Check tutorial docs have required sections
+check_tutorial_docs() {
+    echo "Checking tutorial document structure..."
+    local tut_dir="$DOCS_DIR/book/src/tutorials"
+    local issues=0
+
+    if [ -d "$tut_dir" ]; then
+        while IFS= read -r -d '' file; do
+            local missing=""
+
+            if ! grep -qi "prerequisite\|step 1\|## step" "$file"; then
+                missing="$missing Steps"
+            fi
+            if ! grep -qi "verification\|verify\|you should" "$file"; then
+                missing="$missing Verification"
+            fi
+
+            if [ -n "$missing" ]; then
+                echo -e "${YELLOW}Missing sections in $file:$missing${NC}"
+            fi
+        done < <(find "$tut_dir" -name "*.md" -not -name "worked-examples.md" -print0 2>/dev/null)
+    fi
+
+    if [ "$issues" -eq 0 ]; then
+        echo -e "${GREEN}Tutorial docs structure OK${NC}"
+    fi
+}
+
+# Check how-to docs have required sections
+check_howto_docs() {
+    echo "Checking how-to document structure..."
+    local howto_dir="$DOCS_DIR/book/src/how-to"
+    local issues=0
+
+    if [ -d "$howto_dir" ]; then
+        while IFS= read -r -d '' file; do
+            # Skip runbooks (checked separately) and index files
+            if [[ "$file" == *"runbooks"* ]] || [[ "$file" == *"index.md"* ]]; then
+                continue
+            fi
+
+            local missing=""
+
+            # How-to guides should have code examples or steps
+            if ! grep -q '```' "$file"; then
+                missing="$missing CodeExamples"
+            fi
+
+            if [ -n "$missing" ]; then
+                echo -e "${YELLOW}Missing sections in $file:$missing${NC}"
+            fi
+        done < <(find "$howto_dir" -name "*.md" -print0 2>/dev/null)
+    fi
+
+    if [ "$issues" -eq 0 ]; then
+        echo -e "${GREEN}How-to docs structure OK${NC}"
+    fi
+}
+
+# Check explanation docs have required sections
+check_explanation_docs() {
+    echo "Checking explanation document structure..."
+    local exp_dir="$DOCS_DIR/book/src/explanation"
+    local issues=0
+
+    if [ -d "$exp_dir" ]; then
+        while IFS= read -r -d '' file; do
+            local missing=""
+
+            if ! grep -q "^## " "$file"; then
+                missing="$missing Sections"
+            fi
+
+            if [ -n "$missing" ]; then
+                echo -e "${YELLOW}Missing sections in $file:$missing${NC}"
+            fi
+        done < <(find "$exp_dir" -name "*.md" -print0 2>/dev/null)
+    fi
+
+    if [ "$issues" -eq 0 ]; then
+        echo -e "${GREEN}Explanation docs structure OK${NC}"
     fi
 }
 
 # Check runbooks have required sections
 check_runbook_docs() {
     echo "Checking runbook document structure..."
-    local runbook_dir="$DOCS_DIR/book/src/operations/runbooks"
+    local runbook_dir="$DOCS_DIR/book/src/how-to/runbooks"
     local issues=0
 
     if [ -d "$runbook_dir" ]; then
@@ -161,7 +244,13 @@ check_code_block_languages
 echo ""
 check_mermaid_deprecated
 echo ""
-check_architecture_docs
+check_reference_docs
+echo ""
+check_tutorial_docs
+echo ""
+check_howto_docs
+echo ""
+check_explanation_docs
 echo ""
 check_runbook_docs
 echo ""

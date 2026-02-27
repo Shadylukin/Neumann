@@ -8,8 +8,11 @@ use std::fs;
 fn main() {
     let cli = Cli::parse();
 
+    // NO_COLOR convention: any non-empty value disables color.
+    let no_color = cli.no_color || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
+
     let config = ShellConfig {
-        no_color: cli.no_color.is_some(),
+        no_color,
         no_boot: cli.no_boot,
         quiet: cli.quiet,
         ..Default::default()

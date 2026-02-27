@@ -14,12 +14,12 @@ all three behind one query language.
 
 | I want to... | Go to |
 |---|---|
-| Try it in 5 minutes | [Quick Start](getting-started/quick-start.md) |
-| Build a project with it | [Five-Minute Tutorial](getting-started/five-minute-tutorial.md) |
-| See what it can do | [Use Cases](getting-started/use-cases.md) |
-| Understand the design | [Architecture Overview](architecture/overview.md) |
-| Use the Python SDK | [Python Quickstart](sdks/python-quickstart.md) |
-| Use the TypeScript SDK | [TypeScript Quickstart](sdks/typescript-quickstart.md) |
+| Try it in 5 minutes | [Quick Start](tutorials/quick-start.md) |
+| Build a project with it | [Five-Minute Tutorial](tutorials/five-minute-rag.md) |
+| See what it can do | [Use Cases](tutorials/use-cases.md) |
+| Understand the design | [Architecture Overview](explanation/architecture-overview.md) |
+| Use the Python SDK | [Python Quickstart](tutorials/python-sdk.md) |
+| Use the TypeScript SDK | [TypeScript Quickstart](tutorials/typescript-sdk.md) |
 | Look up a command | [Query Language Reference](reference/query-language.md) |
 
 ## What Makes Neumann Different
@@ -82,15 +82,15 @@ Additional subsystems: `tensor_blob` (S3-style blob storage), `tensor_chain`
 
 ## Getting Started
 
-- [Installation](getting-started/installation.md) -- Install Neumann
-- [Quick Start](getting-started/quick-start.md) -- Your first queries
-- [Five-Minute Tutorial](getting-started/five-minute-tutorial.md) -- Build a mini RAG system
-- [Use Cases](getting-started/use-cases.md) -- Real-world applications
-- [Building from Source](getting-started/building-from-source.md) -- Compile from source
+- [Installation](how-to/installation.md) -- Install Neumann
+- [Quick Start](tutorials/quick-start.md) -- Your first queries
+- [Five-Minute Tutorial](tutorials/five-minute-rag.md) -- Build a mini RAG system
+- [Use Cases](tutorials/use-cases.md) -- Real-world applications
+- [Building from Source](how-to/building-from-source.md) -- Compile from source
 
 ## Reference
 
 - [Query Language](reference/query-language.md) -- Full command reference
 - [Data Types](reference/data-types.md) -- Scalar, vector, and sparse types
 - [Functions](reference/functions.md) -- Aggregates, distance metrics, operators
-- [API Reference](api-reference.md) -- Rustdoc output
+- [Rustdoc](reference/rustdoc.md) -- Rustdoc output

@@ -108,9 +108,10 @@ fn exec_select(&self, select: &SelectStmt) -> Result<QueryResult> {
 ```mermaid
 graph TB
     subgraph QueryRouter
-        Execute[execute_parsed]
+        Execute[execute]
         ExecuteAsync[execute_parsed_async]
         Distributed[try_execute_distributed]
+        Parse[neumann_parser::parse]
         Cache[Query Cache]
         Statement[execute_statement]
         StatementAsync[execute_statement_async]
@@ -119,7 +120,8 @@ graph TB
     Execute --> Distributed
     ExecuteAsync --> StatementAsync
     Distributed -->|cluster active| ScatterGather[Scatter-Gather]
-    Distributed -->|local| Cache
+    Distributed -->|local| Parse
+    Parse --> Cache
     Cache -->|cache hit| Return[Return Result]
     Cache -->|cache miss| Statement
 
@@ -245,24 +247,29 @@ This enables:
 
 | Method | Parser | Async | Distributed | Cache |
 | --- | --- | --- | --- | --- |
-| `execute(command)` | Regex (legacy) | No | No | No |
+| `execute(command)` | AST | No | Yes | Yes |
 | `execute_parsed(command)` | AST | No | Yes | Yes |
 | `execute_parsed_async(command)` | AST | Yes | No | Yes |
 | `execute_statement(stmt)` | Pre-parsed | No | No | No |
 | `execute_statement_async(stmt)` | Pre-parsed | Yes | No | No |
 
+All execution methods now use the `neumann_parser` AST parser. `execute()` and
+`execute_parsed()` are functionally equivalent -- both parse the query string
+into an AST, check for distributed execution, apply caching, and dispatch to
+`execute_statement()`. There is no legacy regex-based parsing path.
+
 ### Execution Flow
 
 ```mermaid
 flowchart TD
-    A[execute_parsed] --> B{Cluster Active?}
-    B -->|Yes| C[try_execute_distributed]
-    B -->|No| D[Parse Command]
+    A[execute] --> B[try_execute_distributed]
 
-    C --> E{Plan Type}
-    E -->|Local| D
-    E -->|Remote| F[execute_on_shard]
-    E -->|ScatterGather| G[execute_scatter_gather]
+    B -->|cluster active| C{Plan Type}
+    C -->|Remote| F[execute_on_shard]
+    C -->|ScatterGather| G[execute_scatter_gather]
+    C -->|Local| D
+
+    B -->|no cluster| D[Parse via neumann_parser]
 
     D --> H{Cacheable?}
     H -->|Yes| I{Cache Hit?}
@@ -286,8 +293,8 @@ flowchart TD
 ### Detailed Execution Steps
 
 1. **Distributed Check**: If cluster is active, `try_execute_distributed` plans
-   query execution
-2. **Parse**: Convert command string to AST via `neumann_parser`
+   query execution (operates on the raw query string before parsing)
+2. **Parse**: Convert command string to AST via `neumann_parser::parse()`
 3. **Cache Check**: For cacheable queries (`SELECT`, `SIMILAR`, `NEIGHBORS`,
    `PATH`), check cache first
 4. **Execute**: Dispatch to appropriate engine based on `StatementKind`
@@ -295,9 +302,13 @@ flowchart TD
 6. **Invalidate**: Clear entire cache on write operations (INSERT, UPDATE,
    DELETE, DDL)
 
+All queries flow through this single path. Parse errors are reported with
+source context via `ParseError::format_with_source()`. Unknown commands
+(unrecognized first keyword) return `RouterError::UnknownCommand`.
+
 ```rust
-// Synchronous execution
-let result = router.execute_parsed("SELECT * FROM users")?;
+// Synchronous execution (execute and execute_parsed are equivalent)
+let result = router.execute("SELECT * FROM users")?;
 
 // Async execution
 let result = router.execute_parsed_async("SELECT * FROM users").await?;
@@ -449,30 +460,30 @@ SELECT * FROM a NATURAL JOIN b
 
 ```sql
 -- Node operations
-NODE CREATE person {name: 'Alice', age: 30}
+NODE CREATE person { name: 'Alice', age: 30 }
 NODE GET 123
 NODE DELETE 123
 NODE LIST person LIMIT 100
-NODE UPDATE 123 {name: 'Alice Smith'}
+NODE UPDATE 123 { name: 'Alice Smith' }
 
 -- Edge operations
-EDGE CREATE person:1 friend person:2 {since: 2020}
+EDGE CREATE 1 -> 2 : friend
 EDGE GET 456
 EDGE DELETE 456
 EDGE LIST friend LIMIT 50
 
 -- Traversals
-NEIGHBORS person:1 friend OUTGOING
-NEIGHBORS 123 * BOTH
-PATH person:1 TO person:5 VIA friend
+NEIGHBORS 1 friend OUTGOING
+NEIGHBORS 123
+PATH 1 -> 5 VIA friend
 ```
 
 ### Vector Operations
 
 ```sql
 -- Single embedding
-EMBED doc1 [0.1, 0.2, 0.3, 0.4]
-EMBED DELETE doc1
+EMBED STORE 'doc1' [0.1, 0.2, 0.3, 0.4]
+EMBED DELETE 'doc1'
 
 -- Batch embedding
 EMBED BATCH [('key1', [0.1, 0.2]), ('key2', [0.3, 0.4])]
@@ -481,6 +492,9 @@ EMBED BATCH [('key1', [0.1, 0.2]), ('key2', [0.3, 0.4])]
 SIMILAR 'doc1' LIMIT 5
 SIMILAR 'doc1' LIMIT 5 EUCLIDEAN
 SIMILAR [0.1, 0.2, 0.3] LIMIT 10 COSINE
+
+-- Collection-scoped embedding
+EMBED STORE 'doc1' [0.1, 0.2] INTO my_collection
 
 -- Listing
 SHOW EMBEDDINGS LIMIT 100
@@ -1040,13 +1054,13 @@ fn is_write_statement(stmt: &Statement) -> bool {
 router.init_cache();
 
 // First call executes and caches (JSON serialization)
-let result1 = router.execute_parsed("SELECT * FROM users")?;
+let result1 = router.execute("SELECT * FROM users")?;
 
 // Second call returns cached result (JSON deserialization)
-let result2 = router.execute_parsed("SELECT * FROM users")?;
+let result2 = router.execute("SELECT * FROM users")?;
 
 // Write operations invalidate entire cache
-router.execute_parsed("INSERT INTO users VALUES (2, 'Bob')")?;
+router.execute("INSERT INTO users VALUES (2, 'Bob')")?;
 // Cache is now empty
 ```
 
@@ -1099,13 +1113,13 @@ if !router.is_authenticated() {
 }
 
 // Identity persists across queries
-router.execute_parsed("VAULT GET 'secret'")?;  // Uses alice's identity
+router.execute("VAULT GET 'secret'")?;  // Uses alice's identity
 ```
 
 ### Error Handling
 
 ```rust
-match router.execute_parsed(query) {
+match router.execute(query) {
     Ok(result) => handle_result(result),
     Err(RouterError::ParseError(msg)) => println!("Invalid query: {}", msg),
     Err(RouterError::AuthenticationRequired) => println!("Please run SET IDENTITY first"),
@@ -1120,7 +1134,7 @@ match router.execute_parsed(query) {
 
 ```rust
 // Use sync for simple scripts
-let result = router.execute_parsed("SELECT * FROM users")?;
+let result = router.execute("SELECT * FROM users")?;
 
 // Use async for concurrent operations
 async fn parallel_queries(router: &QueryRouter) -> Result<()> {
@@ -1147,7 +1161,7 @@ for (key, embedding) in embeddings {
 router.build_vector_index()?;
 
 // Now SIMILAR queries use O(log n) search
-let results = router.execute_parsed("SIMILAR 'query' LIMIT 10")?;
+let results = router.execute("SIMILAR 'query' LIMIT 10")?;
 ```
 
 ## Related Modules

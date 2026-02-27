@@ -219,6 +219,7 @@ pub enum SpatialError {
 mod tests {
     use super::node::NodeN;
     use super::*;
+    use bitcode;
 
     #[test]
     fn test_node_bounds_empty_leaf() {
@@ -350,6 +351,45 @@ mod tests {
         assert!(
             matches!(index.root, NodeN::Leaf { .. }),
             "root should be a Leaf after heavy deletion"
+        );
+    }
+
+    #[test]
+    fn test_remove_region_filters_leaf_matches() {
+        // Regression: leaf removal used to ignore the region parameter,
+        // matching only on the predicate. Duplicate payloads at different
+        // locations could delete the wrong entry.
+        let mut index = SpatialIndex::new();
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(100.0, 100.0, 1.0, 1.0).unwrap(),
+            data: "dup",
+        });
+        index.insert(SpatialEntry {
+            bounds: BoundingBox::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+            data: "dup",
+        });
+
+        let region = BoundingBox::new(0.0, 0.0, 1.0, 1.0).unwrap();
+        index.remove(region, |e| e.data == "dup").unwrap();
+        assert_eq!(index.len(), 1);
+
+        let remaining = index.iter().next().unwrap();
+        assert!(
+            (remaining.bounds.x() - 100.0).abs() < f32::EPSILON,
+            "wrong entry removed: expected x=100, got x={}",
+            remaining.bounds.x()
+        );
+    }
+
+    #[test]
+    fn test_bbox_2d_serde_rejects_negative_extent() {
+        // Regression: deserialization only validated extents for D==3.
+        let raw: [f32; 4] = [0.0, 0.0, -1.0, 1.0];
+        let bytes = bitcode::serialize(&raw).unwrap();
+        let result: Result<BoundingBox, _> = bitcode::deserialize(&bytes);
+        assert!(
+            result.is_err(),
+            "2D bbox with negative width must be rejected"
         );
     }
 }

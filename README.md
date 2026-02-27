@@ -1,3 +1,5 @@
+# Neumann
+
 <p align="center">
   <img src="images/neumann_logo.png" alt="Neumann" height="80" />
   <img src="images/neumann_text.png" alt="Neumann" height="60" />
@@ -25,178 +27,74 @@ One query. Relational filter + vector similarity + graph traversal.
 [![Discord](https://img.shields.io/badge/Discord-Join-7289da.svg)](https://discord.gg/uN3KbAyKvw)
 [![Sponsor](https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff)](https://github.com/sponsors/Shadylukin)
 
-## Installation
+## Why Neumann
 
-### Quick Install (Recommended)
+**Three engines, one system.** Store a table, connect entities in a graph,
+and search by vector similarity -- without moving data between systems.
+No ETL, no sync, no glue code.
 
-```bash
-curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+**Semantic consensus.** Concurrent writes to different fields auto-merge.
+The consensus layer classifies conflicts geometrically rather than treating
+all concurrent writes as errors.
+
+```text
+Alice updates email, Bob updates photo (same user, same time).
+Traditional DB: conflict, manual resolution.
+Neumann: auto-merges (different fields = orthogonal changes).
 ```
 
-### Homebrew (macOS/Linux)
+**AI-native by design.** Built-in embedding storage, semantic caching for
+LLM responses, and encrypted vault for secrets. The query language
+understands similarity, not just equality.
 
-```bash
-brew tap Shadylukin/tap
-brew install neumann
-```
+## Use Cases
 
-### Cargo
+**RAG** -- Store documents with embeddings and relationships. Semantic
+search follows graph links automatically.
 
-```bash
-cargo install neumann_shell
-```
+**Agent memory** -- Conversation history with vector recall across
+sessions. Cache repeated LLM calls to cut API costs.
 
-### Docker
+**Knowledge graphs** -- Combine structured data with semantic similarity.
+Find entities by what they *mean*, not just what they match.
 
-```bash
-# Interactive CLI
-docker run -it shadylukinack/neumann:latest
+**Access control** -- Graph-based permissions. Query results respect
+who's asking.
 
-# Server mode with persistent storage
-docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann \
-  shadylukinack/neumann:server
-```
-
-### Docker Compose
-
-```bash
-git clone https://github.com/Shadylukin/Neumann.git
-cd Neumann
-
-# Start server
-docker compose up -d neumann-server
-
-# Run CLI
-docker compose run --rm neumann-cli
-```
-
-### From Source
-
-```bash
-git clone https://github.com/Shadylukin/Neumann.git
-cd Neumann
-cargo build --release
-./target/release/neumann
-```
-
-See [Installation Guide](docs/book/src/getting-started/installation.md) for
-platform support, troubleshooting, and environment variables.
-
-### Verify Installation
-
-```bash
-# Check version
-neumann --version
-
-# Run a quick smoke test
-neumann -c "CREATE TABLE test (id INT, name TEXT); INSERT test id=1, name='hello'; SELECT * FROM test"
-```
+See [Use Cases](docs/book/src/tutorials/use-cases.md) for worked examples
+with Python, TypeScript, and the CLI.
 
 ## Quick Start
 
 ```bash
+curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
 neumann
 ```
 
 ```sql
 -- Relational
-> CREATE TABLE users (id INT, name TEXT, role TEXT)
-> INSERT users id=1, name='Alice', role='engineer'
-> SELECT * FROM users WHERE role = 'engineer'
+CREATE TABLE users (id INT, name TEXT, role TEXT);
+INSERT users id=1, name='Alice', role='engineer';
+SELECT * FROM users WHERE role = 'engineer';
 
 -- Graph
-> NODE CREATE person name='Alice'
-> NODE CREATE person name='Bob'
-> EDGE CREATE node:1 -> node:2 reports_to
+NODE CREATE person {name: 'Alice'};
+NODE CREATE person {name: 'Bob'};
+EDGE CREATE 1 -> 2 : reports_to;
 
 -- Vector
-> EMBED 'user:alice' [0.1, 0.2, 0.3, ...]
-> SIMILAR 'user:alice' TOP 5
+EMBED STORE 'user:alice' [0.1, 0.2, 0.3];
+SIMILAR 'user:alice' TOP 5;
 ```
 
-## What Makes This Different
-
-**Unified storage.** One entity can have table fields, graph edges, AND
-vector embeddings. No sync logic between systems.
-
-**Semantic consensus.** Orthogonal changes auto-merge without conflicts.
-
-```text
-Alice updates email, Bob updates photo (same user, same time).
-Traditional DB: conflict error, manual resolution.
-Neumann: auto-merges because changes are orthogonal (different fields).
-```
-
-This extends to distributed scenarios. The consensus layer classifies
-conflicts geometrically rather than treating all concurrent writes as
-conflicts.
-
-## Use Cases
-
-### RAG Application
-
-Store documents with their embeddings and relationships in one place.
-
-```python
-from neumann import NeumannClient
-
-client = NeumannClient.connect("localhost:9200")
-
-# Store document with embedding
-client.execute(
-    "INSERT docs id='readme', content='...', embedding=[0.1, 0.2, ...]"
-)
-
-# Link documents
-client.execute("EDGE CREATE doc:readme -> doc:architecture references")
-
-# Semantic search + follow links
-results = client.execute("""
-  FIND NODE doc
-    SIMILAR TO 'doc:readme'
-    CONNECTED TO 'doc:*'
-""")
-```
-
-### Agent Memory
-
-Conversation history with semantic recall across sessions.
-
-```typescript
-const client = await NeumannClient.connect("localhost:9200");
-
-// Store message with embedding
-await client.execute(`
-  INSERT messages
-    session='abc', role='user', content='...',
-    embedding=[0.1, 0.2, ...]
-`);
-
-// Recall similar past conversations
-const memories = await client.execute(`
-  SIMILAR 'current-context' TOP 10
-`);
-```
-
-### Semantic Search with Access Control
-
-```python
-# Store user with permissions via graph
-client.execute("NODE CREATE user name='alice', team='eng'")
-client.execute("EDGE CREATE user:alice -> project:neumann can_read")
-
-# Query respects graph-based access
-results = client.execute("""
-  FIND NODE document
-    WHERE team = 'eng'
-    SIMILAR TO 'query embedding'
-    CONNECTED TO 'user:alice'
-""")
-```
+More install methods (Homebrew, Cargo, Docker, source) in the
+[Installation Guide](docs/book/src/how-to/installation.md).
+Full walkthrough in the
+[Quick Start Tutorial](docs/book/src/tutorials/quick-start.md).
 
 ## SDKs
 
-### Python
+**Python**
 
 ```bash
 pip install neumann-db
@@ -204,19 +102,11 @@ pip install neumann-db
 
 ```python
 from neumann import NeumannClient
-
-# Remote
-client = NeumannClient.connect("localhost:9200", api_key="...")
-
-# Embedded (in-process)
-client = NeumannClient.embedded()
-
+client = NeumannClient.connect("localhost:9200")
 result = client.execute("SELECT * FROM users")
-for row in result.rows:
-    print(row.to_dict())
 ```
 
-### TypeScript
+**TypeScript**
 
 ```bash
 npm install @scrunchee/client
@@ -224,17 +114,13 @@ npm install @scrunchee/client
 
 ```typescript
 import { NeumannClient } from '@scrunchee/client';
-
 const client = await NeumannClient.connect("localhost:9200");
 const result = await client.execute("SELECT * FROM users");
-
-// Streaming for large results
-for await (const chunk of client.executeStream(
-  "SELECT * FROM large_table"
-)) {
-  console.log(chunk.rows);
-}
 ```
+
+Full tutorials:
+[Python](docs/book/src/tutorials/python-sdk.md) |
+[TypeScript](docs/book/src/tutorials/typescript-sdk.md)
 
 ## Dashboard
 
@@ -244,40 +130,38 @@ for await (const chunk of client.executeStream(
 ![Graph Visualization](images/graph.png)
 *Interactive graph visualization with force-directed layout*
 
-## Status
+## Documentation
 
-Neumann is pre-1.0.
+| I want to... | Go to |
+|---|---|
+| Follow a tutorial | [Quick Start](docs/book/src/tutorials/quick-start.md), [RAG in 5 Minutes](docs/book/src/tutorials/five-minute-rag.md), [Knowledge Graph](docs/book/src/tutorials/knowledge-graph.md) |
+| Solve a specific problem | [How-to Guides](docs/book/src/how-to/installation.md) (30+ guides covering storage, graphs, vectors, security, deployment) |
+| Look up syntax or config | [Query Language](docs/book/src/reference/query-language.md), [Configuration](docs/book/src/reference/configuration.md), [Error Types](docs/book/src/reference/error-types.md) |
+| Understand the architecture | [Design Overview](docs/book/src/explanation/architecture-overview.md), [Consensus](docs/book/src/explanation/consensus-protocols.md), [HNSW](docs/book/src/explanation/hnsw-algorithm.md) |
 
-- Core engines: 95%+ test coverage, 22 fuzz targets
-- Single-node: production-ready
-- Multi-node consensus: validation ongoing
-
-The distributed layer has comprehensive testing but real-world multi-node
-deployments need more validation.
-
-See the [roadmap](docs/roadmap.md) for planned work.
+[Full table of contents](docs/book/src/SUMMARY.md) |
+[Rustdoc API Reference](https://shadylukin.github.io/Neumann/)
 
 ## Performance
 
 Benchmarked on Apple M-series silicon:
 
 - **3.8M reads/sec, 2.0M writes/sec** (in-memory, no durability)
-- **22K durable writes/sec** with group commit, 260/sec with fsync per write
-- **150us vector similarity** (HNSW index, 10K embeddings, 128-dim)
+- **22K durable writes/sec** with group commit, 260/sec with fsync
+- **150us vector similarity** (HNSW, 10K embeddings, 128-dim)
 - **52M conflict checks/sec** via sparse delta comparison
 
-Full benchmarks:
-[docs/book/src/benchmarks/index.md](docs/book/src/benchmarks/index.md)
+[Full benchmarks](docs/book/src/reference/benchmarks/index.md)
 
-## Documentation
+## Status
 
-- [API Documentation](https://shadylukin.github.io/Neumann/) -
-  Full rustdoc reference
-- [Installation](docs/book/src/getting-started/installation.md)
-- [Quick Start](docs/book/src/getting-started/quick-start.md)
-- [Architecture](docs/architecture.md)
-- [Tensor Chain](docs/book/src/architecture/tensor-chain.md) -
-  Distributed consensus details
+Neumann is pre-1.0 (v0.3.1). Core engines have 95%+ test coverage and
+139 fuzz targets. Single-node is production-ready. Multi-node consensus
+has comprehensive testing (loom, proptest, deterministic simulation) but
+needs more real-world validation.
+
+See the [roadmap](ROADMAP.md) for where we're headed -- native
+embeddings, natural language queries, and AI-native analytics.
 
 ## The Name
 

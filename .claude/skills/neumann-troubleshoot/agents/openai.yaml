@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Troubleshooting"
+  short_description: "Debug and troubleshoot Neumann errors, performance, and cluster issues"
+  default_prompt: "Help me troubleshoot this Neumann issue: "

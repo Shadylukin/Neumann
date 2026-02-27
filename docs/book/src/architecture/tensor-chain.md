@@ -1353,7 +1353,7 @@ with TLC:
 Model checking discovered protocol-level bugs (out-of-order message
 handling, self-message processing, heartbeat log truncation) that
 were fixed in both the specs and the Rust implementation. See
-[Formal Verification](../concepts/formal-verification.md) for full
+[Formal Verification](../explanation/formal-verification.md) for full
 results and the list of bugs found.
 
 ## Related Modules

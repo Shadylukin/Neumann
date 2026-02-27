@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Query Writing"
+  short_description: "Write correct Neumann database queries across all 8 engines"
+  default_prompt: "Help me write a Neumann query for: "

@@ -37,3 +37,72 @@ line-numbers = true
 enable = true
 limit-results = 30
 use-hierarchical-index = true
+
+# Redirects from old paths to new Divio-structured paths.
+# Populated as files are moved across phases.
+[output.html.redirect]
+# Getting Started -> Tutorials / How-to
+"/getting-started/quick-start.html" = "../tutorials/quick-start.html"
+"/getting-started/five-minute-tutorial.html" = "../tutorials/five-minute-rag.html"
+"/getting-started/use-cases.html" = "../tutorials/use-cases.html"
+"/getting-started/installation.html" = "../how-to/installation.html"
+"/getting-started/building-from-source.html" = "../how-to/building-from-source.html"
+# SDKs -> Tutorials
+"/sdks/python-quickstart.html" = "../tutorials/python-sdk.html"
+"/sdks/typescript-quickstart.html" = "../tutorials/typescript-sdk.html"
+# Operations -> How-to / Reference
+"/operations/deployment.html" = "../how-to/deploy-cluster.html"
+"/operations/configuration.html" = "../reference/configuration.html"
+"/operations/monitoring.html" = "../reference/metrics.html"
+"/operations/troubleshooting.html" = "../how-to/troubleshooting.html"
+"/operations/example-configurations.html" = "../reference/example-configurations.html"
+"/operations/runbooks/index.html" = "../how-to/runbooks/index.html"
+"/operations/runbooks/node-management.html" = "../how-to/runbooks/node-management.html"
+"/operations/runbooks/cluster-upgrade.html" = "../how-to/runbooks/cluster-upgrade.html"
+"/operations/runbooks/leader-election.html" = "../how-to/runbooks/leader-election.html"
+"/operations/runbooks/split-brain.html" = "../how-to/runbooks/split-brain.html"
+"/operations/runbooks/node-recovery.html" = "../how-to/runbooks/node-recovery.html"
+"/operations/runbooks/backup-restore.html" = "../how-to/runbooks/backup-restore.html"
+"/operations/runbooks/capacity-planning.html" = "../how-to/runbooks/capacity-planning.html"
+"/operations/runbooks/deadlock-resolution.html" = "../how-to/runbooks/deadlock-resolution.html"
+# Concepts -> Explanation
+"/concepts/tensor-data-model.html" = "../explanation/tensor-data-model.html"
+"/concepts/sparse-vectors.html" = "../explanation/sparse-vectors.html"
+"/concepts/semantic-operations.html" = "../explanation/semantic-operations.html"
+"/concepts/distributed-transactions.html" = "../explanation/distributed-transactions.html"
+"/concepts/consensus-protocols.html" = "../explanation/consensus-protocols.html"
+"/concepts/embedding-state.html" = "../explanation/embedding-state.html"
+"/concepts/codebook-manager.html" = "../explanation/codebook-manager.html"
+"/concepts/formal-verification.html" = "../explanation/formal-verification.html"
+# Architecture pure moves -> Explanation
+"/architecture/overview.html" = "../explanation/architecture-overview.html"
+"/architecture/tcp-transport.html" = "../explanation/tcp-transport.html"
+"/architecture/snapshot-streaming.html" = "../explanation/snapshot-streaming.html"
+"/architecture/transaction-workspace.html" = "../explanation/transaction-workspace.html"
+# Tutorials split
+"/tutorials/worked-examples.html" = "../explanation/semantic-conflict-detection.html"
+# Benchmarks -> Reference
+"/benchmarks/index.html" = "../reference/benchmarks/index.html"
+"/benchmarks/tensor-store.html" = "../reference/benchmarks/tensor-store.html"
+"/benchmarks/relational-engine.html" = "../reference/benchmarks/relational-engine.html"
+"/benchmarks/graph-engine.html" = "../reference/benchmarks/graph-engine.html"
+"/benchmarks/vector-engine.html" = "../reference/benchmarks/vector-engine.html"
+"/benchmarks/tensor-compress.html" = "../reference/benchmarks/tensor-compress.html"
+"/benchmarks/tensor-vault.html" = "../reference/benchmarks/tensor-vault.html"
+"/benchmarks/tensor-cache.html" = "../reference/benchmarks/tensor-cache.html"
+"/benchmarks/tensor-blob.html" = "../reference/benchmarks/tensor-blob.html"
+"/benchmarks/tensor-chain.html" = "../reference/benchmarks/tensor-chain.html"
+"/benchmarks/neumann-parser.html" = "../reference/benchmarks/neumann-parser.html"
+"/benchmarks/query-router.html" = "../reference/benchmarks/query-router.html"
+"/benchmarks/neumann-shell.html" = "../reference/benchmarks/neumann-shell.html"
+"/benchmarks/neumann-server.html" = "../reference/benchmarks/neumann-server.html"
+"/benchmarks/tensor-unified.html" = "../reference/benchmarks/tensor-unified.html"
+"/benchmarks/tensor-checkpoint.html" = "../reference/benchmarks/tensor-checkpoint.html"
+"/benchmarks/tensor-spatial.html" = "../reference/benchmarks/tensor-spatial.html"
+# Stress Tests -> Reference
+"/stress-tests/index.html" = "../reference/stress-tests/index.html"
+"/stress-tests/hnsw.html" = "../reference/stress-tests/hnsw.html"
+"/stress-tests/tiered-store.html" = "../reference/stress-tests/tiered-store.html"
+"/stress-tests/mixed-workload.html" = "../reference/stress-tests/mixed-workload.html"
+# Integration Tests -> Reference
+"/integration-tests/index.html" = "../reference/integration-tests/index.html"

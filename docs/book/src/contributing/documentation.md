@@ -16,10 +16,10 @@ Neumann documentation consists of:
 docs/book/src/
 ├── SUMMARY.md          # Table of contents
 ├── introduction.md     # Landing page
-├── getting-started/    # Tutorials
-├── architecture/       # Module deep dives
-├── concepts/           # Cross-cutting concepts
-├── operations/         # Deployment, monitoring
+├── tutorials/          # Learning-oriented guides
+├── how-to/             # Goal-oriented recipes
+├── reference/          # Information-oriented tables
+├── explanation/        # Understanding-oriented discussion
 └── contributing/       # Contribution guides
 ```
 

@@ -24,8 +24,8 @@ pub struct Cli {
     pub output_format: OutputFormat,
 
     /// Disable colored output
-    #[arg(long = "no-color", env = "NO_COLOR", num_args = 0..=1, default_missing_value = "true")]
-    pub no_color: Option<String>,
+    #[arg(long = "no-color")]
+    pub no_color: bool,
 
     /// Skip boot sequence animation
     #[arg(long = "no-boot")]
@@ -64,7 +64,7 @@ mod tests {
         assert!(cli.command.is_none());
         assert!(cli.file.is_none());
         assert_eq!(cli.output_format, OutputFormat::Table);
-        assert!(cli.no_color.is_none());
+        assert!(!cli.no_color);
         assert!(!cli.no_boot);
         assert!(!cli.quiet);
     }
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn test_cli_flags() {
         let cli = Cli::parse_from(["neumann", "--no-color", "--no-boot", "-q"]);
-        assert!(cli.no_color.is_some());
+        assert!(cli.no_color);
         assert!(cli.no_boot);
         assert!(cli.quiet);
     }

@@ -101,32 +101,45 @@ Use ASCII diagrams for wire formats and data structures:
 +--------+--------+--------+
 ```
 
-## Document Types
+## Document Types (Divio System)
 
-### Architecture Documents
+Documentation follows the [Divio documentation system](https://docs.divio.com/documentation-system/)
+with four quadrants. Each page belongs to exactly one quadrant. Do not mix
+content types within a single page.
 
-Location: `docs/book/src/architecture/`
+### Tutorials (learning-oriented)
 
-Required sections:
+Location: `docs/book/src/tutorials/`
 
-1. **Overview** - Brief description of the component
-2. **Architecture** - Diagram showing component relationships
-3. **Configuration** - Table of configuration options
-4. **Error Handling** - Error types and recovery strategies
-
-### Concept Documents
-
-Location: `docs/book/src/concepts/`
+Purpose: Teach a beginner by walking them through a concrete project.
 
 Required sections:
 
-1. **Overview** - What the concept is and why it matters
-2. **How It Works** - Technical explanation with diagrams
-3. **Example Usage** - Code examples demonstrating the concept
+1. **Prerequisites** - What the reader needs before starting
+2. **Step N** - Numbered steps with copy-pasteable commands
+3. **Verification** - How to confirm success
+4. **Next Steps** - Links to related tutorials and how-to guides
+
+Rules: Concrete actions, visible results after each step, minimal
+explanation. Link to Explanation pages for "why" content.
+
+### How-to Guides (goal-oriented)
+
+Location: `docs/book/src/how-to/`
+
+Purpose: Help an experienced user accomplish a specific task.
+
+Required sections:
+
+1. **Goal** or clear title stating what the guide achieves
+2. **Steps** or **code examples** showing how to accomplish it
+
+Rules: Assume the reader knows the basics. Link to Reference for
+config tables and to Explanation for design rationale.
 
 ### Runbooks
 
-Location: `docs/book/src/operations/runbooks/`
+Location: `docs/book/src/how-to/runbooks/`
 
 Required sections:
 
@@ -135,15 +148,44 @@ Required sections:
 3. **Resolution** - Step-by-step fix procedure
 4. **Prevention** - How to avoid the issue
 
-### Tutorials
+### Reference (information-oriented)
 
-Location: `docs/book/src/tutorials/`
+Location: `docs/book/src/reference/` and `docs/book/src/reference/api/`
+
+Purpose: Describe the machinery accurately and completely.
+
+Required sections (for API references):
+
+1. **See Also** - Links to related explanation and how-to pages
+2. **Types** - Tables of types, fields, variants
+3. **Error Types** - Error variants with causes
+
+Rules: Tables, not prose. Accurate, complete, up to date. Do not
+include tutorials or explanations. Link to Explanation for "why".
+
+### Explanation (understanding-oriented)
+
+Location: `docs/book/src/explanation/`
+
+Purpose: Help the reader understand design decisions and internals.
 
 Required sections:
 
-1. **Prerequisites** - What the reader needs before starting
-2. **Steps** - Numbered procedure with code examples
-3. **Verification** - How to confirm success
+1. **Overview** or introduction paragraph
+2. **How It Works** - Technical explanation with diagrams
+
+Rules: Discuss alternatives, trade-offs, and design rationale. Use
+diagrams. Link to Reference for precise specifications and to How-to
+for practical usage.
+
+### Cross-Reference Policy
+
+- Tutorials link to Explanation (for "why") and How-to (for next steps)
+- How-to guides link to Reference (for config tables) and Explanation
+  (for design rationale)
+- Reference pages link to Explanation and How-to via "See Also"
+- Explanation pages link to Reference (for precise specs) and How-to
+  (for practical usage)
 
 ## Validation
 
@@ -209,7 +251,7 @@ Use consistent terminology throughout:
 - Include file extensions in links
 
 ```markdown
-See [Transaction Workspace](../architecture/transaction-workspace.md) for
+See [Transaction Workspace](../explanation/transaction-workspace.md) for
 details on workspace lifecycle.
 ```
 

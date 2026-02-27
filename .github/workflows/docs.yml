@@ -90,7 +90,7 @@ jobs:
         continue-on-error: true
         with:
           name: bench-docs
-          path: docs/book/src/benchmarks/
+          path: docs/book/src/reference/benchmarks/
 
       - name: Install mdBook
         run: |
@@ -256,7 +256,7 @@ jobs:
           actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: bench-docs
-          path: docs/book/src/benchmarks/
+          path: docs/book/src/reference/benchmarks/
           retention-days: 7
 
       - name: Upload Criterion reports

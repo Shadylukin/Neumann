@@ -175,7 +175,7 @@ When modifying Raft, 2PC, or gossip protocols:
 2. Run TLC and verify zero errors
 3. Save output to `specs/tla/tlc-results/`
 
-See [Formal Verification](../concepts/formal-verification.md) for
+See [Formal Verification](../explanation/formal-verification.md) for
 background on what model checking covers.
 
 ## Mocking

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neumann Migration"
+  short_description: "Migrate data to Neumann from PostgreSQL, MongoDB, Neo4j, and other databases"
+  default_prompt: "Help me migrate data to Neumann from: "

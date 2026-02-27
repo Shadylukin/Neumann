@@ -43,7 +43,7 @@ async fn main() -> Result<(), ClientError> {
         .await?;
 
     // Execute queries
-    let result = client.execute("SELECT users").await?;
+    let result = client.execute("SELECT * FROM users").await?;
 
     if let Some(rows) = result.rows() {
         println!("Found {} rows", rows.len());
@@ -68,10 +68,10 @@ use neumann_client::{NeumannClient, ClientError};
 fn main() -> Result<(), ClientError> {
     let client = NeumannClient::embedded()?;
 
-    client.execute_sync("CREATE TABLE users (name:string, age:int)")?;
-    client.execute_sync("INSERT users name=\"Alice\", age=30")?;
+    client.execute_sync("CREATE TABLE users (name STRING, age INT)")?;
+    client.execute_sync("INSERT INTO users (name, age) VALUES ('Alice', 30)")?;
 
-    let result = client.execute_sync("SELECT users")?;
+    let result = client.execute_sync("SELECT * FROM users")?;
     println!("{:?}", result);
 
     Ok(())
@@ -170,7 +170,3 @@ async fn example() {
 
 - Rust 1.75.0 or later
 - Tokio runtime (for remote mode)
-
-## License
-
-MIT OR Apache-2.0

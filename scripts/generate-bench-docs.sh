@@ -13,7 +13,7 @@
 set -euo pipefail
 
 CRITERION_DIR="${1:-target/criterion}"
-DOCS_DIR="docs/book/src/benchmarks"
+DOCS_DIR="docs/book/src/reference/benchmarks"
 TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
 # Map Criterion group directories to markdown file basenames.

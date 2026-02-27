@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "ref": "v0.3.1-38-g21aebaa6",
+  "ref_sha": "21aebaa62e9a20451f7c9ee2c526f54ac05f14d2",
+  "installed_at": "2026-02-26T20:05:30Z",
+  "tool": "claude",
+  "root": "/Users/lukin/Neumann/.claude/skills",
+  "skills": [{"name":"neumann-client","path":"/Users/lukin/Neumann/.claude/skills/neumann-client"},{"name":"neumann-deploy","path":"/Users/lukin/Neumann/.claude/skills/neumann-deploy"},{"name":"neumann-graph","path":"/Users/lukin/Neumann/.claude/skills/neumann-graph"},{"name":"neumann-migrate","path":"/Users/lukin/Neumann/.claude/skills/neumann-migrate"},{"name":"neumann-query","path":"/Users/lukin/Neumann/.claude/skills/neumann-query"},{"name":"neumann-schema","path":"/Users/lukin/Neumann/.claude/skills/neumann-schema"},{"name":"neumann-troubleshoot","path":"/Users/lukin/Neumann/.claude/skills/neumann-troubleshoot"},{"name":"neumann-vector","path":"/Users/lukin/Neumann/.claude/skills/neumann-vector"}]
+}

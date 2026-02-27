@@ -50,17 +50,18 @@ neumann -f queries.sql
 ```sql
 -- Relational queries
 CREATE TABLE users (id INT, name STRING, email STRING);
-INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
+INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com');
 SELECT * FROM users WHERE id = 1;
 
 -- Graph queries
-CREATE NODE person { name: 'Bob', age: 30 };
-CREATE EDGE knows FROM person:1 TO person:2 { since: 2020 };
-TRAVERSE person:1 -[knows]-> DEPTH 3;
+NODE CREATE person { name: 'Bob', age: 30 };
+EDGE CREATE 1 -> 2 : knows;
+NEIGHBORS 1 knows OUTGOING;
+PATH 1 -> 2;
 
 -- Vector queries
-CREATE EMBEDDING doc1 [0.1, 0.2, 0.3, ...];
-SEARCH SIMILAR TO doc1 LIMIT 10;
+EMBED STORE 'doc1' [0.1, 0.2, 0.3, 0.4];
+SIMILAR 'doc1' LIMIT 10;
 ```
 
 ## Configuration
