@@ -112,6 +112,7 @@ COPY query_router/benches query_router/benches
 COPY neumann_parser/benches neumann_parser/benches
 COPY neumann_shell/benches neumann_shell/benches
 COPY neumann_server/benches neumann_server/benches
+COPY tensor_spatial/benches tensor_spatial/benches
 
 # Touch files to ensure rebuild
 RUN find . -name "*.rs" -exec touch {} \;
