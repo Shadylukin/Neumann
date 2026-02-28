@@ -143,7 +143,7 @@ impl DocIndexer {
 
     /// Create the docs table.
     fn create_table(&self) -> Result<()> {
-        let query = "CREATE TABLE docs (id:int, path:string, title:string, category:string, size:int, word_count:int)";
+        let query = "CREATE TABLE docs (id INT, file_path TEXT, title TEXT, category TEXT, size INT, word_count INT)";
         self.client
             .execute_sync(query)
             .context("Failed to create docs table")?;
@@ -155,7 +155,7 @@ impl DocIndexer {
         // Escape single quotes in title
         let escaped_title = doc.title.replace('\'', "''");
         let query = format!(
-            "INSERT docs id={}, path='{}', title='{}', category='{}', size={}, word_count={}",
+            "INSERT INTO docs (id, file_path, title, category, size, word_count) VALUES ({}, '{}', '{}', '{}', {}, {})",
             Self::path_hash(&doc.path),
             doc.path,
             escaped_title,
@@ -174,7 +174,7 @@ impl DocIndexer {
         // Escape single quotes in title
         let escaped_title = doc.title.replace('\'', "''");
         let query = format!(
-            "NODE CREATE Doc path='{}', title='{}', category='{}'",
+            "NODE CREATE doc {{file_path: '{}', title: '{}', category: '{}'}}",
             doc.path, escaped_title, doc.category
         );
         let result = self
@@ -192,7 +192,7 @@ impl DocIndexer {
 
     /// Create an edge between two document nodes.
     fn create_edge(&self, from: u64, to: u64) -> Result<()> {
-        let query = format!("EDGE CREATE {from} -> {to} links_to");
+        let query = format!("EDGE CREATE {from} -> {to} : links_to");
         self.client
             .execute_sync(&query)
             .context("Failed to create edge")?;
@@ -203,7 +203,7 @@ impl DocIndexer {
     fn store_embedding(&self, path: &str, embedding: &[f32]) -> Result<()> {
         let key = format!("doc:{path}");
         let values = TfIdfEmbedder::format_embedding(embedding);
-        let query = format!("EMBED {key} [{values}]");
+        let query = format!("EMBED '{key}' [{values}]");
         self.client
             .execute_sync(&query)
             .context("Failed to store embedding")?;
@@ -226,8 +226,8 @@ impl DocIndexer {
     /// List all indexed documents.
     pub fn list_documents(&self, category: Option<&str>) -> Result<Vec<DocumentInfo>> {
         let query = category.map_or_else(
-            || "SELECT docs".to_string(),
-            |cat| format!("SELECT docs WHERE category = '{cat}'"),
+            || "SELECT * FROM docs".to_string(),
+            |cat| format!("SELECT * FROM docs WHERE category = '{cat}'"),
         );
 
         let result = self
@@ -241,7 +241,7 @@ impl DocIndexer {
                 for row in rows {
                     docs.push(DocumentInfo {
                         id: row.id,
-                        path: get_string(&row, "path"),
+                        path: get_string(&row, "file_path"),
                         title: get_string(&row, "title"),
                         category: get_string(&row, "category"),
                         size: get_int(&row, "size") as usize,
@@ -301,7 +301,7 @@ impl DocIndexer {
     /// Get document details including graph neighbors.
     pub fn get_document(&self, path: &str) -> Result<Option<DocumentDetail>> {
         // Get relational data
-        let query = format!("SELECT docs WHERE path = '{path}'");
+        let query = format!("SELECT * FROM docs WHERE file_path = '{path}'");
         let result = self.client.execute_sync(&query)?;
 
         let info = match result {
@@ -309,7 +309,7 @@ impl DocIndexer {
                 let row = rows.first().context("Document not found")?;
                 DocumentInfo {
                     id: row.id,
-                    path: get_string(row, "path"),
+                    path: get_string(row, "file_path"),
                     title: get_string(row, "title"),
                     category: get_string(row, "category"),
                     size: get_int(row, "size") as usize,
@@ -320,7 +320,7 @@ impl DocIndexer {
         };
 
         // Find the node ID for this document
-        let node_query = format!("NODE FIND Doc WHERE path = '{path}'");
+        let node_query = format!("NODE FIND doc WHERE file_path = '{path}'");
         let node_result = self.client.execute_sync(&node_query);
 
         let mut linked_docs = Vec::new();
@@ -333,7 +333,7 @@ impl DocIndexer {
                     self.client.execute_sync(&neighbors_query)
                 {
                     for neighbor in neighbors {
-                        if let Some(path) = neighbor.properties.get("path") {
+                        if let Some(path) = neighbor.properties.get("file_path") {
                             linked_docs.push(path.clone());
                         }
                     }
@@ -347,8 +347,8 @@ impl DocIndexer {
     /// Find path between two documents.
     pub fn find_path(&self, from_path: &str, to_path: &str) -> Result<Option<Vec<String>>> {
         // Find node IDs
-        let from_query = format!("NODE FIND Doc WHERE path = '{from_path}'");
-        let to_query = format!("NODE FIND Doc WHERE path = '{to_path}'");
+        let from_query = format!("NODE FIND doc WHERE file_path = '{from_path}'");
+        let to_query = format!("NODE FIND doc WHERE file_path = '{to_path}'");
 
         let from_result = self.client.execute_sync(&from_query)?;
         let to_result = self.client.execute_sync(&to_query)?;
@@ -375,7 +375,7 @@ impl DocIndexer {
                         if let Ok(QueryResult::Nodes(nodes)) = self.client.execute_sync(&get_query)
                         {
                             if let Some(node) = nodes.first() {
-                                if let Some(path) = node.properties.get("path") {
+                                if let Some(path) = node.properties.get("file_path") {
                                     paths.push(path.clone());
                                 }
                             }

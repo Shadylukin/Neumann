@@ -26,11 +26,11 @@ fn main() {
 
     // Insert products
     let products = [
-        "INSERT products id=1, name='Laptop', category='Electronics', price=999.99",
-        "INSERT products id=2, name='Keyboard', category='Electronics', price=79.99",
-        "INSERT products id=3, name='Desk Chair', category='Furniture', price=249.99",
-        "INSERT products id=4, name='Monitor', category='Electronics', price=399.99",
-        "INSERT products id=5, name='Desk', category='Furniture', price=349.99",
+        "INSERT INTO products (id, name, category, price) VALUES (1, 'Laptop', 'Electronics', 999.99)",
+        "INSERT INTO products (id, name, category, price) VALUES (2, 'Keyboard', 'Electronics', 79.99)",
+        "INSERT INTO products (id, name, category, price) VALUES (3, 'Desk Chair', 'Furniture', 249.99)",
+        "INSERT INTO products (id, name, category, price) VALUES (4, 'Monitor', 'Electronics', 399.99)",
+        "INSERT INTO products (id, name, category, price) VALUES (5, 'Desk', 'Furniture', 349.99)",
     ];
 
     for query in &products {

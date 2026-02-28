@@ -27,22 +27,22 @@ async fn stress_router_concurrent_queries() {
     let store = TensorStore::new();
     let router = Arc::new(query_router::QueryRouter::with_shared_store(store));
 
-    // Create table first (Neumann syntax uses colon for types)
+    // Create table first
     router
-        .execute("CREATE TABLE test (id:INT, name:TEXT)")
+        .execute("CREATE TABLE test (id INT, name TEXT)")
         .expect("create table");
 
     // Pre-populate with some data
     let _embeddings = generate_embeddings(1000, 128, 42);
     let mut node_ids = Vec::new();
     for i in 0..100 {
-        // Neumann INSERT syntax: INSERT table col=val, col=val
         router
-            .execute(&format!("INSERT test id={}, name='entity{}'", i, i))
+            .execute(&format!(
+                "INSERT INTO test (id, name) VALUES ({i}, 'entity{i}')"
+            ))
             .expect("insert");
-        // Neumann NODE syntax: NODE CREATE <label> <prop>=<value>
         // Capture the actual node ID returned
-        match router.execute(&format!("NODE CREATE entity idx={}, type='test'", i)) {
+        match router.execute(&format!("NODE CREATE item {{idx: {i}, kind: 'test'}}")) {
             Ok(query_router::QueryResult::Ids(ids)) => node_ids.push(ids[0]),
             _ => panic!("Failed to create node"),
         }
@@ -75,11 +75,11 @@ async fn stress_router_concurrent_queries() {
                     0 => "SELECT * FROM test LIMIT 10".to_string(),
                     1 => format!("NODE GET {}", node_ids[stream_id % 100]),
                     2 => format!(
-                        "INSERT test id={}, name='stream{}'",
+                        "INSERT INTO test (id, name) VALUES ({}, 'stream{}')",
                         stream_id * 1000 + i,
                         stream_id
                     ),
-                    _ => "NODE LIST entity".to_string(),
+                    _ => "SELECT * FROM test".to_string(),
                 };
 
                 let op_start = Instant::now();
@@ -146,9 +146,9 @@ async fn stress_router_parallel_inserts() {
     let store = TensorStore::new();
     let router = Arc::new(query_router::QueryRouter::with_shared_store(store));
 
-    // Create table first (Neumann syntax)
+    // Create table first
     router
-        .execute("CREATE TABLE parallel_test (id:INT, stream:INT, value:TEXT)")
+        .execute("CREATE TABLE parallel_test (id INT, stream INT, value TEXT)")
         .expect("create table");
 
     let barrier = Arc::new(Barrier::new(stream_count));
@@ -170,9 +170,8 @@ async fn stress_router_parallel_inserts() {
 
             for i in 0..inserts_per_stream {
                 let op_start = Instant::now();
-                // Neumann INSERT syntax
                 let query = format!(
-                    "INSERT parallel_test id={}, stream={}, value='data_{}'",
+                    "INSERT INTO parallel_test (id, stream, value) VALUES ({}, {}, 'data_{}')",
                     stream_id * 1000 + i,
                     stream_id,
                     i
@@ -239,9 +238,9 @@ fn stress_router_sustained_writes() {
     let store = TensorStore::new();
     let router = query_router::QueryRouter::with_shared_store(store);
 
-    // Create table for stress test (Neumann syntax)
+    // Create table for stress test
     router
-        .execute("CREATE TABLE stress_test (id:INT, thread:INT, iter:INT)")
+        .execute("CREATE TABLE stress_test (id INT, thread INT, iter INT)")
         .expect("create table");
 
     let router = Arc::new(Mutex::new(router));
@@ -264,9 +263,8 @@ fn stress_router_sustained_writes() {
             let mut i = 0;
 
             while !done.load(Ordering::Acquire) {
-                // Neumann INSERT syntax
                 let query = format!(
-                    "INSERT stress_test id={}, thread={}, iter={}",
+                    "INSERT INTO stress_test (id, thread, iter) VALUES ({}, {}, {})",
                     t * 1000000 + i,
                     t,
                     i

@@ -323,6 +323,17 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
             }
             dict.set_item("data", py_list)?;
         },
+        QueryResult::Spatial(results) => {
+            dict.set_item("type", "spatial")?;
+            let py_list = PyList::empty(py);
+            for item in &results {
+                let item_dict = PyDict::new(py);
+                item_dict.set_item("key", &*item.key)?;
+                item_dict.set_item("distance", item.distance)?;
+                py_list.append(item_dict)?;
+            }
+            dict.set_item("data", py_list)?;
+        },
     }
 
     Ok(dict.into())

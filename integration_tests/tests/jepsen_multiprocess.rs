@@ -467,12 +467,12 @@ async fn test_bank_transfer_atomicity() {
         .await
         .expect("connect");
     let _ = init_client
-        .execute("CREATE TABLE bank (account:string, balance:int)")
+        .execute("CREATE TABLE bank (account TEXT, balance INT)")
         .await;
     for i in 0..num_accounts {
         let _ = init_client
             .execute(&format!(
-                "INSERT bank account='acct-{i}', balance={initial_balance}"
+                "INSERT INTO bank (account, balance) VALUES ('acct-{i}', {initial_balance})"
             ))
             .await;
     }
@@ -549,7 +549,7 @@ async fn test_bank_transfer_atomicity() {
     for idx in 0..3 {
         let addr = cluster.grpc_addr(idx);
         if let Ok(client) = neumann_client::NeumannClient::connect(&addr).build().await {
-            if let Ok(result) = client.execute("SELECT bank").await {
+            if let Ok(result) = client.execute("SELECT * FROM bank").await {
                 if let Some(rows) = result.rows() {
                     total = 0;
                     for row in rows {
@@ -605,13 +605,15 @@ async fn test_crash_recovery_durability() {
         .await
         .expect("connect");
     let _ = client
-        .execute("CREATE TABLE durability_test (key:string, val:int)")
+        .execute("CREATE TABLE durability_test (k TEXT, val INT)")
         .await;
 
     let num_values = 50;
     for i in 0..num_values {
         let result = client
-            .execute(&format!("INSERT durability_test key='k-{i}', val={i}"))
+            .execute(&format!(
+                "INSERT INTO durability_test (k, val) VALUES ('k-{i}', {i})"
+            ))
             .await;
         assert!(result.is_ok(), "write k-{i} failed: {:?}", result.err());
     }
@@ -634,7 +636,7 @@ async fn test_crash_recovery_durability() {
     for idx in 0..3 {
         let addr = cluster.grpc_addr(idx);
         if let Ok(client) = neumann_client::NeumannClient::connect(&addr).build().await {
-            if let Ok(result) = client.execute("SELECT durability_test").await {
+            if let Ok(result) = client.execute("SELECT * FROM durability_test").await {
                 if let Some(rows) = result.rows() {
                     eprintln!(
                         "[durability] node-{idx} has {} rows (expected {num_values})",
@@ -668,7 +670,7 @@ async fn test_crash_recovery_durability() {
     for idx in 0..3 {
         let addr = cluster.grpc_addr(idx);
         if let Ok(client) = neumann_client::NeumannClient::connect(&addr).build().await {
-            if let Ok(result) = client.execute("SELECT durability_test").await {
+            if let Ok(result) = client.execute("SELECT * FROM durability_test").await {
                 if let Some(rows) = result.rows() {
                     eprintln!("[durability] final: node-{idx} has {} rows", rows.len());
                 }

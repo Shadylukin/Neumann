@@ -13,9 +13,9 @@ fuzz_target!(|data: &[u8]| {
     let router = QueryRouter::with_shared_store(store);
 
     // Insert some data first
-    let _ = router.execute("CREATE TABLE test (name:string, val:int)");
-    let _ = router.execute("INSERT test name='a', val=1");
-    let _ = router.execute("NODE CREATE label key='value'");
+    let _ = router.execute("CREATE TABLE test (name TEXT, val INT)");
+    let _ = router.execute("INSERT INTO test (name, val) VALUES ('a', 1)");
+    let _ = router.execute("NODE CREATE label {k: 'value'}");
 
     // Try checkpoint and rollback
     let _ = router.execute("CHECKPOINT CREATE");

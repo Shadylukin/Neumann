@@ -55,7 +55,7 @@ impl JepsenClient {
             Value::Int(value),
         );
 
-        let query = format!("INSERT jepsen_register key='{key}', val={value}");
+        let query = format!("INSERT INTO jepsen_register (k, val) VALUES ('{key}', {value})");
 
         match self.execute_with_retry(&query).await {
             Ok(_) => {
@@ -80,7 +80,7 @@ impl JepsenClient {
             .history
             .invoke(self.client_id, OpType::Read, key.to_string(), Value::None);
 
-        let query = format!("SELECT jepsen_register WHERE key = '{key}'");
+        let query = format!("SELECT * FROM jepsen_register WHERE k = '{key}'");
 
         match self.execute_with_retry(&query).await {
             Ok(result) => {
@@ -111,7 +111,7 @@ impl JepsenClient {
         );
 
         let query = format!(
-            "UPDATE jepsen_register SET val={new_val} WHERE key = '{key}' AND val = {expected}"
+            "UPDATE jepsen_register SET val={new_val} WHERE k = '{key}' AND val = {expected}"
         );
 
         match self.execute_with_retry(&query).await {

@@ -223,12 +223,12 @@ async fn test_docker_bank_transfer_atomicity() {
         .await
         .expect("connect");
     let _ = init_client
-        .execute("CREATE TABLE bank (account:string, balance:int)")
+        .execute("CREATE TABLE bank (account TEXT, balance INT)")
         .await;
     for i in 0..num_accounts {
         let _ = init_client
             .execute(&format!(
-                "INSERT bank account='acct-{i}', balance={initial_balance}"
+                "INSERT INTO bank (account, balance) VALUES ('acct-{i}', {initial_balance})"
             ))
             .await;
     }
@@ -304,7 +304,7 @@ async fn test_docker_bank_transfer_atomicity() {
     for idx in 0..3 {
         let addr = cluster.grpc_addr(idx);
         if let Ok(client) = neumann_client::NeumannClient::connect(addr).build().await {
-            if let Ok(result) = client.execute("SELECT bank").await {
+            if let Ok(result) = client.execute("SELECT * FROM bank").await {
                 if let Some(rows) = result.rows() {
                     total = 0;
                     for row in rows {
@@ -360,13 +360,15 @@ async fn test_docker_crash_recovery_durability() {
         .await
         .expect("connect");
     let _ = client
-        .execute("CREATE TABLE durability_test (key:string, val:int)")
+        .execute("CREATE TABLE durability_test (k TEXT, val INT)")
         .await;
 
     let num_values = 50;
     for i in 0..num_values {
         let result = client
-            .execute(&format!("INSERT durability_test key='k-{i}', val={i}"))
+            .execute(&format!(
+                "INSERT INTO durability_test (k, val) VALUES ('k-{i}', {i})"
+            ))
             .await;
         assert!(result.is_ok(), "write k-{i} failed: {:?}", result.err());
     }
@@ -392,7 +394,7 @@ async fn test_docker_crash_recovery_durability() {
     for idx in 0..3 {
         let addr = cluster.grpc_addr(idx);
         if let Ok(client) = neumann_client::NeumannClient::connect(addr).build().await {
-            if let Ok(result) = client.execute("SELECT durability_test").await {
+            if let Ok(result) = client.execute("SELECT * FROM durability_test").await {
                 if let Some(rows) = result.rows() {
                     eprintln!(
                         "[durability] node-{idx} has {} rows (expected {num_values})",
@@ -609,11 +611,13 @@ async fn test_docker_disk_full_during_writes() {
         .await
         .expect("connect");
     let _ = client
-        .execute("CREATE TABLE disk_test (key:string, val:int)")
+        .execute("CREATE TABLE disk_test (k TEXT, val INT)")
         .await;
     for i in 0..20 {
         let _ = client
-            .execute(&format!("INSERT disk_test key='k-{i}', val={i}"))
+            .execute(&format!(
+                "INSERT INTO disk_test (k, val) VALUES ('k-{i}', {i})"
+            ))
             .await;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -628,7 +632,9 @@ async fn test_docker_disk_full_during_writes() {
     if let Ok(client1) = neumann_client::NeumannClient::connect(addr1).build().await {
         for i in 20..30 {
             let _ = client1
-                .execute(&format!("INSERT disk_test key='k-{i}', val={i}"))
+                .execute(&format!(
+                    "INSERT INTO disk_test (k, val) VALUES ('k-{i}', {i})"
+                ))
                 .await;
         }
     }
@@ -646,7 +652,7 @@ async fn test_docker_disk_full_during_writes() {
     for idx in 0..3 {
         let addr = cluster.grpc_addr(idx);
         if let Ok(client) = neumann_client::NeumannClient::connect(addr).build().await {
-            if let Ok(result) = client.execute("SELECT disk_test").await {
+            if let Ok(result) = client.execute("SELECT * FROM disk_test").await {
                 if let Some(rows) = result.rows() {
                     eprintln!("[disk_full] node-{idx} has {} rows", rows.len());
                     if rows.len() >= 20 {

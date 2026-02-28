@@ -16,7 +16,7 @@ Basic usage:
 
     # Embedded mode (requires native module)
     client = NeumannClient.embedded()
-    client.execute("CREATE TABLE users (name:string, age:int)")
+    client.execute("CREATE TABLE users (name TEXT, age INT)")
 
     # Async client - preferred pattern
     from neumann.aio import AsyncNeumannClient

@@ -28,7 +28,7 @@ fn test_shell_execute_select() {
 
     // Create table and data
     shell.execute("CREATE TABLE users (id INT, name TEXT)");
-    shell.execute("INSERT users id=1, name='Alice'");
+    shell.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')");
 
     // Execute select
     let result = shell.execute("SELECT * FROM users");
@@ -331,7 +331,7 @@ fn test_shell_neighbors_command() {
     // Create graph
     shell.execute("NODE CREATE user name='Alice'");
     shell.execute("NODE CREATE user name='Bob'");
-    shell.execute("EDGE CREATE 1 -> 2 knows");
+    shell.execute("EDGE CREATE 1 -> 2 : knows");
 
     let result = shell.execute("NEIGHBORS 1 OUT");
 
@@ -348,8 +348,8 @@ fn test_shell_path_command() {
     shell.execute("NODE CREATE a name='A'");
     shell.execute("NODE CREATE b name='B'");
     shell.execute("NODE CREATE c name='C'");
-    shell.execute("EDGE CREATE 1 -> 2 link");
-    shell.execute("EDGE CREATE 2 -> 3 link");
+    shell.execute("EDGE CREATE 1 -> 2 : link");
+    shell.execute("EDGE CREATE 2 -> 3 : link");
 
     let result = shell.execute("PATH 1 -> 3");
 
@@ -379,8 +379,8 @@ fn test_shell_preserves_state() {
 
     // Execute multiple commands
     shell.execute("CREATE TABLE state_test (id INT)");
-    shell.execute("INSERT state_test id=1");
-    shell.execute("INSERT state_test id=2");
+    shell.execute("INSERT INTO state_test (id) VALUES (1)");
+    shell.execute("INSERT INTO state_test (id) VALUES (2)");
 
     // State should be preserved
     let result = shell.execute("SELECT * FROM state_test");
