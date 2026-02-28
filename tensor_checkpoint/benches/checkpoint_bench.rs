@@ -119,18 +119,15 @@ fn bench_checkpoint_list(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("checkpoint_list");
 
-    for checkpoint_count in [5, 50] {
-        let (manager, store) = rt.block_on(setup_manager(100));
-        populate_store(&store, 100);
-
-        for i in 0..checkpoint_count {
-            rt.block_on(async {
-                manager
-                    .create(Some(&format!("cp_{i}")), &store)
-                    .await
-                    .unwrap();
-            });
-        }
+    for checkpoint_count in [5, 20] {
+        let (manager, _store) = rt.block_on(async {
+            let (mgr, st) = setup_manager(100).await;
+            populate_store(&st, 100);
+            for i in 0..checkpoint_count {
+                mgr.create(Some(&format!("cp_{i}")), &st).await.unwrap();
+            }
+            (mgr, st)
+        });
 
         group.bench_with_input(
             BenchmarkId::new("count", checkpoint_count),
