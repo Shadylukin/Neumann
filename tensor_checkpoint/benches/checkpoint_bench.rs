@@ -151,13 +151,13 @@ fn bench_checkpoint_retention(c: &mut Criterion) {
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(5));
 
-    group.bench_function("enforce_retain_5_of_20", |b| {
+    group.bench_function("enforce_retain_5_of_8", |b| {
         b.iter_batched(
             || {
                 rt.block_on(async {
                     let (manager, store) = setup_manager(5).await;
                     populate_store(&store, 100);
-                    for i in 0..20 {
+                    for i in 0..8 {
                         manager
                             .create(Some(&format!("cp_{i}")), &store)
                             .await
