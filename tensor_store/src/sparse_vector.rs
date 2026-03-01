@@ -468,9 +468,10 @@ impl SparseVector {
     /// Add another sparse vector. Returns new sparse vector.
     ///
     /// Positions with zero sum are not stored in result.
+    /// Supports different dimensions — the result uses the larger dimension.
     #[must_use]
     pub fn add(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.dimension, other.dimension);
+        let dimension = self.dimension.max(other.dimension);
 
         let mut result_positions = Vec::new();
         let mut result_values = Vec::new();
@@ -521,7 +522,7 @@ impl SparseVector {
         }
 
         Self {
-            dimension: self.dimension,
+            dimension,
             positions: result_positions,
             values: result_values,
         }
@@ -703,13 +704,14 @@ impl SparseVector {
     ///
     /// Result = (w1 * self + w2 * other) / (w1 + w2)
     /// Positions with zero result are not stored.
+    /// Supports different dimensions — the result uses the larger dimension.
     #[must_use]
     pub fn weighted_average(&self, other: &Self, w1: f32, w2: f32) -> Self {
-        debug_assert_eq!(self.dimension, other.dimension);
+        let dimension = self.dimension.max(other.dimension);
 
         let total = w1 + w2;
         if total == 0.0 {
-            return Self::new(self.dimension);
+            return Self::new(dimension);
         }
 
         let mut result_positions = Vec::new();
@@ -760,7 +762,7 @@ impl SparseVector {
         }
 
         Self {
-            dimension: self.dimension,
+            dimension,
             positions: result_positions,
             values: result_values,
         }
@@ -1703,6 +1705,29 @@ mod tests {
         let result = a.weighted_average(&b, 0.0, 0.0);
         assert_eq!(result.dimension(), 2);
         assert_eq!(result.nnz(), 0);
+    }
+
+    #[test]
+    fn add_different_dimensions() {
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[3.0, 0.0, 0.0, 4.0]);
+
+        let result = a.add(&b);
+        assert_eq!(result.dimension(), 4);
+        assert!((result.get(0) - 4.0).abs() < 1e-6);
+        assert!((result.get(1) - 2.0).abs() < 1e-6);
+        assert!((result.get(3) - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_average_different_dimensions() {
+        let a = SparseVector::from_dense(&[2.0]);
+        let b = SparseVector::from_dense(&[0.0, 0.0, 0.0, 6.0]);
+
+        let result = a.weighted_average(&b, 1.0, 1.0);
+        assert_eq!(result.dimension(), 4);
+        assert!((result.get(0) - 1.0).abs() < 1e-6); // (1*2 + 1*0)/2 = 1
+        assert!((result.get(3) - 3.0).abs() < 1e-6); // (1*0 + 1*6)/2 = 3
     }
 
     #[test]
