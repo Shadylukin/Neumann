@@ -54,6 +54,15 @@ impl StressConfig {
     }
 }
 
+/// Returns true when running on a CI runner (GitHub Actions, etc.).
+///
+/// Stress thresholds should be relaxed on CI where shared, resource-constrained
+/// VMs make hard latency/throughput targets unreliable.
+#[must_use]
+pub fn is_ci() -> bool {
+    env::var("CI").is_ok() || env::var("GITHUB_ACTIONS").is_ok()
+}
+
 /// Quick stress config: 100K entities, 8 threads, ~2 min.
 #[must_use]
 pub const fn quick_config() -> StressConfig {

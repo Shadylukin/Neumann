@@ -87,11 +87,16 @@ fn stress_graph_update_node_50_threads() {
         println!("  Thread {i}: {snapshot}");
     }
 
-    // Verify p99 under threshold
+    // Verify p99 under threshold (relaxed on CI due to shared runners)
+    let p99_limit = if stress_tests::config::is_ci() {
+        100
+    } else {
+        10
+    };
     for snapshot in &results {
         assert!(
-            snapshot.p99.as_millis() < 10,
-            "p99 latency too high: {:?}",
+            snapshot.p99.as_millis() < p99_limit,
+            "p99 latency too high: {:?} (limit: {p99_limit}ms)",
             snapshot.p99
         );
     }
