@@ -80,6 +80,8 @@ fuzz_target!(|input: FuzzInput| {
     // Limit field count to avoid OOM and deduplicate by name
     // (Row uses Vec with find-first, TensorData uses HashMap with last-wins)
     let mut seen = std::collections::HashSet::new();
+    // Reserve _id so user fields cannot collide with the pre-inserted _id
+    seen.insert("_id".to_string());
     let fields: Vec<_> = input
         .fields
         .into_iter()

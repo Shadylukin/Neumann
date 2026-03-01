@@ -27613,6 +27613,40 @@ fn test_condition_or_evaluate() {
 }
 
 #[test]
+fn test_condition_evaluate_tensor_id_column() {
+    // Verify that evaluate and evaluate_tensor agree on _id lookups
+    // regardless of the stored scalar type. Previously tensor_get_value
+    // special-cased _id to only match Int, causing divergence when _id
+    // was stored as a different type.
+    let mut tensor = TensorData::new();
+    tensor.set("_id".to_string(), TensorValue::Scalar(ScalarValue::Int(42)));
+    tensor.set(
+        "name".to_string(),
+        TensorValue::Scalar(ScalarValue::String("alice".into())),
+    );
+
+    let row = Row {
+        id: 42,
+        values: vec![
+            ("_id".to_string(), Value::Int(42)),
+            ("name".to_string(), Value::String("alice".into())),
+        ],
+    };
+
+    let cond_eq = Condition::Eq("_id".to_string(), Value::Int(42));
+    assert_eq!(cond_eq.evaluate(&row), cond_eq.evaluate_tensor(&tensor));
+
+    let cond_ne = Condition::Ne("_id".to_string(), Value::Int(99));
+    assert_eq!(cond_ne.evaluate(&row), cond_ne.evaluate_tensor(&tensor));
+
+    let cond_lt = Condition::Lt("_id".to_string(), Value::Int(100));
+    assert_eq!(cond_lt.evaluate(&row), cond_lt.evaluate_tensor(&tensor));
+
+    let cond_name = Condition::Eq("name".to_string(), Value::String("alice".into()));
+    assert_eq!(cond_name.evaluate(&row), cond_name.evaluate_tensor(&tensor));
+}
+
+#[test]
 fn test_select_with_condition_true() {
     let engine = RelationalEngine::new();
     let schema = Schema::new(vec![

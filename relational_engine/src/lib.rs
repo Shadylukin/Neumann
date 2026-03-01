@@ -684,13 +684,6 @@ impl Condition {
 
     #[allow(dead_code)] // Helper for tensor evaluation methods
     fn tensor_get_value(tensor: &TensorData, col: &str) -> Option<Value> {
-        if col == "_id" {
-            if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = tensor.get("_id") {
-                return Some(Value::Int(*id));
-            }
-            return None;
-        }
-
         match tensor.get(col) {
             Some(TensorValue::Scalar(scalar)) => Some(Value::from_scalar(scalar)),
             _ => None,
