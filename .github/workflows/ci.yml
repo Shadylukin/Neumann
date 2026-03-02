@@ -217,7 +217,6 @@ jobs:
             --exclude integration_tests \
             --exclude stress_tests \
             --exclude examples \
-            --exclude neumann_docs \
             --features tls,metrics,full,graph,vector,\
           fuzzing,test-internals,embedded,remote \
             --html --output-dir target/llvm-cov/html
@@ -230,7 +229,6 @@ jobs:
             --exclude integration_tests \
             --exclude stress_tests \
             --exclude examples \
-            --exclude neumann_docs \
             --features tls,metrics,full,graph,vector,\
           fuzzing,test-internals,embedded,remote \
             --no-run \
@@ -263,7 +261,6 @@ jobs:
             --exclude integration_tests \
             --exclude stress_tests \
             --exclude examples \
-            --exclude neumann_docs \
             --features tls,metrics,full,graph,vector,\
           fuzzing,test-internals,embedded,remote \
             --no-run \

@@ -19,7 +19,6 @@ members = [
     "tensor_checkpoint",
     "tensor_chain",
     "stress_tests",
-    "neumann_docs",
     "examples",
     "tensor_spatial",
 ]

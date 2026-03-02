@@ -10,7 +10,6 @@
 #
 # Excluded crates (no benchmarks required):
 #   neumann_client  -- thin gRPC wrapper, no hot paths
-#   neumann_docs    -- mdbook builder, no runtime code
 #   examples        -- demo code
 #   integration_tests
 #   stress_tests

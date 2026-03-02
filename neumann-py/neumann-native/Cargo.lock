@@ -727,7 +727,7 @@ checksum = "74a4d85559e2637d3d839438b5b3d75c31e655276f9544d72475c36b92fabbed"
 
 [[package]]
 name = "graph_engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "parking_lot",
  "rayon",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "neumann_parser"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "nom"
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "query_router"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "bitcode",
@@ -1172,6 +1172,7 @@ dependencies = [
  "graph_engine",
  "hex",
  "neumann_parser",
+ "parking_lot",
  "rand 0.8.5",
  "relational_engine",
  "serde",
@@ -1180,6 +1181,7 @@ dependencies = [
  "tensor_cache",
  "tensor_chain",
  "tensor_checkpoint",
+ "tensor_spatial",
  "tensor_store",
  "tensor_unified",
  "tensor_vault",
@@ -1342,7 +1344,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "relational_engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dashmap",
  "hex",
@@ -1651,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_blob"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "graph_engine",
  "sha2",
@@ -1664,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_cache"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitcode",
  "dashmap",
@@ -1679,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_chain"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "bitcode",
@@ -1712,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_checkpoint"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitcode",
  "serde",
@@ -1725,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_compress"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitcode",
  "rayon",
@@ -1734,8 +1736,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensor_spatial"
+version = "0.3.1"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "tensor_store"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitcode",
  "bitvec",
@@ -1755,13 +1765,15 @@ dependencies = [
 
 [[package]]
 name = "tensor_unified"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures",
  "graph_engine",
+ "parking_lot",
  "relational_engine",
  "serde",
  "serde_json",
+ "tensor_spatial",
  "tensor_store",
  "tokio",
  "vector_engine",
@@ -1769,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_vault"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1976,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "vector_engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitcode",
  "parking_lot",

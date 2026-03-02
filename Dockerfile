@@ -35,7 +35,6 @@ COPY neumann_parser/Cargo.toml neumann_parser/
 COPY neumann_shell/Cargo.toml neumann_shell/
 COPY neumann_server/Cargo.toml neumann_server/
 COPY neumann_client/Cargo.toml neumann_client/
-COPY neumann_docs/Cargo.toml neumann_docs/
 COPY integration_tests/Cargo.toml integration_tests/
 COPY stress_tests/Cargo.toml stress_tests/
 COPY tensor_spatial/Cargo.toml tensor_spatial/
@@ -58,7 +57,6 @@ RUN mkdir -p tensor_store/src && echo "pub fn dummy() {}" > tensor_store/src/lib
     mkdir -p neumann_shell/src && echo "fn main() {}" > neumann_shell/src/main.rs && \
     mkdir -p neumann_server/src && echo "fn main() {}" > neumann_server/src/main.rs && \
     mkdir -p neumann_client/src && echo "pub fn dummy() {}" > neumann_client/src/lib.rs && \
-    mkdir -p neumann_docs/src && echo "pub fn dummy() {}" > neumann_docs/src/lib.rs && \
     mkdir -p integration_tests/src && echo "pub fn dummy() {}" > integration_tests/src/lib.rs && \
     mkdir -p stress_tests/src && echo "pub fn dummy() {}" > stress_tests/src/lib.rs && \
     mkdir -p tensor_spatial/src && echo "pub fn dummy() {}" > tensor_spatial/src/lib.rs && \
@@ -90,7 +88,6 @@ COPY neumann_server/src neumann_server/src
 COPY neumann_server/proto neumann_server/proto
 COPY neumann_server/build.rs neumann_server/
 COPY neumann_client/src neumann_client/src
-COPY neumann_docs/src neumann_docs/src
 COPY integration_tests/src integration_tests/src
 COPY stress_tests/src stress_tests/src
 COPY tensor_spatial/src tensor_spatial/src

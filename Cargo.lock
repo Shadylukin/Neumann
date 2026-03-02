@@ -1851,20 +1851,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "neumann_docs"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "clap",
- "neumann_client",
- "query_router",
- "regex",
- "relational_engine",
- "tempfile",
- "walkdir",
-]
-
-[[package]]
 name = "neumann_parser"
 version = "0.3.1"
 dependencies = [
