@@ -133,7 +133,8 @@ jobs:
         run: |
           cargo +nightly fuzz run ${{ matrix.target }} \
             --sanitizer none \
-            -- -max_total_time=${{ steps.duration.outputs.seconds }}
+            -- -max_total_time=${{ steps.duration.outputs.seconds }} \
+               -rss_limit_mb=2048
 
       - name: Check for crashes
         if: always()

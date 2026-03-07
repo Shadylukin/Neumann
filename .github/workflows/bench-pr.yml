@@ -73,7 +73,7 @@ jobs:
         if: steps.baseline.outcome == 'failure'
         working-directory: base
         run: |
-          cargo bench --workspace \
+          cargo bench --workspace --benches \
             --exclude fuzz \
             --exclude neumann-native \
             --exclude integration_tests \
@@ -87,7 +87,7 @@ jobs:
 
       - name: Benchmark PR branch
         run: |
-          cargo bench --workspace \
+          cargo bench --workspace --benches \
             --exclude fuzz \
             --exclude neumann-native \
             --exclude integration_tests \
