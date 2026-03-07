@@ -1,0 +1,35 @@
+TLC2 Version 2.20 of Day Month 20?? (rev: db727a7)
+Running breadth-first search Model-Checking with fp 98 and seed 5746043326839377512 with 10 workers on 10 cores with 3641MB heap and 64MB offheap memory [pid: 88884] (Mac OS X 26.2 aarch64, Eclipse Adoptium 21.0.7 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/lukin/Neumann/specs/tla/TwoPhaseCommit.tla
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/Integers.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/Sequences.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/FiniteSets.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/TLC.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/_TLCTrace.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/Naturals.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /private/var/folders/0v/r6xy12qs52905_lpjzydd3yc0000gn/T/tlc-1375396651204192435/TLCExt.tla (jar:file:/private/tmp/tla/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module TwoPhaseCommit
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module TwoPhaseCommit
+Starting... (2026-02-06 13:34:32)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-02-06 13:34:33.
+Progress(11) at 2026-02-06 13:34:36: 209,108 states generated (209,108 s/min), 73,891 distinct states found (73,891 ds/min), 48,470 states left on queue.
+Progress(19) at 2026-02-06 13:35:36: 7,354,117 states generated (7,145,009 s/min), 2,198,258 distinct states found (2,124,367 ds/min), 102,164 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 6.5E-7
+  based on the actual fingerprints:  val = 4.1E-7
+7582773 states generated, 2264939 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 21.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 14 and the 95th percentile is 4).
+Finished in 01min 07s at (2026-02-06 13:35:39)
