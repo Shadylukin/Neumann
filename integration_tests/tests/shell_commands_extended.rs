@@ -4,7 +4,7 @@
 //! Tests shell built-in commands, SAVE/LOAD snapshots, WAL operations,
 //! doctor diagnostics, and error recovery through the parser-based execute path.
 
-use neumann::{CommandResult, Shell};
+use neumann_shell::{CommandResult, Shell};
 use tempfile::TempDir;
 
 fn create_test_shell() -> Shell {
