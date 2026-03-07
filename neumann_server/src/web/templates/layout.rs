@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Base layout template for the Memoria design system admin UI.
 //!
 //! Features a monochromatic dark-themed interface with opacity-based hierarchy,

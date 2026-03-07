@@ -7,7 +7,7 @@ name = "neumann-db"
 version = "0.3.1"
 description = "Python SDK for Neumann database"
 readme = "README.md"
-license = { text = "BSL-1.1" }
+license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.10"
 authors = [
     { name = "Neumann Team" }
@@ -16,7 +16,8 @@ keywords = ["database", "tensor", "grpc", "vector", "graph"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

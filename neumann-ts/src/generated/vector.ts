@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1
+// SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * Static TypeScript definitions for vector.proto
  *

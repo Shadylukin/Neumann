@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Deterministic Simulation Testing (DST) harness for Raft consensus.
 //!
 //! Drives Raft nodes through controlled message delivery and fault injection.

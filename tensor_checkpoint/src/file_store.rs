@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! File-based checkpoint storage backend.
 //!
 //! Each checkpoint is stored as a single `.ncp` file with a two-part layout:

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Docker-based Jepsen cluster management.
 //!
 //! Manages a cluster of `neumann_server` containers via Docker Compose for

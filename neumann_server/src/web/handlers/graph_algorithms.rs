@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Handlers for graph algorithm execution with Memoria design system.
 //!
 //! Exposes all 17 graph algorithms with configurable parameters and result visualization.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! WAL durability tests: torn writes, crash recovery, CRC corruption detection.
 //!
 //! These tests validate that WALs correctly handle partial writes (torn pages),

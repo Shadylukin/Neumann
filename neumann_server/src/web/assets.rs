@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Embedded CSS and JavaScript assets for the Memoria design system.
 //!
 //! Monochromatic, dark-themed, data-forward interface using opacity-based

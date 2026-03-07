@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for query_router engine dispatch paths.
 //! Tests exercise CHAIN, CHECKPOINT, VAULT, CACHE, GRAPH ALGORITHM,
 //! GRAPH CONSTRAINT, GRAPH INDEX, CLUSTER, CYPHER, and cursor paths.

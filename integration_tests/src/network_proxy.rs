@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TCP network proxy for fault injection in multi-process Jepsen tests.
 //!
 //! Each proxy sits between two cluster nodes, forwarding TCP traffic

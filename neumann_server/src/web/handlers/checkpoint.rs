@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Checkpoint manager handlers for the admin UI.
 //!
 //! Provides read-only views for browsing checkpoints and configuration.

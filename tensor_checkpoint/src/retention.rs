@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::{checkpoint_store::CheckpointStore, error::Result};
 
 /// Enforces a count-based retention policy, deleting the oldest checkpoints beyond the limit.
