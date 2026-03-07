@@ -12,7 +12,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use relational_engine::{Column, ColumnType, RelationalEngine, Schema, Value};
 use tensor_blob::{BlobConfig, BlobStore, PutOptions};
 use tensor_cache::{Cache, CacheConfig};
-use tensor_checkpoint::{CheckpointConfig, CheckpointManager};
+use tensor_checkpoint::{CheckpointConfig, CheckpointManager, FileCheckpointStore};
 use tensor_store::TensorStore;
 use tensor_unified::UnifiedEngine;
 use tensor_vault::{Vault, VaultConfig};
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let blob_arc = Arc::new(Mutex::new(blob));
 
     // ── Checkpoint ──────────────────────────────────────────────
-    let checkpoint = seed_checkpoint(Arc::clone(&blob_arc), &store).await;
+    let checkpoint = seed_checkpoint(&store);
 
     // ── Chain / Consensus ───────────────────────────────────────
     let chain = demo_chain_status();
@@ -539,16 +539,19 @@ async fn seed_blob(store: &TensorStore) -> BlobStore {
     blob
 }
 
-async fn seed_checkpoint(blob: Arc<Mutex<BlobStore>>, store: &TensorStore) -> CheckpointManager {
+fn seed_checkpoint(store: &TensorStore) -> CheckpointManager {
+    let dir = std::env::temp_dir().join("neumann-preview-checkpoints");
+    let file_store =
+        Arc::new(FileCheckpointStore::new(&dir).expect("create checkpoint file store"));
     let config = CheckpointConfig::default()
         .with_max_checkpoints(10)
         .with_auto_checkpoint(true);
 
-    let mgr = CheckpointManager::new(blob, config);
+    let mgr = CheckpointManager::new(file_store, config);
 
-    mgr.create(Some("initial_seed"), store).await.ok();
-    mgr.create(Some("post_migration_v2"), store).await.ok();
-    mgr.create(Some("pre_deploy_release"), store).await.ok();
+    mgr.create(Some("initial_seed"), store).ok();
+    mgr.create(Some("post_migration_v2"), store).ok();
+    mgr.create(Some("pre_deploy_release"), store).ok();
 
     mgr
 }

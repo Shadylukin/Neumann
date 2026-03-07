@@ -137,7 +137,7 @@ build_from_source() {
     cd "${tmpdir}/neumann"
 
     info "Building release binary (this may take a few minutes)..."
-    cargo build --release --package neumann_shell || \
+    cargo build --release --package neumann || \
         error "Build failed"
 
     cp "target/release/${BINARY_NAME}" "${tmpdir}/${BINARY_NAME}"
@@ -276,9 +276,11 @@ add_to_path() {
     local path_line="export PATH=\"${install_dir}:\$PATH\""
 
     if ! grep -qF "$install_dir" "$shell_config" 2>/dev/null; then
-        echo "" >> "$shell_config"
-        echo "# Added by Neumann installer" >> "$shell_config"
-        echo "$path_line" >> "$shell_config"
+        {
+            echo ""
+            echo "# Added by Neumann installer"
+            echo "$path_line"
+        } >> "$shell_config"
         info "Added ${install_dir} to PATH in ${shell_config}"
         warn "Please restart your shell or run: source ${shell_config}"
     fi

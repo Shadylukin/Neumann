@@ -168,6 +168,19 @@ class NeumannClient:
         self._stub = None
         self._connected = False
 
+    def save(self, path: str) -> None:
+        """Save the embedded database to a snapshot file.
+
+        Args:
+            path: File path for the snapshot.
+
+        Raises:
+            RuntimeError: If not in embedded mode or client is closed.
+        """
+        if self._native is None:
+            raise RuntimeError("Not in embedded mode or client closed")
+        self._native.save(path)
+
     def __enter__(self) -> NeumannClient:
         """Context manager entry."""
         return self

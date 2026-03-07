@@ -22,6 +22,7 @@ pub struct CheckpointState {
 
 impl CheckpointState {
     /// Create a new checkpoint state with the current timestamp.
+    #[must_use]
     pub fn new(
         id: String,
         name: String,
@@ -44,6 +45,7 @@ impl CheckpointState {
     }
 
     /// Attach a trigger describing the destructive operation that caused this checkpoint.
+    #[must_use]
     pub fn with_trigger(mut self, trigger: CheckpointTrigger) -> Self {
         self.trigger = Some(trigger);
         self
@@ -63,7 +65,8 @@ pub struct CheckpointTrigger {
 
 impl CheckpointTrigger {
     /// Create a new checkpoint trigger.
-    pub fn new(command: String, operation: DestructiveOp, preview: OperationPreview) -> Self {
+    #[must_use]
+    pub const fn new(command: String, operation: DestructiveOp, preview: OperationPreview) -> Self {
         Self {
             command,
             operation,
@@ -134,7 +137,8 @@ pub enum DestructiveOp {
 
 impl DestructiveOp {
     /// Returns a short uppercase label for this operation type (e.g. `"DELETE"`, `"DROP TABLE"`).
-    pub fn operation_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn operation_name(&self) -> &'static str {
         match self {
             Self::Delete { .. } => "DELETE",
             Self::DropTable { .. } => "DROP TABLE",
@@ -149,16 +153,16 @@ impl DestructiveOp {
     }
 
     /// Returns the total number of entities affected by this operation.
+    #[must_use]
     pub fn affected_count(&self) -> usize {
         match self {
-            Self::Delete { row_count, .. } => *row_count,
-            Self::DropTable { row_count, .. } => *row_count,
-            Self::DropIndex { .. } => 1,
+            Self::Delete { row_count, .. } | Self::DropTable { row_count, .. } => *row_count,
             Self::NodeDelete { edge_count, .. } => 1 + edge_count,
-            Self::EdgeDelete { .. } => 1,
-            Self::EmbedDelete { .. } => 1,
-            Self::VaultDelete { .. } => 1,
-            Self::BlobDelete { .. } => 1,
+            Self::DropIndex { .. }
+            | Self::EdgeDelete { .. }
+            | Self::EmbedDelete { .. }
+            | Self::VaultDelete { .. }
+            | Self::BlobDelete { .. } => 1,
             Self::CacheClear { entry_count } => *entry_count,
         }
     }
@@ -177,7 +181,8 @@ pub struct OperationPreview {
 
 impl OperationPreview {
     /// Create a preview with a summary, sample data, and affected count.
-    pub fn new(summary: String, sample_data: Vec<String>, affected_count: usize) -> Self {
+    #[must_use]
+    pub const fn new(summary: String, sample_data: Vec<String>, affected_count: usize) -> Self {
         Self {
             summary,
             sample_data,
@@ -186,6 +191,7 @@ impl OperationPreview {
     }
 
     /// Create an empty preview with just a message and zero affected items.
+    #[must_use]
     pub fn empty(message: &str) -> Self {
         Self {
             summary: message.to_string(),
@@ -210,7 +216,8 @@ pub struct CheckpointMetadata {
 
 impl CheckpointMetadata {
     /// Create metadata from per-engine statistics and a total key count.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         relational: RelationalMeta,
         graph: GraphMeta,
         vector: VectorMeta,
@@ -236,7 +243,8 @@ pub struct RelationalMeta {
 
 impl RelationalMeta {
     /// Create relational metadata with the given table and row counts.
-    pub fn new(table_count: usize, total_rows: usize) -> Self {
+    #[must_use]
+    pub const fn new(table_count: usize, total_rows: usize) -> Self {
         Self {
             table_count,
             total_rows,
@@ -255,7 +263,8 @@ pub struct GraphMeta {
 
 impl GraphMeta {
     /// Create graph metadata with the given node and edge counts.
-    pub fn new(node_count: usize, edge_count: usize) -> Self {
+    #[must_use]
+    pub const fn new(node_count: usize, edge_count: usize) -> Self {
         Self {
             node_count,
             edge_count,
@@ -272,7 +281,8 @@ pub struct VectorMeta {
 
 impl VectorMeta {
     /// Create vector metadata with the given embedding count.
-    pub fn new(embedding_count: usize) -> Self {
+    #[must_use]
+    pub const fn new(embedding_count: usize) -> Self {
         Self { embedding_count }
     }
 }
@@ -286,8 +296,6 @@ pub struct CheckpointInfo {
     pub name: String,
     /// Unix timestamp (seconds) when created.
     pub created_at: u64,
-    /// Blob store artifact ID for the serialized state.
-    pub artifact_id: String,
     /// Size of the serialized checkpoint in bytes.
     pub size: usize,
     /// Short label of the triggering operation, if auto-created.

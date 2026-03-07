@@ -1936,3 +1936,34 @@ class TestNeumannClientConvertProtoChainResults:
         result = self.client._convert_proto_result(mock_response)
         assert result.type == QueryResultType.CHAIN_MERGE
         assert result.data.success is True
+
+
+class TestNeumannClientSave:
+    """Tests for NeumannClient.save()."""
+
+    def test_save_raises_when_not_embedded(self) -> None:
+        """Test that save raises RuntimeError when not in embedded mode."""
+        client = NeumannClient(mode="remote")
+        with pytest.raises(RuntimeError, match="Not in embedded mode or client closed"):
+            client.save("/tmp/snapshot.db")
+
+    def test_save_raises_after_close(self) -> None:
+        """Test that save raises RuntimeError after client is closed."""
+        client = NeumannClient(mode="embedded")
+        mock_native = MagicMock()
+        client._native = mock_native
+        client._connected = True
+
+        client.close()
+        with pytest.raises(RuntimeError, match="Not in embedded mode or client closed"):
+            client.save("/tmp/snapshot.db")
+
+    def test_save_delegates_to_native(self) -> None:
+        """Test that save calls native.save with the given path."""
+        client = NeumannClient(mode="embedded")
+        mock_native = MagicMock()
+        client._native = mock_native
+        client._connected = True
+
+        client.save("/tmp/snapshot.db")
+        mock_native.save.assert_called_once_with("/tmp/snapshot.db")

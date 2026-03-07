@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use maud::{html, Markup, PreEscaped};
+use neumann_parser::ast::{EntityOp, NodeOp, SpatialOp, StatementKind};
 
 use crate::web::templates::{format_number, layout, m_header, m_section, m_stat};
 use crate::web::AdminContext;
@@ -480,6 +482,243 @@ pub async fn api_query(
     }
 }
 
+/// Galaxy API response payload.
+#[derive(Debug, serde::Serialize)]
+pub struct GalaxyResponse {
+    /// Result type: "unified", "rows", "similar", "spatial", "message", etc.
+    #[serde(rename = "type")]
+    type_: String,
+    /// Result items serialized as JSON values.
+    items: Vec<serde_json::Value>,
+    /// Error message (present only on failure).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Check whether a parsed statement is read-only (safe for the galaxy endpoint).
+const fn is_read_only_statement(kind: &StatementKind) -> bool {
+    match kind {
+        // Read-only statements
+        StatementKind::Select(_)
+        | StatementKind::ShowTables
+        | StatementKind::ShowEmbeddings { .. }
+        | StatementKind::ShowVectorIndex
+        | StatementKind::CountEmbeddings
+        | StatementKind::Describe(_)
+        | StatementKind::Find(_)
+        | StatementKind::Similar(_)
+        | StatementKind::Neighbors(_)
+        | StatementKind::Path(_) => true,
+
+        // Spatial: only read-only sub-ops
+        StatementKind::Spatial(s) => matches!(
+            s.op,
+            SpatialOp::WithinRadius { .. } | SpatialOp::Nearest { .. } | SpatialOp::Count
+        ),
+
+        // Entity: only GET is read-only
+        StatementKind::Entity(e) => matches!(e.operation, EntityOp::Get { .. }),
+
+        // Node: LIST and GET are read-only
+        StatementKind::Node(n) => matches!(n.operation, NodeOp::List { .. } | NodeOp::Get { .. }),
+
+        // Everything else is a mutation
+        _ => false,
+    }
+}
+
+/// Execute a read-only query for the galaxy visualization frontend.
+///
+/// Parses the query with `neumann_parser`, checks the read-only whitelist,
+/// and executes via `QueryRouter::execute_statement`.
+///
+/// # Errors
+///
+/// Returns `403 Forbidden` if the query contains a mutation statement.
+pub async fn api_galaxy(
+    State(ctx): State<Arc<AdminContext>>,
+    axum::Json(req): axum::Json<QueryRequest>,
+) -> std::result::Result<axum::Json<GalaxyResponse>, StatusCode> {
+    let query = req.query.trim();
+
+    if query.is_empty() {
+        return Ok(axum::Json(GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some("Empty query".to_string()),
+        }));
+    }
+
+    // Parse with neumann_parser
+    let stmt = match neumann_parser::parse(query) {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(axum::Json(GalaxyResponse {
+                type_: "message".to_string(),
+                items: Vec::new(),
+                error: Some(format!("Parse error: {e}")),
+            }));
+        },
+    };
+
+    // Read-only whitelist check
+    if !is_read_only_statement(&stmt.kind) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Execute via QueryRouter on a blocking thread (some engines use block_on)
+    let Some(router) = ctx.query_router.as_ref() else {
+        return Ok(axum::Json(GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some("Query router not configured".to_string()),
+        }));
+    };
+
+    let router = Arc::clone(router);
+    let result = tokio::task::spawn_blocking(move || router.read().execute_statement(&stmt))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match result {
+        Ok(qr) => {
+            let (type_name, items) = query_result_to_json(&qr);
+            Ok(axum::Json(GalaxyResponse {
+                type_: type_name,
+                items,
+                error: None,
+            }))
+        },
+        Err(e) => Ok(axum::Json(GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some(e.to_string()),
+        })),
+    }
+}
+
+/// Execute any query via the full `QueryRouter` (no read-only restriction).
+///
+/// # Errors
+///
+/// Returns `500 Internal Server Error` on execution failure.
+pub async fn api_execute(
+    State(ctx): State<Arc<AdminContext>>,
+    axum::Json(req): axum::Json<QueryRequest>,
+) -> std::result::Result<axum::Json<GalaxyResponse>, StatusCode> {
+    let query = req.query.trim();
+
+    if query.is_empty() {
+        return Ok(axum::Json(GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some("Empty query".to_string()),
+        }));
+    }
+
+    let stmt = match neumann_parser::parse(query) {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(axum::Json(GalaxyResponse {
+                type_: "message".to_string(),
+                items: Vec::new(),
+                error: Some(format!("Parse error: {e}")),
+            }));
+        },
+    };
+
+    let Some(router) = ctx.query_router.as_ref() else {
+        return Ok(axum::Json(GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some("Query router not configured".to_string()),
+        }));
+    };
+
+    let router = Arc::clone(router);
+    let result = tokio::task::spawn_blocking(move || router.write().execute_statement(&stmt))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match result {
+        Ok(qr) => {
+            let (type_name, items) = query_result_to_json(&qr);
+            Ok(axum::Json(GalaxyResponse {
+                type_: type_name,
+                items,
+                error: None,
+            }))
+        },
+        Err(e) => Ok(axum::Json(GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some(e.to_string()),
+        })),
+    }
+}
+
+/// Convert a `QueryResult` into a type name and a list of JSON values.
+fn query_result_to_json(qr: &query_router::QueryResult) -> (String, Vec<serde_json::Value>) {
+    use query_router::QueryResult;
+    match qr {
+        QueryResult::Empty => ("message".to_string(), vec![serde_json::json!("OK")]),
+        QueryResult::Value(v) => ("message".to_string(), vec![serde_json::json!(v)]),
+        QueryResult::Count(n) => ("message".to_string(), vec![serde_json::json!({"count": n})]),
+        QueryResult::Ids(ids) => (
+            "ids".to_string(),
+            ids.iter().map(|id| serde_json::json!(id)).collect(),
+        ),
+        QueryResult::Rows(rows) => (
+            "rows".to_string(),
+            rows.iter()
+                .map(|row| {
+                    // QueryResult::Rows uses query_router::Row which is Serialize
+                    serde_json::to_value(row).unwrap_or(serde_json::Value::Null)
+                })
+                .collect(),
+        ),
+        QueryResult::Nodes(nodes) => (
+            "nodes".to_string(),
+            nodes
+                .iter()
+                .map(|n| serde_json::to_value(n).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        ),
+        QueryResult::Edges(edges) => (
+            "edges".to_string(),
+            edges
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        ),
+        QueryResult::Similar(sims) => (
+            "similar".to_string(),
+            sims.iter()
+                .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        ),
+        QueryResult::Unified(u) => (
+            "unified".to_string(),
+            vec![serde_json::to_value(u).unwrap_or(serde_json::Value::Null)],
+        ),
+        QueryResult::Spatial(sp) => (
+            "spatial".to_string(),
+            sp.iter()
+                .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        ),
+        QueryResult::TableList(tables) => (
+            "tables".to_string(),
+            tables.iter().map(|t| serde_json::json!(t)).collect(),
+        ),
+        // For everything else, serialize the whole result
+        other => (
+            "result".to_string(),
+            vec![serde_json::to_value(other).unwrap_or(serde_json::Value::Null)],
+        ),
+    }
+}
+
 /// Convert a relational Value to JSON.
 fn value_to_json(value: &relational_engine::Value) -> serde_json::Value {
     match value {
@@ -642,6 +881,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -678,6 +918,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -709,6 +950,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -910,6 +1152,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let req = QueryRequest {
@@ -952,6 +1195,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let req = QueryRequest {
@@ -1041,6 +1285,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let result = dashboard(State(ctx)).await;
@@ -1068,6 +1313,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -1119,6 +1365,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -1149,11 +1396,268 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
         assert!(stats.cache_entries.is_some());
         assert!(stats.cache_entries.unwrap() >= 2);
         assert!(stats.cache_hit_rate.is_some());
+    }
+
+    // === Galaxy API Tests ===
+
+    fn create_galaxy_context() -> Arc<AdminContext> {
+        let router = Arc::new(parking_lot::RwLock::new(query_router::QueryRouter::new()));
+        Arc::new(
+            AdminContext::new(
+                Arc::new(RelationalEngine::new()),
+                Arc::new(VectorEngine::new()),
+                Arc::new(GraphEngine::new()),
+            )
+            .with_query_router(Some(router)),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_find_query() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "SHOW TABLES".to_string(),
+        };
+
+        let response = api_galaxy(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_none());
+        assert_eq!(response.0.type_, "tables");
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_rejects_create() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "CREATE TABLE test (id INT)".to_string(),
+        };
+
+        let result = api_galaxy(State(ctx), axum::Json(req)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_rejects_spatial_insert() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "SPATIAL INSERT 'k1' BOUNDS 0 0 1 1".to_string(),
+        };
+
+        let result = api_galaxy(State(ctx), axum::Json(req)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_rejects_spatial_delete() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "SPATIAL DELETE 'k1' BOUNDS 0 0 1 1".to_string(),
+        };
+
+        let result = api_galaxy(State(ctx), axum::Json(req)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_allows_spatial_nearest() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "SPATIAL NEAREST 0 0 LIMIT 5".to_string(),
+        };
+
+        let response = api_galaxy(State(ctx), axum::Json(req)).await.unwrap();
+        // Should succeed (no spatial data, but not rejected)
+        assert_eq!(response.0.type_, "spatial");
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_rejects_entity_connect() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "ENTITY CONNECT 'a' -> 'b' : link".to_string(),
+        };
+
+        let result = api_galaxy(State(ctx), axum::Json(req)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_rejects_insert() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "INSERT INTO test (id) VALUES (1)".to_string(),
+        };
+
+        let result = api_galaxy(State(ctx), axum::Json(req)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_rejects_drop_table() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "DROP TABLE test".to_string(),
+        };
+
+        let result = api_galaxy(State(ctx), axum::Json(req)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_empty_query() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "".to_string(),
+        };
+
+        let response = api_galaxy(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("Empty"));
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_no_router() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SHOW TABLES".to_string(),
+        };
+
+        let response = api_galaxy(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_parse_error() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "INVALID GARBAGE QUERY".to_string(),
+        };
+
+        let response = api_galaxy(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("Parse error"));
+    }
+
+    #[tokio::test]
+    async fn test_api_galaxy_select_query() {
+        use relational_engine::{Column, ColumnType, Schema, Value};
+
+        let relational = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("id".to_string(), ColumnType::Int)]);
+        relational.create_table("papers", schema).unwrap();
+        relational
+            .insert(
+                "papers",
+                [("id".to_string(), Value::Int(1))].into_iter().collect(),
+            )
+            .unwrap();
+
+        let router = Arc::new(parking_lot::RwLock::new(
+            query_router::QueryRouter::with_engines(
+                relational.clone(),
+                Arc::new(GraphEngine::new()),
+                Arc::new(VectorEngine::new()), // graph, then vector
+            ),
+        ));
+        let ctx = Arc::new(
+            AdminContext::new(
+                relational,
+                Arc::new(VectorEngine::new()),
+                Arc::new(GraphEngine::new()),
+            )
+            .with_query_router(Some(router)),
+        );
+
+        let req = QueryRequest {
+            query: "SELECT * FROM papers".to_string(),
+        };
+        let response = api_galaxy(State(ctx), axum::Json(req)).await.unwrap();
+        assert_eq!(response.0.type_, "rows");
+        assert!(!response.0.items.is_empty());
+    }
+
+    #[test]
+    fn test_is_read_only_statement_select() {
+        let stmt = neumann_parser::parse("SELECT * FROM t").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_statement_show_tables() {
+        let stmt = neumann_parser::parse("SHOW TABLES").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_statement_find() {
+        let stmt = neumann_parser::parse("FIND NODE LIMIT 10").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_spatial_nearest() {
+        let stmt = neumann_parser::parse("SPATIAL NEAREST 0 0 LIMIT 5").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_spatial_count() {
+        let stmt = neumann_parser::parse("SPATIAL COUNT").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_not_read_only_spatial_insert() {
+        let stmt = neumann_parser::parse("SPATIAL INSERT 'k' BOUNDS 0 0 1 1").unwrap();
+        assert!(!is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_not_read_only_entity_create() {
+        let stmt = neumann_parser::parse("ENTITY CREATE 'k' { name: 'test' }").unwrap();
+        assert!(!is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_not_read_only_entity_connect() {
+        let stmt = neumann_parser::parse("ENTITY CONNECT 'a' -> 'b' : link").unwrap();
+        assert!(!is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_galaxy_response_serialize() {
+        let response = GalaxyResponse {
+            type_: "rows".to_string(),
+            items: vec![serde_json::json!({"id": 1})],
+            error: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"type\":\"rows\""));
+        assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn test_galaxy_response_serialize_with_error() {
+        let response = GalaxyResponse {
+            type_: "message".to_string(),
+            items: Vec::new(),
+            error: Some("Something went wrong".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("error"));
+        assert!(json.contains("Something went wrong"));
     }
 }

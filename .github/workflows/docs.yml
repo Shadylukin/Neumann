@@ -137,7 +137,10 @@ jobs:
             benches: >-
               --bench tensor_store_bench
               --bench wal_bench
-            filter: '^(put|get|scan|concurrent|mixed|bloom|sparse|snapshot|metadata|delta|kmeans|tiered|wal)'
+            filter: >-
+              ^(put|get|scan|concurrent|mixed|bloom|
+              sparse|snapshot|metadata|delta|
+              kmeans|tiered|wal)
           - group: store-hnsw
             packages: --package tensor_store
             benches: >-
@@ -169,7 +172,7 @@ jobs:
             packages: >-
               --package tensor_chain
               --package query_router
-              --package neumann_shell
+              --package neumann
               --package neumann_server
             filter: '.'
     steps:

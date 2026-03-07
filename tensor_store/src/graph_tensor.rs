@@ -297,6 +297,35 @@ impl GraphTensor {
         directed: bool,
     ) -> EdgeId {
         let edge_id = EdgeId::new(self.next_edge_id.fetch_add(1, Ordering::Relaxed));
+        self.add_edge_inner(edge_id, from, to, edge_type, directed);
+        edge_id
+    }
+
+    /// Add an edge with a specific `EdgeId`.
+    ///
+    /// Used by `restore()` to preserve original edge IDs from a snapshot.
+    /// The caller is responsible for ensuring `edge_id` does not collide with
+    /// existing edges and that `next_edge_id` is set appropriately.
+    pub fn add_edge_with_id(
+        &self,
+        edge_id: EdgeId,
+        from: EntityId,
+        to: EntityId,
+        edge_type: &str,
+        directed: bool,
+    ) {
+        self.add_edge_inner(edge_id, from, to, edge_type, directed);
+    }
+
+    /// Shared implementation for adding an edge with a given ID.
+    fn add_edge_inner(
+        &self,
+        edge_id: EdgeId,
+        from: EntityId,
+        to: EntityId,
+        edge_type: &str,
+        directed: bool,
+    ) {
         let edge_type_id = self.intern_edge_type(edge_type);
 
         // Update max node ID
@@ -325,8 +354,6 @@ impl GraphTensor {
         if self.pending.lock().len() >= self.merge_threshold {
             self.merge();
         }
-
-        edge_id
     }
 
     /// Get outgoing edges from a node.
@@ -660,6 +687,15 @@ impl GraphTensor {
     pub fn restore(snapshot: GraphTensorSnapshot) -> Self {
         let graph = Self::new();
 
+        // Restore counters BEFORE edges so add_edge_with_id does not
+        // advance next_edge_id and edge IDs are preserved exactly.
+        graph
+            .next_edge_id
+            .store(snapshot.next_edge_id, Ordering::Relaxed);
+        graph
+            .max_node_id
+            .store(snapshot.max_node_id, Ordering::Relaxed);
+
         // Restore edge types using consolidated registry
         {
             let mut registry = graph.edge_types.write();
@@ -673,19 +709,11 @@ impl GraphTensor {
             }
         }
 
-        // Restore edges
+        // Restore edges with their original IDs
         for edge in snapshot.edges {
             let edge_type = &snapshot.edge_types[edge.edge_type_idx as usize];
-            graph.add_edge(edge.from, edge.to, edge_type, edge.directed);
+            graph.add_edge_with_id(edge.edge_id, edge.from, edge.to, edge_type, edge.directed);
         }
-
-        // Restore counters
-        graph
-            .next_edge_id
-            .store(snapshot.next_edge_id, Ordering::Relaxed);
-        graph
-            .max_node_id
-            .store(snapshot.max_node_id, Ordering::Relaxed);
 
         // Restore edge data
         for (key, data) in snapshot.edge_data.iter() {
@@ -758,6 +786,112 @@ pub struct GraphTensorSnapshot {
     next_edge_id: u64,
     max_node_id: u64,
     edge_data: crate::metadata_slab::MetadataSlabSnapshot,
+}
+
+/// Columnar-compressed graph snapshot for V4 format.
+///
+/// Stores edge data in parallel arrays with delta+varint encoding for IDs
+/// and bitpacking for booleans, achieving better compression than the
+/// row-oriented `GraphTensorSnapshot`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressedGraphSnapshot {
+    /// Delta+varint encoded edge IDs (sorted).
+    edge_ids: Vec<u8>,
+    /// Delta+varint encoded source node IDs.
+    from_nodes: Vec<u8>,
+    /// Delta+varint encoded destination node IDs.
+    to_nodes: Vec<u8>,
+    /// Varint encoded edge type indices.
+    edge_type_indices: Vec<u8>,
+    /// Bitpacked directed flags (1 bit per edge).
+    directed_flags: Vec<u8>,
+    /// Number of edges (needed for decoding bitpacked bools).
+    edge_count: u64,
+    /// Edge type string table.
+    edge_types: Vec<String>,
+    /// Counter state.
+    next_edge_id: u64,
+    /// Maximum node ID.
+    max_node_id: u64,
+    /// Edge metadata.
+    edge_data: crate::metadata_slab::MetadataSlabSnapshot,
+}
+
+impl CompressedGraphSnapshot {
+    /// Compress a `GraphTensorSnapshot` into columnar format.
+    #[must_use]
+    pub fn compress(snapshot: &GraphTensorSnapshot) -> Self {
+        use tensor_compress::{compress_ids, varint_encode};
+
+        let edge_count = snapshot.edges.len();
+
+        let mut ids = Vec::with_capacity(edge_count);
+        let mut froms = Vec::with_capacity(edge_count);
+        let mut tos = Vec::with_capacity(edge_count);
+        let mut type_idxs = Vec::with_capacity(edge_count);
+        let mut directed = bitvec![u8, Lsb0;];
+
+        for edge in &snapshot.edges {
+            ids.push(edge.edge_id.as_u64());
+            froms.push(edge.from.as_u64());
+            tos.push(edge.to.as_u64());
+            type_idxs.push(u64::from(edge.edge_type_idx));
+            directed.push(edge.directed);
+        }
+
+        // Sort IDs for delta encoding (edges may not be in order)
+        // We don't sort — edges are already in CSR traversal order (by from node).
+        // Delta encoding still helps with from_nodes (runs of same value).
+
+        Self {
+            edge_ids: compress_ids(&ids),
+            from_nodes: compress_ids(&froms),
+            to_nodes: varint_encode(&tos),
+            edge_type_indices: varint_encode(&type_idxs),
+            directed_flags: directed.into_vec(),
+            edge_count: edge_count as u64,
+            edge_types: snapshot.edge_types.clone(),
+            next_edge_id: snapshot.next_edge_id,
+            max_node_id: snapshot.max_node_id,
+            edge_data: snapshot.edge_data.clone(),
+        }
+    }
+
+    /// Decompress back to a `GraphTensorSnapshot`.
+    #[must_use]
+    pub fn decompress(&self) -> GraphTensorSnapshot {
+        use tensor_compress::{decompress_ids, varint_decode};
+
+        let ids = decompress_ids(&self.edge_ids);
+        let froms = decompress_ids(&self.from_nodes);
+        let tos = varint_decode(&self.to_nodes);
+        let type_idxs = varint_decode(&self.edge_type_indices);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let edge_count = self.edge_count as usize;
+        let directed_bits = bitvec::vec::BitVec::<u8, Lsb0>::from_vec(self.directed_flags.clone());
+
+        let mut edges = Vec::with_capacity(edge_count);
+        for i in 0..edge_count {
+            #[allow(clippy::cast_possible_truncation)]
+            let edge_type_idx = type_idxs.get(i).copied().unwrap_or(0) as u32;
+            edges.push(GraphEdgeSnapshot {
+                edge_id: EdgeId(ids.get(i).copied().unwrap_or(0)),
+                from: EntityId::new(froms.get(i).copied().unwrap_or(0)),
+                to: EntityId::new(tos.get(i).copied().unwrap_or(0)),
+                edge_type_idx,
+                directed: directed_bits.get(i).is_none_or(|b| *b),
+            });
+        }
+
+        GraphTensorSnapshot {
+            edges,
+            edge_types: self.edge_types.clone(),
+            next_edge_id: self.next_edge_id,
+            max_node_id: self.max_node_id,
+            edge_data: self.edge_data.clone(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1553,6 +1687,291 @@ mod tests {
             let restored = GraphTensor::restore(snap.clone());
             // Each snapshot should have consistent edge count
             assert!(restored.edge_count() <= 800);
+        }
+    }
+
+    #[test]
+    fn test_restore_preserves_non_sequential_edge_ids() {
+        let graph = GraphTensor::new();
+        let n0 = EntityId::new(0);
+        let n1 = EntityId::new(1);
+        let n2 = EntityId::new(2);
+        let n3 = EntityId::new(3);
+
+        // Create edges with IDs 0, 1
+        let e0 = graph.add_edge(n0, n1, "a", true);
+        let e1 = graph.add_edge(n1, n2, "a", true);
+        assert_eq!(e0.as_u64(), 0);
+        assert_eq!(e1.as_u64(), 1);
+
+        // Delete edge 1 to create a gap
+        graph.delete_edge(e1);
+
+        // Add more edges: IDs 2, 3
+        let e2 = graph.add_edge(n2, n3, "b", true);
+        let e3 = graph.add_edge(n0, n3, "b", true);
+        assert_eq!(e2.as_u64(), 2);
+        assert_eq!(e3.as_u64(), 3);
+
+        // Snapshot captures edges [0, 2, 3] (non-sequential due to deletion)
+        let snapshot = graph.snapshot();
+        let restored = GraphTensor::restore(snapshot);
+
+        // Verify exact edge IDs preserved
+        let out_n0 = restored.outgoing(n0);
+        let ids: Vec<u64> = out_n0.iter().map(|(_, eid)| eid.as_u64()).collect();
+        assert!(ids.contains(&0), "edge 0 missing");
+        assert!(ids.contains(&3), "edge 3 missing");
+
+        let out_n2 = restored.outgoing(n2);
+        assert_eq!(out_n2.len(), 1);
+        assert_eq!(out_n2[0].1.as_u64(), 2);
+    }
+
+    #[test]
+    fn test_restore_preserves_edge_metadata_keys() {
+        let graph = GraphTensor::new();
+        let n0 = EntityId::new(0);
+        let n1 = EntityId::new(1);
+        let n2 = EntityId::new(2);
+
+        let _e0 = graph.add_edge(n0, n1, "link", true);
+        // Skip IDs to create gap
+        let _e1 = graph.add_edge(n1, n2, "link", true);
+        graph.delete_edge(_e0);
+        let e2 = graph.add_edge(n0, n2, "link", true);
+
+        // Store metadata keyed by actual edge ID
+        let key = format!("edge:{}", e2.as_u64());
+        let mut data = TensorData::new();
+        data.set(
+            "weight",
+            crate::TensorValue::Scalar(crate::ScalarValue::Float(0.75)),
+        );
+        graph.edge_data.set(&key, data);
+
+        let snapshot = graph.snapshot();
+        let restored = GraphTensor::restore(snapshot);
+
+        // Metadata key must still map to the correct edge after restore
+        let restored_data = restored.edge_data.get(&key);
+        assert!(restored_data.is_some(), "edge metadata lost after restore");
+        let binding = restored_data.unwrap();
+        let weight = binding.get("weight").unwrap();
+        match weight {
+            crate::TensorValue::Scalar(crate::ScalarValue::Float(f)) => {
+                assert!((f - 0.75).abs() < f64::EPSILON);
+            },
+            _ => panic!("unexpected value type"),
+        }
+
+        // Verify the edge with that ID actually exists
+        let out = restored.outgoing(n0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, e2, "edge ID changed after restore");
+    }
+
+    #[test]
+    fn test_restore_large_gap_edge_ids() {
+        let graph = GraphTensor::new();
+        let n0 = EntityId::new(0);
+        let n1 = EntityId::new(1);
+
+        // Simulate large IDs [0, 1, 3, 5, 100] by manipulating next_edge_id
+        let _e0 = graph.add_edge(n0, n1, "x", true); // 0
+        let _e1 = graph.add_edge(n1, n0, "x", true); // 1
+        graph.delete_edge(_e1);
+
+        // Force next_edge_id to 3
+        graph.next_edge_id.store(3, Ordering::Relaxed);
+        let e3 = graph.add_edge(n0, n1, "y", true); // 3
+        assert_eq!(e3.as_u64(), 3);
+
+        graph.next_edge_id.store(5, Ordering::Relaxed);
+        let e5 = graph.add_edge(n1, n0, "y", true); // 5
+        assert_eq!(e5.as_u64(), 5);
+
+        graph.next_edge_id.store(100, Ordering::Relaxed);
+        let e100 = graph.add_edge(n0, n1, "z", true); // 100
+        assert_eq!(e100.as_u64(), 100);
+
+        // next_edge_id should be 101 after the last add
+        graph.next_edge_id.store(101, Ordering::Relaxed);
+
+        let snapshot = graph.snapshot();
+        let restored = GraphTensor::restore(snapshot);
+
+        // Verify all edge IDs preserved exactly
+        let all_out_n0 = restored.outgoing(n0);
+        let mut ids: Vec<u64> = all_out_n0.iter().map(|(_, eid)| eid.as_u64()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![0, 3, 100], "non-sequential IDs not preserved");
+
+        let all_out_n1 = restored.outgoing(n1);
+        let mut ids: Vec<u64> = all_out_n1.iter().map(|(_, eid)| eid.as_u64()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![5], "edge 5 not preserved");
+
+        // next_edge_id must be preserved for future adds
+        let next = restored.add_edge(EntityId::new(2), EntityId::new(3), "new", true);
+        assert_eq!(next.as_u64(), 101, "next_edge_id not restored");
+    }
+
+    #[test]
+    fn test_restore_with_deletions_full_fidelity() {
+        let graph = GraphTensor::with_merge_threshold(2);
+        let nodes: Vec<EntityId> = (0..5).map(EntityId::new).collect();
+
+        // Build a graph with various edge types
+        let e0 = graph.add_edge(nodes[0], nodes[1], "friend", true);
+        let e1 = graph.add_edge(nodes[1], nodes[2], "friend", true);
+        let e2 = graph.add_edge(nodes[2], nodes[3], "colleague", false);
+        let e3 = graph.add_edge(nodes[3], nodes[4], "colleague", true);
+        let e4 = graph.add_edge(nodes[0], nodes[4], "friend", true);
+
+        // Delete some edges to create gaps
+        graph.delete_edge(e1);
+        graph.delete_edge(e3);
+
+        // Add metadata on surviving edges
+        for eid in [e0, e2, e4] {
+            let key = format!("edge:{}", eid.as_u64());
+            let mut data = TensorData::new();
+            data.set(
+                "score",
+                crate::TensorValue::Scalar(crate::ScalarValue::Int(eid.as_u64() as i64)),
+            );
+            graph.edge_data.set(&key, data);
+        }
+
+        let snapshot = graph.snapshot();
+        let restored = GraphTensor::restore(snapshot);
+
+        // Verify exact edge count (3 surviving)
+        assert_eq!(restored.edge_count(), 3);
+
+        // Verify each surviving edge has correct ID
+        let out_0 = restored.outgoing(nodes[0]);
+        let ids_0: Vec<u64> = out_0.iter().map(|(_, eid)| eid.as_u64()).collect();
+        assert!(ids_0.contains(&e0.as_u64()));
+        assert!(ids_0.contains(&e4.as_u64()));
+
+        let out_2 = restored.outgoing(nodes[2]);
+        assert_eq!(out_2.len(), 1);
+        assert_eq!(out_2[0].1, e2);
+
+        // Verify metadata still maps correctly
+        for eid in [e0, e2, e4] {
+            let key = format!("edge:{}", eid.as_u64());
+            let data = restored.edge_data.get(&key).expect("metadata missing");
+            let score = data.get("score").unwrap();
+            match score {
+                crate::TensorValue::Scalar(crate::ScalarValue::Int(v)) => {
+                    assert_eq!(*v, eid.as_u64() as i64);
+                },
+                _ => panic!("unexpected value type for edge {}", eid.as_u64()),
+            }
+        }
+    }
+
+    #[test]
+    fn test_compressed_graph_snapshot_empty() {
+        let graph = GraphTensor::new();
+        let snap = graph.snapshot();
+        let compressed = CompressedGraphSnapshot::compress(&snap);
+        assert_eq!(compressed.edge_count, 0);
+
+        let decompressed = compressed.decompress();
+        assert!(decompressed.edges.is_empty());
+        assert_eq!(decompressed.next_edge_id, snap.next_edge_id);
+    }
+
+    #[test]
+    fn test_compressed_graph_snapshot_roundtrip() {
+        let graph = GraphTensor::new();
+        for i in 0..100 {
+            graph.add_edge(EntityId::new(i), EntityId::new(i + 1), "linked", true);
+        }
+
+        let snap = graph.snapshot();
+        let compressed = CompressedGraphSnapshot::compress(&snap);
+        let decompressed = compressed.decompress();
+
+        assert_eq!(decompressed.edges.len(), snap.edges.len());
+        for (orig, restored) in snap.edges.iter().zip(decompressed.edges.iter()) {
+            assert_eq!(orig.edge_id, restored.edge_id);
+            assert_eq!(orig.from, restored.from);
+            assert_eq!(orig.to, restored.to);
+            assert_eq!(orig.edge_type_idx, restored.edge_type_idx);
+            assert_eq!(orig.directed, restored.directed);
+        }
+    }
+
+    #[test]
+    fn test_compressed_graph_snapshot_multiple_edge_types() {
+        let graph = GraphTensor::new();
+        graph.add_edge(EntityId::new(0), EntityId::new(1), "follows", true);
+        graph.add_edge(EntityId::new(1), EntityId::new(2), "blocks", false);
+        graph.add_edge(EntityId::new(2), EntityId::new(3), "follows", true);
+        graph.add_edge(EntityId::new(3), EntityId::new(0), "mentions", true);
+
+        let snap = graph.snapshot();
+        let compressed = CompressedGraphSnapshot::compress(&snap);
+        let decompressed = compressed.decompress();
+
+        assert_eq!(decompressed.edges.len(), snap.edges.len());
+        // Verify edge IDs preserved
+        let orig_ids: Vec<u64> = snap.edges.iter().map(|e| e.edge_id.as_u64()).collect();
+        let restored_ids: Vec<u64> = decompressed
+            .edges
+            .iter()
+            .map(|e| e.edge_id.as_u64())
+            .collect();
+        assert_eq!(orig_ids, restored_ids);
+
+        // Verify edge types preserved
+        assert_eq!(decompressed.edge_types, snap.edge_types);
+    }
+
+    #[test]
+    fn test_compressed_graph_snapshot_with_metadata() {
+        let graph = GraphTensor::new();
+        let e0 = graph.add_edge(EntityId::new(10), EntityId::new(20), "knows", true);
+
+        let mut data = crate::TensorData::new();
+        data.set(
+            "weight",
+            crate::TensorValue::Scalar(crate::ScalarValue::Float(0.95)),
+        );
+        graph.edge_data.set(&format!("edge:{}", e0.as_u64()), data);
+
+        let snap = graph.snapshot();
+        let compressed = CompressedGraphSnapshot::compress(&snap);
+        let decompressed = compressed.decompress();
+
+        // Metadata should be preserved through compression
+        let key = format!("edge:{}", e0.as_u64());
+        let restored_data = decompressed
+            .edge_data
+            .iter()
+            .find(|(k, _)| k.as_str() == key);
+        assert!(restored_data.is_some());
+    }
+
+    #[test]
+    fn test_compressed_graph_snapshot_mixed_directions() {
+        let graph = GraphTensor::new();
+        graph.add_edge(EntityId::new(0), EntityId::new(1), "a", true);
+        graph.add_edge(EntityId::new(1), EntityId::new(2), "b", false);
+        graph.add_edge(EntityId::new(2), EntityId::new(3), "c", true);
+        graph.add_edge(EntityId::new(3), EntityId::new(4), "d", false);
+
+        let snap = graph.snapshot();
+        let compressed = CompressedGraphSnapshot::compress(&snap);
+        let decompressed = compressed.decompress();
+
+        for (orig, restored) in snap.edges.iter().zip(decompressed.edges.iter()) {
+            assert_eq!(orig.directed, restored.directed);
         }
     }
 }

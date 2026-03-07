@@ -20,10 +20,6 @@ pub enum CheckpointError {
     #[error("deserialization error: {0}")]
     Deserialization(String),
 
-    /// An error propagated from the blob store.
-    #[error("blob error: {0}")]
-    Blob(#[from] tensor_blob::BlobError),
-
     /// Failed to create or restore a store snapshot.
     #[error("snapshot error: {0}")]
     Snapshot(String),
@@ -89,7 +85,6 @@ mod tests {
 
     #[test]
     fn test_from_bincode_error() {
-        // Create a bincode error by trying to deserialize invalid data
         let bad_data: &[u8] = &[0xff, 0xff, 0xff];
         let bincode_err: std::result::Result<String, _> = bitcode::deserialize(bad_data);
 

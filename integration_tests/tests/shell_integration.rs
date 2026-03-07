@@ -3,7 +3,7 @@
 //!
 //! Tests shell command processing, help text, and interactive features.
 
-use neumann_shell::{CommandResult, Shell, ShellConfig};
+use neumann::{CommandResult, Shell, ShellConfig};
 
 fn create_test_shell() -> Shell {
     Shell::new()

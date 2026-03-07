@@ -3,7 +3,6 @@ name = "vector_engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -11,7 +10,7 @@ readme = "../README.md"
 description = "k-NN similarity search engine with HNSW indexing and multiple distance metrics"
 
 [dependencies]
-tensor_store = { path = "../tensor_store" }
+tensor_store.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,9 +1,8 @@
 [package]
-name = "neumann_shell"
+name = "neumann"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
@@ -14,13 +13,13 @@ categories = ["database", "command-line-utilities"]
 exclude = ["benches/*", "*.profraw"]
 
 [dependencies]
-query_router = { path = "../query_router" }
-relational_engine = { path = "../relational_engine" }
-tensor_store = { path = "../tensor_store" }
-tensor_compress = { path = "../tensor_compress" }
-tensor_chain = { path = "../tensor_chain" }
-tensor_checkpoint = { path = "../tensor_checkpoint" }
-tensor_unified = { path = "../tensor_unified" }
+query_router.workspace = true
+relational_engine.workspace = true
+tensor_store.workspace = true
+tensor_compress.workspace = true
+tensor_chain.workspace = true
+tensor_checkpoint.workspace = true
+tensor_unified.workspace = true
 rustyline = "17"
 base64.workspace = true
 parking_lot.workspace = true
@@ -47,6 +46,10 @@ x509-parser.workspace = true
 clap.workspace = true
 clap_complete = "4"
 clap_mangen = "0.2"
+
+[lib]
+name = "neumann_shell"
+path = "src/lib.rs"
 
 [[bin]]
 name = "neumann"

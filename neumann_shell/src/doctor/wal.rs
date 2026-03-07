@@ -24,21 +24,15 @@ fn format_time_ago(seconds: u64) -> String {
 /// Gets the time since the last checkpoint in seconds.
 fn get_last_checkpoint_time(ctx: &DiagnosticContext<'_, impl WalInfo>) -> Option<u64> {
     let checkpoint = ctx.router.checkpoint()?;
-    let runtime = ctx.router.runtime()?;
 
-    let result = runtime.block_on(async {
-        let guard = checkpoint.lock().await;
-        guard.list(Some(1)).await.ok()
-    });
+    let list = checkpoint.list(Some(1)).ok()?;
 
-    result.and_then(|list| {
-        list.first().map(|cp| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            now.saturating_sub(cp.created_at)
-        })
+    list.first().map(|cp| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        now.saturating_sub(cp.created_at)
     })
 }
 

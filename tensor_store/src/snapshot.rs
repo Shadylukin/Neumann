@@ -24,16 +24,19 @@ use crate::{
 };
 
 /// Magic bytes for v3 format identification.
-const V3_MAGIC: [u8; 4] = *b"NEUM";
+pub(crate) const V3_MAGIC: [u8; 4] = *b"NEUM";
 
 /// Current version number.
-const CURRENT_VERSION: u32 = 3;
+pub(crate) const CURRENT_VERSION: u32 = 4;
+
+/// V3 version number (for backward compatibility detection).
+const V3_VERSION: u32 = 3;
 
 /// Flag indicating compressed payload.
 const FLAG_COMPRESSED: u32 = 0x01;
 
 /// Default Zstd compression level for snapshots.
-const SNAPSHOT_COMPRESSION_LEVEL: i32 = 3;
+pub(crate) const SNAPSHOT_COMPRESSION_LEVEL: i32 = 3;
 
 /// Snapshot format version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,10 +45,12 @@ pub enum SnapshotVersion {
     V2,
     /// SlabRouter-based format with magic header.
     V3,
+    /// V4: columnar-compressed graph snapshot.
+    V4,
 }
 
 /// Size of the raw header in bytes (magic + version + flags + `entry_count`).
-const HEADER_SIZE: usize = 4 + 4 + 4 + 8;
+pub(crate) const HEADER_SIZE: usize = 4 + 4 + 4 + 8;
 
 /// Header for v3 snapshot format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +67,7 @@ pub struct SnapshotHeader {
 
 impl SnapshotHeader {
     /// Serialize header to raw bytes (fixed 20-byte format).
-    fn to_raw_bytes(&self) -> [u8; HEADER_SIZE] {
+    pub(crate) fn to_raw_bytes(&self) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
         buf[0..4].copy_from_slice(&self.magic);
         buf[4..8].copy_from_slice(&self.version.to_le_bytes());
@@ -72,7 +77,7 @@ impl SnapshotHeader {
     }
 
     /// Deserialize header from raw bytes.
-    const fn from_raw_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
+    pub(crate) const fn from_raw_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
         Self {
             magic: [buf[0], buf[1], buf[2], buf[3]],
             version: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
@@ -120,10 +125,16 @@ impl SnapshotHeader {
         if self.magic != V3_MAGIC {
             return Err(SnapshotFormatError::InvalidMagic);
         }
-        if self.version != CURRENT_VERSION {
+        if self.version != CURRENT_VERSION && self.version != V3_VERSION {
             return Err(SnapshotFormatError::UnsupportedVersion(self.version));
         }
         Ok(())
+    }
+
+    /// Returns the detected snapshot version from the header.
+    #[must_use]
+    pub const fn detected_version(&self) -> u32 {
+        self.version
     }
 }
 
@@ -138,6 +149,29 @@ pub struct V3Snapshot {
     pub hnsw: Option<HNSWSnapshot>,
     /// Optional Voronoi partitioner snapshot.
     pub voronoi: Option<VoronoiSnapshot>,
+}
+
+/// V4 snapshot with columnar-compressed graph.
+///
+/// Same as V3 but stores the graph slab in columnar format for better
+/// compression. The `SlabRouterSnapshotV4` replaces `GraphTensorSnapshot`
+/// with `CompressedGraphSnapshot`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SlabRouterSnapshotV4 {
+    /// Entity index state.
+    pub index: crate::entity_index::EntityIndexSnapshot,
+    /// Embedding slab state.
+    pub embeddings: crate::embedding_slab::EmbeddingSlabSnapshot,
+    /// Columnar-compressed graph state.
+    pub graph: crate::graph_tensor::CompressedGraphSnapshot,
+    /// Relational tables state.
+    pub relations: crate::relational_slab::RelationalSlabSnapshot,
+    /// Metadata slab state.
+    pub metadata: crate::metadata_slab::MetadataSlabSnapshot,
+    /// Cache ring state.
+    pub cache: crate::cache_ring::CacheRingSnapshot<crate::TensorData>,
+    /// Blob log state.
+    pub blobs: crate::blob_log::BlobLogSnapshot,
 }
 
 /// Snapshot of HNSW index configuration.
@@ -253,23 +287,33 @@ pub fn detect_version<P: AsRef<Path>>(path: P) -> Result<SnapshotVersion, Snapsh
     }
 
     if magic == V3_MAGIC {
-        Ok(SnapshotVersion::V3)
+        let mut version_buf = [0u8; 4];
+        if file.read_exact(&mut version_buf).is_err() {
+            return Ok(SnapshotVersion::V3);
+        }
+        let version = u32::from_le_bytes(version_buf);
+        if version == CURRENT_VERSION {
+            Ok(SnapshotVersion::V4)
+        } else {
+            Ok(SnapshotVersion::V3)
+        }
     } else {
         Ok(SnapshotVersion::V2)
     }
 }
 
-/// Save a `SlabRouter` to v3 snapshot format (compressed by default).
+/// Save a `SlabRouter` to the current snapshot format (V4 with columnar graph,
+/// compressed by default).
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be created or serialization fails.
 #[instrument(skip(router), fields(path = %path.as_ref().display()))]
 pub fn save_v3<P: AsRef<Path>>(router: &SlabRouter, path: P) -> Result<(), SnapshotFormatError> {
-    save_v3_with_compression(router, path, true)
+    save_with_compression(router, path, true)
 }
 
-/// Save a `SlabRouter` to v3 snapshot format without compression.
+/// Save a `SlabRouter` to snapshot format without zstd compression.
 ///
 /// # Errors
 ///
@@ -278,20 +322,21 @@ pub fn save_v3_uncompressed<P: AsRef<Path>>(
     router: &SlabRouter,
     path: P,
 ) -> Result<(), SnapshotFormatError> {
-    save_v3_with_compression(router, path, false)
+    save_with_compression(router, path, false)
 }
 
-/// Save a `SlabRouter` to v3 snapshot format with optional compression.
-fn save_v3_with_compression<P: AsRef<Path>>(
+/// Save a `SlabRouter` to V4 snapshot format with optional zstd compression.
+fn save_with_compression<P: AsRef<Path>>(
     router: &SlabRouter,
     path: P,
     compress: bool,
 ) -> Result<(), SnapshotFormatError> {
+    use crate::graph_tensor::CompressedGraphSnapshot;
+
     let path = path.as_ref();
     let temp_path = path.with_extension("tmp");
 
-    let router_snapshot = router.snapshot();
-    // Estimate total entry count from various slabs
+    let snapshot = router.snapshot();
     let entry_count = (router.len() + router.index.len()) as u64;
 
     let header = if compress {
@@ -300,27 +345,28 @@ fn save_v3_with_compression<P: AsRef<Path>>(
         SnapshotHeader::new(entry_count)
     };
 
-    let snapshot = V3Snapshot {
-        header,
-        router: router_snapshot,
-        hnsw: None,
-        voronoi: None,
+    // Build V4 snapshot with columnar-compressed graph
+    let v4 = SlabRouterSnapshotV4 {
+        index: snapshot.index,
+        embeddings: snapshot.embeddings,
+        graph: CompressedGraphSnapshot::compress(&snapshot.graph),
+        relations: snapshot.relations,
+        metadata: snapshot.metadata,
+        cache: snapshot.cache,
+        blobs: snapshot.blobs,
     };
 
     let mut file = File::create(&temp_path)?;
+    file.write_all(&header.to_raw_bytes())?;
 
-    // Write header as raw bytes (fixed size for easy parsing)
-    file.write_all(&snapshot.header.to_raw_bytes())?;
-
-    // Serialize router data
-    let router_bytes = bitcode::serialize(&snapshot.router)?;
+    let payload_bytes = bitcode::serialize(&v4)?;
 
     if compress {
-        let compressed = zstd::encode_all(&router_bytes[..], SNAPSHOT_COMPRESSION_LEVEL)
+        let compressed = zstd::encode_all(&payload_bytes[..], SNAPSHOT_COMPRESSION_LEVEL)
             .map_err(|e| SnapshotFormatError::IoError(e.to_string()))?;
         file.write_all(&compressed)?;
     } else {
-        file.write_all(&router_bytes)?;
+        file.write_all(&payload_bytes)?;
     }
 
     std::fs::rename(&temp_path, path)?;
@@ -339,6 +385,7 @@ pub fn load<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> 
     match detect_version(path)? {
         SnapshotVersion::V2 => load_v2(path),
         SnapshotVersion::V3 => load_v3(path),
+        SnapshotVersion::V4 => load_v4(path),
     }
 }
 
@@ -394,6 +441,43 @@ fn load_v3<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
 
         Ok(SlabRouter::restore(router))
     }
+}
+
+/// Load from V4 format (columnar-compressed graph).
+#[instrument(fields(path = %path.as_ref().display()))]
+fn load_v4<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
+    let mut file = File::open(path.as_ref())?;
+
+    let mut header_buf = [0u8; HEADER_SIZE];
+    file.read_exact(&mut header_buf)?;
+    let header = SnapshotHeader::from_raw_bytes(&header_buf);
+    header.validate()?;
+
+    let payload_bytes = if header.is_compressed() {
+        let mut compressed = Vec::new();
+        file.read_to_end(&mut compressed)?;
+        zstd::decode_all(&compressed[..])
+            .map_err(|e| SnapshotFormatError::IoError(e.to_string()))?
+    } else {
+        let mut raw = Vec::new();
+        file.read_to_end(&mut raw)?;
+        raw
+    };
+
+    let v4: SlabRouterSnapshotV4 = bitcode::deserialize(&payload_bytes)?;
+
+    // Decompress graph back to standard snapshot
+    let snapshot = SlabRouterSnapshot {
+        index: v4.index,
+        embeddings: v4.embeddings,
+        graph: v4.graph.decompress(),
+        relations: v4.relations,
+        metadata: v4.metadata,
+        cache: v4.cache,
+        blobs: v4.blobs,
+    };
+
+    Ok(SlabRouter::restore(snapshot))
 }
 
 /// Convert v2 snapshot to v3 format.
@@ -480,15 +564,15 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_version_v3() {
+    fn test_detect_version_v4() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("test.v3.bin");
+        let path = dir.path().join("test.v4.bin");
 
         let router = SlabRouter::new();
         router.put("key", create_test_data()).unwrap();
         save_v3(&router, &path).unwrap();
 
-        assert_eq!(detect_version(&path).unwrap(), SnapshotVersion::V3);
+        assert_eq!(detect_version(&path).unwrap(), SnapshotVersion::V4);
     }
 
     #[test]
@@ -545,8 +629,8 @@ mod tests {
         // Migrate
         migrate_v2_to_v3(&v2_path, &v3_path).unwrap();
 
-        // Verify v3 format
-        assert_eq!(detect_version(&v3_path).unwrap(), SnapshotVersion::V3);
+        // Verify v4 format (save_v3 now writes V4)
+        assert_eq!(detect_version(&v3_path).unwrap(), SnapshotVersion::V4);
 
         let loaded = load(&v3_path).unwrap();
         assert!(loaded.exists("key1"));

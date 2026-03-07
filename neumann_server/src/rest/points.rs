@@ -804,6 +804,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -848,6 +849,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let mut payload = std::collections::HashMap::new();
@@ -895,6 +897,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -952,6 +955,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1002,6 +1006,7 @@ mod tests {
             metrics: Some(metrics.clone()),
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1047,6 +1052,7 @@ mod tests {
             metrics: None,
             audit_logger: Some(audit_logger),
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1092,6 +1098,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1138,6 +1145,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1180,6 +1188,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1225,6 +1234,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1268,6 +1278,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1316,6 +1327,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1367,6 +1379,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1420,6 +1433,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1467,6 +1481,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1517,6 +1532,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1564,6 +1580,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1614,6 +1631,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         // First page
@@ -1676,6 +1694,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1816,6 +1835,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1871,6 +1891,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1925,6 +1946,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();
@@ -1983,6 +2005,7 @@ mod tests {
             metrics: None,
             audit_logger: None,
             spatial: None,
+            spatial_3d: None,
         });
 
         let headers = HeaderMap::new();

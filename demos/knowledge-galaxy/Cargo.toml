@@ -1,0 +1,24 @@
+[package]
+name = "knowledge-galaxy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "galaxy-server"
+path = "src/main.rs"
+
+[dependencies]
+neumann_server = { path = "../../neumann_server" }
+query_router = { path = "../../query_router" }
+tensor_store = { path = "../../tensor_store" }
+tensor_spatial = { path = "../../tensor_spatial" }
+relational_engine = { path = "../../relational_engine" }
+graph_engine = { path = "../../graph_engine" }
+vector_engine = { path = "../../vector_engine" }
+tensor_unified = { path = "../../tensor_unified" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+parking_lot = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

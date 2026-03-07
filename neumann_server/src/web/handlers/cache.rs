@@ -395,6 +395,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -412,6 +413,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -434,6 +436,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 

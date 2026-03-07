@@ -66,6 +66,7 @@ use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
 };
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
 use tensor_chain::{
@@ -74,6 +75,7 @@ use tensor_chain::{
 };
 use tensor_checkpoint::{
     CheckpointConfig, CheckpointError, CheckpointManager, ConfirmationHandler, DestructiveOp,
+    FileCheckpointStore,
 };
 use tensor_store::{ConsistentHashConfig, ConsistentHashPartitioner, TensorStore};
 use tensor_unified::{
@@ -755,8 +757,10 @@ pub struct QueryRouter {
     vector_generation: AtomicU64,
     /// Generation at which the current HNSW index was built.
     hnsw_generation: AtomicU64,
-    /// Optional checkpoint manager (requires blob storage)
-    checkpoint: Option<Arc<tokio::sync::Mutex<CheckpointManager>>>,
+    /// Directory for checkpoint storage files.
+    checkpoint_dir: Option<PathBuf>,
+    /// Optional checkpoint manager (requires checkpoint directory).
+    checkpoint: Option<Arc<CheckpointManager>>,
     /// Optional tensor chain (requires initialization)
     chain: Option<Arc<TensorChain>>,
     /// Optional cluster orchestrator for distributed mode
@@ -810,6 +814,7 @@ impl QueryRouter {
             hnsw_index: None,
             vector_generation: AtomicU64::new(0),
             hnsw_generation: AtomicU64::new(0),
+            checkpoint_dir: None,
             checkpoint: None,
             chain: None,
             cluster: None,
@@ -850,6 +855,7 @@ impl QueryRouter {
             hnsw_index: None,
             vector_generation: AtomicU64::new(0),
             hnsw_generation: AtomicU64::new(0),
+            checkpoint_dir: None,
             checkpoint: None,
             chain: None,
             cluster: None,
@@ -1255,42 +1261,53 @@ impl QueryRouter {
     }
 
     /// Get reference to checkpoint manager (if initialized).
-    pub const fn checkpoint(&self) -> Option<&Arc<tokio::sync::Mutex<CheckpointManager>>> {
+    pub const fn checkpoint(&self) -> Option<&Arc<CheckpointManager>> {
         self.checkpoint.as_ref()
+    }
+
+    /// Set the directory used for checkpoint file storage.
+    pub fn set_checkpoint_dir(&mut self, dir: PathBuf) {
+        self.checkpoint_dir = Some(dir);
+    }
+
+    /// Get the configured checkpoint directory, if any.
+    pub fn checkpoint_dir(&self) -> Option<&Path> {
+        self.checkpoint_dir.as_deref()
     }
 
     /// Initialize the checkpoint manager with default configuration.
     ///
-    /// Requires blob storage to be initialized first.
+    /// Requires checkpoint directory to be set first.
     ///
     /// # Errors
     ///
-    /// Returns an error if blob store is not initialized.
+    /// Returns an error if checkpoint directory is not set.
     pub fn init_checkpoint(&mut self) -> Result<()> {
         self.init_checkpoint_with_config(CheckpointConfig::default())
     }
 
     /// Initialize the checkpoint manager with custom configuration.
     ///
-    /// Requires blob storage to be initialized first.
+    /// Requires checkpoint directory to be set first via [`set_checkpoint_dir`].
     ///
     /// # Errors
     ///
-    /// Returns an error if blob store is not initialized.
+    /// Returns an error if checkpoint directory is not set.
     pub fn init_checkpoint_with_config(&mut self, config: CheckpointConfig) -> Result<()> {
-        let blob = self
-            .blob
-            .as_ref()
-            .ok_or_else(|| {
-                RouterError::CheckpointError(
-                    "Blob store must be initialized before checkpoint manager".to_string(),
-                )
-            })?
-            .clone();
+        let dir = self.checkpoint_dir.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError(
+                "Checkpoint directory must be set before initializing checkpoint manager"
+                    .to_string(),
+            )
+        })?;
 
-        let manager = CheckpointManager::new(blob, config);
+        let store = Arc::new(
+            FileCheckpointStore::new(dir)
+                .map_err(|e| RouterError::CheckpointError(e.to_string()))?,
+        );
 
-        self.checkpoint = Some(Arc::new(tokio::sync::Mutex::new(manager)));
+        let manager = CheckpointManager::new(store, config);
+        self.checkpoint = Some(Arc::new(manager));
         Ok(())
     }
 
@@ -1298,17 +1315,13 @@ impl QueryRouter {
     ///
     /// # Errors
     ///
-    /// Returns an error if checkpoint manager initialization fails.
+    /// Returns an error if checkpoint directory is not set or initialization fails.
     ///
     /// # Panics
     ///
     /// Panics if checkpoint is `None` after successful initialization (should never happen).
-    pub fn ensure_checkpoint(&mut self) -> Result<&Arc<tokio::sync::Mutex<CheckpointManager>>> {
+    pub fn ensure_checkpoint(&mut self) -> Result<&Arc<CheckpointManager>> {
         if self.checkpoint.is_none() {
-            // First ensure blob is initialized
-            if self.blob.is_none() {
-                self.init_blob()?;
-            }
             self.init_checkpoint()?;
         }
         Ok(self.checkpoint.as_ref().unwrap())
@@ -1348,21 +1361,13 @@ impl QueryRouter {
     ///
     /// # Errors
     ///
-    /// Returns an error if checkpoint manager or blob runtime is not initialized.
+    /// Returns an error if checkpoint manager is not initialized.
     pub fn set_confirmation_handler(&self, handler: Arc<dyn ConfirmationHandler>) -> Result<()> {
         let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
             RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
         })?;
 
-        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Blob runtime not initialized".to_string())
-        })?;
-
-        runtime.block_on(async {
-            let mut cp = checkpoint.lock().await;
-            cp.set_confirmation_handler(handler);
-        });
-
+        checkpoint.set_confirmation_handler(handler);
         Ok(())
     }
 
@@ -2059,11 +2064,7 @@ impl QueryRouter {
                     table: table.clone(),
                     row_count,
                 };
-                match self.protect_destructive_op(
-                    &format!("DROP TABLE {table}"),
-                    op,
-                    sample_data,
-                )? {
+                match self.protect_destructive_op(&format!("DROP TABLE {table}"), op, sample_data) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -2096,7 +2097,7 @@ impl QueryRouter {
                         &format!("DROP INDEX ON {}({})", table.name, column.name),
                         op,
                         vec![format!("index on {}.{}", table.name, column.name)],
-                    )? {
+                    ) {
                         ProtectedOpResult::Proceed => {},
                         ProtectedOpResult::Cancelled => {
                             return Err(RouterError::CheckpointError(
@@ -2293,7 +2294,7 @@ impl QueryRouter {
                     "CACHE CLEAR",
                     op,
                     vec![format!("{} cached entries", entry_count)],
-                )? {
+                ) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -2522,7 +2523,7 @@ impl QueryRouter {
                     &format!("VAULT DELETE '{key_str}'"),
                     op,
                     vec![format!("secret key: {}", key_str)],
-                )? {
+                ) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -2677,7 +2678,7 @@ impl QueryRouter {
                     &format!("BLOB DELETE '{id}'"),
                     op,
                     vec![format!("artifact: {}, size: {} bytes", id, size)],
-                )? {
+                ) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -2958,9 +2959,6 @@ impl QueryRouter {
         let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
             RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
         })?;
-        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Blob runtime not initialized".to_string())
-        })?;
 
         let name = stmt
             .name
@@ -2969,10 +2967,7 @@ impl QueryRouter {
             .transpose()?;
 
         let store = self.vector.store();
-        let checkpoint_id = runtime.block_on(async {
-            let cp_guard = checkpoint.lock().await;
-            cp_guard.create(name.as_deref(), store).await
-        })?;
+        let checkpoint_id = checkpoint.create(name.as_deref(), store)?;
 
         Ok(QueryResult::Value(format!(
             "Checkpoint created: {checkpoint_id}"
@@ -2983,17 +2978,11 @@ impl QueryRouter {
         let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
             RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
         })?;
-        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Blob runtime not initialized".to_string())
-        })?;
 
         let target = self.eval_string_expr(&stmt.target)?;
 
         let store = self.vector.store();
-        runtime.block_on(async {
-            let cp_guard = checkpoint.lock().await;
-            cp_guard.rollback(&target, store).await
-        })?;
+        checkpoint.rollback(&target, store)?;
 
         Ok(QueryResult::Value(format!(
             "Rolled back to checkpoint: {target}"
@@ -3003,9 +2992,6 @@ impl QueryRouter {
     fn exec_checkpoints(&self, stmt: &CheckpointsStmt) -> Result<QueryResult> {
         let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
             RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
-        })?;
-        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Blob runtime not initialized".to_string())
         })?;
 
         let limit = stmt
@@ -3017,10 +3003,7 @@ impl QueryRouter {
         // Default to 10 if no limit specified
         let limit_opt = limit.or(Some(10));
 
-        let checkpoints = runtime.block_on(async {
-            let cp_guard = checkpoint.lock().await;
-            cp_guard.list(limit_opt).await
-        })?;
+        let checkpoints = checkpoint.list(limit_opt)?;
 
         let info_list: Vec<CheckpointInfo> = checkpoints
             .into_iter()
@@ -3960,7 +3943,7 @@ impl QueryRouter {
                         &format!("BATCH DELETE NODES ({})", node_ids.len()),
                         op,
                         sample_data,
-                    )? {
+                    ) {
                         ProtectedOpResult::Proceed => {},
                         ProtectedOpResult::Cancelled => {
                             return Err(RouterError::CheckpointError(
@@ -3995,7 +3978,7 @@ impl QueryRouter {
                         &format!("BATCH DELETE EDGES ({})", edge_ids.len()),
                         op,
                         sample_data,
-                    )? {
+                    ) {
                         ProtectedOpResult::Proceed => {},
                         ProtectedOpResult::Cancelled => {
                             return Err(RouterError::CheckpointError(
@@ -4933,52 +4916,38 @@ impl QueryRouter {
     // ========== Auto-Checkpoint Protection ==========
 
     /// Check and optionally create checkpoint before destructive operation.
-    #[allow(clippy::significant_drop_tightening)] // Checkpoint lock held for preview + confirmation
     fn protect_destructive_op(
         &self,
         command: &str,
         op: DestructiveOp,
         sample_data: Vec<String>,
-    ) -> Result<ProtectedOpResult> {
+    ) -> ProtectedOpResult {
         // If no checkpoint manager, proceed without protection
         let Some(checkpoint) = self.checkpoint.as_ref() else {
-            return Ok(ProtectedOpResult::Proceed);
+            return ProtectedOpResult::Proceed;
         };
 
-        let Some(runtime) = self.blob_runtime.as_ref() else {
-            return Ok(ProtectedOpResult::Proceed);
-        };
-
-        // Skip protection if we're already inside a tokio runtime (avoids nested runtime panic)
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return Ok(ProtectedOpResult::Proceed);
+        // Check if auto-checkpoint is enabled
+        if !checkpoint.auto_checkpoint_enabled() {
+            return ProtectedOpResult::Proceed;
         }
 
-        runtime.block_on(async {
-            let cp = checkpoint.lock().await;
+        // Generate preview
+        let preview = checkpoint.generate_preview(&op, sample_data);
 
-            // Check if auto-checkpoint is enabled
-            if !cp.auto_checkpoint_enabled() {
-                return Ok(ProtectedOpResult::Proceed);
-            }
+        // Request confirmation (may prompt user via handler)
+        if !checkpoint.request_confirmation(&op, &preview) {
+            return ProtectedOpResult::Cancelled;
+        }
 
-            // Generate preview
-            let preview = cp.generate_preview(&op, sample_data);
+        // Create auto-checkpoint before operation
+        let store = self.vector.store();
+        if let Err(e) = checkpoint.create_auto(command, op, preview, store) {
+            // Log but don't fail - checkpoint is best-effort
+            eprintln!("Warning: Failed to create auto-checkpoint: {e}");
+        }
 
-            // Request confirmation (may prompt user via handler)
-            if !cp.request_confirmation(&op, &preview) {
-                return Ok(ProtectedOpResult::Cancelled);
-            }
-
-            // Create auto-checkpoint before operation
-            let store = self.vector.store();
-            if let Err(e) = cp.create_auto(command, op, preview, store).await {
-                // Log but don't fail - checkpoint is best-effort
-                eprintln!("Warning: Failed to create auto-checkpoint: {e}");
-            }
-
-            Ok(ProtectedOpResult::Proceed)
-        })
+        ProtectedOpResult::Proceed
     }
 
     /// Collect sample data for a relational delete preview.
@@ -5116,7 +5085,7 @@ impl QueryRouter {
                 }
             );
 
-            match self.protect_destructive_op(&command, op, sample_data)? {
+            match self.protect_destructive_op(&command, op, sample_data) {
                 ProtectedOpResult::Proceed => {},
                 ProtectedOpResult::Cancelled => {
                     return Err(RouterError::CheckpointError(
@@ -5193,7 +5162,7 @@ impl QueryRouter {
                     &format!("NODE DELETE {node_id}"),
                     op,
                     sample_data,
-                )? {
+                ) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -5284,7 +5253,7 @@ impl QueryRouter {
                     &format!("EDGE DELETE {edge_id}"),
                     op,
                     sample_data,
-                )? {
+                ) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -5445,7 +5414,7 @@ impl QueryRouter {
                     &format!("EMBED DELETE '{key_str}'"),
                     op,
                     vec![format!("embedding key: {}", key_str)],
-                )? {
+                ) {
                     ProtectedOpResult::Proceed => {},
                     ProtectedOpResult::Cancelled => {
                         return Err(RouterError::CheckpointError(
@@ -6592,10 +6561,10 @@ impl QueryRouter {
             StatementKind::Blob(blob) => self.exec_blob_async(blob).await,
             StatementKind::Blobs(blobs) => self.exec_blobs_async(blobs).await,
 
-            // Checkpoint statements are async (use blob storage)
-            StatementKind::Checkpoint(cp) => self.exec_checkpoint_async(cp).await,
-            StatementKind::Rollback(rb) => self.exec_rollback_async(rb).await,
-            StatementKind::Checkpoints(cps) => self.exec_checkpoints_async(cps).await,
+            // Checkpoint statements use sync file-based storage
+            StatementKind::Checkpoint(cp) => self.exec_checkpoint(cp),
+            StatementKind::Rollback(rb) => self.exec_rollback(rb),
+            StatementKind::Checkpoints(cps) => self.exec_checkpoints(cps),
 
             // All other statements delegate to sync execution
             // (they're in-memory and fast, no benefit from async)
@@ -6860,78 +6829,6 @@ impl QueryRouter {
                 ))
             },
         }
-    }
-
-    /// Execute checkpoint creation asynchronously.
-    #[allow(clippy::significant_drop_tightening)] // Checkpoint lock held for create operation
-    async fn exec_checkpoint_async(&self, stmt: &CheckpointStmt) -> Result<QueryResult> {
-        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
-        })?;
-
-        let name = stmt
-            .name
-            .as_ref()
-            .map(|e| self.eval_string_expr(e))
-            .transpose()?;
-
-        let store = self.vector.store();
-        let cp_guard = checkpoint.lock().await;
-        let checkpoint_id = cp_guard.create(name.as_deref(), store).await?;
-
-        Ok(QueryResult::Value(format!(
-            "Checkpoint created: {checkpoint_id}"
-        )))
-    }
-
-    /// Execute rollback asynchronously.
-    #[allow(clippy::significant_drop_tightening)] // Checkpoint lock held for rollback operation
-    async fn exec_rollback_async(&self, stmt: &RollbackStmt) -> Result<QueryResult> {
-        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
-        })?;
-
-        let target = self.eval_string_expr(&stmt.target)?;
-
-        let store = self.vector.store();
-        let cp_guard = checkpoint.lock().await;
-        cp_guard.rollback(&target, store).await?;
-
-        Ok(QueryResult::Value(format!(
-            "Rolled back to checkpoint: {target}"
-        )))
-    }
-
-    /// Execute checkpoint listing asynchronously.
-    #[allow(clippy::significant_drop_tightening)] // Checkpoint lock held for list operation
-    async fn exec_checkpoints_async(&self, stmt: &CheckpointsStmt) -> Result<QueryResult> {
-        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
-            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
-        })?;
-
-        let limit = stmt
-            .limit
-            .as_ref()
-            .map(|e| self.expr_to_usize(e))
-            .transpose()?;
-
-        // Default to 10 if no limit specified
-        let limit_opt = limit.or(Some(10));
-
-        let cp_guard = checkpoint.lock().await;
-        let checkpoints = cp_guard.list(limit_opt).await?;
-
-        let info_list: Vec<CheckpointInfo> = checkpoints
-            .into_iter()
-            .map(|cp| CheckpointInfo {
-                id: cp.id,
-                name: cp.name,
-                created_at: cp.created_at,
-                is_auto: cp.trigger.is_some(),
-            })
-            .collect();
-
-        Ok(QueryResult::CheckpointList(info_list))
     }
 
     /// Store multiple embeddings in parallel.
@@ -13741,28 +13638,30 @@ mod tests {
     // ========== Checkpoint Tests ==========
 
     #[test]
-    fn test_init_checkpoint_requires_blob() {
+    fn test_init_checkpoint_requires_dir() {
         let mut router = QueryRouter::new();
-        // Checkpoint requires blob to be initialized first
+        // Checkpoint requires checkpoint_dir to be set first
         let result = router.init_checkpoint();
         assert!(result.is_err());
         if let Err(RouterError::CheckpointError(msg)) = result {
-            assert!(msg.contains("Blob store must be initialized"));
+            assert!(msg.contains("Checkpoint directory must be set"));
         }
     }
 
     #[test]
-    fn test_init_checkpoint_with_blob() {
+    fn test_init_checkpoint_with_dir() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         let result = router.init_checkpoint();
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_init_checkpoint_with_config() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         let config = CheckpointConfig::default().with_max_checkpoints(5);
         let result = router.init_checkpoint_with_config(config);
         assert!(result.is_ok());
@@ -13770,16 +13669,19 @@ mod tests {
 
     #[test]
     fn test_ensure_checkpoint_auto_init() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        // ensure_checkpoint should auto-initialize blob and checkpoint
+        router.set_checkpoint_dir(dir.path().to_path_buf());
+        // ensure_checkpoint should auto-initialize checkpoint
         let result = router.ensure_checkpoint();
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_ensure_checkpoint_already_initialized() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
         // Calling ensure_checkpoint again should still work
         let result = router.ensure_checkpoint();
@@ -13799,87 +13701,75 @@ mod tests {
 
     #[test]
     fn test_exec_checkpoint_create() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        router
-            .block_on(async {
-                let stmt = parser::parse("CHECKPOINT").unwrap();
-                let result = router.execute_statement_async(&stmt).await;
-                assert!(result.is_ok());
-                if let QueryResult::Value(v) = result.unwrap() {
-                    assert!(v.contains("Checkpoint created"));
-                }
-            })
-            .unwrap();
+        let stmt = parser::parse("CHECKPOINT").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::Value(v) = result.unwrap() {
+            assert!(v.contains("Checkpoint created"));
+        }
     }
 
     #[test]
     fn test_exec_checkpoint_with_name() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        router
-            .block_on(async {
-                let stmt = parser::parse("CHECKPOINT 'my-checkpoint'").unwrap();
-                let result = router.execute_statement_async(&stmt).await;
-                assert!(result.is_ok());
-                if let QueryResult::Value(v) = result.unwrap() {
-                    assert!(v.contains("Checkpoint created"));
-                }
-            })
-            .unwrap();
+        let stmt = parser::parse("CHECKPOINT 'my-checkpoint'").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::Value(v) = result.unwrap() {
+            assert!(v.contains("Checkpoint created"));
+        }
     }
 
     #[test]
     fn test_exec_checkpoints_list() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        router
-            .block_on(async {
-                // Create a checkpoint first
-                let stmt = parser::parse("CHECKPOINT 'test-cp'").unwrap();
-                router.execute_statement_async(&stmt).await.unwrap();
+        // Create a checkpoint first
+        let stmt = parser::parse("CHECKPOINT 'test-cp'").unwrap();
+        router.execute_statement(&stmt).unwrap();
 
-                // List checkpoints
-                let stmt = parser::parse("CHECKPOINTS").unwrap();
-                let result = router.execute_statement_async(&stmt).await;
-                assert!(result.is_ok());
-                if let QueryResult::CheckpointList(list) = result.unwrap() {
-                    assert!(!list.is_empty());
-                    assert_eq!(list[0].name, "test-cp");
-                }
-            })
-            .unwrap();
+        // List checkpoints
+        let stmt = parser::parse("CHECKPOINTS").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::CheckpointList(list) = result.unwrap() {
+            assert!(!list.is_empty());
+            assert_eq!(list[0].name, "test-cp");
+        }
     }
 
     #[test]
     fn test_exec_checkpoints_with_limit() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        router
-            .block_on(async {
-                // Create multiple checkpoints
-                for i in 0..5 {
-                    let stmt = parser::parse(&format!("CHECKPOINT 'cp-{}'", i)).unwrap();
-                    router.execute_statement_async(&stmt).await.unwrap();
-                }
+        // Create multiple checkpoints
+        for i in 0..5 {
+            let stmt = parser::parse(&format!("CHECKPOINT 'cp-{}'", i)).unwrap();
+            router.execute_statement(&stmt).unwrap();
+        }
 
-                // List with limit
-                let stmt = parser::parse("CHECKPOINTS LIMIT 3").unwrap();
-                let result = router.execute_statement_async(&stmt).await;
-                assert!(result.is_ok());
-                if let QueryResult::CheckpointList(list) = result.unwrap() {
-                    assert_eq!(list.len(), 3);
-                }
-            })
-            .unwrap();
+        // List with limit
+        let stmt = parser::parse("CHECKPOINTS LIMIT 3").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::CheckpointList(list) = result.unwrap() {
+            assert_eq!(list.len(), 3);
+        }
     }
 
     #[test]
@@ -13903,71 +13793,62 @@ mod tests {
 
     #[test]
     fn test_exec_rollback_success() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // Store some data
         router.execute("EMBED testkey [1.0, 2.0, 3.0]").unwrap();
 
-        router
-            .block_on(async {
-                // Create checkpoint
-                let cp_stmt = parser::parse("CHECKPOINT 'before-delete'").unwrap();
-                router.execute_statement_async(&cp_stmt).await.unwrap();
+        // Create checkpoint
+        let cp_stmt = parser::parse("CHECKPOINT 'before-delete'").unwrap();
+        router.execute_statement(&cp_stmt).unwrap();
 
-                // Delete the data using parsed command
-                router.execute_parsed("EMBED DELETE 'testkey'").unwrap();
-                assert!(!router.vector().exists("testkey"));
+        // Delete the data using parsed command
+        router.execute_parsed("EMBED DELETE 'testkey'").unwrap();
+        assert!(!router.vector().exists("testkey"));
 
-                // Rollback
-                let rb_stmt = parser::parse("ROLLBACK TO 'before-delete'").unwrap();
-                let result = router.execute_statement_async(&rb_stmt).await;
-                assert!(result.is_ok());
-                if let QueryResult::Value(v) = result.unwrap() {
-                    assert!(v.contains("Rolled back"));
-                }
+        // Rollback
+        let rb_stmt = parser::parse("ROLLBACK TO 'before-delete'").unwrap();
+        let result = router.execute_statement(&rb_stmt);
+        assert!(result.is_ok());
+        if let QueryResult::Value(v) = result.unwrap() {
+            assert!(v.contains("Rolled back"));
+        }
 
-                // Verify data is restored
-                assert!(router.vector().exists("testkey"));
-            })
-            .unwrap();
+        // Verify data is restored
+        assert!(router.vector().exists("testkey"));
     }
 
     #[test]
     fn test_exec_rollback_not_found() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        router
-            .block_on(async {
-                let stmt = parser::parse("ROLLBACK TO 'nonexistent'").unwrap();
-                let result = router.execute_statement_async(&stmt).await;
-                assert!(result.is_err());
-            })
-            .unwrap();
+        let stmt = parser::parse("ROLLBACK TO 'nonexistent'").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_checkpoint_info_is_auto() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        router
-            .block_on(async {
-                // Manual checkpoint should have is_auto = false
-                let stmt = parser::parse("CHECKPOINT 'manual'").unwrap();
-                router.execute_statement_async(&stmt).await.unwrap();
+        // Manual checkpoint should have is_auto = false
+        let stmt = parser::parse("CHECKPOINT 'manual'").unwrap();
+        router.execute_statement(&stmt).unwrap();
 
-                let stmt = parser::parse("CHECKPOINTS").unwrap();
-                let result = router.execute_statement_async(&stmt).await.unwrap();
-                if let QueryResult::CheckpointList(list) = result {
-                    assert!(!list[0].is_auto);
-                }
-            })
-            .unwrap();
+        let stmt = parser::parse("CHECKPOINTS").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+        if let QueryResult::CheckpointList(list) = result {
+            assert!(!list[0].is_auto);
+        }
     }
 
     #[test]
@@ -13979,11 +13860,11 @@ mod tests {
 
     #[test]
     fn test_exec_checkpoint_sync_success() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        // Use sync execute_statement which calls exec_checkpoint internally
         let stmt = parser::parse("CHECKPOINT 'sync-test'").unwrap();
         let result = router.execute_statement(&stmt);
         assert!(result.is_ok());
@@ -13994,15 +13875,15 @@ mod tests {
 
     #[test]
     fn test_exec_checkpoints_sync_success() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // Create a checkpoint first
         let stmt = parser::parse("CHECKPOINT 'for-list'").unwrap();
         router.execute_statement(&stmt).unwrap();
 
-        // Use sync execute_statement for CHECKPOINTS
         let stmt = parser::parse("CHECKPOINTS").unwrap();
         let result = router.execute_statement(&stmt);
         assert!(result.is_ok());
@@ -14013,8 +13894,9 @@ mod tests {
 
     #[test]
     fn test_exec_rollback_sync_success() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // Store data and create checkpoint
@@ -14026,7 +13908,6 @@ mod tests {
         router.execute_parsed("EMBED DELETE 'synckey'").unwrap();
         assert!(!router.vector().exists("synckey"));
 
-        // Use sync execute_statement for ROLLBACK
         let stmt = parser::parse("ROLLBACK TO 'sync-rollback'").unwrap();
         let result = router.execute_statement(&stmt);
         assert!(result.is_ok());
@@ -14036,16 +13917,12 @@ mod tests {
     }
 
     #[test]
-    fn test_exec_checkpoint_sync_runtime_not_initialized() {
-        // This is a tricky edge case - checkpoint is Some but runtime is None
-        // In practice this shouldn't happen because init_checkpoint requires blob
-        // But we test the error message path for coverage
+    fn test_checkpoint_with_limit() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        // The above initialization should succeed and both checkpoint and runtime
-        // should be Some. So this test verifies the success path works.
         let stmt = parser::parse("CHECKPOINTS LIMIT 5").unwrap();
         let result = router.execute_statement(&stmt);
         assert!(result.is_ok());
@@ -14053,8 +13930,9 @@ mod tests {
 
     #[test]
     fn test_checkpoint_list_empty() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // List checkpoints when none exist
@@ -14068,8 +13946,9 @@ mod tests {
 
     #[test]
     fn test_checkpoint_with_double_quoted_name() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         let stmt = parser::parse("CHECKPOINT \"double-quoted\"").unwrap();
@@ -14079,8 +13958,9 @@ mod tests {
 
     #[test]
     fn test_rollback_sync_by_id() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // Create checkpoint and get its ID
@@ -14103,8 +13983,9 @@ mod tests {
 
     #[test]
     fn test_multiple_checkpoints_ordering() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // Create multiple checkpoints
@@ -14129,19 +14010,20 @@ mod tests {
 
     #[test]
     fn test_checkpoint_via_execute_parsed() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
-        // Use execute_parsed instead of execute_statement
         let result = router.execute_parsed("CHECKPOINT 'parsed-test'");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_checkpoints_via_execute_parsed() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         router.execute_parsed("CHECKPOINT 'test1'").unwrap();
@@ -14153,8 +14035,9 @@ mod tests {
 
     #[test]
     fn test_rollback_via_execute_parsed() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         router
@@ -14166,8 +14049,9 @@ mod tests {
 
     #[test]
     fn test_checkpoint_default_name() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
 
         // Checkpoint without a name should use auto-generated name
@@ -15423,16 +15307,15 @@ mod tests {
     fn test_delete_creates_auto_checkpoint() {
         use tensor_checkpoint::{AutoConfirm, CheckpointConfig};
 
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
 
-        // Initialize checkpoint manager with auto-checkpoint enabled
         let config = CheckpointConfig::default()
             .with_auto_checkpoint(true)
             .with_interactive_confirm(true);
         router.init_checkpoint_with_config(config).unwrap();
 
-        // Set auto-confirm handler
         router
             .set_confirmation_handler(Arc::new(AutoConfirm))
             .unwrap();
@@ -15462,16 +15345,15 @@ mod tests {
     fn test_delete_cancelled_preserves_data() {
         use tensor_checkpoint::{AutoReject, CheckpointConfig};
 
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
 
-        // Initialize checkpoint manager with auto-checkpoint enabled
         let config = CheckpointConfig::default()
             .with_auto_checkpoint(true)
             .with_interactive_confirm(true);
         router.init_checkpoint_with_config(config).unwrap();
 
-        // Set auto-reject handler
         router
             .set_confirmation_handler(Arc::new(AutoReject))
             .unwrap();
@@ -15499,16 +15381,15 @@ mod tests {
     fn test_delete_with_auto_checkpoint_disabled() {
         use tensor_checkpoint::{AutoReject, CheckpointConfig};
 
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
 
-        // Initialize checkpoint manager with auto-checkpoint DISABLED
         let config = CheckpointConfig::default()
             .with_auto_checkpoint(false)
             .with_interactive_confirm(false);
         router.init_checkpoint_with_config(config).unwrap();
 
-        // Even with auto-reject handler, delete should succeed because auto-checkpoint is off
         router
             .set_confirmation_handler(Arc::new(AutoReject))
             .unwrap();
@@ -15524,8 +15405,9 @@ mod tests {
     fn test_drop_table_creates_checkpoint() {
         use tensor_checkpoint::{AutoConfirm, CheckpointConfig};
 
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
 
         let config = CheckpointConfig::default()
             .with_auto_checkpoint(true)
@@ -15553,8 +15435,9 @@ mod tests {
     fn test_node_delete_creates_checkpoint() {
         use tensor_checkpoint::{AutoConfirm, CheckpointConfig};
 
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
 
         let config = CheckpointConfig::default()
             .with_auto_checkpoint(true)
@@ -20974,8 +20857,9 @@ mod tests {
 
     #[test]
     fn test_checkpoint_and_rollback() {
+        let dir = tempfile::tempdir().unwrap();
         let mut router = QueryRouter::new();
-        router.init_blob().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
         router.init_checkpoint().unwrap();
         router
             .execute_parsed("CREATE TABLE ckpt_t (id INT)")

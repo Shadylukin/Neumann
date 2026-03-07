@@ -155,7 +155,7 @@ jobs:
               "blob": "tensor_blob",
               "neumann_parser": "neumann_parser",
               "query_router": "query_router",
-              "neumann_shell": "neumann_shell",
+              "neumann_shell": "neumann",
               "neumann_server": "neumann_server",
               "tensor_unified": "tensor_unified",
               "tensor_checkpoint": "tensor_checkpoint",
@@ -165,7 +165,7 @@ jobs:
           violations = []
           with open("bench-comparison.txt") as f:
               for line in f:
-                  # Match lines like: group/bench  base  1.234 ms  pr  1.500 ms  +21.55%
+                  # Match: group/bench base 1.234ms pr 1.500ms +21.55%
                   m = re.search(r'\+(\d+\.?\d*)%', line)
                   if not m:
                       continue
@@ -175,7 +175,8 @@ jobs:
                   if not parts:
                       continue
                   bench_name = parts[0]
-                  group = bench_name.split("/")[0] if "/" in bench_name else bench_name
+                  group = bench_name.split("/")[0] \
+                      if "/" in bench_name else bench_name
 
                   # Find crate for this group
                   crate_name = None
@@ -184,9 +185,14 @@ jobs:
                           crate_name = crate
                           break
 
-                  threshold = thresholds.get(crate_name, default_pct) if crate_name else default_pct
+                  threshold = thresholds.get(
+                      crate_name, default_pct
+                  ) if crate_name else default_pct
                   if pct >= threshold:
-                      violations.append(f"{bench_name}: +{pct:.1f}% (threshold: {threshold}%)")
+                      violations.append(
+                          f"{bench_name}: +{pct:.1f}%"
+                          f" (threshold: {threshold}%)"
+                      )
 
           with open("regression-report.txt", "w") as f:
               if violations:
@@ -220,7 +226,8 @@ jobs:
         with:
           script: |
             const comparison = `${{ steps.compare.outputs.comparison }}`;
-            const regressionReport = `${{ steps.compare.outputs.regression_report }}`;
+            const regressionReport =
+              `${{ steps.compare.outputs.regression_report }}`;
             const hasRegressions = ${{ steps.compare.outputs.has_regressions }};
 
             let body = '## Benchmark Results\n\n';

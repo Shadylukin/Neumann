@@ -1,22 +1,22 @@
 class Neumann < Formula
   desc "Unified tensor database combining relational, graph, and vector storage"
   homepage "https://github.com/Shadylukin/Neumann"
-  version "0.1.0"
-  license any_of: ["MIT", "Apache-2.0"]
+  version "0.3.1"
+  license "BSL-1.1"
 
   on_macos do
     on_arm do
-      url "https://github.com/Shadylukin/Neumann/releases/download/v0.1.0/neumann-v0.1.0-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/Shadylukin/Neumann/releases/download/v#{version}/neumann-v#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "PLACEHOLDER_ARM64_SHA256"
     end
     on_intel do
-      url "https://github.com/Shadylukin/Neumann/releases/download/v0.1.0/neumann-v0.1.0-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/Shadylukin/Neumann/releases/download/v#{version}/neumann-v#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "PLACEHOLDER_X64_SHA256"
     end
   end
 
   on_linux do
-    url "https://github.com/Shadylukin/Neumann/releases/download/v0.1.0/neumann-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+    url "https://github.com/Shadylukin/Neumann/releases/download/v#{version}/neumann-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
     sha256 "PLACEHOLDER_LINUX_SHA256"
   end
 

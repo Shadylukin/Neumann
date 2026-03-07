@@ -430,33 +430,95 @@ impl SlabRouter {
         snapshot::load(path)
     }
 
-    /// Serialize to bytes (v3 format).
+    /// Serialize to bytes using V4 format with columnar-compressed graph:
+    /// `[raw header (20 bytes)][zstd-compressed bitcode(SlabRouterSnapshotV4)]`.
     ///
     /// # Errors
     ///
-    /// Returns [`SnapshotFormatError`] if serialization fails.
+    /// Returns [`SnapshotFormatError`] if serialization or compression fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, SnapshotFormatError> {
-        let router_snapshot = self.snapshot();
+        use crate::graph_tensor::CompressedGraphSnapshot;
+
+        let snap = self.snapshot();
         let entry_count = (self.len() + self.index.len()) as u64;
 
-        let v3 = snapshot::V3Snapshot {
-            header: snapshot::SnapshotHeader::new(entry_count),
-            router: router_snapshot,
-            hnsw: None,
-            voronoi: None,
+        let v4 = snapshot::SlabRouterSnapshotV4 {
+            index: snap.index,
+            embeddings: snap.embeddings,
+            graph: CompressedGraphSnapshot::compress(&snap.graph),
+            relations: snap.relations,
+            metadata: snap.metadata,
+            cache: snap.cache,
+            blobs: snap.blobs,
         };
 
-        bitcode::serialize(&v3).map_err(SnapshotFormatError::from)
+        let header = snapshot::SnapshotHeader::new_compressed(entry_count);
+        let payload = bitcode::serialize(&v4)?;
+        let compressed = zstd::encode_all(&payload[..], snapshot::SNAPSHOT_COMPRESSION_LEVEL)
+            .map_err(|e| SnapshotFormatError::IoError(e.to_string()))?;
+
+        let header_raw = header.to_raw_bytes();
+        let mut out = Vec::with_capacity(header_raw.len() + compressed.len());
+        out.extend_from_slice(&header_raw);
+        out.extend_from_slice(&compressed);
+        Ok(out)
     }
 
-    /// Deserialize from bytes (v3 format).
+    /// Deserialize from bytes. Accepts V4 (columnar graph), V3 (raw header),
+    /// and legacy `bitcode(V3Snapshot)` formats.
+    ///
+    /// Detection: bytes starting with `NEUM` magic and a valid version in the
+    /// raw header use the header+payload path. V4 (version 4) decompresses
+    /// the graph from columnar format. V3 (version 3) uses the original
+    /// `SlabRouterSnapshot`. If the raw header version is unrecognized, falls
+    /// back to the legacy `bitcode(V3Snapshot)` path.
     ///
     /// # Errors
     ///
     /// Returns [`SnapshotFormatError`] if deserialization or header validation fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotFormatError> {
-        let v3: snapshot::V3Snapshot =
-            bitcode::deserialize(bytes).map_err(SnapshotFormatError::from)?;
+        if bytes.len() >= snapshot::HEADER_SIZE && bytes[0..4] == snapshot::V3_MAGIC {
+            let header_buf: &[u8; snapshot::HEADER_SIZE] = bytes[..snapshot::HEADER_SIZE]
+                .try_into()
+                .map_err(|_| SnapshotFormatError::InvalidMagic)?;
+            let header = snapshot::SnapshotHeader::from_raw_bytes(header_buf);
+
+            if header.validate().is_ok() {
+                let payload = &bytes[snapshot::HEADER_SIZE..];
+                let decompressed;
+                let data = if header.is_compressed() {
+                    decompressed = zstd::decode_all(payload)
+                        .map_err(|e| SnapshotFormatError::IoError(e.to_string()))?;
+                    &decompressed[..]
+                } else {
+                    payload
+                };
+
+                return if header.detected_version() == snapshot::CURRENT_VERSION {
+                    // V4: columnar-compressed graph
+                    let v4: snapshot::SlabRouterSnapshotV4 = bitcode::deserialize(data)?;
+                    let snap = SlabRouterSnapshot {
+                        index: v4.index,
+                        embeddings: v4.embeddings,
+                        graph: v4.graph.decompress(),
+                        relations: v4.relations,
+                        metadata: v4.metadata,
+                        cache: v4.cache,
+                        blobs: v4.blobs,
+                    };
+                    Ok(Self::restore(snap))
+                } else {
+                    // V3: standard SlabRouterSnapshot
+                    let router: SlabRouterSnapshot = bitcode::deserialize(data)?;
+                    Ok(Self::restore(router))
+                };
+            }
+
+            // Raw header validation failed — fall through to legacy path
+        }
+
+        // Legacy format: bitcode(V3Snapshot)
+        let v3: snapshot::V3Snapshot = bitcode::deserialize(bytes)?;
         v3.header.validate()?;
         Ok(Self::restore(v3.router))
     }
@@ -1966,5 +2028,110 @@ mod tests {
 
         // Test source() returns None (no nested error)
         assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_to_bytes_produces_compressed_format() {
+        let router = SlabRouter::new();
+        let mut data = TensorData::new();
+        data.set("val", TensorValue::Scalar(crate::ScalarValue::Int(42)));
+        router.put("key:1", data).unwrap();
+
+        let bytes = router.to_bytes().unwrap();
+
+        // Should start with NEUM magic
+        assert_eq!(&bytes[0..4], b"NEUM");
+
+        // Parse header
+        let header_buf: &[u8; crate::snapshot::HEADER_SIZE] =
+            bytes[..crate::snapshot::HEADER_SIZE].try_into().unwrap();
+        let header = crate::snapshot::SnapshotHeader::from_raw_bytes(header_buf);
+        assert!(header.is_compressed());
+    }
+
+    #[test]
+    fn test_to_bytes_from_bytes_roundtrip() {
+        let router = SlabRouter::new();
+        for i in 0..100 {
+            let mut data = TensorData::new();
+            data.set(
+                "val",
+                TensorValue::Scalar(crate::ScalarValue::String(format!("value_{i}"))),
+            );
+            router.put(&format!("item:{i}"), data).unwrap();
+        }
+
+        let bytes = router.to_bytes().unwrap();
+        let restored = SlabRouter::from_bytes(&bytes).unwrap();
+
+        assert_eq!(restored.len(), router.len());
+        for i in 0..100 {
+            let key = format!("item:{i}");
+            let original = router.get(&key).unwrap();
+            let restored_val = restored.get(&key).unwrap();
+            assert_eq!(original.get("val"), restored_val.get("val"));
+        }
+    }
+
+    #[test]
+    fn test_from_bytes_legacy_format() {
+        // Create bytes in the old format: bitcode(V3Snapshot)
+        // This format was used before Phase 1a introduced header+zstd.
+        // bitcode happens to serialize the magic bytes first, so both old
+        // and new formats start with NEUM. The distinction is that in the
+        // raw header format, bytes 4-7 are a LE u32 version (3 = [3,0,0,0]),
+        // while bitcode uses variable-length encoding for the version field.
+        let router = SlabRouter::new();
+        let mut data = TensorData::new();
+        data.set("x", TensorValue::Scalar(crate::ScalarValue::Int(7)));
+        router.put("legacy:1", data).unwrap();
+
+        let snapshot = router.snapshot();
+        let entry_count = (router.len() + router.index.len()) as u64;
+        let v3 = crate::snapshot::V3Snapshot {
+            header: crate::snapshot::SnapshotHeader::new(entry_count),
+            router: snapshot,
+            hnsw: None,
+            voronoi: None,
+        };
+        let legacy_bytes = bitcode::serialize(&v3).unwrap();
+
+        // from_bytes should handle legacy format via fallback
+        let restored = SlabRouter::from_bytes(&legacy_bytes).unwrap();
+        assert_eq!(restored.len(), 1);
+        let val = restored.get("legacy:1").unwrap();
+        assert_eq!(
+            val.get("x"),
+            Some(&TensorValue::Scalar(crate::ScalarValue::Int(7)))
+        );
+    }
+
+    #[test]
+    fn test_compressed_bytes_smaller_than_uncompressed() {
+        let router = SlabRouter::new();
+        // Insert repetitive data that compresses well
+        for i in 0..500 {
+            let mut data = TensorData::new();
+            data.set(
+                "payload",
+                TensorValue::Scalar(crate::ScalarValue::String(
+                    "repetitive data block for compression test".to_string(),
+                )),
+            );
+            data.set("id", TensorValue::Scalar(crate::ScalarValue::Int(i)));
+            router.put(&format!("compress:{i}"), data).unwrap();
+        }
+
+        let compressed_bytes = router.to_bytes().unwrap();
+
+        // Compare with uncompressed size (bitcode of router snapshot)
+        let router_bytes = bitcode::serialize(&router.snapshot()).unwrap();
+
+        assert!(
+            compressed_bytes.len() < router_bytes.len(),
+            "compressed {} should be smaller than uncompressed {}",
+            compressed_bytes.len(),
+            router_bytes.len()
+        );
     }
 }

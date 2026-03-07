@@ -162,8 +162,9 @@ fn test_graph_vector_similarity_consistency() {
 
 #[test]
 fn test_checkpoint_across_engines() {
+    let dir = tempfile::tempdir().unwrap();
     let mut router = create_shared_router();
-    router.init_blob().unwrap();
+    router.set_checkpoint_dir(dir.path().to_path_buf());
     router.init_checkpoint().unwrap();
 
     // Insert data across engines

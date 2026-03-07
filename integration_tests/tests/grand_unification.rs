@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use graph_engine::{Direction, GraphEngine, PropertyValue};
 use relational_engine::{Column, ColumnType, Condition, RelationalEngine, Schema, Value};
 use tensor_blob::{BlobConfig, BlobStore, PutOptions};
-use tensor_checkpoint::{CheckpointConfig, CheckpointManager};
+use tensor_checkpoint::{CheckpointConfig, CheckpointManager, FileCheckpointStore};
 use tensor_store::TensorStore;
 use tensor_unified::UnifiedEngine;
 use vector_engine::VectorEngine;
@@ -39,13 +39,12 @@ async fn test_the_neumann_protocol() {
     );
 
     // The Time Machine
-    let checkpoint_mgr = CheckpointManager::new(blob.clone(), CheckpointConfig::default());
+    let cp_dir = tempfile::tempdir().unwrap();
+    let file_store = Arc::new(FileCheckpointStore::new(cp_dir.path()).unwrap());
+    let checkpoint_mgr = CheckpointManager::new(file_store, CheckpointConfig::default());
 
     // === STEP 1: TIME ZERO ===
-    let genesis_snapshot = checkpoint_mgr
-        .create(Some("genesis"), &store)
-        .await
-        .unwrap();
+    let genesis_snapshot = checkpoint_mgr.create(Some("genesis"), &store).unwrap();
 
     // === STEP 2: INGESTION ===
 
@@ -154,10 +153,7 @@ async fn test_the_neumann_protocol() {
     assert_eq!(retrieved_content, paper_content);
 
     // === STEP 4: THE TIME TRAVEL ===
-    checkpoint_mgr
-        .rollback(&genesis_snapshot, &store)
-        .await
-        .unwrap();
+    checkpoint_mgr.rollback(&genesis_snapshot, &store).unwrap();
 
     // Verify
     assert_eq!(vector.count(), 0);

@@ -239,6 +239,8 @@ pub struct ServerConfig {
     pub streaming: Option<StreamingConfig>,
     /// Cluster configuration for distributed mode (optional).
     pub cluster: Option<ClusterConfig>,
+    /// REST API configuration (CORS, body limits, etc.).
+    pub rest_config: crate::rest::RestConfig,
 }
 
 impl Default for ServerConfig {
@@ -270,6 +272,7 @@ impl Default for ServerConfig {
             web_addr: None,
             streaming: None,
             cluster: None,
+            rest_config: crate::rest::RestConfig::default(),
         }
     }
 }
@@ -579,6 +582,13 @@ impl ServerConfig {
     #[must_use]
     pub const fn with_streaming(mut self, config: StreamingConfig) -> Self {
         self.streaming = Some(config);
+        self
+    }
+
+    /// Set REST API configuration (CORS, body limits, etc.).
+    #[must_use]
+    pub fn with_rest_config(mut self, config: crate::rest::RestConfig) -> Self {
+        self.rest_config = config;
         self
     }
 

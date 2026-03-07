@@ -3,7 +3,6 @@ name = "tensor_blob"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -11,9 +10,9 @@ readme = "../README.md"
 description = "Content-addressable blob storage with streaming and garbage collection"
 
 [dependencies]
-tensor_store = { path = "../tensor_store" }
-graph_engine = { path = "../graph_engine", optional = true }
-vector_engine = { path = "../vector_engine", optional = true }
+tensor_store.workspace = true
+graph_engine = { workspace = true, optional = true }
+vector_engine = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 sha2.workspace = true
 thiserror.workspace = true

@@ -39,7 +39,10 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     path::Path,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -47,7 +50,7 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use tensor_store::RelationalSlab;
+use tensor_store::SlabRouter;
 pub use tensor_store::WalConfig;
 pub(crate) use tensor_store::{
     ColumnDef as SlabColumnDef, ColumnType as SlabColumnType, ColumnValue as SlabColumnValue,
@@ -2293,8 +2296,9 @@ impl RelationalEngine {
 
             // Create table in slab (if not already exists)
             let slab_schema: tensor_store::TableSchema = (&schema).into();
-            if !self.slab().table_exists(table_name) {
-                if let Err(e) = self.slab().create_table(table_name, slab_schema) {
+            let router = self.slab();
+            if !router.relations.table_exists(table_name) {
+                if let Err(e) = router.relations.create_table(table_name, slab_schema) {
                     debug!(table = %table_name, error = ?e, "failed to create slab table during recovery");
                     continue;
                 }
@@ -2447,9 +2451,11 @@ impl RelationalEngine {
         self.table_count.load(Ordering::Acquire)
     }
 
-    /// Access the underlying `RelationalSlab` for direct columnar operations.
-    fn slab(&self) -> &RelationalSlab {
-        &self.store.router().relations
+    /// Access the underlying `SlabRouter` for direct columnar operations.
+    ///
+    /// Callers must access `.relations` on the returned `Arc<SlabRouter>`.
+    fn slab(&self) -> Arc<SlabRouter> {
+        self.store.load_router()
     }
 
     fn acquire_index_lock(&self, key: &str) -> &RwLock<()> {
@@ -2667,6 +2673,7 @@ impl RelationalEngine {
         // Create table in RelationalSlab for columnar storage
         let slab_schema: SlabTableSchema = (&schema).into();
         self.slab()
+            .relations
             .create_table(name, slab_schema)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -2966,6 +2973,7 @@ impl RelationalEngine {
             // Insert into slab
             let slab_row_id = self
                 .slab()
+                .relations
                 .insert(table, slab_row)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -3082,6 +3090,7 @@ impl RelationalEngine {
                 .collect();
             let slab_rows = self
                 .slab()
+                .relations
                 .get_rows_by_indices(table, &indices)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -3142,6 +3151,7 @@ impl RelationalEngine {
         );
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -3253,6 +3263,7 @@ impl RelationalEngine {
 
             let slab_rows = self
                 .slab()
+                .relations
                 .get_rows_by_indices(table, &indices)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -3282,6 +3293,7 @@ impl RelationalEngine {
         // Full scan with early termination
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -4430,6 +4442,7 @@ impl RelationalEngine {
                 .collect();
             let slab_rows = self
                 .slab()
+                .relations
                 .get_rows_by_indices(table, &indices)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -4446,6 +4459,7 @@ impl RelationalEngine {
         // Full scan path: count matching rows without collecting.
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -4483,6 +4497,7 @@ impl RelationalEngine {
         if matches!(condition, Condition::True) {
             let slab_rows = self
                 .slab()
+                .relations
                 .scan_all(table)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -4503,6 +4518,7 @@ impl RelationalEngine {
                 .collect();
             let slab_rows = self
                 .slab()
+                .relations
                 .get_rows_by_indices(table, &indices)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -4521,6 +4537,7 @@ impl RelationalEngine {
         // Full scan path: count matching non-null values without collecting.
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -4745,7 +4762,7 @@ impl RelationalEngine {
         }
 
         // Drop from RelationalSlab
-        let _ = self.slab().drop_table(table); // Ignore error if table doesn't exist in slab
+        let _ = self.slab().relations.drop_table(table); // Ignore error if table doesn't exist in slab
 
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
@@ -5297,6 +5314,7 @@ impl RelationalEngine {
     pub fn row_count(&self, table: &str) -> Result<usize> {
         let _ = self.get_schema(table)?;
         self.slab()
+            .relations
             .row_count(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))
     }
@@ -5349,6 +5367,7 @@ impl RelationalEngine {
         let mut visited: usize = 0;
 
         self.slab()
+            .relations
             .scan_for_each(table, &mut |row_id, slab_row| {
                 // Row-limit check
                 if let Some(max) = max_rows {
@@ -5463,6 +5482,7 @@ impl RelationalEngine {
 
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -5570,6 +5590,7 @@ impl RelationalEngine {
 
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -5997,6 +6018,7 @@ impl RelationalEngine {
         // With slab integration, all columns are stored in columnar format
         // Check if the table exists and has the column
         self.slab()
+            .relations
             .get_schema(table)
             .is_some_and(|s| s.columns.iter().any(|c| c.name == column))
     }
@@ -6059,6 +6081,7 @@ impl RelationalEngine {
         // Scan all rows from slab
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -6317,10 +6340,11 @@ impl RelationalEngine {
         let indices = selection.selected_indices();
 
         // Fetch rows from slab
-        let slab_rows = self.slab().get_rows_by_indices(table, &indices).ok()?;
+        let router = self.slab();
+        let slab_rows = router.relations.get_rows_by_indices(table, &indices).ok()?;
 
         // Get schema for column name mapping
-        let schema = self.slab().get_schema(table)?;
+        let schema = router.relations.get_schema(table)?;
 
         // Convert slab rows to engine rows
         let rows: Vec<Row> = slab_rows
@@ -6366,16 +6390,17 @@ impl RelationalEngine {
         table: &str,
         condition: &Condition,
     ) -> Option<(SelectionVector, usize)> {
+        let slab = self.slab();
+        let rel = &slab.relations;
         match condition {
             Condition::True => {
                 // Get row count from slab
-                let row_count = self.slab().row_count(table).ok()?;
+                let row_count = rel.row_count(table).ok()?;
                 Some((SelectionVector::all(row_count), row_count))
             },
 
             Condition::Eq(col, Value::Int(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_int_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_int_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6388,8 +6413,7 @@ impl RelationalEngine {
             },
 
             Condition::Ne(col, Value::Int(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_int_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_int_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6401,8 +6425,7 @@ impl RelationalEngine {
             },
 
             Condition::Lt(col, Value::Int(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_int_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_int_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6414,8 +6437,7 @@ impl RelationalEngine {
             },
 
             Condition::Le(col, Value::Int(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_int_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_int_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6427,8 +6449,7 @@ impl RelationalEngine {
             },
 
             Condition::Gt(col, Value::Int(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_int_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_int_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6440,8 +6461,7 @@ impl RelationalEngine {
             },
 
             Condition::Ge(col, Value::Int(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_int_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_int_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6453,8 +6473,7 @@ impl RelationalEngine {
             },
 
             Condition::Lt(col, Value::Float(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_float_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_float_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6466,8 +6485,7 @@ impl RelationalEngine {
             },
 
             Condition::Gt(col, Value::Float(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_float_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_float_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6479,8 +6497,7 @@ impl RelationalEngine {
             },
 
             Condition::Eq(col, Value::Float(val)) => {
-                let (values, alive_words, _null_words) =
-                    self.slab().get_float_column(table, col).ok()?;
+                let (values, alive_words, _null_words) = rel.get_float_column(table, col).ok()?;
                 let row_count = values.len();
                 if row_count == 0 {
                     return Some((SelectionVector::none(0), 0));
@@ -6669,7 +6686,7 @@ impl RelationalEngine {
                 index_entries,
             } => {
                 // Undo insert: delete the row
-                if let Err(e) = self.slab().delete(table, *slab_row_id) {
+                if let Err(e) = self.slab().relations.delete(table, *slab_row_id) {
                     errors.push(format!(
                         "Failed to delete row {row_id} from table '{table}': {e}"
                     ));
@@ -6697,7 +6714,11 @@ impl RelationalEngine {
                 index_changes,
             } => {
                 // Undo update: restore old values
-                if let Err(e) = self.slab().restore_row(table, *slab_row_id, old_values) {
+                if let Err(e) = self
+                    .slab()
+                    .relations
+                    .restore_row(table, *slab_row_id, old_values)
+                {
                     errors.push(format!(
                         "Failed to restore row {row_id} in table '{table}': {e}"
                     ));
@@ -6747,9 +6768,10 @@ impl RelationalEngine {
                 index_entries,
             } => {
                 // Undo delete: restore the row
-                if let Err(e) = self
-                    .slab()
-                    .restore_deleted_row(table, *slab_row_id, old_values)
+                if let Err(e) =
+                    self.slab()
+                        .relations
+                        .restore_deleted_row(table, *slab_row_id, old_values)
                 {
                     errors.push(format!(
                         "Failed to restore deleted row {row_id} in table '{table}': {e}"
@@ -6830,6 +6852,7 @@ impl RelationalEngine {
         // Insert into slab
         let slab_row_id = self
             .slab()
+            .relations
             .insert(table, slab_row)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -6932,6 +6955,7 @@ impl RelationalEngine {
         // Scan to find matching rows
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -7021,6 +7045,7 @@ impl RelationalEngine {
 
             // Update the row in slab
             self.slab()
+                .relations
                 .update_row(table, *slab_row_id, &slab_updates)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
         }
@@ -7051,6 +7076,7 @@ impl RelationalEngine {
         // Scan to find matching rows
         let slab_rows = self
             .slab()
+            .relations
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
@@ -7121,6 +7147,7 @@ impl RelationalEngine {
 
             // Delete from slab
             self.slab()
+                .relations
                 .delete(table, *slab_row_id)
                 .map_err(|e| RelationalError::StorageError(e.to_string()))?;
         }

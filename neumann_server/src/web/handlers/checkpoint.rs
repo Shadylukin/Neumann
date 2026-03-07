@@ -28,7 +28,7 @@ pub async fn list_view(State(ctx): State<Arc<AdminContext>>) -> Markup {
         );
     };
 
-    let checkpoints = checkpoint.list(Some(50)).await;
+    let checkpoints = checkpoint.list(Some(50));
 
     let content = match checkpoints {
         Ok(list) => {
@@ -102,7 +102,7 @@ pub async fn detail_view(State(ctx): State<Arc<AdminContext>>, Path(id): Path<St
     };
 
     // Find the checkpoint in the list
-    let checkpoints = checkpoint.list(Some(100)).await;
+    let checkpoints = checkpoint.list(Some(100));
     let found = checkpoints
         .ok()
         .and_then(|list| list.into_iter().find(|cp| cp.id == id));
@@ -145,12 +145,6 @@ pub async fn detail_view(State(ctx): State<Arc<AdminContext>>, Path(id): Path<St
                                 dt class="text-neutral-400" { "Created" }
                                 dd class="text-white font-mono" {
                                     (format_checkpoint_time(cp.created_at))
-                                }
-                            }
-                            div class="flex justify-between" {
-                                dt class="text-neutral-400" { "Artifact ID" }
-                                dd class="text-white font-mono text-xs break-all" {
-                                    (cp.artifact_id)
                                 }
                             }
                         }
@@ -252,7 +246,7 @@ mod tests {
     use axum::extract::State;
     use graph_engine::GraphEngine;
     use relational_engine::RelationalEngine;
-    use tensor_checkpoint::{CheckpointConfig, CheckpointManager};
+    use tensor_checkpoint::{CheckpointConfig, CheckpointManager, FileCheckpointStore};
     use vector_engine::VectorEngine;
 
     fn create_test_context() -> Arc<AdminContext> {
@@ -263,20 +257,17 @@ mod tests {
         ))
     }
 
-    async fn create_test_context_with_checkpoint() -> Arc<AdminContext> {
-        let store = tensor_store::TensorStore::new();
-        let blob = tensor_blob::BlobStore::new(store, tensor_blob::BlobConfig::default())
-            .await
-            .expect("blob store creation");
-        let blob = Arc::new(tokio::sync::Mutex::new(blob));
-        let mgr = CheckpointManager::new(blob, CheckpointConfig::default());
+    fn create_test_context_with_checkpoint() -> (Arc<AdminContext>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileCheckpointStore::new(dir.path()).unwrap());
+        let mgr = CheckpointManager::new(store, CheckpointConfig::default());
         let mut ctx = AdminContext::new(
             Arc::new(RelationalEngine::new()),
             Arc::new(VectorEngine::new()),
             Arc::new(GraphEngine::new()),
         );
         ctx.checkpoint = Some(Arc::new(mgr));
-        Arc::new(ctx)
+        (Arc::new(ctx), dir)
     }
 
     #[tokio::test]
@@ -289,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_view_empty() {
-        let ctx = create_test_context_with_checkpoint().await;
+        let (ctx, _dir) = create_test_context_with_checkpoint();
         let result = list_view(State(ctx)).await;
         let html = result.into_string();
         assert!(html.contains("CHECKPOINTS"));
@@ -305,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_detail_view_not_found() {
-        let ctx = create_test_context_with_checkpoint().await;
+        let (ctx, _dir) = create_test_context_with_checkpoint();
         let result = detail_view(State(ctx), Path("nonexistent".to_string())).await;
         let html = result.into_string();
         assert!(html.contains("Not Found"));
@@ -321,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_view_with_checkpoint() {
-        let ctx = create_test_context_with_checkpoint().await;
+        let (ctx, _dir) = create_test_context_with_checkpoint();
         let result = config_view(State(ctx)).await;
         let html = result.into_string();
         assert!(html.contains("CHECKPOINT CONFIGURATION"));
@@ -331,16 +322,13 @@ mod tests {
     }
 
     /// Create a test context with an actual checkpoint stored in the manager.
-    async fn create_test_context_with_data() -> (Arc<AdminContext>, String) {
-        let store = tensor_store::TensorStore::new();
-        let blob = tensor_blob::BlobStore::new(store.clone(), tensor_blob::BlobConfig::default())
-            .await
-            .expect("blob store");
-        let blob = Arc::new(tokio::sync::Mutex::new(blob));
-        let mgr = CheckpointManager::new(blob, CheckpointConfig::default());
+    fn create_test_context_with_data() -> (Arc<AdminContext>, String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = Arc::new(FileCheckpointStore::new(dir.path()).unwrap());
+        let tensor_store = tensor_store::TensorStore::new();
+        let mgr = CheckpointManager::new(file_store, CheckpointConfig::default());
         let cp_id = mgr
-            .create(Some("test_backup"), &store)
-            .await
+            .create(Some("test_backup"), &tensor_store)
             .expect("create checkpoint");
         let mut ctx = AdminContext::new(
             Arc::new(RelationalEngine::new()),
@@ -348,12 +336,12 @@ mod tests {
             Arc::new(GraphEngine::new()),
         );
         ctx.checkpoint = Some(Arc::new(mgr));
-        (Arc::new(ctx), cp_id)
+        (Arc::new(ctx), cp_id, dir)
     }
 
     #[tokio::test]
     async fn test_list_view_with_data() {
-        let (ctx, _id) = create_test_context_with_data().await;
+        let (ctx, _id, _dir) = create_test_context_with_data();
         let result = list_view(State(ctx)).await;
         let html = result.into_string();
         assert!(html.contains("test_backup"));
@@ -362,7 +350,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_detail_view_with_data() {
-        let (ctx, id) = create_test_context_with_data().await;
+        let (ctx, id, _dir) = create_test_context_with_data();
         let result = detail_view(State(ctx), Path(id)).await;
         let html = result.into_string();
         assert!(html.contains("test_backup"));
