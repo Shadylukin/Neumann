@@ -1288,7 +1288,7 @@ impl QueryRouter {
 
     /// Initialize the checkpoint manager with custom configuration.
     ///
-    /// Requires checkpoint directory to be set first via [`set_checkpoint_dir`].
+    /// Requires checkpoint directory to be set first via [`Self::set_checkpoint_dir`].
     ///
     /// # Errors
     ///
