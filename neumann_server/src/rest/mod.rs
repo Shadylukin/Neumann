@@ -326,4 +326,39 @@ mod tests {
         let config = RestConfig::new().with_max_body_size(8 * 1024 * 1024);
         let _router = router_with_config(ctx, &config);
     }
+
+    #[test]
+    fn test_vector_api_context_with_spatial_3d() {
+        let engine = Arc::new(VectorEngine::new());
+        let spatial_3d = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex3D::<
+            String,
+        >::new()));
+        let ctx = VectorApiContext::new(engine).with_spatial_3d(Some(spatial_3d));
+
+        assert!(ctx.spatial_3d.is_some());
+    }
+
+    #[test]
+    fn test_vector_api_context_with_metrics() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let engine = Arc::new(VectorEngine::new());
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+        let ctx = VectorApiContext::new(engine).with_metrics(Some(metrics));
+
+        assert!(ctx.metrics.is_some());
+    }
+
+    #[test]
+    fn test_router_with_cors_enabled() {
+        let engine = Arc::new(VectorEngine::new());
+        let ctx = Arc::new(VectorApiContext::new(engine));
+        let config = RestConfig::new()
+            .with_cors(true)
+            .with_cors_origins(vec!["http://localhost:3000".to_string()]);
+        let _router = router_with_config(ctx, &config);
+    }
 }

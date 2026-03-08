@@ -217,4 +217,58 @@ mod tests {
         assert_eq!(result.status, CheckStatus::Healthy);
         assert!(result.message.contains("0B"));
     }
+
+    #[test]
+    fn test_get_last_checkpoint_time_no_checkpoint() {
+        use query_router::QueryRouter;
+
+        let router = QueryRouter::new();
+        let wal = MockWal { size: 100 };
+        let ctx = DiagnosticContext::new(&router, Some(&wal));
+        let time = get_last_checkpoint_time(&ctx);
+        // No checkpoint manager initialized, should return None
+        assert!(time.is_none());
+    }
+
+    #[test]
+    fn test_check_wal_with_checkpoint() {
+        use query_router::QueryRouter;
+
+        let mut router = QueryRouter::new();
+        let dir = tempfile::tempdir().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
+        router.init_checkpoint().unwrap();
+
+        // Create a checkpoint so there's data
+        router.execute("CHECKPOINT 'test'").unwrap();
+
+        let wal = MockWal { size: 1024 };
+        let ctx = DiagnosticContext::new(&router, Some(&wal));
+        let result = check_wal(&ctx);
+
+        assert_eq!(result.status, CheckStatus::Healthy);
+        // Should contain "last checkpoint" info since we created one
+        assert!(result.message.contains("last checkpoint"));
+    }
+
+    #[test]
+    fn test_check_wal_large_with_checkpoint() {
+        use query_router::QueryRouter;
+
+        let mut router = QueryRouter::new();
+        let dir = tempfile::tempdir().unwrap();
+        router.set_checkpoint_dir(dir.path().to_path_buf());
+        router.init_checkpoint().unwrap();
+        router.execute("CHECKPOINT 'big-wal'").unwrap();
+
+        let wal = MockWal {
+            size: WAL_WARNING_BYTES + 1,
+        };
+        let ctx = DiagnosticContext::new(&router, Some(&wal));
+        let result = check_wal(&ctx);
+
+        assert_eq!(result.status, CheckStatus::Warning);
+        assert!(result.message.contains("Large WAL"));
+        assert!(result.message.contains("last checkpoint"));
+    }
 }

@@ -793,6 +793,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_query_3d_with_limit() {
+        let ctx = make_ctx_with_spatial_3d();
+
+        // Insert three entries
+        for (key, x) in [("a", 1.0_f32), ("b", 2.0), ("c", 3.0)] {
+            let body = Spatial3DInsertRequest {
+                key: key.to_string(),
+                x,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+                h: 1.0,
+                d: 1.0,
+            };
+            let _ = insert_3d(
+                State(Arc::clone(&ctx)),
+                HeaderMap::new(),
+                Path("col".to_string()),
+                Json(body),
+            )
+            .await
+            .unwrap();
+        }
+
+        let q = Spatial3DQueryRequest {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            radius: Some(100.0),
+            limit: Some(2),
+        };
+        let result = query_3d(
+            State(Arc::clone(&ctx)),
+            HeaderMap::new(),
+            Path("col".to_string()),
+            Json(q),
+        )
+        .await
+        .unwrap();
+        assert!(result.0.results.len() <= 2);
+    }
+
+    #[test]
+    fn test_validate_auth_no_config() {
+        let result = validate_auth(&HeaderMap::new(), None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_validate_auth_required_but_missing() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let auth = AuthConfig::new().with_api_key(ApiKey::new(
+            "test-api-key-12345678".to_string(),
+            "user:test".to_string(),
+        ));
+        let result = validate_auth(&HeaderMap::new(), Some(&auth));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_auth_anonymous_allowed() {
+        use crate::config::AuthConfig;
+
+        let auth = AuthConfig::new().with_anonymous(true);
+        let result = validate_auth(&HeaderMap::new(), Some(&auth));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_validate_auth_valid_key() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let auth = AuthConfig::new().with_api_key(ApiKey::new(
+            "test-api-key-12345678".to_string(),
+            "user:alice".to_string(),
+        ));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "test-api-key-12345678".parse().unwrap());
+        let result = validate_auth(&headers, Some(&auth));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().unwrap(), "user:alice");
+    }
+
+    #[test]
+    fn test_validate_auth_invalid_key() {
+        use crate::config::{ApiKey, AuthConfig};
+
+        let auth = AuthConfig::new().with_api_key(ApiKey::new(
+            "test-api-key-12345678".to_string(),
+            "user:alice".to_string(),
+        ));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "wrong-key-value".parse().unwrap());
+        let result = validate_auth(&headers, Some(&auth));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_api_key_default_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "mykey".parse().unwrap());
+        let key = extract_api_key(&headers, None);
+        assert_eq!(key.unwrap(), "mykey");
+    }
+
+    #[test]
+    fn test_extract_api_key_custom_header() {
+        use crate::config::AuthConfig;
+
+        let auth = AuthConfig::new().with_header("authorization".to_string());
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "bearer-token".parse().unwrap());
+        let key = extract_api_key(&headers, Some(&auth));
+        assert_eq!(key.unwrap(), "bearer-token");
+    }
+
+    #[test]
+    fn test_check_rate_limit_no_limiter() {
+        let result = check_rate_limit(None, None, "test");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_rate_limit_no_identity() {
+        let limiter = Arc::new(RateLimiter::default());
+        let result = check_rate_limit(None, Some(&limiter), "test");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
     async fn test_insert_3d_invalid_bounds() {
         let ctx = make_ctx_with_spatial_3d();
 

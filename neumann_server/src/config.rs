@@ -1136,6 +1136,17 @@ mod tests {
 
         let result = tls.validate();
         assert!(result.is_err());
+
+        // Test with_rest_config builder
+        let config = ServerConfig::new()
+            .with_rest_config(crate::rest::RestConfig::new().with_max_body_size(32 * 1024 * 1024));
+        assert_eq!(config.rest_config.max_body_size, 32 * 1024 * 1024);
+
+        // Test rest_config default in ServerConfig::default()
+        let default_config = ServerConfig::default();
+        // Default body size is 16MB (16 * 1024 * 1024)
+        assert_eq!(default_config.rest_config.max_body_size, 16 * 1024 * 1024);
+
         let err = result.unwrap_err().to_string();
         assert!(err.contains("require_client_cert"));
         assert!(err.contains("ca_cert_path"));

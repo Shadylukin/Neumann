@@ -1847,6 +1847,7 @@ dependencies = [
  "smallvec",
  "sys-info",
  "tabled",
+ "tempfile",
  "tensor_chain",
  "tensor_checkpoint",
  "tensor_compress",

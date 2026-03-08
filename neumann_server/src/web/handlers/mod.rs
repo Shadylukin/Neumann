@@ -1660,4 +1660,224 @@ mod tests {
         assert!(json.contains("error"));
         assert!(json.contains("Something went wrong"));
     }
+
+    // === query_result_to_json Tests ===
+
+    #[test]
+    fn test_query_result_to_json_empty() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Empty);
+        assert_eq!(t, "message");
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn test_query_result_to_json_value() {
+        let (t, items) =
+            query_result_to_json(&query_router::QueryResult::Value("hello".to_string()));
+        assert_eq!(t, "message");
+        assert_eq!(items[0], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_query_result_to_json_count() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Count(42));
+        assert_eq!(t, "message");
+        assert!(items[0].get("count").is_some());
+    }
+
+    #[test]
+    fn test_query_result_to_json_ids() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Ids(vec![1, 2, 3]));
+        assert_eq!(t, "ids");
+        assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn test_query_result_to_json_table_list() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::TableList(vec![
+            "a".to_string(),
+            "b".to_string(),
+        ]));
+        assert_eq!(t, "tables");
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn test_query_result_to_json_nodes() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Nodes(Vec::new()));
+        assert_eq!(t, "nodes");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_to_json_edges() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Edges(Vec::new()));
+        assert_eq!(t, "edges");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_to_json_similar() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Similar(Vec::new()));
+        assert_eq!(t, "similar");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_to_json_spatial() {
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Spatial(Vec::new()));
+        assert_eq!(t, "spatial");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_to_json_rows() {
+        let (t, _items) = query_result_to_json(&query_router::QueryResult::Rows(Vec::new()));
+        assert_eq!(t, "rows");
+    }
+
+    #[test]
+    fn test_query_result_to_json_unified() {
+        let unified = query_router::UnifiedResult {
+            description: "test".to_string(),
+            items: Vec::new(),
+        };
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Unified(unified));
+        assert_eq!(t, "unified");
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn test_query_result_to_json_other() {
+        // Path falls into the catchall "other" arm
+        let (t, items) = query_result_to_json(&query_router::QueryResult::Path(vec![1, 2]));
+        assert_eq!(t, "result");
+        assert_eq!(items.len(), 1);
+    }
+
+    // === api_execute Tests ===
+
+    #[tokio::test]
+    async fn test_api_execute_empty_query() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "".to_string(),
+        };
+
+        let response = api_execute(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("Empty"));
+    }
+
+    #[tokio::test]
+    async fn test_api_execute_parse_error() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "TOTALLY INVALID SYNTAX".to_string(),
+        };
+
+        let response = api_execute(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("Parse error"));
+    }
+
+    #[tokio::test]
+    async fn test_api_execute_no_router() {
+        let ctx = create_test_context();
+        let req = QueryRequest {
+            query: "SHOW TABLES".to_string(),
+        };
+
+        let response = api_execute(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_some());
+        assert!(response.0.error.unwrap().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn test_api_execute_valid_query() {
+        let ctx = create_galaxy_context();
+        let req = QueryRequest {
+            query: "SHOW TABLES".to_string(),
+        };
+
+        let response = api_execute(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_none());
+        assert_eq!(response.0.type_, "tables");
+    }
+
+    #[tokio::test]
+    async fn test_api_execute_mutation() {
+        use relational_engine::{Column, ColumnType, Schema};
+
+        let relational = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("id".to_string(), ColumnType::Int)]);
+        relational.create_table("t1", schema).unwrap();
+
+        let router = Arc::new(parking_lot::RwLock::new(
+            query_router::QueryRouter::with_engines(
+                relational.clone(),
+                Arc::new(GraphEngine::new()),
+                Arc::new(VectorEngine::new()),
+            ),
+        ));
+        let ctx = Arc::new(
+            AdminContext::new(
+                relational,
+                Arc::new(VectorEngine::new()),
+                Arc::new(GraphEngine::new()),
+            )
+            .with_query_router(Some(router)),
+        );
+
+        let req = QueryRequest {
+            query: "INSERT INTO t1 (id) VALUES (1)".to_string(),
+        };
+        // api_execute allows mutations (unlike api_galaxy)
+        let response = api_execute(State(ctx), axum::Json(req)).await.unwrap();
+        assert!(response.0.error.is_none());
+    }
+
+    // === Additional is_read_only_statement coverage ===
+
+    #[test]
+    fn test_is_read_only_show_embeddings() {
+        let stmt = neumann_parser::parse("SHOW EMBEDDINGS").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_describe() {
+        let stmt = neumann_parser::parse("DESCRIBE TABLE users").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_similar() {
+        let stmt = neumann_parser::parse("SIMILAR [1.0, 0.0, 0.0] LIMIT 5").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_spatial_within_radius() {
+        let stmt = neumann_parser::parse("SPATIAL WITHIN 0 0 RADIUS 10").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_node_list() {
+        let stmt = neumann_parser::parse("NODE LIST LIMIT 10").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_not_read_only_node_create() {
+        let stmt = neumann_parser::parse("NODE CREATE Person { name: 'test' }").unwrap();
+        assert!(!is_read_only_statement(&stmt.kind));
+    }
+
+    #[test]
+    fn test_is_read_only_entity_get() {
+        let stmt = neumann_parser::parse("ENTITY GET 'some-key'").unwrap();
+        assert!(is_read_only_statement(&stmt.kind));
+    }
 }

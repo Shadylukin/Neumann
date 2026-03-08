@@ -1833,4 +1833,16 @@ mod tests {
         assert!(config.audit.is_some());
         assert!(config.request_timeout.is_some());
     }
+
+    #[test]
+    fn test_server_with_spatial_3d() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let spatial = Arc::new(RwLock::new(SpatialIndex3D::<String>::new()));
+
+        let server = NeumannServer::new(router, config).with_spatial_3d(Arc::clone(&spatial));
+
+        assert!(server.spatial_3d.is_some());
+        assert!(Arc::ptr_eq(server.spatial_3d.as_ref().unwrap(), &spatial));
+    }
 }
