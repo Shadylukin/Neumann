@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "b389d747b4d2",
+  "session_id": "f409b145-d62e-472d-b034-4de3a5b13ab9",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-11T22:43:49.841689Z",
+  "branch": "publish-and-snapshot-improvements",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-pr.yml",
+    "tensor_store/src/sparse_vector.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-6",
+  "turn_id": "d9abc5206bfb",
+  "token_usage": {
+    "input_tokens": 1147,
+    "cache_creation_tokens": 2055289,
+    "cache_read_tokens": 75970587,
+    "output_tokens": 217535,
+    "api_call_count": 740
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-11T22:43:24.63374Z",
+    "agent_lines": 64,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 64,
+    "agent_percentage": 100
+  }
+}
