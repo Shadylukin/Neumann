@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Network transport abstraction for distributed consensus.
 //!
 //! Provides a pluggable transport layer for node communication:

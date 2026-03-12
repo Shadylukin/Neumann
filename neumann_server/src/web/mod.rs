@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Web UI for Neumann Server administration.
 //!
 //! Provides a modern, dark-mode admin interface for browsing and managing
@@ -8,8 +8,11 @@ use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
+use parking_lot::RwLock;
+use tower_http::cors::CorsLayer;
 
 use graph_engine::GraphEngine;
+use query_router::QueryRouter;
 use relational_engine::RelationalEngine;
 use tensor_blob::BlobStore;
 use tensor_cache::Cache;
@@ -118,6 +121,8 @@ pub struct AdminContext {
     pub auth_config: Option<AuthConfig>,
     /// Server metrics (optional).
     pub metrics: Option<Arc<ServerMetrics>>,
+    /// Query router for executing parsed statements (optional).
+    pub query_router: Option<Arc<RwLock<QueryRouter>>>,
 }
 
 impl AdminContext {
@@ -141,6 +146,7 @@ impl AdminContext {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         }
     }
 
@@ -204,6 +210,13 @@ impl AdminContext {
     #[must_use]
     pub fn with_chain(mut self, chain: Option<Arc<ChainStatus>>) -> Self {
         self.chain = chain;
+        self
+    }
+
+    /// Add query router for executing parsed statements.
+    #[must_use]
+    pub fn with_query_router(mut self, router: Option<Arc<RwLock<QueryRouter>>>) -> Self {
+        self.query_router = router;
         self
     }
 }
@@ -321,6 +334,18 @@ fn storage_routes() -> Router<Arc<AdminContext>> {
 
 /// Create the admin web UI router.
 pub fn router(ctx: Arc<AdminContext>) -> Router {
+    // CORS layer for API endpoints accessed by external frontends
+    let cors = CorsLayer::new()
+        .allow_origin([axum::http::HeaderValue::from_static(
+            "http://localhost:5173",
+        )])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+
     Router::new()
         .route("/", get(handlers::dashboard))
         .route("/relational", get(handlers::relational::tables_list))
@@ -366,6 +391,9 @@ pub fn router(ctx: Arc<AdminContext>) -> Router {
         .route("/api/metrics", get(handlers::metrics::api_snapshot))
         .route("/api/graph/subgraph", get(handlers::graph::api_subgraph))
         .route("/api/query", axum::routing::post(handlers::api_query))
+        .route("/api/galaxy", post(handlers::api_galaxy))
+        .route("/api/execute", post(handlers::api_execute))
+        .layer(cors)
         .with_state(ctx)
 }
 

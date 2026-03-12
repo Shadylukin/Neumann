@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Deterministic simulation tests for 2PC distributed transactions.
 //!
 //! Tests atomicity, lock exclusivity, and phase transitions under

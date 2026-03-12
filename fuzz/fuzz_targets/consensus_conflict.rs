@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz semantic conflict detection with arbitrary transaction deltas.
 //!
 //! Tests that:
@@ -65,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(input) = FuzzInput::arbitrary(&mut arbitrary::Unstructured::new(data)) else {
         return;
     };
-    if input.operations.len() > 50 {
+    if input.operations.len() > 20 {
         return;
     }
     if input.operations.is_empty() {

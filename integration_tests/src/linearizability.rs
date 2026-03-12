@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Linearizability checking module using the Wing-Gong-Liu (WGL) algorithm.
 //!
 //! Verifies that concurrent operations on a distributed key-value store appear

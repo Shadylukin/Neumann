@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cache view handlers for the admin UI.
 //!
 //! Provides three views for browsing cache statistics: stats dashboard,
@@ -395,6 +395,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -412,6 +413,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -434,6 +436,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 

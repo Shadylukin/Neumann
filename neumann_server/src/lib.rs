@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Neumann gRPC Server
 //!
 //! This crate provides a gRPC server that exposes the Neumann database via
@@ -76,6 +76,7 @@ use query_router::QueryRouter;
 use relational_engine::RelationalEngine;
 use tensor_blob::{BlobConfig, BlobStore};
 use tensor_cache::Cache;
+use tensor_spatial::SpatialIndex3D;
 use tensor_store::TensorStore;
 use tensor_unified::UnifiedEngine;
 use tensor_vault::Vault;
@@ -118,6 +119,7 @@ pub struct NeumannServer {
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
     metrics: Option<Arc<ServerMetrics>>,
+    spatial_3d: Option<Arc<RwLock<SpatialIndex3D<String>>>>,
 }
 
 impl NeumannServer {
@@ -147,6 +149,7 @@ impl NeumannServer {
             rate_limiter,
             audit_logger,
             metrics: None,
+            spatial_3d: None,
         }
     }
 
@@ -189,6 +192,7 @@ impl NeumannServer {
             rate_limiter,
             audit_logger,
             metrics: None,
+            spatial_3d: None,
         })
     }
 
@@ -245,6 +249,13 @@ impl NeumannServer {
     #[must_use]
     pub fn with_cache(mut self, cache: Arc<Cache>) -> Self {
         self.cache_engine = Some(cache);
+        self
+    }
+
+    /// Set the 3D spatial index for REST spatial endpoints.
+    #[must_use]
+    pub fn with_spatial_3d(mut self, spatial_3d: Arc<RwLock<SpatialIndex3D<String>>>) -> Self {
+        self.spatial_3d = Some(spatial_3d);
         self
     }
 
@@ -434,9 +445,10 @@ impl NeumannServer {
                     .with_rate_limiter(self.rate_limiter.clone())
                     .with_audit_logger(self.audit_logger.clone())
                     .with_metrics(self.metrics.clone())
-                    .with_spatial(Some(self.router.read().spatial().clone())),
+                    .with_spatial(Some(self.router.read().spatial().clone()))
+                    .with_spatial_3d(self.spatial_3d.clone()),
             );
-            let rest_router = rest::router(rest_ctx);
+            let rest_router = rest::router_with_config(rest_ctx, &self.config.rest_config);
             let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
                 ServerError::Internal(format!("failed to bind REST server to {rest_addr}: {e}"))
             })?;
@@ -469,7 +481,8 @@ impl NeumannServer {
                     .with_cache(self.cache_engine.clone())
                     .with_blob(self.blob_store.clone())
                     .with_auth(self.config.auth.clone())
-                    .with_metrics(self.metrics.clone()),
+                    .with_metrics(self.metrics.clone())
+                    .with_query_router(Some(Arc::clone(&self.router))),
                 );
                 let web_router = web::router(web_ctx);
                 let listener = TcpListener::bind(web_addr).await.map_err(|e| {
@@ -713,9 +726,10 @@ impl NeumannServer {
                     .with_rate_limiter(self.rate_limiter.clone())
                     .with_audit_logger(self.audit_logger.clone())
                     .with_metrics(self.metrics.clone())
-                    .with_spatial(Some(self.router.read().spatial().clone())),
+                    .with_spatial(Some(self.router.read().spatial().clone()))
+                    .with_spatial_3d(self.spatial_3d.clone()),
             );
-            let rest_router = rest::router(rest_ctx);
+            let rest_router = rest::router_with_config(rest_ctx, &self.config.rest_config);
             let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
                 ServerError::Internal(format!("failed to bind REST server to {rest_addr}: {e}"))
             })?;
@@ -744,7 +758,8 @@ impl NeumannServer {
                     .with_cache(self.cache_engine.clone())
                     .with_blob(self.blob_store.clone())
                     .with_auth(self.config.auth.clone())
-                    .with_metrics(self.metrics.clone()),
+                    .with_metrics(self.metrics.clone())
+                    .with_query_router(Some(Arc::clone(&self.router))),
                 );
                 let web_router = web::router(web_ctx);
                 let listener = TcpListener::bind(web_addr).await.map_err(|e| {
@@ -1817,5 +1832,17 @@ mod tests {
         assert!(config.rate_limit.is_some());
         assert!(config.audit.is_some());
         assert!(config.request_timeout.is_some());
+    }
+
+    #[test]
+    fn test_server_with_spatial_3d() {
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let spatial = Arc::new(RwLock::new(SpatialIndex3D::<String>::new()));
+
+        let server = NeumannServer::new(router, config).with_spatial_3d(Arc::clone(&spatial));
+
+        assert!(server.spatial_3d.is_some());
+        assert!(Arc::ptr_eq(server.spatial_3d.as_ref().unwrap(), &spatial));
     }
 }

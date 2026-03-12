@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! REST API handlers for spatial operations.
 //!
 //! The spatial index is global (shared across all collections via `QueryRouter`).

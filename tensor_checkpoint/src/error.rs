@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use thiserror::Error;
 
 /// Errors that can occur during checkpoint operations.
@@ -19,10 +19,6 @@ pub enum CheckpointError {
     /// Failed to deserialize checkpoint state from bytes.
     #[error("deserialization error: {0}")]
     Deserialization(String),
-
-    /// An error propagated from the blob store.
-    #[error("blob error: {0}")]
-    Blob(#[from] tensor_blob::BlobError),
 
     /// Failed to create or restore a store snapshot.
     #[error("snapshot error: {0}")]
@@ -89,7 +85,6 @@ mod tests {
 
     #[test]
     fn test_from_bincode_error() {
-        // Create a bincode error by trying to deserialize invalid data
         let bad_data: &[u8] = &[0xff, 0xff, 0xff];
         let bincode_err: std::result::Result<String, _> = bitcode::deserialize(bad_data);
 

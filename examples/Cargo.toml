@@ -9,13 +9,13 @@ repository.workspace = true
 description = "Example code for Neumann database"
 
 [dependencies]
-relational_engine = { path = "../relational_engine" }
-graph_engine = { path = "../graph_engine" }
-vector_engine = { path = "../vector_engine" }
-query_router = { path = "../query_router" }
-tensor_unified = { path = "../tensor_unified" }
-tensor_store = { path = "../tensor_store" }
-neumann_server = { path = "../neumann_server" }
+relational_engine.workspace = true
+graph_engine.workspace = true
+vector_engine.workspace = true
+query_router.workspace = true
+tensor_unified.workspace = true
+tensor_store.workspace = true
+neumann_server.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 parking_lot.workspace = true
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Inline SVG icon system for the Memoria design system.
 //!
 //! Each function returns a `Markup` fragment containing a single `<svg>` element

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Adaptive memory/disk buffer for snapshot assembly with bounded memory usage.
 //!
 //! # Overview

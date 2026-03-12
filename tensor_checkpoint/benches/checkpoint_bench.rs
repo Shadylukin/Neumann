@@ -1,25 +1,20 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(missing_docs)]
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use tensor_blob::{BlobConfig, BlobStore};
-use tensor_checkpoint::{CheckpointConfig, CheckpointManager};
+use tensor_checkpoint::{CheckpointConfig, CheckpointManager, FileCheckpointStore};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
-use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
 
-async fn setup_manager(max_checkpoints: usize) -> (CheckpointManager, TensorStore) {
+fn setup_manager(max_checkpoints: usize) -> (CheckpointManager, TensorStore, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
     let store = TensorStore::new();
-    let blob = BlobStore::new(store.clone(), BlobConfig::default())
-        .await
-        .unwrap();
-    let blob = Arc::new(Mutex::new(blob));
+    let file_store = Arc::new(FileCheckpointStore::new(dir.path()).unwrap());
     let config = CheckpointConfig::new().with_max_checkpoints(max_checkpoints);
-    let manager = CheckpointManager::new(blob, config);
-    (manager, store)
+    let manager = CheckpointManager::new(file_store, config);
+    (manager, store, dir)
 }
 
 fn make_tensor(key: &str, value: &str) -> TensorData {
@@ -43,28 +38,23 @@ fn populate_store(store: &TensorStore, key_count: usize) {
 }
 
 fn bench_checkpoint_create(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("checkpoint_create");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(5));
 
-    for key_count in [0, 1_000, 5_000] {
+    for key_count in [0, 100, 1_000] {
         group.bench_with_input(
             BenchmarkId::new("keys", key_count),
             &key_count,
             |b, &key_count| {
                 b.iter_batched(
                     || {
-                        rt.block_on(async {
-                            let (manager, store) = setup_manager(100).await;
-                            populate_store(&store, key_count);
-                            (manager, store)
-                        })
+                        let (manager, store, dir) = setup_manager(100);
+                        populate_store(&store, key_count);
+                        (manager, store, dir)
                     },
-                    |(manager, store)| {
-                        rt.block_on(async {
-                            black_box(manager.create(None, &store).await.unwrap());
-                        });
+                    |(manager, store, _dir)| {
+                        black_box(manager.create(None, &store).unwrap());
                     },
                     criterion::BatchSize::LargeInput,
                 );
@@ -76,35 +66,30 @@ fn bench_checkpoint_create(c: &mut Criterion) {
 }
 
 fn bench_checkpoint_rollback(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("checkpoint_rollback");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(5));
 
-    for key_count in [1_000, 5_000] {
+    for key_count in [100, 1_000] {
         group.bench_with_input(
             BenchmarkId::new("keys", key_count),
             &key_count,
             |b, &key_count| {
                 b.iter_batched(
                     || {
-                        rt.block_on(async {
-                            let (manager, store) = setup_manager(100).await;
-                            populate_store(&store, key_count);
-                            let id = manager.create(None, &store).await.unwrap();
-                            // Mutate store after checkpoint
-                            for i in 0..100 {
-                                store
-                                    .put(format!("extra_{i}"), make_tensor("n", &format!("{i}")))
-                                    .unwrap();
-                            }
-                            (manager, store, id)
-                        })
+                        let (manager, store, dir) = setup_manager(100);
+                        populate_store(&store, key_count);
+                        let id = manager.create(None, &store).unwrap();
+                        // Mutate store after checkpoint
+                        for i in 0..100 {
+                            store
+                                .put(format!("extra_{i}"), make_tensor("n", &format!("{i}")))
+                                .unwrap();
+                        }
+                        (manager, store, id, dir)
                     },
-                    |(manager, store, id)| {
-                        rt.block_on(async {
-                            black_box(manager.rollback(&id, &store).await.unwrap());
-                        });
+                    |(manager, store, id, _dir)| {
+                        black_box(manager.rollback(&id, &store).unwrap());
                     },
                     criterion::BatchSize::LargeInput,
                 );
@@ -116,27 +101,21 @@ fn bench_checkpoint_rollback(c: &mut Criterion) {
 }
 
 fn bench_checkpoint_list(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("checkpoint_list");
 
-    for checkpoint_count in [5, 20] {
-        let (manager, _store) = rt.block_on(async {
-            let (mgr, st) = setup_manager(100).await;
-            populate_store(&st, 100);
-            for i in 0..checkpoint_count {
-                mgr.create(Some(&format!("cp_{i}")), &st).await.unwrap();
-            }
-            (mgr, st)
-        });
+    for checkpoint_count in [3, 10] {
+        let (manager, store, _dir) = setup_manager(100);
+        populate_store(&store, 100);
+        for i in 0..checkpoint_count {
+            manager.create(Some(&format!("cp_{i}")), &store).unwrap();
+        }
 
         group.bench_with_input(
             BenchmarkId::new("count", checkpoint_count),
             &checkpoint_count,
             |b, _| {
                 b.iter(|| {
-                    rt.block_on(async {
-                        black_box(manager.list(None).await.unwrap());
-                    });
+                    black_box(manager.list(None).unwrap());
                 });
             },
         );
@@ -145,55 +124,18 @@ fn bench_checkpoint_list(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_checkpoint_retention(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let mut group = c.benchmark_group("checkpoint_retention");
-    group.sample_size(10);
-    group.measurement_time(Duration::from_secs(5));
-
-    group.bench_function("enforce_retain_5_of_8", |b| {
-        b.iter_batched(
-            || {
-                rt.block_on(async {
-                    let (manager, store) = setup_manager(5).await;
-                    populate_store(&store, 100);
-                    for i in 0..8 {
-                        manager
-                            .create(Some(&format!("cp_{i}")), &store)
-                            .await
-                            .unwrap();
-                    }
-                    (manager, store)
-                })
-            },
-            |(manager, store)| {
-                rt.block_on(async {
-                    // Creating one more triggers retention enforcement
-                    black_box(manager.create(Some("trigger"), &store).await.unwrap());
-                });
-            },
-            criterion::BatchSize::LargeInput,
-        );
-    });
-
-    group.finish();
-}
-
 fn bench_checkpoint_metadata(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("checkpoint_metadata");
 
-    let (manager, store) = rt.block_on(setup_manager(100));
-    populate_store(&store, 1_000);
-    let id = rt.block_on(async { manager.create(Some("meta_bench"), &store).await.unwrap() });
+    let (manager, store, _dir) = setup_manager(100);
+    populate_store(&store, 100);
+    let id = manager.create(Some("meta_bench"), &store).unwrap();
 
     group.bench_function("list_single", |b| {
         b.iter(|| {
-            rt.block_on(async {
-                let list = manager.list(Some(1)).await.unwrap();
-                black_box(&list);
-                assert_eq!(list[0].id, id);
-            });
+            let list = manager.list(Some(1)).unwrap();
+            black_box(&list);
+            assert_eq!(list[0].id, id);
         });
     });
 
@@ -206,7 +148,6 @@ criterion_group!(
     bench_checkpoint_create,
     bench_checkpoint_rollback,
     bench_checkpoint_list,
-    bench_checkpoint_retention,
     bench_checkpoint_metadata,
 );
 

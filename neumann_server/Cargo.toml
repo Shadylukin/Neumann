@@ -5,7 +5,6 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords = ["database", "grpc", "tensor", "server"]
@@ -14,17 +13,18 @@ rust-version.workspace = true
 readme = "../README.md"
 
 [dependencies]
-query_router = { path = "../query_router" }
-tensor_blob = { path = "../tensor_blob" }
-tensor_store = { path = "../tensor_store" }
-relational_engine = { path = "../relational_engine" }
-vector_engine = { path = "../vector_engine" }
-graph_engine = { path = "../graph_engine" }
-tensor_unified = { path = "../tensor_unified" }
-tensor_spatial = { path = "../tensor_spatial" }
-tensor_vault = { path = "../tensor_vault" }
-tensor_cache = { path = "../tensor_cache" }
-tensor_checkpoint = { path = "../tensor_checkpoint" }
+neumann_parser.workspace = true
+query_router.workspace = true
+tensor_blob.workspace = true
+tensor_store.workspace = true
+relational_engine.workspace = true
+vector_engine.workspace = true
+graph_engine.workspace = true
+tensor_unified.workspace = true
+tensor_spatial.workspace = true
+tensor_vault.workspace = true
+tensor_cache.workspace = true
+tensor_checkpoint.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 tonic-web = "0.14"
@@ -57,7 +57,7 @@ tonic-prost-build.workspace = true
 [dev-dependencies]
 tokio-test.workspace = true
 tempfile.workspace = true
-query_router = { path = "../query_router" }
+query_router.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
 criterion.workspace = true

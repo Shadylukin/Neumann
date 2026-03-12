@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for query_router engine dispatch paths.
 //! Tests exercise CHAIN, CHECKPOINT, VAULT, CACHE, GRAPH ALGORITHM,
 //! GRAPH CONSTRAINT, GRAPH INDEX, CLUSTER, CYPHER, and cursor paths.
 
 use integration_tests::{
-    create_router_with_blob, create_router_with_cache, create_router_with_vault,
-    create_shared_router, create_test_graph_router,
+    create_router_with_cache, create_router_with_vault, create_shared_router,
+    create_test_graph_router,
 };
 use query_router::{PaginationOptions, QueryResult};
 use tensor_vault::Vault;
@@ -134,7 +134,9 @@ fn test_chain_no_identity_errors() {
 
 #[test]
 fn test_checkpoint_create_and_rollback() {
-    let mut router = create_router_with_blob();
+    let dir = tempfile::tempdir().unwrap();
+    let mut router = create_shared_router();
+    router.set_checkpoint_dir(dir.path().to_path_buf());
     router.init_checkpoint().unwrap();
 
     // Insert some data via embeddings (avoids CREATE TABLE syntax issues)
@@ -169,7 +171,9 @@ fn test_checkpoint_create_and_rollback() {
 
 #[test]
 fn test_checkpoint_list() {
-    let mut router = create_router_with_blob();
+    let dir = tempfile::tempdir().unwrap();
+    let mut router = create_shared_router();
+    router.set_checkpoint_dir(dir.path().to_path_buf());
     router.init_checkpoint().unwrap();
 
     // Create a checkpoint
@@ -186,7 +190,9 @@ fn test_checkpoint_list() {
 
 #[test]
 fn test_checkpoint_auto_name() {
-    let mut router = create_router_with_blob();
+    let dir = tempfile::tempdir().unwrap();
+    let mut router = create_shared_router();
+    router.set_checkpoint_dir(dir.path().to_path_buf());
     router.init_checkpoint().unwrap();
 
     // Checkpoint without explicit name
@@ -743,7 +749,9 @@ fn test_count_embeddings() {
 
 #[test]
 fn test_checkpoint_roundtrip_with_data() {
-    let mut router = create_router_with_blob();
+    let dir = tempfile::tempdir().unwrap();
+    let mut router = create_shared_router();
+    router.set_checkpoint_dir(dir.path().to_path_buf());
     router.init_checkpoint().unwrap();
 
     // Store embedding data

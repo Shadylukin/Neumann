@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for tensor_blob embedding search and linking features.
 
 use integration_tests::create_router_with_blob;

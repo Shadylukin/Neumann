@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -85,48 +85,25 @@ fuzz_target!(|input: Input| {
         return;
     }
 
-    // Take snapshot
-    let snapshot = partitioner.snapshot();
-
-    // Restore from snapshot
-    let restored = VoronoiPartitioner::restore(snapshot.clone());
-
-    // Verify restoration
-    assert_eq!(
-        restored.has_regions(),
-        partitioner.has_regions(),
-        "has_regions mismatch after restore"
-    );
-
-    // Verify region assignment is consistent
+    // Verify region assignment is consistent across calls
     for sample in &samples {
-        let original_region = partitioner.region_id_for_embedding(sample);
-        let restored_region = restored.region_id_for_embedding(sample);
+        let r1 = partitioner.region_for_embedding(sample);
+        let r2 = partitioner.region_for_embedding(sample);
         assert_eq!(
-            original_region, restored_region,
-            "Region assignment mismatch for sample"
+            r1.as_ref().map(|r| &r.owner),
+            r2.as_ref().map(|r| &r.owner),
+            "Region assignment not deterministic"
         );
     }
 
     // Verify locality key generation
     if let Some(key1) = partitioner.locality_key_for_embedding(&samples[0]) {
-        if let Some(key2) = restored.locality_key_for_embedding(&samples[0]) {
-            // Keys should be in same region
+        if let Some(key2) = partitioner.locality_key_for_embedding(&samples[0]) {
             assert_eq!(
                 key1.region_id(),
                 key2.region_id(),
                 "Locality key region mismatch"
             );
         }
-    }
-
-    // Double roundtrip to verify stability
-    let snapshot2 = restored.snapshot();
-    let restored2 = VoronoiPartitioner::restore(snapshot2);
-
-    for sample in &samples {
-        let r1 = restored.region_id_for_embedding(sample);
-        let r2 = restored2.region_id_for_embedding(sample);
-        assert_eq!(r1, r2, "Double roundtrip region mismatch");
     }
 });

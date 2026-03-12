@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stateful property tests for the 2PC distributed transaction coordinator.
 //!
 //! Tests atomicity, lock exclusivity, decision stability, and phase monotonicity

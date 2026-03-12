@@ -1,7 +1,5 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
-use tensor_blob::BlobStore;
-
-use crate::{error::Result, storage::CheckpointStorage};
+// SPDX-License-Identifier: MIT OR Apache-2.0
+use crate::{checkpoint_store::CheckpointStore, error::Result};
 
 /// Enforces a count-based retention policy, deleting the oldest checkpoints beyond the limit.
 pub struct RetentionManager {
@@ -10,14 +8,19 @@ pub struct RetentionManager {
 
 impl RetentionManager {
     /// Create a retention manager that keeps at most `max_checkpoints` checkpoints.
-    pub fn new(max_checkpoints: usize) -> Self {
+    #[must_use]
+    pub const fn new(max_checkpoints: usize) -> Self {
         Self { max_checkpoints }
     }
 
     /// Enforce retention policy by deleting oldest checkpoints beyond the limit.
     /// Returns the number of checkpoints deleted.
-    pub async fn enforce(&self, blob: &BlobStore) -> Result<usize> {
-        let checkpoints = CheckpointStorage::list(blob).await?;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint list cannot be read or a checkpoint cannot be deleted.
+    pub fn enforce(&self, store: &dyn CheckpointStore) -> Result<usize> {
+        let checkpoints = store.list(None)?;
 
         if checkpoints.len() <= self.max_checkpoints {
             return Ok(0);
@@ -28,10 +31,7 @@ impl RetentionManager {
 
         // Checkpoints are sorted by created_at descending, so oldest are at the end
         for checkpoint in checkpoints.iter().rev().take(to_remove) {
-            if CheckpointStorage::delete(&checkpoint.artifact_id, blob)
-                .await
-                .is_ok()
-            {
+            if store.delete(&checkpoint.id).is_ok() {
                 removed += 1;
             }
         }
@@ -40,88 +40,96 @@ impl RetentionManager {
     }
 
     /// Returns the configured maximum number of checkpoints to retain.
-    pub fn max_checkpoints(&self) -> usize {
+    #[must_use]
+    pub const fn max_checkpoints(&self) -> usize {
         self.max_checkpoints
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use tensor_blob::BlobConfig;
-    use tensor_store::TensorStore;
-
     use super::*;
-    use crate::state::{CheckpointMetadata, CheckpointState};
+    use crate::{
+        file_store::FileCheckpointStore,
+        state::{CheckpointMetadata, CheckpointState},
+    };
 
-    async fn setup() -> BlobStore {
-        let store = TensorStore::new();
-        BlobStore::new(store, BlobConfig::default()).await.unwrap()
+    fn setup() -> (FileCheckpointStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileCheckpointStore::new(dir.path()).unwrap();
+        (store, dir)
     }
 
-    #[tokio::test]
-    async fn test_no_deletion_under_limit() {
-        let blob = setup().await;
+    fn make_state(id: &str, name: &str, ts: u64) -> CheckpointState {
+        let mut s = CheckpointState::new(
+            id.to_string(),
+            name.to_string(),
+            vec![id.len() as u8],
+            CheckpointMetadata::default(),
+        );
+        s.created_at = ts;
+        s
+    }
+
+    #[test]
+    fn test_no_deletion_under_limit() {
+        let (store, _dir) = setup();
         let retention = RetentionManager::new(5);
 
-        for i in 0..3 {
-            let state = CheckpointState::new(
-                format!("id-{i}"),
-                format!("checkpoint-{i}"),
-                vec![i as u8],
-                CheckpointMetadata::default(),
-            );
-            CheckpointStorage::store(&state, &blob).await.unwrap();
+        for i in 0..3u64 {
+            store
+                .store(&make_state(
+                    &format!("id-{i}"),
+                    &format!("cp-{i}"),
+                    i * 1000,
+                ))
+                .unwrap();
         }
 
-        let deleted = retention.enforce(&blob).await.unwrap();
+        let deleted = retention.enforce(&store).unwrap();
         assert_eq!(deleted, 0);
-
-        let list = CheckpointStorage::list(&blob).await.unwrap();
-        assert_eq!(list.len(), 3);
+        assert_eq!(store.list(None).unwrap().len(), 3);
     }
 
-    #[tokio::test]
-    async fn test_deletion_at_limit() {
-        let blob = setup().await;
+    #[test]
+    fn test_deletion_at_limit() {
+        let (store, _dir) = setup();
         let retention = RetentionManager::new(2);
 
-        for i in 0..5 {
-            let state = CheckpointState::new(
-                format!("id-{i}"),
-                format!("checkpoint-{i}"),
-                vec![i as u8],
-                CheckpointMetadata::default(),
-            );
-            CheckpointStorage::store(&state, &blob).await.unwrap();
+        for i in 0..5u64 {
+            store
+                .store(&make_state(
+                    &format!("id-{i}"),
+                    &format!("cp-{i}"),
+                    i * 1000,
+                ))
+                .unwrap();
         }
 
-        let deleted = retention.enforce(&blob).await.unwrap();
+        let deleted = retention.enforce(&store).unwrap();
         assert_eq!(deleted, 3);
-
-        let list = CheckpointStorage::list(&blob).await.unwrap();
-        assert_eq!(list.len(), 2);
+        assert_eq!(store.list(None).unwrap().len(), 2);
     }
 
-    #[tokio::test]
-    async fn test_keeps_one() {
-        let blob = setup().await;
+    #[test]
+    fn test_keeps_one() {
+        let (store, _dir) = setup();
         let retention = RetentionManager::new(1);
 
-        for i in 0..3 {
-            let state = CheckpointState::new(
-                format!("id-{i}"),
-                format!("checkpoint-{i}"),
-                vec![i as u8],
-                CheckpointMetadata::default(),
-            );
-            CheckpointStorage::store(&state, &blob).await.unwrap();
+        for i in 0..3u64 {
+            store
+                .store(&make_state(
+                    &format!("id-{i}"),
+                    &format!("cp-{i}"),
+                    i * 1000,
+                ))
+                .unwrap();
         }
 
-        retention.enforce(&blob).await.unwrap();
-
-        let list = CheckpointStorage::list(&blob).await.unwrap();
+        retention.enforce(&store).unwrap();
+        let list = store.list(None).unwrap();
         assert_eq!(list.len(), 1);
-        // One checkpoint remains (order not guaranteed with same timestamps)
-        assert!(list[0].id.starts_with("id-"));
+        // Should keep the newest
+        assert_eq!(list[0].id, "id-2");
     }
 }

@@ -21,7 +21,7 @@ tensor_blob:95
 tensor_unified:89
 tensor_vault:71
 query_router:68
-neumann_shell:64
+neumann:64
 tensor_chain:67
 graph_engine:60
 tensor_compress:60
@@ -33,7 +33,7 @@ integration_tests:68
 "
 
 # Crates that need --lib flag (have both lib and bin targets)
-LIB_ONLY_CRATES="neumann_shell"
+LIB_ONLY_CRATES="neumann"
 
 FAILED=0
 CHECKED=0

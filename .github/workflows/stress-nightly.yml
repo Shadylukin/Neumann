@@ -60,7 +60,11 @@ jobs:
             --package stress_tests \
             --profile stress-nightly \
             --run-ignored ignored-only \
-            -E 'not (binary(~tensor_store_stress) | binary(~tensor_chain_stress) | binary(~tensor_compress_stress) | binary(~duration_stress) | test(~1m_vectors))'
+            -E 'not (binary(~tensor_store_stress)
+              | binary(~tensor_chain_stress)
+              | binary(~tensor_compress_stress)
+              | binary(~duration_stress)
+              | test(~1m_vectors))'
 
       - name: Run Tier 3 stress tests (reduced scale)
         env:
@@ -75,7 +79,11 @@ jobs:
             --package stress_tests \
             --profile stress-nightly \
             --run-ignored ignored-only \
-            -E 'binary(~tensor_store_stress) | binary(~tensor_chain_stress) | binary(~tensor_compress_stress) | (binary(~duration_stress) & not test(~1_hour))'
+            -E 'binary(~tensor_store_stress)
+              | binary(~tensor_chain_stress)
+              | binary(~tensor_compress_stress)
+              | (binary(~duration_stress)
+                & not test(~1_hour))'
 
   loom:
     name: Loom Concurrency Tests

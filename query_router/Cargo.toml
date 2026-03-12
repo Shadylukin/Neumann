@@ -3,7 +3,6 @@ name = "query_router"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -11,18 +10,18 @@ readme = "../README.md"
 description = "Unified query routing across relational, graph, and vector engines"
 
 [dependencies]
-tensor_store = { path = "../tensor_store" }
-tensor_chain = { path = "../tensor_chain" }
-relational_engine = { path = "../relational_engine" }
-graph_engine = { path = "../graph_engine" }
-vector_engine = { path = "../vector_engine" }
-tensor_unified = { path = "../tensor_unified" }
-tensor_vault = { path = "../tensor_vault" }
-tensor_cache = { path = "../tensor_cache" }
-tensor_blob = { path = "../tensor_blob", features = ["full"] }
-tensor_checkpoint = { path = "../tensor_checkpoint" }
-neumann_parser = { path = "../neumann_parser" }
-tensor_spatial = { path = "../tensor_spatial" }
+tensor_store.workspace = true
+tensor_chain.workspace = true
+relational_engine.workspace = true
+graph_engine.workspace = true
+vector_engine.workspace = true
+tensor_unified.workspace = true
+tensor_vault.workspace = true
+tensor_cache.workspace = true
+tensor_blob = { workspace = true, features = ["full"] }
+tensor_checkpoint.workspace = true
+neumann_parser.workspace = true
+tensor_spatial.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "fs"] }
 futures.workspace = true
@@ -38,6 +37,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[bench]]

@@ -47,7 +47,7 @@ declare -A GROUP_TO_FILE=(
     # query layer
     [neumann_parser]="neumann-parser"
     [query_router]="query-router"
-    [neumann_shell]="neumann-shell"
+    [neumann]="neumann-shell"
     [shell]="neumann-shell"
     # server
     [neumann_server]="neumann-server"

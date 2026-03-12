@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Jepsen client for multi-process tests.
 //!
 //! Wraps `NeumannClient` gRPC connections with leader discovery, retry logic,

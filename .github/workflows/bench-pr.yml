@@ -24,13 +24,41 @@ jobs:
       github.event.label.name == 'bench' ||
       (github.event_name == 'pull_request' && github.event.action != 'labeled')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Checkout PR
         # v4.2.2
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed crates with benchmarks
+        id: crates
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          DIRS=""
+          for dir in tensor_store relational_engine graph_engine \
+                     vector_engine tensor_chain query_router \
+                     tensor_compress neumann_parser tensor_blob \
+                     tensor_cache tensor_vault tensor_checkpoint \
+                     tensor_unified tensor_spatial neumann_server \
+                     neumann_shell; do
+            if ! git diff --quiet "${BASE_SHA}...HEAD" -- "$dir/"; then
+              DIRS="$DIRS $dir"
+            fi
+          done
+          DIRS=$(echo "$DIRS" | xargs)
+          if [ -z "$DIRS" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No benchmarkable crates changed — skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "dirs=$DIRS" >> "$GITHUB_OUTPUT"
+            echo "Changed crate dirs: $DIRS"
+          fi
 
       - name: Try to download main baseline
+        if: steps.crates.outputs.skip != 'true'
         id: baseline
         # v4.3.0
         uses: >-
@@ -44,7 +72,9 @@ jobs:
           run-id: ${{ github.event.pull_request.base.sha }}
 
       - name: Checkout base branch (fallback)
-        if: steps.baseline.outcome == 'failure'
+        if: >-
+          steps.crates.outputs.skip != 'true' &&
+          steps.baseline.outcome == 'failure'
         # v4.2.2
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -52,49 +82,77 @@ jobs:
           path: base
 
       - name: Install Rust toolchain
+        if: steps.crates.outputs.skip != 'true'
         # stable
         uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
 
       - name: Cache Rust
+        if: steps.crates.outputs.skip != 'true'
         # v2.7.8
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
 
       - name: Install protoc
+        if: steps.crates.outputs.skip != 'true'
         run: >-
           sudo apt-get update &&
           sudo apt-get install -y protobuf-compiler
 
       - name: Install critcmp
+        if: steps.crates.outputs.skip != 'true'
         run: cargo install critcmp
 
       - name: Benchmark base branch (fallback)
-        if: steps.baseline.outcome == 'failure'
+        if: >-
+          steps.crates.outputs.skip != 'true' &&
+          steps.baseline.outcome == 'failure'
         working-directory: base
         run: |
-          cargo bench --workspace \
-            --exclude fuzz \
-            --exclude neumann-native \
-            --exclude integration_tests \
-            --exclude stress_tests \
-            -- --save-baseline base
+          PKGS=""
+          for dir in ${{ steps.crates.outputs.dirs }}; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              pkg=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" \
+                    | head -1)
+              if [ -n "$pkg" ]; then
+                PKGS="$PKGS -p $pkg"
+              fi
+            fi
+          done
+          echo "Benchmarking base packages:$PKGS"
+          if [ -n "$PKGS" ]; then
+            # shellcheck disable=SC2086
+            cargo bench $PKGS --bench '*' -- --save-baseline base
+          fi
 
       - name: Copy cached baseline
-        if: steps.baseline.outcome == 'success'
+        if: >-
+          steps.crates.outputs.skip != 'true' &&
+          steps.baseline.outcome == 'success'
         run: |
           echo "Using cached main baseline from artifact"
 
       - name: Benchmark PR branch
+        if: steps.crates.outputs.skip != 'true'
         run: |
-          cargo bench --workspace \
-            --exclude fuzz \
-            --exclude neumann-native \
-            --exclude integration_tests \
-            --exclude stress_tests \
-            -- --save-baseline pr
+          PKGS=""
+          for dir in ${{ steps.crates.outputs.dirs }}; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              pkg=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" \
+                    | head -1)
+              if [ -n "$pkg" ]; then
+                PKGS="$PKGS -p $pkg"
+              fi
+            fi
+          done
+          echo "Benchmarking PR packages:$PKGS"
+          if [ -n "$PKGS" ]; then
+            # shellcheck disable=SC2086
+            cargo bench $PKGS --bench '*' -- --save-baseline pr
+          fi
 
       - name: Compare benchmarks with per-crate thresholds
+        if: steps.crates.outputs.skip != 'true'
         id: compare
         run: |
           critcmp base pr > bench-comparison.txt 2>&1 || true
@@ -155,7 +213,7 @@ jobs:
               "blob": "tensor_blob",
               "neumann_parser": "neumann_parser",
               "query_router": "query_router",
-              "neumann_shell": "neumann_shell",
+              "neumann_shell": "neumann",
               "neumann_server": "neumann_server",
               "tensor_unified": "tensor_unified",
               "tensor_checkpoint": "tensor_checkpoint",
@@ -165,7 +223,7 @@ jobs:
           violations = []
           with open("bench-comparison.txt") as f:
               for line in f:
-                  # Match lines like: group/bench  base  1.234 ms  pr  1.500 ms  +21.55%
+                  # Match: group/bench base 1.234ms pr 1.500ms +21.55%
                   m = re.search(r'\+(\d+\.?\d*)%', line)
                   if not m:
                       continue
@@ -175,7 +233,8 @@ jobs:
                   if not parts:
                       continue
                   bench_name = parts[0]
-                  group = bench_name.split("/")[0] if "/" in bench_name else bench_name
+                  group = bench_name.split("/")[0] \
+                      if "/" in bench_name else bench_name
 
                   # Find crate for this group
                   crate_name = None
@@ -184,9 +243,14 @@ jobs:
                           crate_name = crate
                           break
 
-                  threshold = thresholds.get(crate_name, default_pct) if crate_name else default_pct
+                  threshold = thresholds.get(
+                      crate_name, default_pct
+                  ) if crate_name else default_pct
                   if pct >= threshold:
-                      violations.append(f"{bench_name}: +{pct:.1f}% (threshold: {threshold}%)")
+                      violations.append(
+                          f"{bench_name}: +{pct:.1f}%"
+                          f" (threshold: {threshold}%)"
+                      )
 
           with open("regression-report.txt", "w") as f:
               if violations:
@@ -215,12 +279,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Post benchmark results
+        if: steps.crates.outputs.skip != 'true'
         # v7.0.1
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
             const comparison = `${{ steps.compare.outputs.comparison }}`;
-            const regressionReport = `${{ steps.compare.outputs.regression_report }}`;
+            const regressionReport =
+              `${{ steps.compare.outputs.regression_report }}`;
             const hasRegressions = ${{ steps.compare.outputs.has_regressions }};
 
             let body = '## Benchmark Results\n\n';

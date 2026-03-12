@@ -3,7 +3,6 @@ name = "tensor_cache"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -12,7 +11,7 @@ description = "Multi-layer LLM response cache with exact, semantic, and embeddin
 
 [dependencies]
 # Internal
-tensor_store = { path = "../tensor_store" }
+tensor_store.workspace = true
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }

@@ -15,7 +15,7 @@ THRESHOLD=${2:-95}
 # Get crate-specific thresholds
 get_threshold() {
     case "$1" in
-        neumann_shell)   echo 88 ;;
+        neumann)   echo 88 ;;
         neumann_parser)  echo 91 ;;
         tensor_blob)     echo 91 ;;
         query_router)    echo 92 ;;

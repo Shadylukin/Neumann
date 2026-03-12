@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! State machine for applying Raft log entries to `TensorChain`.
 //!
 //! Bridges the gap between Raft consensus (log commitment) and

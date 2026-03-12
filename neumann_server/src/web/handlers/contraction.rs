@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Contraction view handlers for the admin UI.
 //!
 //! Provides four views exposing the cross-modal tensor contraction engine:
@@ -880,6 +880,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -898,6 +899,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -999,6 +1001,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 

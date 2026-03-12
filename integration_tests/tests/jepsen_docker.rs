@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Docker-based Jepsen tests with kernel-level fault injection.
 //!
 //! These tests run real `neumann_server` containers via Docker Compose and

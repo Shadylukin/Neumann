@@ -1,12 +1,14 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! REST API for vector operations.
 //!
 //! Provides Qdrant-style REST endpoints for vector point and collection operations.
 
 use std::sync::Arc;
 
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
+use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -21,6 +23,7 @@ pub mod collections;
 pub mod error;
 pub mod points;
 pub mod spatial;
+pub mod spatial3d;
 pub mod types;
 
 pub use error::{ApiError, ApiResult};
@@ -43,6 +46,8 @@ pub struct VectorApiContext {
     pub metrics: Option<Arc<ServerMetrics>>,
     /// Shared spatial index (None if spatial not configured).
     pub spatial: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>>,
+    /// 3D spatial index for R-tree queries (None if not configured).
+    pub spatial_3d: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>>,
 }
 
 impl VectorApiContext {
@@ -56,6 +61,7 @@ impl VectorApiContext {
             audit_logger: None,
             metrics: None,
             spatial: None,
+            spatial_3d: None,
         }
     }
 
@@ -94,6 +100,16 @@ impl VectorApiContext {
         spatial: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>>,
     ) -> Self {
         self.spatial = spatial;
+        self
+    }
+
+    /// Add 3D spatial index.
+    #[must_use]
+    pub fn with_spatial_3d(
+        mut self,
+        spatial_3d: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>>,
+    ) -> Self {
+        self.spatial_3d = spatial_3d;
         self
     }
 }
@@ -155,7 +171,7 @@ pub fn router(ctx: Arc<VectorApiContext>) -> Router {
 
 /// Create the REST API router with configuration.
 pub fn router_with_config(ctx: Arc<VectorApiContext>, config: &RestConfig) -> Router {
-    Router::new()
+    let mut router = Router::new()
         // Points endpoints
         .route(
             "/collections/{name}/points",
@@ -170,7 +186,7 @@ pub fn router_with_config(ctx: Arc<VectorApiContext>, config: &RestConfig) -> Ro
         .route("/collections/{name}", get(collections::get))
         .route("/collections/{name}", delete(collections::delete))
         .route("/collections", get(collections::list))
-        // Spatial endpoints
+        // Spatial endpoints (2D)
         .route(
             "/collections/{name}/spatial/insert",
             post(spatial::insert),
@@ -181,10 +197,51 @@ pub fn router_with_config(ctx: Arc<VectorApiContext>, config: &RestConfig) -> Ro
             post(spatial::delete),
         )
         .route("/collections/{name}/spatial/count", get(spatial::count))
+        // Spatial 3D endpoints
+        .route(
+            "/collections/{name}/spatial3d/insert",
+            post(spatial3d::insert_3d),
+        )
+        .route(
+            "/collections/{name}/spatial3d/query",
+            post(spatial3d::query_3d),
+        )
+        .route(
+            "/collections/{name}/spatial3d/nearest",
+            post(spatial3d::nearest_3d),
+        )
+        .route(
+            "/collections/{name}/spatial3d/region",
+            post(spatial3d::region_3d),
+        )
+        .route(
+            "/collections/{name}/spatial3d/delete",
+            post(spatial3d::delete_3d),
+        )
+        .route(
+            "/collections/{name}/spatial3d/count",
+            get(spatial3d::count_3d),
+        )
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(config.max_body_size))
-        .with_state(ctx)
+        .with_state(ctx);
+
+    // Apply CORS if configured
+    if config.cors_enabled {
+        let origins: Vec<HeaderValue> = config
+            .cors_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        let cors = CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([header::CONTENT_TYPE, HeaderName::from_static("x-api-key")]);
+        router = router.layer(cors);
+    }
+
+    router
 }
 
 #[cfg(test)]
@@ -267,6 +324,41 @@ mod tests {
         let engine = Arc::new(VectorEngine::new());
         let ctx = Arc::new(VectorApiContext::new(engine));
         let config = RestConfig::new().with_max_body_size(8 * 1024 * 1024);
+        let _router = router_with_config(ctx, &config);
+    }
+
+    #[test]
+    fn test_vector_api_context_with_spatial_3d() {
+        let engine = Arc::new(VectorEngine::new());
+        let spatial_3d = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex3D::<
+            String,
+        >::new()));
+        let ctx = VectorApiContext::new(engine).with_spatial_3d(Some(spatial_3d));
+
+        assert!(ctx.spatial_3d.is_some());
+    }
+
+    #[test]
+    fn test_vector_api_context_with_metrics() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let engine = Arc::new(VectorEngine::new());
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+        let ctx = VectorApiContext::new(engine).with_metrics(Some(metrics));
+
+        assert!(ctx.metrics.is_some());
+    }
+
+    #[test]
+    fn test_router_with_cors_enabled() {
+        let engine = Arc::new(VectorEngine::new());
+        let ctx = Arc::new(VectorApiContext::new(engine));
+        let config = RestConfig::new()
+            .with_cors(true)
+            .with_cors_origins(vec!["http://localhost:3000".to_string()]);
         let _router = router_with_config(ctx, &config);
     }
 }

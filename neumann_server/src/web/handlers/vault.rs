@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vault view handlers for the admin UI.
 //!
 //! Provides five views for browsing and managing secrets stored in
@@ -776,6 +776,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -804,6 +805,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 
@@ -838,6 +840,7 @@ mod tests {
             chain: None,
             auth_config: None,
             metrics: None,
+            query_router: None,
         })
     }
 

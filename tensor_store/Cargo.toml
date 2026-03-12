@@ -3,7 +3,6 @@ name = "tensor_store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -11,9 +10,10 @@ readme = "../README.md"
 description = "Core tensor-based key-value storage with HNSW indexing and tiered caching"
 
 [dependencies]
+arc-swap.workspace = true
 serde.workspace = true
 bitcode.workspace = true
-tensor_compress = { path = "../tensor_compress" }
+tensor_compress.workspace = true
 wide = "0.7"
 memmap2.workspace = true
 rustc-hash = "2"

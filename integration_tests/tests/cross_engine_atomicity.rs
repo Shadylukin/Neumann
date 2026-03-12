@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cross-engine atomicity integration tests.
 //!
 //! Tests that operations spanning multiple engines (relational, graph, vector)
@@ -162,8 +162,9 @@ fn test_graph_vector_similarity_consistency() {
 
 #[test]
 fn test_checkpoint_across_engines() {
+    let dir = tempfile::tempdir().unwrap();
     let mut router = create_shared_router();
-    router.init_blob().unwrap();
+    router.set_checkpoint_dir(dir.path().to_path_buf());
     router.init_checkpoint().unwrap();
 
     // Insert data across engines

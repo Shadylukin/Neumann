@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Knowledge Galaxy - Neumann</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        overflow: hidden;
+        background: radial-gradient(ellipse at center, #0a0a2e 0%, #020210 60%, #000000 100%);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #e0e0f0;
+      }
+
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #stats-overlay {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        background: rgba(10, 10, 40, 0.7);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(100, 100, 255, 0.15);
+        border-radius: 12px;
+        padding: 14px 18px;
+        font-size: 13px;
+        line-height: 1.7;
+        z-index: 10;
+        min-width: 180px;
+        pointer-events: none;
+      }
+
+      #stats-overlay .stat-label {
+        color: #8888bb;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      #stats-overlay .stat-value {
+        color: #c0c0ff;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #search-container {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #search-input {
+        width: 360px;
+        padding: 10px 18px;
+        background: rgba(10, 10, 40, 0.6);
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(100, 100, 255, 0.2);
+        border-radius: 24px;
+        color: #e0e0f0;
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+
+      #search-input::placeholder {
+        color: #6666aa;
+      }
+
+      #search-input:focus {
+        border-color: rgba(100, 100, 255, 0.5);
+        box-shadow: 0 0 20px rgba(68, 136, 255, 0.15);
+      }
+
+      #search-btn {
+        padding: 10px 20px;
+        background: rgba(68, 136, 255, 0.3);
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(100, 100, 255, 0.3);
+        border-radius: 24px;
+        color: #c0c0ff;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.2s, border-color 0.2s;
+      }
+
+      #search-btn:hover {
+        background: rgba(68, 136, 255, 0.5);
+        border-color: rgba(100, 100, 255, 0.5);
+      }
+
+      #search-results {
+        position: fixed;
+        top: 60px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        font-size: 12px;
+        color: #8888bb;
+        pointer-events: none;
+      }
+
+      #legend {
+        position: fixed;
+        bottom: 16px;
+        right: 16px;
+        background: rgba(10, 10, 40, 0.7);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(100, 100, 255, 0.15);
+        border-radius: 12px;
+        padding: 14px 18px;
+        font-size: 12px;
+        z-index: 10;
+        pointer-events: none;
+      }
+
+      #legend .legend-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #8888bb;
+        margin-bottom: 8px;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+
+      .legend-chip {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .legend-label {
+        color: #a0a0cc;
+      }
+
+      #tooltip {
+        position: fixed;
+        display: none;
+        background: rgba(10, 10, 40, 0.85);
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(100, 100, 255, 0.25);
+        border-radius: 12px;
+        padding: 16px;
+        max-width: 320px;
+        font-size: 13px;
+        line-height: 1.5;
+        z-index: 20;
+        pointer-events: none;
+      }
+
+      #tooltip .tooltip-title {
+        font-weight: 600;
+        color: #e0e0ff;
+        margin-bottom: 6px;
+      }
+
+      #tooltip .tooltip-meta {
+        font-size: 11px;
+        color: #8888bb;
+        margin-bottom: 4px;
+      }
+
+      #tooltip .tooltip-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+      }
+
+      #tooltip .tooltip-abstract {
+        font-size: 12px;
+        color: #a0a0cc;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      #loading-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(ellipse at center, #0a0a2e 0%, #020210 60%, #000000 100%);
+        z-index: 100;
+        transition: opacity 0.8s ease-out;
+      }
+
+      #loading-overlay.fade-out {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .loading-text {
+        font-size: 18px;
+        color: #6666aa;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading-overlay">
+      <div class="loading-text">Mapping the Knowledge Galaxy...</div>
+    </div>
+
+    <div id="stats-overlay">
+      <div><span class="stat-label">Papers</span> <span class="stat-value" id="stat-total">0</span></div>
+      <div><span class="stat-label">Visible</span> <span class="stat-value" id="stat-visible">0</span></div>
+      <div><span class="stat-label">Latency</span> <span class="stat-value" id="stat-latency">--</span></div>
+      <div><span class="stat-label">FPS</span> <span class="stat-value" id="stat-fps">0</span></div>
+    </div>
+
+    <div id="search-container">
+      <input id="search-input" type="text" placeholder="Search papers..." />
+      <button id="search-btn">Search</button>
+    </div>
+    <div id="search-results"></div>
+
+    <div id="legend">
+      <div class="legend-title">Categories</div>
+      <div class="legend-item"><div class="legend-chip" style="background:#4488ff"></div><span class="legend-label">AI</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#00ddff"></div><span class="legend-label">ML</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#00cc88"></div><span class="legend-label">CV</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#ffaa00"></div><span class="legend-label">NLP</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#aa44ff"></div><span class="legend-label">SE</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#00bbaa"></div><span class="legend-label">DB</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#ff4444"></div><span class="legend-label">Systems</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#8844cc"></div><span class="legend-label">Theory</span></div>
+      <div class="legend-item"><div class="legend-chip" style="background:#aaaacc"></div><span class="legend-label">Other</span></div>
+    </div>
+
+    <div id="tooltip">
+      <div class="tooltip-title"></div>
+      <div class="tooltip-badge"></div>
+      <div class="tooltip-meta"></div>
+      <div class="tooltip-abstract"></div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

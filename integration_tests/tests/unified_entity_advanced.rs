@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for tensor_unified advanced entity operations.
 
 use integration_tests::create_shared_router;

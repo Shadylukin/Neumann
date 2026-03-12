@@ -5,12 +5,13 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords = ["database", "grpc", "tensor", "client"]
 categories = ["database", "network-programming"]
 rust-version.workspace = true
+readme = "../README.md"
+include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "LICENSE*", "../README.md"]
 
 [features]
 default = ["remote"]
@@ -19,7 +20,7 @@ remote = ["tonic", "tonic-prost", "tokio", "prost", "tokio-stream"]
 full = ["embedded", "remote"]
 
 [dependencies]
-query_router = { path = "../query_router", optional = true }
+query_router = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
@@ -35,8 +36,8 @@ tonic-prost-build.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
-neumann_server = { path = "../neumann_server" }
-query_router = { path = "../query_router" }
+neumann_server.workspace = true
+query_router.workspace = true
 parking_lot.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 

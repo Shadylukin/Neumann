@@ -122,7 +122,7 @@ jobs:
         shell: bash
         run: |
           cargo build --release \
-            --package neumann_shell \
+            --package neumann \
             --target ${{ matrix.target }}
 
       - name: Package (Unix)
@@ -138,7 +138,7 @@ jobs:
           cp README.md LICENSE* dist/ 2>/dev/null || true
 
           COMP=$(find "$BUILD_DIR" \
-            -path "*neumann_shell*/out/completions" \
+            -path "*neumann-*/out/completions" \
             -type d | head -1)
           if [ -d "$COMP" ]; then
             mkdir -p dist/completions
@@ -146,7 +146,7 @@ jobs:
           fi
 
           MAN=$(find "$BUILD_DIR" \
-            -path "*neumann_shell*/out/man" \
+            -path "*neumann-*/out/man" \
             -type d | head -1)
           if [ -d "$MAN" ]; then
             mkdir -p dist/man
@@ -172,7 +172,7 @@ jobs:
 
           $comp = Get-ChildItem -Path $build `
             -Recurse -Directory -Filter "completions" |
-            Where-Object { $_.FullName -like "*neumann_shell*out*" } |
+            Where-Object { $_.FullName -like "*neumann-*out*" } |
             Select-Object -First 1
           if ($comp) {
             New-Item -ItemType Directory -Force -Path dist/completions
@@ -181,7 +181,7 @@ jobs:
 
           $man = Get-ChildItem -Path $build `
             -Recurse -Directory -Filter "man" |
-            Where-Object { $_.FullName -like "*neumann_shell*out*" } |
+            Where-Object { $_.FullName -like "*neumann-*out*" } |
             Select-Object -First 1
           if ($man) {
             New-Item -ItemType Directory -Force -Path dist/man
@@ -313,20 +313,189 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          cargo publish --package tensor_store --allow-dirty || true
-          cargo publish --package tensor_compress --allow-dirty || true
-          cargo publish --package neumann_parser --allow-dirty || true
+          set -euo pipefail
 
-          sleep 30
-          cargo publish --package relational_engine --allow-dirty || true
-          cargo publish --package graph_engine --allow-dirty || true
-          cargo publish --package vector_engine --allow-dirty || true
+          publish_crate() {
+            local crate="$1"
+            local attempt=0
+            local max=3
+            while [ $attempt -lt $max ]; do
+              attempt=$((attempt + 1))
+              echo "Publishing $crate (attempt $attempt/$max)..."
+              if cargo publish --package "$crate"; then
+                echo "Published $crate successfully."
+                return 0
+              fi
+              if [ $attempt -lt $max ]; then
+                local delay=$((attempt * 15))
+                echo "Retrying $crate in ${delay}s..."
+                sleep "$delay"
+              fi
+            done
+            echo "::error::Failed to publish $crate after $max attempts"
+            return 1
+          }
 
-          sleep 30
-          cargo publish --package query_router --allow-dirty || true
+          # L1: Foundation (no internal deps)
+          publish_crate tensor_compress
+          publish_crate neumann_parser
+          publish_crate tensor_spatial
 
-          sleep 30
-          cargo publish --package neumann_shell --allow-dirty || true
+          echo "Waiting for crates.io index propagation..."
+          sleep 45
+
+          # L2: Core storage
+          publish_crate tensor_store
+
+          sleep 45
+
+          # L3: Engine layer
+          publish_crate relational_engine
+          publish_crate graph_engine
+          publish_crate vector_engine
+
+          sleep 45
+
+          # L4: Specialized storage
+          publish_crate tensor_vault
+          publish_crate tensor_cache
+          publish_crate tensor_blob
+          publish_crate tensor_chain
+
+          sleep 45
+
+          # L5: Checkpoint
+          publish_crate tensor_checkpoint
+
+          sleep 45
+
+          # L6: Unified (depends on engines)
+          publish_crate tensor_unified
+
+          sleep 45
+
+          # L7: Query router (depends on everything)
+          publish_crate query_router
+
+          sleep 45
+
+          # L8: Server and client
+          publish_crate neumann_server
+          publish_crate neumann_client
+
+          sleep 45
+
+          # L9: CLI binary
+          publish_crate neumann
+
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    if: needs.create-release.outputs.is_prerelease == 'false'
+    steps:
+      - name: Download release tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin \
+                        x86_64-unknown-linux-gnu; do
+            gh release download "$VERSION" \
+              --repo Shadylukin/Neumann \
+              --pattern "neumann-$VERSION-$target.tar.gz"
+          done
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          arm64=$(sha256sum "neumann-$VERSION-aarch64-apple-darwin.tar.gz" \
+            | awk '{print $1}')
+          x64=$(sha256sum "neumann-$VERSION-x86_64-apple-darwin.tar.gz" \
+            | awk '{print $1}')
+          linux=$(sha256sum "neumann-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+            | awk '{print $1}')
+          {
+            echo "arm64=$arm64"
+            echo "x64=$x64"
+            echo "linux=$linux"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: Shadylukin/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+          SHA_ARM64: ${{ steps.hashes.outputs.arm64 }}
+          SHA_X64: ${{ steps.hashes.outputs.x64 }}
+          SHA_LINUX: ${{ steps.hashes.outputs.linux }}
+        run: |
+          set -euo pipefail
+          SEMVER="${VERSION#v}"
+          mkdir -p homebrew-tap/Formula
+
+          BASE="https://github.com/Shadylukin/Neumann"
+          DL="$BASE/releases/download/$VERSION"
+          cat > homebrew-tap/Formula/neumann.rb <<FORMULA
+          class Neumann < Formula
+            desc "Unified tensor database"
+            homepage "$BASE"
+            version "$SEMVER"
+            license "BSL-1.1"
+
+            on_macos do
+              on_arm do
+                url "$DL/neumann-$VERSION-aarch64-apple-darwin.tar.gz"
+                sha256 "$SHA_ARM64"
+              end
+              on_intel do
+                url "$DL/neumann-$VERSION-x86_64-apple-darwin.tar.gz"
+                sha256 "$SHA_X64"
+              end
+            end
+
+            on_linux do
+              url "$DL/neumann-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "$SHA_LINUX"
+            end
+
+            def install
+              bin.install "neumann"
+              bash_completion.install \
+                "completions/neumann.bash" => "neumann"
+              zsh_completion.install "completions/_neumann"
+              fish_completion.install "completions/neumann.fish"
+              man1.install "man/neumann.1"
+            end
+
+            test do
+              assert_match "neumann \#{version}",
+                shell_output("\#{bin}/neumann --version")
+            end
+          end
+          FORMULA
+
+          sed -i 's/^          //' homebrew-tap/Formula/neumann.rb
+
+      - name: Commit and push
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/neumann.rb
+          git commit -m "Update neumann to $VERSION"
+          git push
 
   publish-npm:
     name: Publish to npm

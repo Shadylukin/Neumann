@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Deterministic simulation tests for Raft consensus.
 //!
 //! Each test runs a DST scenario with controlled fault injection and

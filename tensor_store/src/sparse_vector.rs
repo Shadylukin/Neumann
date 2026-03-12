@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sparse Vector - Storage where zero doesn't exist
 //!
 //! Philosophy: Zero represents absence of information, not a value to store.
@@ -416,12 +416,13 @@ impl SparseVector {
     }
 
     /// Internal f64 dot product to avoid intermediate overflow.
+    ///
+    /// Returns 0.0 when dimensions differ (vectors in different spaces
+    /// are treated as orthogonal).
     fn dot_f64(&self, other: &Self) -> f64 {
-        debug_assert_eq!(
-            self.dimension, other.dimension,
-            "Dimension mismatch: {} vs {}",
-            self.dimension, other.dimension
-        );
+        if self.dimension != other.dimension {
+            return 0.0;
+        }
 
         let mut result = 0.0_f64;
         let mut i = 0;
@@ -448,13 +449,9 @@ impl SparseVector {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn dot_dense(&self, dense: &[f32]) -> f32 {
-        debug_assert_eq!(
-            self.dimension,
-            dense.len(),
-            "Dimension mismatch: {} vs {}",
-            self.dimension,
-            dense.len()
-        );
+        if self.dimension != dense.len() {
+            return 0.0;
+        }
 
         let sum: f64 = self
             .positions
@@ -886,7 +883,9 @@ impl SparseVector {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn weighted_jaccard(&self, other: &Self) -> f32 {
-        debug_assert_eq!(self.dimension, other.dimension);
+        if self.dimension != other.dimension {
+            return 0.0;
+        }
 
         let mut min_sum = 0.0_f64;
         let mut max_sum = 0.0_f64;
@@ -964,7 +963,9 @@ impl SparseVector {
 
     /// Internal f64 squared Euclidean distance to avoid intermediate overflow.
     fn euclidean_distance_squared_f64(&self, other: &Self) -> f64 {
-        debug_assert_eq!(self.dimension, other.dimension);
+        if self.dimension != other.dimension {
+            return f64::INFINITY;
+        }
 
         let mut sum_sq = 0.0_f64;
 
@@ -1013,7 +1014,9 @@ impl SparseVector {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn manhattan_distance(&self, other: &Self) -> f32 {
-        debug_assert_eq!(self.dimension, other.dimension);
+        if self.dimension != other.dimension {
+            return f32::INFINITY;
+        }
 
         let mut sum = 0.0_f64;
 
@@ -1891,5 +1894,49 @@ mod tests {
     fn test_max_dimension_constant() {
         // Verify the constant matches u32::MAX
         assert_eq!(MAX_DIMENSION, u32::MAX as usize);
+    }
+
+    #[test]
+    fn dot_dimension_mismatch_returns_zero() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(a.dot(&b), 0.0);
+    }
+
+    #[test]
+    fn dot_dense_dimension_mismatch_returns_zero() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        assert_eq!(a.dot_dense(&[1.0, 2.0]), 0.0);
+        assert_eq!(a.dot_dense(&[1.0, 2.0, 3.0, 4.0]), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_dimension_mismatch_returns_zero() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 1.0]);
+        let b = SparseVector::from_dense(&[0.0, 1.0]);
+        assert_eq!(a.cosine_similarity(&b), 0.0);
+    }
+
+    #[test]
+    fn weighted_jaccard_dimension_mismatch_returns_zero() {
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        assert_eq!(a.weighted_jaccard(&b), 0.0);
+    }
+
+    #[test]
+    fn euclidean_distance_dimension_mismatch_returns_max() {
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[1.0]);
+        // Internal f64::INFINITY is clamped to f32::MAX by the overflow guard
+        assert_eq!(a.euclidean_distance(&b), f32::MAX);
+        assert_eq!(a.euclidean_distance_squared(&b), f32::MAX);
+    }
+
+    #[test]
+    fn manhattan_distance_dimension_mismatch_returns_infinity() {
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[1.0]);
+        assert_eq!(a.manhattan_distance(&b), f32::INFINITY);
     }
 }

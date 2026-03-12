@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::state::{DestructiveOp, OperationPreview};
 
 /// Generates human-readable previews for destructive operations.
@@ -8,13 +8,15 @@ pub struct PreviewGenerator {
 
 impl PreviewGenerator {
     /// Create a preview generator that truncates sample data to `sample_size` items.
-    pub fn new(sample_size: usize) -> Self {
+    #[must_use]
+    pub const fn new(sample_size: usize) -> Self {
         Self { sample_size }
     }
 
     /// Build an `OperationPreview` from an operation and its sample data.
+    #[must_use]
     pub fn generate(&self, op: &DestructiveOp, sample_data: Vec<String>) -> OperationPreview {
-        let summary = self.format_summary(op);
+        let summary = Self::format_summary(op);
         let affected_count = op.affected_count();
 
         let truncated_sample: Vec<String> =
@@ -23,7 +25,7 @@ impl PreviewGenerator {
         OperationPreview::new(summary, truncated_sample, affected_count)
     }
 
-    fn format_summary(&self, op: &DestructiveOp) -> String {
+    fn format_summary(op: &DestructiveOp) -> String {
         match op {
             DestructiveOp::Delete { table, row_count } => {
                 format!("Will delete {row_count} row(s) from table '{table}'")
@@ -71,6 +73,7 @@ fn format_bytes(bytes: usize) -> String {
     const MB: usize = KB * 1024;
     const GB: usize = MB * 1024;
 
+    #[allow(clippy::cast_precision_loss)]
     if bytes >= GB {
         format!("{:.2} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
@@ -83,6 +86,7 @@ fn format_bytes(bytes: usize) -> String {
 }
 
 /// Format a warning message for a destructive operation.
+#[must_use]
 pub fn format_warning(op: &DestructiveOp) -> String {
     match op {
         DestructiveOp::Delete { table, row_count } => {
@@ -120,6 +124,7 @@ pub fn format_warning(op: &DestructiveOp) -> String {
 }
 
 /// Build a full confirmation prompt including warning, summary, sample data, and input prompt.
+#[must_use]
 pub fn format_confirmation_prompt(op: &DestructiveOp, preview: &OperationPreview) -> String {
     let mut output = String::new();
 
@@ -129,15 +134,17 @@ pub fn format_confirmation_prompt(op: &DestructiveOp, preview: &OperationPreview
     output.push('\n');
 
     if !preview.sample_data.is_empty() {
+        use std::fmt::Write;
         output.push_str("\nAffected data sample:\n");
         for (i, item) in preview.sample_data.iter().enumerate() {
-            output.push_str(&format!("  {}. {}\n", i + 1, item));
+            let _ = writeln!(output, "  {}. {}", i + 1, item);
         }
         if preview.affected_count > preview.sample_data.len() {
-            output.push_str(&format!(
-                "  ... and {} more\n",
+            let _ = writeln!(
+                output,
+                "  ... and {} more",
                 preview.affected_count - preview.sample_data.len()
-            ));
+            );
         }
     }
 

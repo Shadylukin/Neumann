@@ -113,7 +113,8 @@ jobs:
       - name: Run clippy
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
         run: |
           cargo clippy --workspace \
             --exclude fuzz \
@@ -159,7 +160,8 @@ jobs:
       - name: Run tests
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
         run: |
           cargo nextest run --workspace \
             --profile ci \
@@ -209,7 +211,8 @@ jobs:
       - name: Generate coverage report
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
         run: |
           cargo llvm-cov --workspace \
             --exclude fuzz \
@@ -574,7 +577,8 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-fuse-ld=mold
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: >-
+            -Clink-arg=-fuse-ld=mold
         run: |
           cargo nextest run --profile ci \
             -p tensor_store \
@@ -709,7 +713,18 @@ jobs:
             --package stress_tests \
             --profile stress-pr \
             --run-ignored ignored-only \
-            -E 'binary(~crash_recovery) | (binary(~cache_stress) & not test(~eviction_performance) & not test(~semantic_throughput)) | binary(~clock_drift) | binary(~graph_algorithm_stress) | binary(~graph_index_stress) | binary(~graph_toctou) | binary(~partition_churn) | binary(~query_router_stress) | (binary(~slab_router) & not test(~throughput_stability))'
+            -E 'binary(~crash_recovery)
+              | (binary(~cache_stress)
+                & not test(~eviction_performance)
+                & not test(~semantic_throughput))
+              | binary(~clock_drift)
+              | binary(~graph_algorithm_stress)
+              | binary(~graph_index_stress)
+              | binary(~graph_toctou)
+              | binary(~partition_churn)
+              | binary(~query_router_stress)
+              | (binary(~slab_router)
+                & not test(~throughput_stability))'
 
   pr-size:
     name: PR Size Check
@@ -834,6 +849,61 @@ jobs:
               });
             }
 
+  publish-check:
+    name: Publish Dry Run
+    needs: [clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Rust
+        # stable
+        uses: >-
+          dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        # v2.7.8
+        uses: >-
+          Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+
+      - name: Install protoc
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Verify crate packaging
+        run: |
+          set -euo pipefail
+
+          # Leaf crates (no internal deps): full dry-run publish
+          LEAF_CRATES=(tensor_compress neumann_parser tensor_spatial)
+          for crate in "${LEAF_CRATES[@]}"; do
+            echo "Dry-run publish $crate..."
+            cargo publish --package "$crate" --dry-run --allow-dirty
+          done
+
+          # All crates: verify packaging metadata and file inclusion
+          ALL_CRATES=(
+            tensor_compress neumann_parser tensor_spatial
+            tensor_store
+            relational_engine graph_engine vector_engine
+            tensor_vault tensor_cache tensor_blob tensor_chain
+            tensor_checkpoint
+            tensor_unified
+            query_router
+            neumann_server neumann_client
+            neumann
+          )
+          for crate in "${ALL_CRATES[@]}"; do
+            echo "Checking package contents for $crate..."
+            cargo package --package "$crate" --allow-dirty --list > /dev/null
+          done
+
   ci-success:
     name: CI Success
     needs:
@@ -853,6 +923,7 @@ jobs:
       - pr-size
       - bench-inventory
       - stress-pr
+      - publish-check
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -878,10 +949,12 @@ jobs:
           PR="${{ needs.pr-size.result }}"
           BENCH="${{ needs.bench-inventory.result }}"
           STRESS="${{ needs.stress-pr.result }}"
+          PUBLISH="${{ needs.publish-check.result }}"
 
           for job in fmt:$FMT clippy:$CLIPPY \
                      test:$TEST coverage:$COV doc:$DOC \
-                     security-audit:$AUDIT cargo-deny:$DENY; do
+                     security-audit:$AUDIT cargo-deny:$DENY \
+                     publish-check:$PUBLISH; do
             name="${job%%:*}"
             result="${job##*:}"
             if [[ "$result" != "success" ]]; then
@@ -896,7 +969,9 @@ jobs:
                      bench-inventory:$BENCH stress-pr:$STRESS; do
             name="${job%%:*}"
             result="${job##*:}"
-            if [[ "$result" != "success" && "$result" != "skipped" && "$result" != "cancelled" ]]; then
+            if [[ "$result" != "success" \
+                  && "$result" != "skipped" \
+                  && "$result" != "cancelled" ]]; then
               echo "::error::$name failed: $result"
               FAILED=true
             fi

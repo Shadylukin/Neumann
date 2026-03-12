@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Synchronization compatibility for loom testing.
 //!
 //! Re-exports `parking_lot::RwLock` and `parking_lot::Mutex` in normal builds

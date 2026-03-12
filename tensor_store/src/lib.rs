@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSL-1.1 OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `TensorStore` - Unified Storage Layer for Neumann
 //!
 //! A thread-safe, sharded key-value store optimized for tensor data:
@@ -77,6 +77,7 @@ use std::{
     },
 };
 
+use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
 pub mod binary_quantization;
@@ -776,7 +777,7 @@ pub type SnapshotResult<T> = std::result::Result<T, SnapshotError>;
 /// Clone creates a shared reference to the same underlying storage.
 #[derive(Clone)]
 pub struct TensorStore {
-    router: Arc<SlabRouter>,
+    router: Arc<ArcSwap<SlabRouter>>,
     bloom_filter: Option<Arc<BloomFilter>>,
     instrumentation: Option<Arc<ShardAccessTracker>>,
 }
@@ -788,7 +789,7 @@ impl TensorStore {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            router: Arc::new(SlabRouter::new()),
+            router: Arc::new(ArcSwap::from_pointee(SlabRouter::new())),
             bloom_filter: None,
             instrumentation: None,
         }
@@ -798,7 +799,7 @@ impl TensorStore {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            router: Arc::new(SlabRouter::with_capacity(capacity)),
+            router: Arc::new(ArcSwap::from_pointee(SlabRouter::with_capacity(capacity))),
             bloom_filter: None,
             instrumentation: None,
         }
@@ -815,7 +816,7 @@ impl TensorStore {
     #[must_use]
     pub fn with_bloom_filter(expected_items: usize, false_positive_rate: f64) -> Self {
         Self {
-            router: Arc::new(SlabRouter::new()),
+            router: Arc::new(ArcSwap::from_pointee(SlabRouter::new())),
             bloom_filter: Some(Arc::new(BloomFilter::new(
                 expected_items,
                 false_positive_rate,
@@ -830,7 +831,7 @@ impl TensorStore {
     #[must_use]
     pub fn with_default_bloom_filter() -> Self {
         Self {
-            router: Arc::new(SlabRouter::new()),
+            router: Arc::new(ArcSwap::from_pointee(SlabRouter::new())),
             bloom_filter: Some(Arc::new(BloomFilter::with_defaults())),
             instrumentation: None,
         }
@@ -843,7 +844,7 @@ impl TensorStore {
     #[must_use]
     pub fn with_instrumentation(sample_rate: u32) -> Self {
         Self {
-            router: Arc::new(SlabRouter::new()),
+            router: Arc::new(ArcSwap::from_pointee(SlabRouter::new())),
             bloom_filter: None,
             instrumentation: Some(Arc::new(ShardAccessTracker::new(
                 instrumentation::DEFAULT_SHARD_COUNT,
@@ -860,7 +861,7 @@ impl TensorStore {
         sample_rate: u32,
     ) -> Self {
         Self {
-            router: Arc::new(SlabRouter::new()),
+            router: Arc::new(ArcSwap::from_pointee(SlabRouter::new())),
             bloom_filter: Some(Arc::new(BloomFilter::new(
                 expected_items,
                 false_positive_rate,
@@ -933,6 +934,7 @@ impl TensorStore {
             instr.record_write(Self::shard_for_key(&key));
         }
         self.router
+            .load()
             .put(&key, tensor)
             .map_err(|e| TensorStoreError::NotFound(e.to_string()))
     }
@@ -956,6 +958,7 @@ impl TensorStore {
             instr.record_read(Self::shard_for_key(key));
         }
         self.router
+            .load()
             .get(key)
             .map_err(|_| TensorStoreError::NotFound(key.to_string()))
     }
@@ -970,6 +973,7 @@ impl TensorStore {
             instr.record_write(Self::shard_for_key(key));
         }
         self.router
+            .load()
             .delete(key)
             .map_err(|e| TensorStoreError::NotFound(e.to_string()))
     }
@@ -989,42 +993,43 @@ impl TensorStore {
         if let Some(ref instr) = self.instrumentation {
             instr.record_read(Self::shard_for_key(key));
         }
-        self.router.exists(key)
+        self.router.load().exists(key)
     }
 
     /// Scans keys with the given prefix.
     #[must_use]
     pub fn scan(&self, prefix: &str) -> Vec<String> {
-        self.router.scan(prefix)
+        self.router.load().scan(prefix)
     }
 
     /// Returns the number of entries.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.router.len()
+        self.router.load().len()
     }
 
     /// Returns true if the store is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.router.is_empty()
+        self.router.load().is_empty()
     }
 
     /// Clears all entries.
     pub fn clear(&self) {
-        self.router.clear();
+        self.router.load().clear();
         if let Some(ref filter) = self.bloom_filter {
             filter.clear();
         }
     }
 
-    /// Access the underlying `SlabRouter` for direct slab operations.
+    /// Load a snapshot of the current `SlabRouter` as an `Arc`.
     ///
-    /// This provides access to specialized slabs like `RelationalSlab` for
-    /// engines that need direct columnar storage access.
+    /// Callers can borrow from the returned `Arc` for the duration of their
+    /// operation. This is the replacement for the old `router()` method which
+    /// cannot return a reference through `ArcSwap`.
     #[must_use]
-    pub fn router(&self) -> &SlabRouter {
-        &self.router
+    pub fn load_router(&self) -> Arc<SlabRouter> {
+        self.router.load_full()
     }
 
     /// Evict entries from the cache ring using the configured eviction strategy.
@@ -1032,13 +1037,13 @@ impl TensorStore {
     /// Returns the number of entries actually evicted.
     #[must_use]
     pub fn evict_cache(&self, count: usize) -> usize {
-        self.router.evict_cache(count)
+        self.router.load().evict_cache(count)
     }
 
     /// Counts entries with the given prefix.
     #[must_use]
     pub fn scan_count(&self, prefix: &str) -> usize {
-        self.router.scan_count(prefix)
+        self.router.load().scan_count(prefix)
     }
 
     /// Scan entries by prefix, filtering and mapping in a single pass.
@@ -1071,7 +1076,7 @@ impl TensorStore {
     where
         F: FnMut(&str, &TensorData) -> Option<T>,
     {
-        self.router.scan_filter_map(prefix, f)
+        self.router.load().scan_filter_map(prefix, f)
     }
 
     /// Save a snapshot of the store to a file.
@@ -1092,6 +1097,7 @@ impl TensorStore {
     /// ```
     pub fn save_snapshot<P: AsRef<Path>>(&self, path: P) -> SnapshotResult<()> {
         self.router
+            .load()
             .save_to_file(path)
             .map_err(|e| SnapshotError::SerializationError(e.to_string()))
     }
@@ -1117,7 +1123,7 @@ impl TensorStore {
             .map_err(|e| SnapshotError::SerializationError(e.to_string()))?;
 
         Ok(Self {
-            router: Arc::new(router),
+            router: Arc::new(ArcSwap::from_pointee(router)),
             bloom_filter: None,
             instrumentation: None,
         })
@@ -1147,7 +1153,7 @@ impl TensorStore {
         }
 
         Ok(Self {
-            router: Arc::new(router),
+            router: Arc::new(ArcSwap::from_pointee(router)),
             bloom_filter: Some(Arc::new(bloom)),
             instrumentation: None,
         })
@@ -1176,11 +1182,12 @@ impl TensorStore {
         let path = path.as_ref();
         let temp_path = path.with_extension("tmp");
 
-        let keys = self.router.scan("");
+        let router = self.router.load();
+        let keys = router.scan("");
         let mut entries = Vec::with_capacity(keys.len());
 
         for key in keys {
-            let Ok(tensor) = self.router.get(&key) else {
+            let Ok(tensor) = router.get(&key) else {
                 continue;
             };
 
@@ -1295,7 +1302,7 @@ impl TensorStore {
             }
 
             // Best-effort restore - continue even if individual entries fail
-            if let Err(e) = store.router.put(&entry.key, tensor) {
+            if let Err(e) = store.router.load().put(&entry.key, tensor) {
                 tracing::warn!(
                     key = %entry.key,
                     error = %e,
@@ -1314,32 +1321,32 @@ impl TensorStore {
     /// Returns `SnapshotError::SerializationError` if serialization fails.
     pub fn snapshot_bytes(&self) -> SnapshotResult<Vec<u8>> {
         self.router
+            .load()
             .to_bytes()
             .map_err(|e| SnapshotError::SerializationError(e.to_string()))
     }
 
     /// Restore store contents from serialized checkpoint bytes.
     ///
+    /// Atomically swaps the entire `SlabRouter`, preserving all slab state
+    /// (graph CSR, relational columns, embeddings, slab configs). All clones
+    /// of this store see the new state immediately.
+    ///
     /// # Errors
     ///
     /// Returns `SnapshotError::SerializationError` if deserialization fails.
     pub fn restore_from_bytes(&self, bytes: &[u8]) -> SnapshotResult<()> {
-        // Create a new router from the bytes
         let new_router = SlabRouter::from_bytes(bytes)
             .map_err(|e| SnapshotError::SerializationError(e.to_string()))?;
 
-        // Clear current and copy data from new router
-        self.router.clear();
-        for key in new_router.scan("") {
-            if let Ok(value) = new_router.get(&key) {
-                // Best-effort restore - continue even if individual entries fail
-                if let Err(e) = self.router.put(&key, value) {
-                    tracing::warn!(
-                        key = %key,
-                        error = %e,
-                        "Failed to restore entry during checkpoint restore"
-                    );
-                }
+        // Atomic swap — all clones see the new router immediately
+        self.router.store(Arc::new(new_router));
+
+        // Rebuild Bloom filter from new router state
+        if let Some(ref filter) = self.bloom_filter {
+            filter.clear();
+            for key in self.router.load().scan("") {
+                filter.add(&key);
             }
         }
 
@@ -1356,7 +1363,7 @@ impl TensorStore {
     pub fn open_durable<P: AsRef<Path>>(wal_path: P, config: WalConfig) -> std::io::Result<Self> {
         let router = SlabRouter::with_wal(wal_path, config)?;
         Ok(Self {
-            router: Arc::new(router),
+            router: Arc::new(ArcSwap::from_pointee(router)),
             bloom_filter: None,
             instrumentation: None,
         })
@@ -1375,7 +1382,7 @@ impl TensorStore {
     ) -> std::io::Result<Self> {
         let router = SlabRouter::with_wal(wal_path, config)?;
         Ok(Self {
-            router: Arc::new(router),
+            router: Arc::new(ArcSwap::from_pointee(router)),
             bloom_filter: Some(Arc::new(BloomFilter::new(
                 expected_items,
                 false_positive_rate,
@@ -1400,7 +1407,7 @@ impl TensorStore {
     ) -> std::result::Result<Self, SlabRouterError> {
         let router = SlabRouter::recover(wal_path, config, snapshot_path)?;
         Ok(Self {
-            router: Arc::new(router),
+            router: Arc::new(ArcSwap::from_pointee(router)),
             bloom_filter: None,
             instrumentation: None,
         })
@@ -1428,7 +1435,7 @@ impl TensorStore {
         }
 
         Ok(Self {
-            router: Arc::new(router),
+            router: Arc::new(ArcSwap::from_pointee(router)),
             bloom_filter: Some(Arc::new(bloom)),
             instrumentation: None,
         })
@@ -1451,6 +1458,7 @@ impl TensorStore {
             instr.record_write(Self::shard_for_key(&key));
         }
         self.router
+            .load()
             .put_durable(&key, tensor)
             .map_err(|e| TensorStoreError::NotFound(e.to_string()))
     }
@@ -1467,6 +1475,7 @@ impl TensorStore {
             instr.record_write(Self::shard_for_key(key));
         }
         self.router
+            .load()
             .delete_durable(key)
             .map_err(|e| TensorStoreError::NotFound(e.to_string()))
     }
@@ -1483,19 +1492,19 @@ impl TensorStore {
         &self,
         snapshot_path: P,
     ) -> std::result::Result<u64, SlabRouterError> {
-        self.router.checkpoint(snapshot_path.as_ref())
+        self.router.load().checkpoint(snapshot_path.as_ref())
     }
 
     /// Get WAL status if WAL is configured.
     #[must_use]
     pub fn wal_status(&self) -> Option<WalStatus> {
-        self.router.wal_status()
+        self.router.load().wal_status()
     }
 
     /// Check if WAL is enabled.
     #[must_use]
     pub fn has_wal(&self) -> bool {
-        self.router.has_wal()
+        self.router.load().has_wal()
     }
 
     /// Flush and sync the WAL to disk.
@@ -1504,7 +1513,7 @@ impl TensorStore {
     ///
     /// Returns an error if WAL fsync fails.
     pub fn wal_sync(&self) -> std::result::Result<(), SlabRouterError> {
-        self.router.wal_sync()
+        self.router.load().wal_sync()
     }
 
     /// Sync all pending WAL writes to disk.
@@ -1515,7 +1524,7 @@ impl TensorStore {
     ///
     /// Returns an error if WAL fsync fails.
     pub fn sync(&self) -> std::result::Result<(), SlabRouterError> {
-        self.router.wal_sync()
+        self.router.load().wal_sync()
     }
 }
 
@@ -3844,7 +3853,7 @@ mod tests {
     #[test]
     fn test_tensor_store_router_access() {
         let store = TensorStore::new();
-        let router = store.router();
+        let router = store.load_router();
         // Just verify we can access the router
         assert_eq!(router.len(), 0);
     }
@@ -4194,5 +4203,94 @@ mod tests {
 
         assert!(store.exists("key1"));
         assert!(!store.exists("nonexistent"));
+    }
+
+    #[test]
+    fn restore_from_bytes_preserves_graph_slab_state() {
+        let store = TensorStore::new();
+
+        // Add graph edges with non-sequential IDs
+        let router = store.load_router();
+        let graph = &router.graph;
+        let n0 = crate::entity_index::EntityId::new(0);
+        let n1 = crate::entity_index::EntityId::new(1);
+        let n2 = crate::entity_index::EntityId::new(2);
+        let e0 = graph.add_edge(n0, n1, "link", true);
+        let _e1 = graph.add_edge(n1, n2, "link", true);
+        graph.delete_edge(_e1);
+        let e2 = graph.add_edge(n0, n2, "ref", true);
+
+        // Add metadata keyed by edge ID
+        let mut data = TensorData::new();
+        data.set("score", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        store
+            .put(&format!("edge:{}", e0.as_u64()), data.clone())
+            .unwrap();
+        store.put(&format!("edge:{}", e2.as_u64()), data).unwrap();
+
+        // Snapshot and restore
+        let bytes = store.snapshot_bytes().unwrap();
+        let store2 = TensorStore::new();
+        store2.restore_from_bytes(&bytes).unwrap();
+
+        // Verify graph edge IDs preserved
+        let router2 = store2.load_router();
+        let graph2 = &router2.graph;
+        let out = graph2.outgoing(n0);
+        let ids: Vec<u64> = out.iter().map(|(_, eid)| eid.as_u64()).collect();
+        assert!(ids.contains(&e0.as_u64()));
+        assert!(ids.contains(&e2.as_u64()));
+        assert_eq!(graph2.edge_count(), 2);
+    }
+
+    #[test]
+    fn restore_from_bytes_clone_sees_new_state() {
+        let store = TensorStore::new();
+        let clone = store.clone();
+
+        // Add data to original
+        let mut data = TensorData::new();
+        data.set("v", TensorValue::Scalar(ScalarValue::Int(1)));
+        store.put("a:1", data).unwrap();
+
+        // Create snapshot of different data
+        let other = TensorStore::new();
+        let mut data2 = TensorData::new();
+        data2.set("v", TensorValue::Scalar(ScalarValue::Int(2)));
+        other.put("b:1", data2).unwrap();
+        let bytes = other.snapshot_bytes().unwrap();
+
+        // Restore on original — clone should see new state
+        store.restore_from_bytes(&bytes).unwrap();
+
+        assert!(clone.exists("b:1"), "clone must see restored data");
+        assert!(!clone.exists("a:1"), "clone must not see old data");
+    }
+
+    #[test]
+    fn restore_from_bytes_rebuilds_bloom_filter() {
+        let store = TensorStore::with_bloom_filter(1000, 0.01);
+
+        // Add keys
+        let mut data = TensorData::new();
+        data.set("v", TensorValue::Scalar(ScalarValue::Int(1)));
+        store.put("bloom:1", data.clone()).unwrap();
+        store.put("bloom:2", data.clone()).unwrap();
+
+        // Create snapshot of different keys
+        let other = TensorStore::new();
+        other.put("new:1", data.clone()).unwrap();
+        other.put("new:2", data).unwrap();
+        let bytes = other.snapshot_bytes().unwrap();
+
+        // Restore — Bloom must be rebuilt from new keys
+        store.restore_from_bytes(&bytes).unwrap();
+
+        // New keys should be found (no false negatives from stale Bloom)
+        assert!(store.exists("new:1"));
+        assert!(store.exists("new:2"));
+        // Old keys should not exist
+        assert!(!store.exists("bloom:1"));
+        assert!(!store.exists("bloom:2"));
     }
 }

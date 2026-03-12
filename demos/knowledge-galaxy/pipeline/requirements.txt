@@ -1,0 +1,5 @@
+sentence-transformers>=2.2
+umap-learn>=0.5
+numpy>=1.24
+requests
+tqdm
