@@ -1,0 +1,82 @@
+resume
+
+---
+
+resume
+
+---
+
+Yes please
+
+---
+
+Run Benchmarks
+cancelled 48 minutes ago in 45m 16s
+
+3s
+3s
+1s
+3s
+10s
+4s
+57s
+28s
+43m 23s
+Benchmarking relational_execute/insert: Warming up for 3.0000 s
+Benchmarking relational_execute/insert: Collecting 100 samples in estimated 5.0105 s (121k iterations)
+Benchmarking relational_execute/insert: Analyzing
+relational_execute/insert
+                        time:   [39.740 µs 40.455 µs 41.096 µs]
+Found 16 outliers among 100 measurements (16.00%)
+  10 (10.00%) low severe
+  4 (4.00%) high mild
+  2 (2.00%) high severe
+Benchmarking relational_execute/update
+Benchmarking relational_execute/update: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 9.1s, or reduce sample count to 50.
+Benchmarking relational_execute/update: Collecting 100 samples in estimated 9.0985 s (100 iterations)
+Benchmarking relational_execute/update: Analyzing
+relational_execute/update
+                        time:   [89.798 ms 89.890 ms 89.992 ms]
+Found 9 outliers among 100 measurements (9.00%)
+  5 (5.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking graph_execute/node_create
+Benchmarking graph_execute/node_create: Warming up for 3.0000 s
+Benchmarking graph_execute/node_create: Collecting 100 samples in estimated 5.0048 s (924k iterations)
+Benchmarking graph_execute/node_create: Analyzing
+graph_execute/node_create
+                        time:   [5.6026 µs 5.6350 µs 5.6665 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  6 (6.00%) low severe
+  1 (1.00%) high severe
+Benchmarking graph_execute/edge_create
+Benchmarking graph_execute/edge_create: Warming up for 3.0000 s
+Benchmarking graph_execute/edge_create: Collecting 100 samples in estimated 5.0005 s (677k iterations)
+Benchmarking graph_execute/edge_create: Analyzing
+graph_execute/edge_create
+                        time:   [20.661 µs 21.403 µs 22.026 µs]
+Benchmarking graph_execute/neighbors
+Benchmarking graph_execute/neighbors: Warming up for 3.0000 s
+Benchmarking graph_execute/neighbors: Collecting 100 samples in estimated 5.0004 s (1.7M iterations)
+Benchmarking graph_execute/neighbors: Analyzing
+graph_execute/neighbors time:   [2.9946 µs 3.0016 µs 3.0139 µs]
+Found 6 outliers among 100 measurements (6.00%)
+  1 (1.00%) high mild
+  5 (5.00%) high severe
+Benchmarking graph_execute/path
+Benchmarking graph_execute/path: Warming up for 3.0000 s
+Benchmarking graph_execute/path: Collecting 100 samples in estimated 5.0097 s (227k iterations)
+Benchmarking graph_execute/path: Analyzing
+graph_execute/path      time:   [21.981 µs 22.058 µs 22.157 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  2 (2.00%) high mild
+  6 (6.00%) high severe
+Benchmarking graph_execute/find_node
+Benchmarking graph_execute/find_node: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 1707.7s, or reduce sample count to 10.
+Benchmarking graph_execute/find_node: Collecting 100 samples in estimated 1707.7 s (100 iterations)
+Error: The operation was canceled.
