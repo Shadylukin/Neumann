@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "501ea16005bb",
+  "session_id": "f409b145-d62e-472d-b034-4de3a5b13ab9",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T19:07:26.156968Z",
+  "branch": "publish-and-snapshot-improvements",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-pr.yml"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-6",
+  "turn_id": "7ad68e822aac",
+  "token_usage": {
+    "input_tokens": 1167,
+    "cache_creation_tokens": 2225966,
+    "cache_read_tokens": 77178409,
+    "output_tokens": 229105,
+    "api_call_count": 756
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T19:07:01.120398Z",
+    "agent_lines": 0,
+    "human_added": 35,
+    "human_modified": 16,
+    "human_removed": 0,
+    "total_committed": 35,
+    "agent_percentage": 0
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "501ea16005bb",
+  "strategy": "manual-commit",
+  "branch": "publish-and-snapshot-improvements",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/bench-pr.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/50/1ea16005bb/0/metadata.json",
+      "transcript": "/50/1ea16005bb/0/full.jsonl",
+      "content_hash": "/50/1ea16005bb/0/content_hash.txt",
+      "prompt": "/50/1ea16005bb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1167,
+    "cache_creation_tokens": 2225966,
+    "cache_read_tokens": 77178409,
+    "output_tokens": 229105,
+    "api_call_count": 756
+  }
+}
