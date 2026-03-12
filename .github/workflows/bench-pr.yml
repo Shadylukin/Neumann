@@ -36,27 +36,25 @@ jobs:
         id: crates
         run: |
           BASE_SHA=${{ github.event.pull_request.base.sha }}
-          PKGS=""
+          DIRS=""
           for dir in tensor_store relational_engine graph_engine \
                      vector_engine tensor_chain query_router \
                      tensor_compress neumann_parser tensor_blob \
                      tensor_cache tensor_vault tensor_checkpoint \
-                     tensor_unified tensor_spatial neumann_server; do
+                     tensor_unified tensor_spatial neumann_server \
+                     neumann_shell; do
             if ! git diff --quiet "${BASE_SHA}...HEAD" -- "$dir/"; then
-              PKGS="$PKGS -p $dir"
+              DIRS="$DIRS $dir"
             fi
           done
-          # neumann_shell directory has package name "neumann"
-          if ! git diff --quiet "${BASE_SHA}...HEAD" -- neumann_shell/; then
-            PKGS="$PKGS -p neumann"
-          fi
-          if [ -z "$PKGS" ]; then
+          DIRS=$(echo "$DIRS" | xargs)
+          if [ -z "$DIRS" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "No benchmarkable crates changed — skipping"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "packages=$PKGS" >> "$GITHUB_OUTPUT"
-            echo "Packages to benchmark:$PKGS"
+            echo "dirs=$DIRS" >> "$GITHUB_OUTPUT"
+            echo "Changed crate dirs: $DIRS"
           fi
 
       - name: Try to download main baseline
@@ -111,8 +109,21 @@ jobs:
           steps.baseline.outcome == 'failure'
         working-directory: base
         run: |
-          cargo bench ${{ steps.crates.outputs.packages }} \
-            --bench '*' -- --save-baseline base
+          PKGS=""
+          for dir in ${{ steps.crates.outputs.dirs }}; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              pkg=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" \
+                    | head -1)
+              if [ -n "$pkg" ]; then
+                PKGS="$PKGS -p $pkg"
+              fi
+            fi
+          done
+          echo "Benchmarking base packages:$PKGS"
+          if [ -n "$PKGS" ]; then
+            # shellcheck disable=SC2086
+            cargo bench $PKGS --bench '*' -- --save-baseline base
+          fi
 
       - name: Copy cached baseline
         if: >-
@@ -124,8 +135,21 @@ jobs:
       - name: Benchmark PR branch
         if: steps.crates.outputs.skip != 'true'
         run: |
-          cargo bench ${{ steps.crates.outputs.packages }} \
-            --bench '*' -- --save-baseline pr
+          PKGS=""
+          for dir in ${{ steps.crates.outputs.dirs }}; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              pkg=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" \
+                    | head -1)
+              if [ -n "$pkg" ]; then
+                PKGS="$PKGS -p $pkg"
+              fi
+            fi
+          done
+          echo "Benchmarking PR packages:$PKGS"
+          if [ -n "$PKGS" ]; then
+            # shellcheck disable=SC2086
+            cargo bench $PKGS --bench '*' -- --save-baseline pr
+          fi
 
       - name: Compare benchmarks with per-crate thresholds
         if: steps.crates.outputs.skip != 'true'
