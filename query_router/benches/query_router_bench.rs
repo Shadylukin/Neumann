@@ -122,9 +122,21 @@ fn bench_graph_execute(c: &mut Criterion) {
         });
     });
 
+    // Use a dedicated router so find_node isn't affected by accumulated
+    // nodes from the node_create benchmark above.
+    let find_router = QueryRouter::new();
+    for i in 0..100 {
+        find_router
+            .execute_parsed(&format!(
+                "NODE CREATE person {{id: {}, name: 'person{}'}}",
+                i, i
+            ))
+            .unwrap();
+    }
+    group.sample_size(10);
     group.bench_function("find_node", |b| {
         b.iter(|| {
-            let result = router
+            let result = find_router
                 .execute_parsed(black_box("FIND NODE WHERE id > 0"))
                 .unwrap();
             black_box(result);
