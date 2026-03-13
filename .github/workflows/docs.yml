@@ -172,7 +172,7 @@ jobs:
             packages: >-
               --package tensor_chain
               --package query_router
-              --package neumann
+              --package neumann-db
               --package neumann_server
             filter: '.'
     steps:
