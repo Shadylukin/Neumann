@@ -1,0 +1,240 @@
+<task-notification>
+<task-id>bzsuwwcng</task-id>
+<tool-use-id>toolu_01GyRCXkg9KPmXnDcRrSmkcX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-lukin-Neumann/tasks/bzsuwwcng.output</output-file>
+<status>completed</status>
+<summary>Background command "Run all workspace tests" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: /private/tmp/claude-501/-Users-lukin-Neumann/tasks/bzsuwwcng.output
+
+---
+
+Docker build failed
+
+---
+
+Ci failing on 68
+
+---
+
+Can you trigger pr 68 to run CI again?
+
+---
+
+Merge then I would like to trigger a release so we can be available to install via cargo and homebrew
+
+---
+
+v0.4.0
+
+---
+
+v0.4.0
+
+---
+
+Build aarch64-apple-darwin
+failed now in 3m 16s
+
+4s
+6s
+8s
+0s
+14s
+0s
+2m 37s
+1s
+0s
+3s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1. and Build x86_64-unknown-linux-gnu
+failed now in 3m 35s
+
+2s
+3s
+10s
+11s
+0s
+0s
+3m 4s
+1s
+0s
+2s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1. and Build x86_64-apple-darwin
+failed now in 4m 23s
+
+4s
+7s
+12s
+0s
+17s
+0s
+3m 36s
+1s
+0s
+3s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1. and Build x86_64-pc-windows-msvc
+failed 2 minutes ago in 6m 48s
+
+2s
+10s
+23s
+0s
+0s
+14s
+5m 44s
+0s
+2s
+8s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1.
+
+---
+
+Publish to crates.io
+failed now in 3m 42s
+
+1s
+2s
+10s
+10s
+3m 17s
+   Compiling blake3 v1.8.3
+   Compiling serde_derive v1.0.228
+   Compiling bitcode_derive v0.6.9
+   Compiling thiserror-impl v2.0.18
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling thiserror v2.0.18
+   Compiling serde v1.0.228
+   Compiling bitcode v0.6.9
+   Compiling bitvec v1.0.1
+   Compiling tensor_compress v0.4.0
+   Compiling zstd v0.13.3
+   Compiling tensor_store v0.4.0 (/home/runner/work/Neumann/Neumann/target/package/tensor_store-0.4.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.28s
+   Uploading tensor_store v0.4.0 (/home/runner/work/Neumann/Neumann/tensor_store)
+    Uploaded tensor_store v0.4.0 to registry `crates-io`
+note: waiting for tensor_store v0.4.0 to be available at registry `crates-io`
+help: you may press ctrl-c to skip waiting; the crate should be available shortly
+   Published tensor_store v0.4.0 at registry `crates-io`
+Published tensor_store successfully.
+Publishing relational_engine (attempt 1/3)...
+    Updating crates.io index
+   Packaging relational_engine v0.4.0 (/home/runner/work/Neumann/Neumann/relational_engine)
+    Updating crates.io index
+    Packaged 13 files, 1.2MiB (165.0KiB compressed)
+   Verifying relational_engine v0.4.0 (/home/runner/work/Neumann/Neumann/relational_engine)
+ Downloading crates ...
+  Downloaded dashmap v6.1.0
+  Downloaded itoa v1.0.17
+  Downloaded zmij v1.0.21
+  Downloaded hashbrown v0.14.5
+  Downloaded memchr v2.8.0
+  Downloaded serde_json v1.0.149
+  Downloaded tensor_store v0.4.0
+   Compiling zmij v1.0.21
+   Compiling serde_json v1.0.149
+   Compiling itoa v1.0.17
+   Compiling hashbrown v0.14.5
+   Compiling memchr v2.8.0
+   Compiling tensor_store v0.4.0
+   Compiling dashmap v6.1.0
+   Compiling relational_engine v0.4.0 (/home/runner/work/Neumann/Neumann/target/package/relational_engine-0.4.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.36s
+   Uploading relational_engine v0.4.0 (/home/runner/work/Neumann/Neumann/relational_engine)
+    Uploaded relational_engine v0.4.0 to registry `crates-io`
+note: waiting for relational_engine v0.4.0 to be available at registry `crates-io`
+help: you may press ctrl-c to skip waiting; the crate should be available shortly
+   Published relational_engine v0.4.0 at registry `crates-io`
+Published relational_engine successfully.
+Publishing graph_engine (attempt 1/3)...
+    Updating crates.io index
+   Packaging graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+    Updating crates.io index
+    Packaged 23 files, 1.1MiB (154.4KiB compressed)
+   Verifying graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+   Compiling graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/target/package/graph_engine-0.4.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.78s
+   Uploading graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+error: failed to publish graph_engine v0.4.0 to registry at https://crates.io
+
+Caused by:
+  the remote server responded with an error (status 429 Too Many Requests): You have published too many new crates in a short period of time. Please try again after Fri, 13 Mar 2026 03:55:58 GMT and see https://crates.io/docs/rate-limits for more details.
+Retrying graph_engine in 15s...
+Publishing graph_engine (attempt 2/3)...
+    Updating crates.io index
+   Packaging graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+    Updating crates.io index
+    Packaged 23 files, 1.1MiB (154.4KiB compressed)
+   Verifying graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+   Compiling graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/target/package/graph_engine-0.4.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.56s
+   Uploading graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+error: failed to publish graph_engine v0.4.0 to registry at https://crates.io
+
+Caused by:
+  the remote server responded with an error (status 429 Too Many Requests): You have published too many new crates in a short period of time. Please try again after Fri, 13 Mar 2026 03:55:58 GMT and see https://crates.io/docs/rate-limits for more details.
+Retrying graph_engine in 30s...
+Publishing graph_engine (attempt 3/3)...
+    Updating crates.io index
+   Packaging graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+    Updating crates.io index
+    Packaged 23 files, 1.1MiB (154.4KiB compressed)
+   Verifying graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+   Compiling graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/target/package/graph_engine-0.4.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.60s
+   Uploading graph_engine v0.4.0 (/home/runner/work/Neumann/Neumann/graph_engine)
+error: failed to publish graph_engine v0.4.0 to registry at https://crates.io
+
+Caused by:
+  the remote server responded with an error (status 429 Too Many Requests): You have published too many new crates in a short period of time. Please try again after Fri, 13 Mar 2026 03:55:58 GMT and see https://crates.io/docs/rate-limits for more details.
+Error: Failed to publish graph_engine after 3 attempts
+Error: Process completed with exit code 1.
+
+---
+
+Publish to crates.io
+failed 2 hours ago in 10m 38s
+
+1s
+3s
+13s
+17s
+10m 1s
+Run set -euo pipefail
+Publishing tensor_compress (attempt 1/5)...
+    Updating crates.io index
+error: crate tensor_compress@0.4.0 already exists on crates.io index
+Rate limited. Retrying tensor_compress in 60s...
+Publishing tensor_compress (attempt 2/5)...
+    Updating crates.io index
+error: crate tensor_compress@0.4.0 already exists on crates.io index
+Rate limited. Retrying tensor_compress in 120s...
+Publishing tensor_compress (attempt 3/5)...
+    Updating crates.io index
+error: crate tensor_compress@0.4.0 already exists on crates.io index
+Rate limited. Retrying tensor_compress in 180s...
+Publishing tensor_compress (attempt 4/5)...
+    Updating crates.io index
+error: crate tensor_compress@0.4.0 already exists on crates.io index
+Rate limited. Retrying tensor_compress in 240s...
+Publishing tensor_compress (attempt 5/5)...
+    Updating crates.io index
+error: crate tensor_compress@0.4.0 already exists on crates.io index
+Error: Failed to publish tensor_compress after 5 attempts
+Error: Process completed with exit code 1.
