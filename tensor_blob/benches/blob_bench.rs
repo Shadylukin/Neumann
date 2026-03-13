@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(missing_docs)]
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
 use tensor_blob::{BlobConfig, BlobStore, PutOptions};
 use tensor_store::TensorStore;
 use tokio::runtime::Runtime;

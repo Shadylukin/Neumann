@@ -4,7 +4,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
 use tensor_checkpoint::{CheckpointConfig, CheckpointManager, FileCheckpointStore};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
 

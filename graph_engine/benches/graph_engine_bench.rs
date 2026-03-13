@@ -2,8 +2,9 @@
 #![allow(missing_docs)]
 use std::collections::HashMap;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use graph_engine::{Direction, GraphEngine, PropertyValue};
+use std::hint::black_box;
 
 fn create_props(id: i64) -> HashMap<String, PropertyValue> {
     let mut props = HashMap::new();

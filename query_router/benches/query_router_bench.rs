@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(missing_docs)]
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use query_router::QueryRouter;
+use std::hint::black_box;
 
 fn bench_relational_execute(c: &mut Criterion) {
     let mut group = c.benchmark_group("relational_execute");

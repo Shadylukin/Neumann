@@ -4,9 +4,10 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use graph_engine::{GraphEngine, PropertyValue};
 use peak_alloc::PeakAlloc;
+use std::hint::black_box;
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig};
 

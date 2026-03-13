@@ -7,8 +7,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use rand::Rng;
+use std::hint::black_box;
 use vector_engine::{HNSWConfig, HNSWIndex, VectorEngine};
 
 fn random_vector(dim: usize) -> Vec<f32> {

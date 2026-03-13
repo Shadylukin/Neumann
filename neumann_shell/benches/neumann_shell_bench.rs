@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(missing_docs)]
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use neumann_shell::Shell;
 use peak_alloc::PeakAlloc;
+use std::hint::black_box;
 
 #[global_allocator]
 static PEAK_ALLOC: PeakAlloc = PeakAlloc;

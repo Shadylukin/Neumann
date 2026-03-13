@@ -4,8 +4,9 @@
 // This allow is required because we cannot add doc comments to macro-generated code.
 #![allow(missing_docs)]
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::sync::Arc;
 
 use graph_engine::GraphEngine;
