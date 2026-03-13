@@ -205,8 +205,7 @@ jobs:
         run: |
           ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
           cosign sign-blob --yes \
-            --output-signature "$ARTIFACT.sig" \
-            --output-certificate "$ARTIFACT.pem" \
+            --bundle "$ARTIFACT.bundle" \
             "$ARTIFACT"
 
       - name: Upload Release Asset
@@ -219,11 +218,9 @@ jobs:
           tag_name: ${{ needs.create-release.outputs.version }}
           files: |
             neumann-*.tar.gz
-            neumann-*.tar.gz.sig
-            neumann-*.tar.gz.pem
+            neumann-*.tar.gz.bundle
             neumann-*.zip
-            neumann-*.zip.sig
-            neumann-*.zip.pem
+            neumann-*.zip.bundle
 
   docker:
     name: Publish to Docker Hub
