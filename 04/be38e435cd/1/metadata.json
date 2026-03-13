@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "04be38e435cd",
+  "session_id": "f409b145-d62e-472d-b034-4de3a5b13ab9",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T03:27:05.475272Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.toml",
+    "Formula/neumann.rb",
+    "neumann-py/pyproject.toml",
+    "neumann-ts/package.json"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-6",
+  "turn_id": "8064158a7d42",
+  "token_usage": {
+    "input_tokens": 1260,
+    "cache_creation_tokens": 2460984,
+    "cache_read_tokens": 85884112,
+    "output_tokens": 258165,
+    "api_call_count": 829
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T03:26:40.489221Z",
+    "agent_lines": 0,
+    "human_added": 53,
+    "human_modified": 21,
+    "human_removed": 0,
+    "total_committed": 53,
+    "agent_percentage": 0
+  }
+}
