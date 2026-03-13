@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(missing_docs)]
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use peak_alloc::PeakAlloc;
+use std::hint::black_box;
 use tensor_compress::{
     compress_ids, decompress_ids, rle_decode, rle_encode, tt_cosine_similarity, tt_decompose,
     tt_dot_product, tt_reconstruct, TTConfig,

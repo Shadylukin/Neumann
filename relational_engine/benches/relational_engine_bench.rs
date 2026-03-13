@@ -3,10 +3,11 @@
 
 use std::collections::HashMap;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use relational_engine::{
     Column, ColumnType, ColumnarScanOptions, Condition, RelationalEngine, Schema, Value,
 };
+use std::hint::black_box;
 
 fn create_users_schema() -> Schema {
     Schema::new(vec![

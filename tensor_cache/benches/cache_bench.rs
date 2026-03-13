@@ -4,7 +4,8 @@
 
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
 use tensor_cache::{Cache, CacheConfig, DistanceMetric, SparseVector};
 
 fn create_test_vector(dim: usize, seed: usize) -> Vec<f32> {

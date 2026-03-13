@@ -2,7 +2,8 @@
 #![allow(missing_docs)]
 use std::{path::PathBuf, sync::Arc, thread};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use tensor_compress::TTConfig;
 use tensor_store::{
     ArchetypeRegistry, BloomFilter, DeltaVector, HNSWIndex, KMeans, KMeansConfig, KMeansInit,

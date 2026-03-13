@@ -2,9 +2,10 @@
 
 #![allow(missing_docs)]
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use std::hint::black_box;
 use tensor_spatial::{
     BoundingBox, BoundingBox3D, SpatialConfig, SpatialEntry, SpatialEntry3D, SpatialIndex,
     SpatialIndex3D, SplitStrategy,

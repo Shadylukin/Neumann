@@ -7,7 +7,8 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use tensor_store::HNSWIndex;
 
 fn generate_random_vector(dim: usize, seed: u64) -> Vec<f32> {
