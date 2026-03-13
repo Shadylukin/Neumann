@@ -645,9 +645,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan CLI image for vulnerabilities
-        # v0.30.0
+        # v0.35.0
         uses: >-
-          aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284
+          aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: neumann-cli:ci
           format: table
@@ -656,9 +656,9 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Server image for vulnerabilities
-        # v0.30.0
+        # v0.35.0
         uses: >-
-          aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284
+          aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: neumann-server:ci
           format: table
