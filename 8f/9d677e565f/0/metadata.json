@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "8f9d677e565f",
+  "session_id": "f409b145-d62e-472d-b034-4de3a5b13ab9",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-13T02:08:36.542023Z",
+  "branch": "dependabot/cargo/criterion-0.8.2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "query_router/benches/query_router_bench.rs",
+    "tensor_checkpoint/benches/checkpoint_bench.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-6",
+  "turn_id": "8064158a7d42",
+  "token_usage": {
+    "input_tokens": 1260,
+    "cache_creation_tokens": 2460984,
+    "cache_read_tokens": 85884112,
+    "output_tokens": 258165,
+    "api_call_count": 829
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-13T02:07:50.673457Z",
+    "agent_lines": 0,
+    "human_added": 390,
+    "human_modified": 2,
+    "human_removed": 0,
+    "total_committed": 390,
+    "agent_percentage": 0
+  }
+}
