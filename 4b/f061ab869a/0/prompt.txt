@@ -1,0 +1,16 @@
+<task-notification>
+<task-id>bzsuwwcng</task-id>
+<tool-use-id>toolu_01GyRCXkg9KPmXnDcRrSmkcX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-lukin-Neumann/tasks/bzsuwwcng.output</output-file>
+<status>completed</status>
+<summary>Background command "Run all workspace tests" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: /private/tmp/claude-501/-Users-lukin-Neumann/tasks/bzsuwwcng.output
+
+---
+
+Docker build failed
+
+---
+
+Ci failing on 68
