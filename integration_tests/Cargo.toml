@@ -21,7 +21,7 @@ tensor_unified.workspace = true
 tensor_chain.workspace = true
 query_router.workspace = true
 neumann_parser.workspace = true
-neumann.workspace = true
+neumann-db.workspace = true
 neumann_client = { workspace = true, features = ["full"] }
 neumann_server.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }

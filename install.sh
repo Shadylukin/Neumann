@@ -137,7 +137,7 @@ build_from_source() {
     cd "${tmpdir}/neumann"
 
     info "Building release binary (this may take a few minutes)..."
-    cargo build --release --package neumann || \
+    cargo build --release --package neumann-db || \
         error "Build failed"
 
     cp "target/release/${BINARY_NAME}" "${tmpdir}/${BINARY_NAME}"

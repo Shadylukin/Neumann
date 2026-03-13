@@ -1,5 +1,5 @@
 [package]
-name = "neumann"
+name = "neumann-db"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

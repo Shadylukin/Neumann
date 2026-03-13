@@ -122,7 +122,7 @@ jobs:
         shell: bash
         run: |
           cargo build --release \
-            --package neumann \
+            --package neumann-db \
             --target ${{ matrix.target }}
 
       - name: Package (Unix)
@@ -400,7 +400,7 @@ jobs:
           sleep $LAYER_WAIT
 
           # L9: CLI binary
-          publish_crate neumann
+          publish_crate neumann-db
 
   update-homebrew:
     name: Update Homebrew Tap

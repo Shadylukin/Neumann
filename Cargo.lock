@@ -1559,7 +1559,7 @@ dependencies = [
  "futures",
  "graph_engine",
  "libc",
- "neumann",
+ "neumann-db",
  "neumann_client",
  "neumann_parser",
  "neumann_server",
@@ -1801,7 +1801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
-name = "neumann"
+name = "neumann-db"
 version = "0.4.0"
 dependencies = [
  "base64 0.22.1",

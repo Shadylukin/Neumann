@@ -63,7 +63,7 @@ RUN mkdir -p tensor_store/src && echo "pub fn dummy() {}" > tensor_store/src/lib
     mkdir -p examples/src && echo "pub fn dummy() {}" > examples/src/lib.rs
 
 # Build dependencies only (this layer is cached)
-RUN cargo build --release --package neumann 2>/dev/null || true
+RUN cargo build --release --package neumann-db 2>/dev/null || true
 RUN cargo build --release --package neumann_server 2>/dev/null || true
 
 # Remove dummy files
@@ -115,7 +115,7 @@ COPY tensor_spatial/benches tensor_spatial/benches
 RUN find . -name "*.rs" -exec touch {} \;
 
 # Build release binaries
-RUN cargo build --release --package neumann
+RUN cargo build --release --package neumann-db
 RUN cargo build --release --package neumann_server
 
 # ==============================================================================
