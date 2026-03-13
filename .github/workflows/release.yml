@@ -315,17 +315,23 @@ jobs:
           publish_crate() {
             local crate="$1"
             local attempt=0
-            local max=3
+            local max=5
             while [ $attempt -lt $max ]; do
               attempt=$((attempt + 1))
               echo "Publishing $crate (attempt $attempt/$max)..."
-              if cargo publish --package "$crate"; then
+              local output
+              output=$(cargo publish --package "$crate" 2>&1) && {
                 echo "Published $crate successfully."
+                return 0
+              }
+              echo "$output"
+              if echo "$output" | grep -q "already uploaded"; then
+                echo "$crate already published, skipping."
                 return 0
               fi
               if [ $attempt -lt $max ]; then
-                local delay=$((attempt * 15))
-                echo "Retrying $crate in ${delay}s..."
+                local delay=$((attempt * 60))
+                echo "Rate limited. Retrying $crate in ${delay}s..."
                 sleep "$delay"
               fi
             done
@@ -333,54 +339,65 @@ jobs:
             return 1
           }
 
+          LAYER_WAIT=60
+          CRATE_WAIT=30
+
           # L1: Foundation (no internal deps)
           publish_crate tensor_compress
+          sleep $CRATE_WAIT
           publish_crate neumann_parser
+          sleep $CRATE_WAIT
           publish_crate tensor_spatial
 
           echo "Waiting for crates.io index propagation..."
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L2: Core storage
           publish_crate tensor_store
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L3: Engine layer
           publish_crate relational_engine
+          sleep $CRATE_WAIT
           publish_crate graph_engine
+          sleep $CRATE_WAIT
           publish_crate vector_engine
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L4: Specialized storage
           publish_crate tensor_vault
+          sleep $CRATE_WAIT
           publish_crate tensor_cache
+          sleep $CRATE_WAIT
           publish_crate tensor_blob
+          sleep $CRATE_WAIT
           publish_crate tensor_chain
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L5: Checkpoint
           publish_crate tensor_checkpoint
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L6: Unified (depends on engines)
           publish_crate tensor_unified
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L7: Query router (depends on everything)
           publish_crate query_router
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L8: Server and client
           publish_crate neumann_server
+          sleep $CRATE_WAIT
           publish_crate neumann_client
 
-          sleep 45
+          sleep $LAYER_WAIT
 
           # L9: CLI binary
           publish_crate neumann
