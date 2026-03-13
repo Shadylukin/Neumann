@@ -1,7 +1,7 @@
 class Neumann < Formula
   desc "Unified tensor database combining relational, graph, and vector storage"
   homepage "https://github.com/Shadylukin/Neumann"
-  version "0.3.1"
+  version "0.4.0"
   license "MIT"
 
   on_macos do

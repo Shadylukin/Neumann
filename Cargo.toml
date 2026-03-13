@@ -25,7 +25,7 @@ members = [
 exclude = ["fuzz", "neumann-py/neumann-native", "experiments", "seed_model", "demos/knowledge-galaxy"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Lukin Ackroyd <lukin@scrunchee.ai>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -98,23 +98,23 @@ bytes = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 
 # Internal crates (path + version for crates.io)
-tensor_compress = { path = "tensor_compress", version = "=0.3.1" }
-neumann_parser = { path = "neumann_parser", version = "=0.3.1" }
-tensor_spatial = { path = "tensor_spatial", version = "=0.3.1" }
-tensor_store = { path = "tensor_store", version = "=0.3.1" }
-relational_engine = { path = "relational_engine", version = "=0.3.1" }
-graph_engine = { path = "graph_engine", version = "=0.3.1" }
-vector_engine = { path = "vector_engine", version = "=0.3.1" }
-tensor_vault = { path = "tensor_vault", version = "=0.3.1" }
-tensor_cache = { path = "tensor_cache", version = "=0.3.1" }
-tensor_blob = { path = "tensor_blob", version = "=0.3.1" }
-tensor_chain = { path = "tensor_chain", version = "=0.3.1" }
-tensor_checkpoint = { path = "tensor_checkpoint", version = "=0.3.1" }
-tensor_unified = { path = "tensor_unified", version = "=0.3.1" }
-query_router = { path = "query_router", version = "=0.3.1" }
-neumann_client = { path = "neumann_client", version = "=0.3.1" }
-neumann_server = { path = "neumann_server", version = "=0.3.1" }
-neumann = { path = "neumann_shell", version = "=0.3.1" }
+tensor_compress = { path = "tensor_compress", version = "=0.4.0" }
+neumann_parser = { path = "neumann_parser", version = "=0.4.0" }
+tensor_spatial = { path = "tensor_spatial", version = "=0.4.0" }
+tensor_store = { path = "tensor_store", version = "=0.4.0" }
+relational_engine = { path = "relational_engine", version = "=0.4.0" }
+graph_engine = { path = "graph_engine", version = "=0.4.0" }
+vector_engine = { path = "vector_engine", version = "=0.4.0" }
+tensor_vault = { path = "tensor_vault", version = "=0.4.0" }
+tensor_cache = { path = "tensor_cache", version = "=0.4.0" }
+tensor_blob = { path = "tensor_blob", version = "=0.4.0" }
+tensor_chain = { path = "tensor_chain", version = "=0.4.0" }
+tensor_checkpoint = { path = "tensor_checkpoint", version = "=0.4.0" }
+tensor_unified = { path = "tensor_unified", version = "=0.4.0" }
+query_router = { path = "query_router", version = "=0.4.0" }
+neumann_client = { path = "neumann_client", version = "=0.4.0" }
+neumann_server = { path = "neumann_server", version = "=0.4.0" }
+neumann = { path = "neumann_shell", version = "=0.4.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
