@@ -325,7 +325,7 @@ jobs:
                 return 0
               }
               echo "$output"
-              if echo "$output" | grep -q "already uploaded"; then
+              if echo "$output" | grep -qE "already uploaded|already exists"; then
                 echo "$crate already published, skipping."
                 return 0
               fi
