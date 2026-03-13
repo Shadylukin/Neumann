@@ -39,8 +39,11 @@ brew install neumann
 If you have Rust installed:
 
 ```bash
-cargo install neumann_shell
+cargo install neumann-db
 ```
+
+This installs the `neumann` binary with all engines (relational, graph, vector,
+vault, cache, blob, checkpoint, chain).
 
 To install the gRPC server:
 
@@ -93,7 +96,7 @@ git clone https://github.com/Shadylukin/Neumann.git
 cd Neumann
 
 # Build in release mode
-cargo build --release --package neumann_shell
+cargo build --release --package neumann-db
 
 # Install locally
 cargo install --path neumann_shell
@@ -213,7 +216,7 @@ brew upgrade neumann
 ### Cargo
 
 ```bash
-cargo install neumann_shell --force
+cargo install neumann-db
 ```
 
 ### Python SDK

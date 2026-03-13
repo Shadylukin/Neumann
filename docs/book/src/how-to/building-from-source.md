@@ -64,7 +64,7 @@ cargo +nightly fuzz run parser_parse -- -max_total_time=60
 
 ```bash
 # Debug mode
-cargo run -p neumann_shell
+cargo run -p neumann-db
 
 # Release mode
 cargo run --release -p neumann_shell

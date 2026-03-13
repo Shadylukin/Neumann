@@ -67,7 +67,19 @@ with Python, TypeScript, and the CLI.
 ## Quick Start
 
 ```bash
+# Homebrew (macOS/Linux)
+brew tap Shadylukin/tap && brew install neumann
+
+# Cargo (crates.io)
+cargo install neumann-db
+
+# Or use the install script
 curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+```
+
+Then start the shell:
+
+```bash
 neumann
 ```
 
@@ -155,7 +167,7 @@ Benchmarked on Apple M-series silicon:
 
 ## Status
 
-Neumann is pre-1.0 (v0.3.1). Core engines have 95%+ test coverage and
+Neumann is pre-1.0 (v0.4.0). Core engines have 95%+ test coverage and
 139 fuzz targets. Single-node is production-ready. Multi-node consensus
 has comprehensive testing (loom, proptest, deterministic simulation) but
 needs more real-world validation.
