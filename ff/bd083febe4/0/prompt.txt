@@ -1,0 +1,104 @@
+<task-notification>
+<task-id>bzsuwwcng</task-id>
+<tool-use-id>toolu_01GyRCXkg9KPmXnDcRrSmkcX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-lukin-Neumann/tasks/bzsuwwcng.output</output-file>
+<status>completed</status>
+<summary>Background command "Run all workspace tests" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: /private/tmp/claude-501/-Users-lukin-Neumann/tasks/bzsuwwcng.output
+
+---
+
+Docker build failed
+
+---
+
+Ci failing on 68
+
+---
+
+Can you trigger pr 68 to run CI again?
+
+---
+
+Merge then I would like to trigger a release so we can be available to install via cargo and homebrew
+
+---
+
+v0.4.0
+
+---
+
+v0.4.0
+
+---
+
+Build aarch64-apple-darwin
+failed now in 3m 16s
+
+4s
+6s
+8s
+0s
+14s
+0s
+2m 37s
+1s
+0s
+3s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1. and Build x86_64-unknown-linux-gnu
+failed now in 3m 35s
+
+2s
+3s
+10s
+11s
+0s
+0s
+3m 4s
+1s
+0s
+2s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1. and Build x86_64-apple-darwin
+failed now in 4m 23s
+
+4s
+7s
+12s
+0s
+17s
+0s
+3m 36s
+1s
+0s
+3s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1. and Build x86_64-pc-windows-msvc
+failed 2 minutes ago in 6m 48s
+
+2s
+10s
+23s
+0s
+0s
+14s
+5m 44s
+0s
+2s
+8s
+0s
+Run ARTIFACT="neumann-$VERSION-$TARGET.$ARCHIVE"
+Error: must provide --bundle with --signing-config or --use-signing-config
+error during command execution: must provide --bundle with --signing-config or --use-signing-config
+Error: Process completed with exit code 1.
