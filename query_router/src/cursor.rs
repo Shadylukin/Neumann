@@ -178,30 +178,21 @@ impl CursorState {
 }
 
 /// Errors related to cursor operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CursorError {
     /// Invalid cursor token.
+    #[error("Invalid cursor token: {0}")]
     InvalidToken(String),
     /// Cursor has expired.
+    #[error("Cursor expired: {0}")]
     Expired(CursorId),
     /// Cursor not found.
+    #[error("Cursor not found: {0}")]
     NotFound(CursorId),
     /// Maximum cursors exceeded.
+    #[error("Maximum cursor capacity exceeded")]
     CapacityExceeded,
 }
-
-impl std::fmt::Display for CursorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidToken(msg) => write!(f, "Invalid cursor token: {msg}"),
-            Self::Expired(id) => write!(f, "Cursor expired: {id}"),
-            Self::NotFound(id) => write!(f, "Cursor not found: {id}"),
-            Self::CapacityExceeded => write!(f, "Maximum cursor capacity exceeded"),
-        }
-    }
-}
-
-impl std::error::Error for CursorError {}
 
 /// Get current Unix timestamp in seconds.
 fn current_timestamp() -> i64 {

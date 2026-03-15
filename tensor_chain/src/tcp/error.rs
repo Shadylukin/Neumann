@@ -1,79 +1,96 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! TCP transport error types.
 
-use std::fmt;
+use thiserror::Error;
 
-use crate::error::ChainError;
 use crate::tcp::config::SecurityMode;
 
 /// Errors specific to TCP transport operations.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TcpError {
     /// Connection to peer failed.
+    #[error("connection to {peer} failed: {reason}")]
     ConnectionFailed { peer: String, reason: String },
 
     /// Connection was closed by peer.
+    #[error("connection closed by peer")]
     ConnectionClosed,
 
     /// Operation timed out.
+    #[error("{operation} timed out after {timeout_ms}ms")]
     Timeout {
         operation: &'static str,
         timeout_ms: u64,
     },
 
     /// Message exceeds maximum size.
+    #[error("message too large: {size} bytes (max {max_size})")]
     MessageTooLarge { size: usize, max_size: usize },
 
     /// Failed to serialize or deserialize message.
+    #[error("serialization error: {0}")]
     Serialization(String),
 
     /// IO error.
-    Io(std::io::Error),
+    #[error("io error: {0}")]
+    Io(#[source] std::io::Error),
 
     /// Peer not found in connection pool.
+    #[error("peer not found: {0}")]
     PeerNotFound(String),
 
     /// Backpressure: outbound queue full.
+    #[error("backpressure: queue full for {peer} ({queue_size} pending)")]
     BackpressureFull { peer: String, queue_size: usize },
 
     /// TLS error.
+    #[error("TLS error: {0}")]
     TlsError(String),
 
     /// Transport is shutting down.
+    #[error("transport is shutting down")]
     Shutdown,
 
     /// Invalid frame received.
+    #[error("invalid frame: {0}")]
     InvalidFrame(String),
 
     /// Handshake failed.
+    #[error("handshake failed: {0}")]
     HandshakeFailed(String),
 
     /// Identity verification failed during TLS handshake.
+    #[error("identity verification failed for node '{claimed_node_id}': {reason}")]
     IdentityVerificationFailed {
         reason: String,
         claimed_node_id: String,
     },
 
     /// Certificate `NodeId` does not match claimed `NodeId`.
+    #[error("certificate NodeId mismatch: cert='{cert_node_id}', claimed='{claimed_node_id}'")]
     CertificateNodeIdMismatch {
         cert_node_id: String,
         claimed_node_id: String,
     },
 
     /// Client certificate required but not provided.
+    #[error("client certificate required but not provided")]
     ClientCertificateRequired,
 
     /// Compression/decompression error.
+    #[error("compression {operation} error: {message}")]
     Compression {
         operation: &'static str,
         message: String,
     },
 
     /// Rate limited: peer is being sent messages too fast.
+    #[error("rate limited: peer {peer} (available tokens: {available})")]
     RateLimited { peer: String, available: u32 },
 
     /// Connection pool exhausted: no healthy connections available.
+    #[error("pool exhausted for {peer}: {active}/{target} active connections")]
     PoolExhausted {
         peer: String,
         active: usize,
@@ -81,119 +98,26 @@ pub enum TcpError {
     },
 
     /// TLS is required by security mode but not configured.
+    #[error("TLS required by security mode {mode:?}: {reason}")]
     TlsRequired { mode: SecurityMode, reason: String },
 
     /// Mutual TLS (client auth) is required by security mode.
+    #[error("mutual TLS required by security mode {mode:?}: {reason}")]
     MtlsRequired { mode: SecurityMode, reason: String },
 
     /// `NodeId` verification is required by security mode.
+    #[error("NodeId verification required by security mode {mode:?}: {reason}")]
     NodeIdVerificationRequired { mode: SecurityMode, reason: String },
 
     /// Connection rejected: plaintext connection when TLS is required.
+    #[error("plaintext connection rejected from {remote_addr}: TLS is required")]
     PlaintextRejected { remote_addr: String },
 
     /// Connection rejected: no client certificate when mTLS is required.
+    #[error(
+        "connection from {remote_addr} rejected: client certificate required but not provided"
+    )]
     ClientCertMissing { remote_addr: String },
-}
-
-impl fmt::Display for TcpError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ConnectionFailed { peer, reason } => {
-                write!(f, "connection to {peer} failed: {reason}")
-            },
-            Self::ConnectionClosed => write!(f, "connection closed by peer"),
-            Self::Timeout {
-                operation,
-                timeout_ms,
-            } => {
-                write!(f, "{operation} timed out after {timeout_ms}ms")
-            },
-            Self::MessageTooLarge { size, max_size } => {
-                write!(f, "message too large: {size} bytes (max {max_size})")
-            },
-            Self::Serialization(msg) => write!(f, "serialization error: {msg}"),
-            Self::Io(err) => write!(f, "io error: {err}"),
-            Self::PeerNotFound(peer) => write!(f, "peer not found: {peer}"),
-            Self::BackpressureFull { peer, queue_size } => {
-                write!(
-                    f,
-                    "backpressure: queue full for {peer} ({queue_size} pending)"
-                )
-            },
-            Self::TlsError(msg) => write!(f, "TLS error: {msg}"),
-            Self::Shutdown => write!(f, "transport is shutting down"),
-            Self::InvalidFrame(msg) => write!(f, "invalid frame: {msg}"),
-            Self::HandshakeFailed(msg) => write!(f, "handshake failed: {msg}"),
-            Self::IdentityVerificationFailed {
-                reason,
-                claimed_node_id,
-            } => {
-                write!(
-                    f,
-                    "identity verification failed for node '{claimed_node_id}': {reason}"
-                )
-            },
-            Self::CertificateNodeIdMismatch {
-                cert_node_id,
-                claimed_node_id,
-            } => {
-                write!(f, "certificate NodeId mismatch: cert='{cert_node_id}', claimed='{claimed_node_id}'")
-            },
-            Self::ClientCertificateRequired => {
-                write!(f, "client certificate required but not provided")
-            },
-            Self::Compression { operation, message } => {
-                write!(f, "compression {operation} error: {message}")
-            },
-            Self::RateLimited { peer, available } => {
-                write!(
-                    f,
-                    "rate limited: peer {peer} (available tokens: {available})"
-                )
-            },
-            Self::PoolExhausted {
-                peer,
-                active,
-                target,
-            } => {
-                write!(
-                    f,
-                    "pool exhausted for {peer}: {active}/{target} active connections"
-                )
-            },
-            Self::TlsRequired { mode, reason } => {
-                write!(f, "TLS required by security mode {mode:?}: {reason}")
-            },
-            Self::MtlsRequired { mode, reason } => {
-                write!(f, "mutual TLS required by security mode {mode:?}: {reason}")
-            },
-            Self::NodeIdVerificationRequired { mode, reason } => {
-                write!(
-                    f,
-                    "NodeId verification required by security mode {mode:?}: {reason}"
-                )
-            },
-            Self::PlaintextRejected { remote_addr } => {
-                write!(
-                    f,
-                    "plaintext connection rejected from {remote_addr}: TLS is required"
-                )
-            },
-            Self::ClientCertMissing { remote_addr } => {
-                write!(f, "connection from {remote_addr} rejected: client certificate required but not provided")
-            },
-        }
-    }
-}
-
-impl std::error::Error for TcpError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(err) => Some(err),
-            _ => None,
-        }
-    }
 }
 
 impl From<std::io::Error> for TcpError {
@@ -208,18 +132,14 @@ impl From<bitcode::Error> for TcpError {
     }
 }
 
-impl From<TcpError> for ChainError {
-    fn from(err: TcpError) -> Self {
-        Self::NetworkError(err.to_string())
-    }
-}
-
 /// Result type for TCP transport operations.
 pub type TcpResult<T> = std::result::Result<T, TcpError>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::error::ChainError;
 
     #[test]
     fn test_connection_failed_display() {
@@ -355,7 +275,7 @@ mod tests {
     fn test_into_chain_error() {
         let tcp_err = TcpError::ConnectionClosed;
         let chain_err: ChainError = tcp_err.into();
-        assert!(matches!(chain_err, ChainError::NetworkError(_)));
+        assert!(matches!(chain_err, ChainError::TcpTransportError(_)));
     }
 
     #[test]

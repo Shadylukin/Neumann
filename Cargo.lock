@@ -1197,6 +1197,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tensor_store",
+ "thiserror",
  "tracing",
 ]
 
@@ -2496,6 +2497,7 @@ dependencies = [
  "tensor_store",
  "tensor_unified",
  "tensor_vault",
+ "thiserror",
  "tokio",
  "tracing",
  "uuid",
@@ -2691,6 +2693,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tensor_store",
+ "thiserror",
  "tracing",
  "wide",
 ]
@@ -3388,6 +3391,7 @@ dependencies = [
  "serde_json",
  "tensor_spatial",
  "tensor_store",
+ "thiserror",
  "tokio",
  "vector_engine",
 ]
@@ -3404,6 +3408,7 @@ dependencies = [
  "dashmap",
  "graph_engine",
  "hkdf",
+ "parking_lot",
  "peak_alloc",
  "rand 0.9.2",
  "rcgen",
@@ -3413,6 +3418,8 @@ dependencies = [
  "sha2",
  "tensor_compress",
  "tensor_store",
+ "thiserror",
+ "tracing",
  "zeroize",
 ]
 
@@ -3944,6 +3951,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tensor_store",
+ "thiserror",
  "tracing",
 ]
 

@@ -1279,15 +1279,19 @@ impl std::fmt::Debug for RowCursor<'_> {
 
 /// Errors from relational engine operations.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum RelationalError {
     /// Table does not exist.
+    #[error("Table not found: {0}")]
     TableNotFound(String),
     /// Table already exists.
+    #[error("Table already exists: {0}")]
     TableAlreadyExists(String),
     /// Column does not exist in table.
+    #[error("Column not found: {0}")]
     ColumnNotFound(String),
     /// Value type doesn't match column type.
+    #[error("Type mismatch for column {column}: expected {expected:?}")]
     TypeMismatch {
         /// Column name.
         column: String,
@@ -1295,8 +1299,10 @@ pub enum RelationalError {
         expected: ColumnType,
     },
     /// Null value in non-nullable column.
+    #[error("Null not allowed for column: {0}")]
     NullNotAllowed(String),
     /// Index already exists.
+    #[error("Index already exists on {table}.{column}")]
     IndexAlreadyExists {
         /// Table name.
         table: String,
@@ -1304,6 +1310,7 @@ pub enum RelationalError {
         column: String,
     },
     /// Index does not exist.
+    #[error("Index not found on {table}.{column}")]
     IndexNotFound {
         /// Table name.
         table: String,
@@ -1311,14 +1318,19 @@ pub enum RelationalError {
         column: String,
     },
     /// Underlying storage error.
+    #[error("Storage error: {0}")]
     StorageError(String),
     /// Invalid table or column name.
+    #[error("Invalid name: {0}")]
     InvalidName(String),
     /// Transaction not found.
+    #[error("Transaction not found: {0}")]
     TransactionNotFound(u64),
     /// Transaction is not active (already committed or aborted).
+    #[error("Transaction not active: {0}")]
     TransactionInactive(u64),
     /// Lock conflict with another transaction.
+    #[error("Lock conflict: tx {tx_id} blocked by tx {blocking_tx} on {table}.{row_id}")]
     LockConflict {
         /// Transaction requesting the lock.
         tx_id: u64,
@@ -1330,6 +1342,7 @@ pub enum RelationalError {
         row_id: u64,
     },
     /// Lock acquisition timed out.
+    #[error("Lock timeout: tx {tx_id} waiting for {} rows in {table}", row_ids.len())]
     LockTimeout {
         /// Transaction ID.
         tx_id: u64,
@@ -1339,6 +1352,7 @@ pub enum RelationalError {
         row_ids: Vec<u64>,
     },
     /// Rollback failed.
+    #[error("Rollback failed for tx {tx_id}: {reason}")]
     RollbackFailed {
         /// Transaction ID.
         tx_id: u64,
@@ -1346,6 +1360,7 @@ pub enum RelationalError {
         reason: String,
     },
     /// Result set exceeds the maximum allowed size.
+    #[error("{operation} result too large: {actual} rows exceeds maximum of {max}")]
     ResultTooLarge {
         /// Operation name.
         operation: String,
@@ -1355,11 +1370,13 @@ pub enum RelationalError {
         max: usize,
     },
     /// Index data is corrupted.
+    #[error("Index data corrupted: {reason}")]
     IndexCorrupted {
         /// Description of the corruption.
         reason: String,
     },
     /// Schema metadata is corrupted or incomplete.
+    #[error("Schema corrupted for table '{table}': {reason}")]
     SchemaCorrupted {
         /// Table name.
         table: String,
@@ -1367,6 +1384,7 @@ pub enum RelationalError {
         reason: String,
     },
     /// Maximum number of tables exceeded.
+    #[error("Too many tables: {current} tables exceeds maximum of {max}")]
     TooManyTables {
         /// Current table count.
         current: usize,
@@ -1374,6 +1392,7 @@ pub enum RelationalError {
         max: usize,
     },
     /// Maximum number of indexes per table exceeded.
+    #[error("Too many indexes on table '{table}': {current} indexes exceeds maximum of {max}")]
     TooManyIndexes {
         /// Table name.
         table: String,
@@ -1383,6 +1402,7 @@ pub enum RelationalError {
         max: usize,
     },
     /// Query timed out.
+    #[error("Query timeout: {operation} exceeded {timeout_ms}ms")]
     QueryTimeout {
         /// Operation that timed out.
         operation: String,
@@ -1390,6 +1410,7 @@ pub enum RelationalError {
         timeout_ms: u64,
     },
     /// Primary key constraint violation.
+    #[error("Primary key violation on '{table}' columns [{}]: duplicate value '{value}'", columns.join(", "))]
     PrimaryKeyViolation {
         /// Table name.
         table: String,
@@ -1399,6 +1420,7 @@ pub enum RelationalError {
         value: String,
     },
     /// Unique constraint violation.
+    #[error("Unique constraint '{constraint_name}' violation on columns [{}]: duplicate value '{value}'", columns.join(", "))]
     UniqueViolation {
         /// Constraint name.
         constraint_name: String,
@@ -1408,6 +1430,7 @@ pub enum RelationalError {
         value: String,
     },
     /// Foreign key constraint violation on insert/update.
+    #[error("Foreign key constraint '{constraint_name}' violation: value in '{table}' not found in '{referenced_table}'")]
     ForeignKeyViolation {
         /// Constraint name.
         constraint_name: String,
@@ -1417,6 +1440,7 @@ pub enum RelationalError {
         referenced_table: String,
     },
     /// Foreign key restrict prevents delete/update of referenced row.
+    #[error("Foreign key constraint '{constraint_name}' restricts operation: {row_count} row(s) in '{referencing_table}' reference '{table}'")]
     ForeignKeyRestrict {
         /// Constraint name.
         constraint_name: String,
@@ -1428,6 +1452,7 @@ pub enum RelationalError {
         row_count: usize,
     },
     /// Constraint not found.
+    #[error("Constraint '{constraint_name}' not found on table '{table}'")]
     ConstraintNotFound {
         /// Table name.
         table: String,
@@ -1435,6 +1460,7 @@ pub enum RelationalError {
         constraint_name: String,
     },
     /// Constraint already exists.
+    #[error("Constraint '{constraint_name}' already exists on table '{table}'")]
     ConstraintAlreadyExists {
         /// Table name.
         table: String,
@@ -1442,6 +1468,7 @@ pub enum RelationalError {
         constraint_name: String,
     },
     /// Column has a constraint that prevents the operation.
+    #[error("Column '{column}' is part of constraint '{constraint_name}'")]
     ColumnHasConstraint {
         /// Column name.
         column: String,
@@ -1449,6 +1476,7 @@ pub enum RelationalError {
         constraint_name: String,
     },
     /// Cannot add column due to constraint or data issue.
+    #[error("Cannot add column '{column}': {reason}")]
     CannotAddColumn {
         /// Column name.
         column: String,
@@ -1456,6 +1484,7 @@ pub enum RelationalError {
         reason: String,
     },
     /// Column already exists in the table.
+    #[error("Column '{column}' already exists in table '{table}'")]
     ColumnAlreadyExists {
         /// Table name.
         table: String,
@@ -1463,189 +1492,12 @@ pub enum RelationalError {
         column: String,
     },
     /// Condition tree exceeds maximum nesting depth.
+    #[error("Condition nesting exceeds maximum depth of {max_depth}")]
     ConditionTooDeep {
         /// Maximum allowed depth.
         max_depth: usize,
     },
 }
-
-impl std::fmt::Display for RelationalError {
-    #[allow(clippy::too_many_lines)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TableNotFound(t) => write!(f, "Table not found: {t}"),
-            Self::TableAlreadyExists(t) => write!(f, "Table already exists: {t}"),
-            Self::ColumnNotFound(c) => write!(f, "Column not found: {c}"),
-            Self::TypeMismatch { column, expected } => {
-                write!(
-                    f,
-                    "Type mismatch for column {column}: expected {expected:?}"
-                )
-            },
-            Self::NullNotAllowed(c) => write!(f, "Null not allowed for column: {c}"),
-            Self::IndexAlreadyExists { table, column } => {
-                write!(f, "Index already exists on {table}.{column}")
-            },
-            Self::IndexNotFound { table, column } => {
-                write!(f, "Index not found on {table}.{column}")
-            },
-            Self::StorageError(e) => write!(f, "Storage error: {e}"),
-            Self::InvalidName(msg) => write!(f, "Invalid name: {msg}"),
-            Self::TransactionNotFound(tx_id) => {
-                write!(f, "Transaction not found: {tx_id}")
-            },
-            Self::TransactionInactive(tx_id) => {
-                write!(f, "Transaction not active: {tx_id}")
-            },
-            Self::LockConflict {
-                tx_id,
-                blocking_tx,
-                table,
-                row_id,
-            } => {
-                write!(
-                    f,
-                    "Lock conflict: tx {tx_id} blocked by tx {blocking_tx} on {table}.{row_id}"
-                )
-            },
-            Self::LockTimeout {
-                tx_id,
-                table,
-                row_ids,
-            } => {
-                write!(
-                    f,
-                    "Lock timeout: tx {} waiting for {} rows in {}",
-                    tx_id,
-                    row_ids.len(),
-                    table
-                )
-            },
-            Self::RollbackFailed { tx_id, reason } => {
-                write!(f, "Rollback failed for tx {tx_id}: {reason}")
-            },
-            Self::ResultTooLarge {
-                operation,
-                actual,
-                max,
-            } => {
-                write!(
-                    f,
-                    "{operation} result too large: {actual} rows exceeds maximum of {max}"
-                )
-            },
-            Self::IndexCorrupted { reason } => {
-                write!(f, "Index data corrupted: {reason}")
-            },
-            Self::SchemaCorrupted { table, reason } => {
-                write!(f, "Schema corrupted for table '{table}': {reason}")
-            },
-            Self::TooManyTables { current, max } => {
-                write!(
-                    f,
-                    "Too many tables: {current} tables exceeds maximum of {max}"
-                )
-            },
-            Self::TooManyIndexes {
-                table,
-                current,
-                max,
-            } => {
-                write!(
-                    f,
-                    "Too many indexes on table '{table}': {current} indexes exceeds maximum of {max}"
-                )
-            },
-            Self::QueryTimeout {
-                operation,
-                timeout_ms,
-            } => {
-                write!(f, "Query timeout: {operation} exceeded {timeout_ms}ms")
-            },
-            Self::PrimaryKeyViolation {
-                table,
-                columns,
-                value,
-            } => {
-                write!(
-                    f,
-                    "Primary key violation on '{table}' columns [{}]: duplicate value '{value}'",
-                    columns.join(", ")
-                )
-            },
-            Self::UniqueViolation {
-                constraint_name,
-                columns,
-                value,
-            } => {
-                write!(
-                    f,
-                    "Unique constraint '{constraint_name}' violation on columns [{}]: duplicate value '{value}'",
-                    columns.join(", ")
-                )
-            },
-            Self::ForeignKeyViolation {
-                constraint_name,
-                table,
-                referenced_table,
-            } => {
-                write!(
-                    f,
-                    "Foreign key constraint '{constraint_name}' violation: value in '{table}' not found in '{referenced_table}'"
-                )
-            },
-            Self::ForeignKeyRestrict {
-                constraint_name,
-                table,
-                referencing_table,
-                row_count,
-            } => {
-                write!(
-                    f,
-                    "Foreign key constraint '{constraint_name}' restricts operation: {row_count} row(s) in '{referencing_table}' reference '{table}'"
-                )
-            },
-            Self::ConstraintNotFound {
-                table,
-                constraint_name,
-            } => {
-                write!(
-                    f,
-                    "Constraint '{constraint_name}' not found on table '{table}'"
-                )
-            },
-            Self::ConstraintAlreadyExists {
-                table,
-                constraint_name,
-            } => {
-                write!(
-                    f,
-                    "Constraint '{constraint_name}' already exists on table '{table}'"
-                )
-            },
-            Self::ColumnHasConstraint {
-                column,
-                constraint_name,
-            } => {
-                write!(
-                    f,
-                    "Column '{column}' is part of constraint '{constraint_name}'"
-                )
-            },
-            Self::CannotAddColumn { column, reason } => {
-                write!(f, "Cannot add column '{column}': {reason}")
-            },
-            Self::ColumnAlreadyExists { table, column } => {
-                write!(f, "Column '{column}' already exists in table '{table}'")
-            },
-            Self::ConditionTooDeep { max_depth } => {
-                write!(f, "Condition nesting exceeds maximum depth of {max_depth}")
-            },
-        }
-    }
-}
-
-impl std::error::Error for RelationalError {}
 
 impl From<TensorStoreError> for RelationalError {
     fn from(e: TensorStoreError) -> Self {

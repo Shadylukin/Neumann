@@ -8,6 +8,7 @@ use crate::embedding::EmbeddingError;
 use crate::raft_wal::WalError;
 use crate::snapshot_buffer::SnapshotBufferError;
 use crate::snapshot_streaming::StreamingError;
+use crate::tcp::TcpError;
 
 /// Result type for `tensor_chain` operations.
 pub type Result<T> = std::result::Result<T, ChainError>;
@@ -83,6 +84,10 @@ pub enum ChainError {
     /// Network error.
     #[error("network error: {0}")]
     NetworkError(String),
+
+    /// Typed TCP transport error (preserves the original `TcpError` for programmatic matching).
+    #[error(transparent)]
+    TcpTransportError(#[from] TcpError),
 
     /// Serialization error.
     #[error("serialization error: {0}")]
@@ -216,6 +221,22 @@ pub enum ChainError {
     /// Clock error (system time unavailable or invalid).
     #[error("clock error: {0}")]
     ClockError(String),
+}
+
+impl ChainError {
+    /// Returns `true` if this error is likely transient and the operation can be retried.
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::TcpTransportError(
+                TcpError::Timeout { .. }
+                    | TcpError::BackpressureFull { .. }
+                    | TcpError::RateLimited { .. }
+                    | TcpError::ConnectionFailed { .. }
+            )
+        )
+    }
 }
 
 impl From<bitcode::Error> for ChainError {
@@ -445,5 +466,72 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("clock error"));
         assert!(msg.contains("system time before epoch"));
+    }
+
+    #[test]
+    fn test_tcp_transport_error_variant() {
+        let tcp_err = TcpError::ConnectionClosed;
+        let chain_err: ChainError = tcp_err.into();
+        assert!(matches!(chain_err, ChainError::TcpTransportError(_)));
+        assert!(chain_err.to_string().contains("connection closed by peer"));
+    }
+
+    #[test]
+    fn test_tcp_transport_error_transparent_display() {
+        let tcp_err = TcpError::PeerNotFound("node-42".to_string());
+        let chain_err: ChainError = tcp_err.into();
+        assert_eq!(chain_err.to_string(), "peer not found: node-42");
+    }
+
+    #[test]
+    fn test_is_transient_timeout() {
+        let err: ChainError = TcpError::Timeout {
+            operation: "connect",
+            timeout_ms: 5000,
+        }
+        .into();
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_transient_backpressure() {
+        let err: ChainError = TcpError::BackpressureFull {
+            peer: "node1".to_string(),
+            queue_size: 100,
+        }
+        .into();
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_transient_rate_limited() {
+        let err: ChainError = TcpError::RateLimited {
+            peer: "node1".to_string(),
+            available: 0,
+        }
+        .into();
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_transient_connection_failed() {
+        let err: ChainError = TcpError::ConnectionFailed {
+            peer: "node1".to_string(),
+            reason: "refused".to_string(),
+        }
+        .into();
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_transient_false_for_non_transient() {
+        let err: ChainError = TcpError::Shutdown.into();
+        assert!(!err.is_transient());
+
+        let err = ChainError::NetworkError("some error".to_string());
+        assert!(!err.is_transient());
+
+        let err = ChainError::EmptyChain;
+        assert!(!err.is_transient());
     }
 }

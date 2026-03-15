@@ -55,6 +55,7 @@ use std::{
 };
 
 use tokio::{sync::broadcast, task::JoinHandle};
+use tracing::{debug, instrument};
 
 pub use config::{CacheConfig, EvictionStrategy};
 pub use error::{CacheError, Result};
@@ -183,6 +184,7 @@ impl Cache {
 
     /// Tries exact match first, then semantic similarity if embedding is provided.
     #[must_use]
+    #[instrument(skip(self, embedding))]
     pub fn get(&self, prompt: &str, embedding: Option<&[f32]>) -> Option<CacheHit> {
         self.get_with_metric(prompt, embedding, None)
     }
@@ -210,6 +212,7 @@ impl Cache {
             self.stats.record_miss(CacheLayer::Semantic);
         }
 
+        debug!("cache miss");
         None
     }
 
@@ -222,6 +225,7 @@ impl Cache {
         }
 
         self.stats.record_hit(CacheLayer::Exact);
+        debug!("cache hit (exact)");
 
         let response = Self::get_string_field(&data, fields::RESPONSE)?;
         let input_tokens = Self::get_usize_field(&data, fields::INPUT_TOKENS);
@@ -264,6 +268,7 @@ impl Cache {
         }
 
         self.stats.record_hit(CacheLayer::Semantic);
+        debug!(similarity = %similarity, "cache hit (semantic)");
 
         let response = Self::get_string_field(&data, fields::RESPONSE)?;
         let input_tokens = Self::get_usize_field(&data, fields::INPUT_TOKENS);
@@ -301,6 +306,7 @@ impl Cache {
     /// # Errors
     ///
     /// Returns an error if insertion fails due to dimension mismatch or capacity.
+    #[instrument(skip(self, embedding, response))]
     pub fn put(
         &self,
         prompt: &str,
@@ -367,6 +373,7 @@ impl Cache {
         self.index.insert(&sem_key, embedding)?;
         self.stats.increment_size(CacheLayer::Semantic);
 
+        debug!("cache entry stored");
         Ok(())
     }
 
@@ -493,6 +500,7 @@ impl Cache {
     /// # Errors
     ///
     /// Returns an error if storage insertion fails.
+    #[instrument(skip(self, value))]
     pub fn put_simple(&self, key: &str, value: &str) -> Result<()> {
         let exact_count = self.stats.size(CacheLayer::Exact);
         if exact_count >= self.config.exact_capacity {
@@ -527,10 +535,12 @@ impl Cache {
     }
 
     #[must_use]
+    #[instrument(skip(self))]
     pub fn invalidate(&self, prompt: &str) -> bool {
         let key = Self::exact_key(prompt);
         if self.store.delete(&key).is_ok() {
             self.stats.decrement_size(CacheLayer::Exact);
+            debug!("cache entry invalidated");
             true
         } else {
             false
@@ -673,6 +683,7 @@ impl Cache {
         let evicted = self.store.evict_cache(count);
         if evicted > 0 {
             self.stats.record_eviction(evicted);
+            debug!(evicted, "cache entries evicted");
         }
         evicted
     }
@@ -716,6 +727,7 @@ impl Cache {
         // Record all expirations at once
         if cleaned > 0 {
             self.stats.record_expiration(cleaned);
+            debug!(cleaned, "expired cache entries removed");
         }
 
         cleaned

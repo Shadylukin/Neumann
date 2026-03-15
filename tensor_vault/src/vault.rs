@@ -3,15 +3,19 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use parking_lot::Mutex;
 
 use dashmap::DashMap;
 use zeroize::Zeroizing;
 
 use graph_engine::{Direction, GraphEngine, PropertyValue};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
+
+use tracing::{debug, info, instrument, warn};
 
 use crate::{
     access::AccessController,
@@ -395,6 +399,7 @@ impl Vault {
         });
     }
 
+    #[allow(dead_code)]
     fn emit_poison_recovery(&self, context: &str) {
         self.event_handler.on_event(&VaultEvent::PoisonRecovery {
             context: context.into(),
@@ -421,6 +426,7 @@ impl Vault {
     ///
     /// For existing secrets, this adds a new version. Old versions are kept
     /// up to `max_versions` limit.
+    #[instrument(skip(self, value), fields(vault_key = %key))]
     pub fn set(&self, requester: &str, key: &str, value: &str) -> Result<()> {
         self.set_inner(requester, key, value, None)
     }
@@ -440,6 +446,7 @@ impl Vault {
         self.set_inner(requester, key, value, Some(ttl))
     }
 
+    #[instrument(skip(self, value), fields(vault_key = %key))]
     fn set_inner(
         &self,
         requester: &str,
@@ -491,10 +498,7 @@ impl Vault {
 
         // Serialize metadata read-modify-write per secret
         let lock = self.version_lock(&vault_storage_key);
-        let _guard = lock.lock().unwrap_or_else(|e| {
-            self.emit_poison_recovery("set_inner: version metadata lock");
-            e.into_inner()
-        });
+        let _guard = lock.lock();
 
         // Get or create metadata tensor
         let mut tensor = if is_update {
@@ -576,6 +580,7 @@ impl Vault {
         // Log audit
         self.log_operation(requester, key, &AuditOperation::Set);
 
+        debug!("secret stored");
         Ok(())
     }
 
@@ -628,6 +633,7 @@ impl Vault {
     }
 
     /// Retrieve a secret (requires graph path from requester to secret).
+    #[instrument(skip(self), fields(vault_key = %key))]
     pub fn get(&self, requester: &str, key: &str) -> Result<String> {
         self.seal_guard.check_sealed()?;
 
@@ -647,6 +653,7 @@ impl Vault {
         // Check expiry
         if let Some(TensorValue::Scalar(ScalarValue::Int(expires_at))) = tensor.get("_expires_at") {
             if Self::current_timestamp() >= *expires_at {
+                warn!("secret expired");
                 return Err(VaultError::SecretExpired(key.to_string()));
             }
         }
@@ -691,6 +698,7 @@ impl Vault {
         // Log audit
         self.log_operation(requester, key, &AuditOperation::Get);
 
+        debug!("secret retrieved");
         String::from_utf8(plaintext)
             .map_err(|e| VaultError::CryptoError(format!("Invalid UTF-8: {e}")))
     }
@@ -818,6 +826,7 @@ impl Vault {
     }
 
     /// Grant access to a secret with Admin permission (backward compatible).
+    #[instrument(skip(self))]
     pub fn grant(&self, requester: &str, entity: &str, key: &str) -> Result<()> {
         self.seal_guard.check_sealed()?;
         self.grant_with_permission(requester, entity, key, Permission::Admin)
@@ -893,6 +902,7 @@ impl Vault {
     /// The graph edge deletion, TTL tracker cleanup, and persist are separate.
     /// If the process crashes mid-revoke, `cleanup_expired_grants()` at next
     /// startup will reconcile stale grants.
+    #[instrument(skip(self))]
     pub fn revoke(&self, requester: &str, entity: &str, key: &str) -> Result<()> {
         self.seal_guard.check_sealed()?;
         // Only those with Admin permission can revoke access
@@ -954,6 +964,7 @@ impl Vault {
     /// Delete a secret (requires Admin permission).
     ///
     /// This deletes all versions of the secret.
+    #[instrument(skip(self), fields(vault_key = %key))]
     pub fn delete(&self, requester: &str, key: &str) -> Result<()> {
         self.seal_guard.check_sealed()?;
         self.check_access_with_permission(requester, key, Permission::Admin)?;
@@ -962,10 +973,7 @@ impl Vault {
 
         // Serialize with concurrent set/rotate on the same secret
         let lock = self.version_lock(&vault_storage_key);
-        let _guard = lock.lock().unwrap_or_else(|e| {
-            self.emit_poison_recovery("delete: version metadata lock");
-            e.into_inner()
-        });
+        let _guard = lock.lock();
 
         // Delete all version blobs
         if let Ok(tensor) = self.store.get(&vault_storage_key) {
@@ -1019,12 +1027,14 @@ impl Vault {
         let ns = Self::extract_namespace(key);
         self.quota_manager.record_secret_removed(&self.store, ns, 0);
 
+        debug!("secret deleted");
         Ok(())
     }
 
     /// Rotate a secret value (requires Write permission).
     ///
     /// Creates a new version. Previous versions are kept up to `max_versions`.
+    #[instrument(skip(self, new_value), fields(vault_key = %key))]
     pub fn rotate(&self, requester: &str, key: &str, new_value: &str) -> Result<()> {
         self.seal_guard.check_sealed()?;
         self.check_access_with_permission(requester, key, Permission::Write)?;
@@ -1048,10 +1058,7 @@ impl Vault {
 
         // Serialize metadata read-modify-write per secret
         let lock = self.version_lock(&vault_storage_key);
-        let _guard = lock.lock().unwrap_or_else(|e| {
-            self.emit_poison_recovery("rotate: version metadata lock");
-            e.into_inner()
-        });
+        let _guard = lock.lock();
 
         // Get current tensor
         let mut tensor = self
@@ -1103,6 +1110,7 @@ impl Vault {
         self.quota_manager
             .record_operation(&self.store, Self::extract_namespace(key));
 
+        info!("secret rotated");
         Ok(())
     }
 
@@ -1227,10 +1235,12 @@ impl Vault {
         ) {
             Ok(())
         } else if AccessController::check_path(&self.graph, requester, &secret_node) {
+            warn!(requester, key, ?required, "insufficient permission");
             Err(VaultError::InsufficientPermission(format!(
                 "{requester} has access but not {required} permission on '{key}'"
             )))
         } else {
+            warn!(requester, key, "access denied");
             Err(VaultError::AccessDenied(format!(
                 "No path from {requester} to secret '{key}'"
             )))
@@ -2007,10 +2017,7 @@ impl Vault {
 
         let vault_storage_key = self.vault_key(key);
         let lock = self.version_lock(&vault_storage_key);
-        let _guard = lock.lock().unwrap_or_else(|e| {
-            self.emit_poison_recovery("clear_expiration: version metadata lock");
-            e.into_inner()
-        });
+        let _guard = lock.lock();
 
         let mut tensor = self
             .store

@@ -214,69 +214,60 @@ impl std::str::FromStr for Permission {
 }
 
 /// Error types for vault operations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum VaultError {
     /// Access denied - no path from requester to secret.
+    #[error("access denied: {0}")]
     AccessDenied(String),
     /// Secret not found.
+    #[error("secret not found: {0}")]
     NotFound(String),
     /// Encryption/decryption failed.
+    #[error("crypto error: {0}")]
     CryptoError(String),
     /// Key derivation failed.
+    #[error("key derivation error: {0}")]
     KeyDerivationError(String),
     /// Storage error from `TensorStore`.
+    #[error("storage error: {0}")]
     StorageError(String),
     /// Graph error from path verification.
+    #[error("graph error: {0}")]
     GraphError(String),
     /// Invalid secret key format.
+    #[error("invalid key: {0}")]
     InvalidKey(String),
     /// Insufficient permissions for operation.
+    #[error("insufficient permission: {0}")]
     InsufficientPermission(String),
     /// Rate limit exceeded.
+    #[error("rate limited: {0}")]
     RateLimited(String),
     /// Secret has expired past its TTL deadline.
+    #[error("secret expired: {0}")]
     SecretExpired(String),
     /// Shamir secret sharing error.
+    #[error("shamir error: {0}")]
     ShamirError(String),
     /// Wrapping token has expired.
+    #[error("wrapping token expired: {0}")]
     WrappingTokenExpired(String),
     /// Wrapping token already consumed.
+    #[error("wrapping token consumed: {0}")]
     WrappingTokenConsumed(String),
     /// Vault is sealed.
+    #[error("vault sealed: {0}")]
     Sealed(String),
     /// Quota exceeded.
+    #[error("quota exceeded: {0}")]
     QuotaExceeded(String),
     /// Engine not found.
+    #[error("engine not found: {0}")]
     EngineNotFound(String),
     /// Cyclic dependency detected.
+    #[error("cyclic dependency: {0}")]
     CyclicDependency(String),
 }
-
-impl std::fmt::Display for VaultError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AccessDenied(msg) => write!(f, "access denied: {msg}"),
-            Self::NotFound(key) => write!(f, "secret not found: {key}"),
-            Self::CryptoError(msg) => write!(f, "crypto error: {msg}"),
-            Self::KeyDerivationError(msg) => write!(f, "key derivation error: {msg}"),
-            Self::StorageError(msg) => write!(f, "storage error: {msg}"),
-            Self::GraphError(msg) => write!(f, "graph error: {msg}"),
-            Self::InvalidKey(msg) => write!(f, "invalid key: {msg}"),
-            Self::InsufficientPermission(msg) => write!(f, "insufficient permission: {msg}"),
-            Self::RateLimited(msg) => write!(f, "rate limited: {msg}"),
-            Self::SecretExpired(key) => write!(f, "secret expired: {key}"),
-            Self::ShamirError(msg) => write!(f, "shamir error: {msg}"),
-            Self::WrappingTokenExpired(token) => write!(f, "wrapping token expired: {token}"),
-            Self::WrappingTokenConsumed(token) => write!(f, "wrapping token consumed: {token}"),
-            Self::Sealed(msg) => write!(f, "vault sealed: {msg}"),
-            Self::QuotaExceeded(msg) => write!(f, "quota exceeded: {msg}"),
-            Self::EngineNotFound(name) => write!(f, "engine not found: {name}"),
-            Self::CyclicDependency(msg) => write!(f, "cyclic dependency: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for VaultError {}
 
 /// A specialized `Result` type for vault operations.
 pub type Result<T> = std::result::Result<T, VaultError>;
