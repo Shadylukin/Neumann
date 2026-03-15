@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "dcb94dda66f2",
+  "strategy": "manual-commit",
+  "branch": "error-handling-improvements",
+  "checkpoints_count": 11,
+  "files_touched": [
+    "Cargo.lock",
+    "graph_engine/Cargo.toml",
+    "graph_engine/src/error.rs",
+    "query_router/Cargo.toml",
+    "query_router/src/cursor.rs",
+    "query_router/src/lib.rs",
+    "relational_engine/Cargo.toml",
+    "relational_engine/src/lib.rs",
+    "tensor_blob/src/error.rs",
+    "tensor_cache/src/lib.rs",
+    "tensor_chain/src/error.rs",
+    "tensor_chain/src/tcp/error.rs",
+    "tensor_chain/src/tcp/transport.rs",
+    "tensor_unified/Cargo.toml",
+    "tensor_unified/src/lib.rs",
+    "tensor_vault/Cargo.toml",
+    "tensor_vault/src/lib.rs",
+    "tensor_vault/src/pki.rs",
+    "tensor_vault/src/ttl.rs",
+    "tensor_vault/src/vault.rs",
+    "vector_engine/Cargo.toml",
+    "vector_engine/src/lib.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/dc/b94dda66f2/0/metadata.json",
+      "transcript": "/dc/b94dda66f2/0/full.jsonl",
+      "content_hash": "/dc/b94dda66f2/0/content_hash.txt",
+      "prompt": "/dc/b94dda66f2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6560,
+    "cache_creation_tokens": 1246210,
+    "cache_read_tokens": 29393017,
+    "output_tokens": 73561,
+    "api_call_count": 279
+  }
+}
