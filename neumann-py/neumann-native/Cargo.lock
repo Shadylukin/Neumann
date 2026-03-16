@@ -736,7 +736,7 @@ checksum = "74a4d85559e2637d3d839438b5b3d75c31e655276f9544d72475c36b92fabbed"
 
 [[package]]
 name = "graph_engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "parking_lot",
  "rayon",
@@ -861,9 +861,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lz4_flex"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
+checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
 dependencies = [
  "twox-hash",
 ]
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "neumann_parser"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "nom"
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "query_router"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64",
  "bitcode",
@@ -1353,7 +1353,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "relational_engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dashmap",
  "hex",
@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_blob"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "graph_engine",
  "sha2",
@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_cache"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "dashmap",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_chain"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bitcode",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_checkpoint"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "parking_lot",
@@ -1735,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_compress"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "rayon",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_spatial"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_store"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "bitcode",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_unified"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "futures",
  "graph_engine",
@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_vault"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "vector_engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "parking_lot",
