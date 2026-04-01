@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "015cd242a806",
+  "strategy": "manual-commit",
+  "branch": "learn",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "neumann_parser/src/ast.rs",
+    "neumann_parser/src/parser.rs",
+    "neumann_parser/src/token.rs",
+    "neumann_server/Cargo.toml",
+    "neumann_server/src/rest/collections.rs",
+    "neumann_server/src/service/collections.rs",
+    "neumann_server/src/web/icons.rs",
+    "neumann_server/src/web/templates/layout.rs",
+    "query_router/src/lib.rs",
+    "tensor_store/src/distance.rs",
+    "tensor_store/src/hnsw.rs",
+    "tensor_store/src/sparse_vector.rs",
+    "tensor_vault/src/similarity.rs",
+    "vector_engine/src/lib.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/01/5cd242a806/0/metadata.json",
+      "transcript": "/01/5cd242a806/0/full.jsonl",
+      "content_hash": "/01/5cd242a806/0/content_hash.txt",
+      "prompt": "/01/5cd242a806/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3785,
+    "cache_creation_tokens": 592940,
+    "cache_read_tokens": 14912488,
+    "output_tokens": 78459,
+    "api_call_count": 134
+  }
+}
