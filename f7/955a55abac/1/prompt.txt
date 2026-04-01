@@ -59,3 +59,7 @@ The visualisation isn't showing me the embedding shapes or way to see it general
 ---
 
 So what take aways do I want from this? In terms of building on my understanding of hyperbolic geometry neurology and machine learning.
+
+---
+
+Commit and push this work for now
