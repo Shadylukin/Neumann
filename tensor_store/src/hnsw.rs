@@ -140,6 +140,8 @@ pub enum HNSWDistanceMetric {
     Euclidean,
     /// Negative dot product (for maximum inner product search). Range `(-inf, inf)`.
     DotProduct,
+    /// Poincare distance in the hyperbolic disk model. Range `[0, inf)`.
+    Poincare,
 }
 
 impl HNSWDistanceMetric {
@@ -154,6 +156,7 @@ impl HNSWDistanceMetric {
             Self::Cosine => 1.0 - distance,
             Self::Euclidean => 1.0 / (1.0 + distance),
             Self::DotProduct => -distance,
+            Self::Poincare => (-distance).exp(),
         }
     }
 }
@@ -1144,6 +1147,31 @@ impl EmbeddingStorage {
         -self.dot_with_sparse(query)
     }
 
+    /// Compute Poincare distance with a dense query vector.
+    ///
+    /// Both the stored embedding and query must lie inside the unit disk.
+    #[must_use]
+    pub fn poincare_distance_dense(&self, query: &[f32], curvature: f32) -> f32 {
+        let stored_sparse = match self {
+            Self::Dense(v) => SparseVector::from_dense(v),
+            Self::Sparse(s) => s.clone(),
+            _ => return f32::MAX,
+        };
+        let query_sparse = SparseVector::from_dense(query);
+        stored_sparse.poincare_distance(&query_sparse, curvature)
+    }
+
+    /// Compute Poincare distance with a sparse query vector.
+    #[must_use]
+    pub fn poincare_distance_sparse(&self, query: &SparseVector, curvature: f32) -> f32 {
+        let stored_sparse = match self {
+            Self::Dense(v) => SparseVector::from_dense(v),
+            Self::Sparse(s) => s.clone(),
+            _ => return f32::MAX,
+        };
+        stored_sparse.poincare_distance(query, curvature)
+    }
+
     /// Compute distance using the specified metric with a dense query.
     ///
     /// Dispatches to the appropriate distance function based on the metric:
@@ -1154,11 +1182,17 @@ impl EmbeddingStorage {
     /// For Delta storage, returns `f32::MAX` (unsupported without registry).
     #[inline]
     #[must_use]
-    pub fn distance_dense(&self, query: &[f32], metric: HNSWDistanceMetric) -> f32 {
+    pub fn distance_dense(
+        &self,
+        query: &[f32],
+        metric: HNSWDistanceMetric,
+        poincare_curvature: f32,
+    ) -> f32 {
         match metric {
             HNSWDistanceMetric::Cosine => self.cosine_distance_dense(query),
             HNSWDistanceMetric::Euclidean => self.euclidean_distance_dense(query),
             HNSWDistanceMetric::DotProduct => self.dot_product_distance_dense(query),
+            HNSWDistanceMetric::Poincare => self.poincare_distance_dense(query, poincare_curvature),
         }
     }
 
@@ -1172,11 +1206,19 @@ impl EmbeddingStorage {
     /// For Delta storage, returns `f32::MAX` (unsupported without registry).
     #[inline]
     #[must_use]
-    pub fn distance_sparse(&self, query: &SparseVector, metric: HNSWDistanceMetric) -> f32 {
+    pub fn distance_sparse(
+        &self,
+        query: &SparseVector,
+        metric: HNSWDistanceMetric,
+        poincare_curvature: f32,
+    ) -> f32 {
         match metric {
             HNSWDistanceMetric::Cosine => self.cosine_distance_sparse(query),
             HNSWDistanceMetric::Euclidean => self.euclidean_distance_sparse(query),
             HNSWDistanceMetric::DotProduct => self.dot_product_distance_sparse(query),
+            HNSWDistanceMetric::Poincare => {
+                self.poincare_distance_sparse(query, poincare_curvature)
+            },
         }
     }
 
@@ -1457,9 +1499,14 @@ pub struct HNSWConfig {
     /// - Use `Cosine` for normalized embeddings (most common)
     /// - Use `Euclidean` for spatial/geometric embeddings
     /// - Use `DotProduct` for MIPS (maximum inner product search)
+    /// - Use `Poincare` for hyperbolic embeddings
     ///
     /// Default: [`HNSWDistanceMetric::Cosine`]
     pub distance_metric: HNSWDistanceMetric,
+    /// Curvature parameter for Poincare distance (only used when metric is `Poincare`).
+    ///
+    /// Default: `1.0` (standard Poincare disk).
+    pub poincare_curvature: f32,
 }
 
 impl Default for HNSWConfig {
@@ -1475,6 +1522,7 @@ impl Default for HNSWConfig {
             sparsity_threshold: 0.5,
             max_nodes: 10_000_000, // 10M nodes default limit
             distance_metric: HNSWDistanceMetric::default(),
+            poincare_curvature: 1.0,
         }
     }
 }
@@ -1515,6 +1563,7 @@ impl HNSWConfig {
             sparsity_threshold: 0.5,
             max_nodes: 10_000_000,
             distance_metric: HNSWDistanceMetric::default(),
+            poincare_curvature: 1.0,
         }
     }
 
@@ -1530,6 +1579,7 @@ impl HNSWConfig {
             sparsity_threshold: 0.5,
             max_nodes: 10_000_000,
             distance_metric: HNSWDistanceMetric::default(),
+            poincare_curvature: 1.0,
         }
     }
 
@@ -2166,7 +2216,6 @@ impl HNSWIndex {
     }
 
     /// Greedy search in a layer - find the closest node to query
-    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_greedy(
         &self,
         nodes: &[HNSWNode],
@@ -2175,15 +2224,20 @@ impl HNSWIndex {
         layer: usize,
         metric: HNSWDistanceMetric,
     ) -> usize {
+        let curvature = self.config.poincare_curvature;
         let mut current = entry_id;
-        let mut current_dist = nodes[current].embedding.distance_dense(query, metric);
+        let mut current_dist = nodes[current]
+            .embedding
+            .distance_dense(query, metric, curvature);
 
         loop {
             let neighbor_ids = nodes[current].neighbors[layer].read().get();
             let mut changed = false;
 
             for neighbor_id in neighbor_ids {
-                let dist = nodes[neighbor_id].embedding.distance_dense(query, metric);
+                let dist = nodes[neighbor_id]
+                    .embedding
+                    .distance_dense(query, metric, curvature);
                 if dist < current_dist {
                     current = neighbor_id;
                     current_dist = dist;
@@ -2200,7 +2254,6 @@ impl HNSWIndex {
     }
 
     /// Greedy search with sparse query
-    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_greedy_sparse(
         &self,
         nodes: &[HNSWNode],
@@ -2209,15 +2262,20 @@ impl HNSWIndex {
         layer: usize,
         metric: HNSWDistanceMetric,
     ) -> usize {
+        let curvature = self.config.poincare_curvature;
         let mut current = entry_id;
-        let mut current_dist = nodes[current].embedding.distance_sparse(query, metric);
+        let mut current_dist = nodes[current]
+            .embedding
+            .distance_sparse(query, metric, curvature);
 
         loop {
             let neighbor_ids = nodes[current].neighbors[layer].read().get();
             let mut changed = false;
 
             for neighbor_id in neighbor_ids {
-                let dist = nodes[neighbor_id].embedding.distance_sparse(query, metric);
+                let dist = nodes[neighbor_id]
+                    .embedding
+                    .distance_sparse(query, metric, curvature);
                 if dist < current_dist {
                     current = neighbor_id;
                     current_dist = dist;
@@ -2272,7 +2330,6 @@ impl HNSWIndex {
     }
 
     /// Search in a layer - find ef closest nodes to query
-    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer(
         &self,
         nodes: &[HNSWNode],
@@ -2282,11 +2339,14 @@ impl HNSWIndex {
         layer: usize,
         metric: HNSWDistanceMetric,
     ) -> Vec<Neighbor> {
+        let curvature = self.config.poincare_curvature;
         let mut visited = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new(); // min-heap (closest first)
         let mut results: BinaryHeap<MaxNeighbor> = BinaryHeap::new(); // max-heap (furthest first)
 
-        let entry_dist = nodes[entry_id].embedding.distance_dense(query, metric);
+        let entry_dist = nodes[entry_id]
+            .embedding
+            .distance_dense(query, metric, curvature);
         visited.insert(entry_id);
         candidates.push(Neighbor::new(entry_id, entry_dist));
         results.push(MaxNeighbor(Neighbor::new(entry_id, entry_dist)));
@@ -2305,7 +2365,9 @@ impl HNSWIndex {
             let neighbor_ids = nodes[current.id].neighbors[layer].read().get();
             for neighbor_id in neighbor_ids {
                 if visited.insert(neighbor_id) {
-                    let dist = nodes[neighbor_id].embedding.distance_dense(query, metric);
+                    let dist = nodes[neighbor_id]
+                        .embedding
+                        .distance_dense(query, metric, curvature);
 
                     // Add to results if closer than worst, or if we don't have ef results yet
                     let should_add = results.len() < ef
@@ -2335,7 +2397,6 @@ impl HNSWIndex {
     }
 
     /// Search in a layer with sparse query
-    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_sparse(
         &self,
         nodes: &[HNSWNode],
@@ -2345,11 +2406,14 @@ impl HNSWIndex {
         layer: usize,
         metric: HNSWDistanceMetric,
     ) -> Vec<Neighbor> {
+        let curvature = self.config.poincare_curvature;
         let mut visited = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new();
         let mut results: BinaryHeap<MaxNeighbor> = BinaryHeap::new();
 
-        let entry_dist = nodes[entry_id].embedding.distance_sparse(query, metric);
+        let entry_dist = nodes[entry_id]
+            .embedding
+            .distance_sparse(query, metric, curvature);
         visited.insert(entry_id);
         candidates.push(Neighbor::new(entry_id, entry_dist));
         results.push(MaxNeighbor(Neighbor::new(entry_id, entry_dist)));
@@ -2366,7 +2430,9 @@ impl HNSWIndex {
             let neighbor_ids = nodes[current.id].neighbors[layer].read().get();
             for neighbor_id in neighbor_ids {
                 if visited.insert(neighbor_id) {
-                    let dist = nodes[neighbor_id].embedding.distance_sparse(query, metric);
+                    let dist = nodes[neighbor_id]
+                        .embedding
+                        .distance_sparse(query, metric, curvature);
 
                     let should_add = results.len() < ef
                         || results.peek().is_none_or(|worst| dist < worst.0.distance);
@@ -2428,6 +2494,7 @@ impl HNSWIndex {
             HNSWDistanceMetric::Cosine => self.try_cosine_distance(a, b),
             HNSWDistanceMetric::Euclidean => self.try_euclidean_distance(a, b),
             HNSWDistanceMetric::DotProduct => self.try_dot_product_distance(a, b),
+            HNSWDistanceMetric::Poincare => self.try_poincare_distance(a, b),
         }
     }
 
@@ -2694,6 +2761,47 @@ impl HNSWIndex {
             // ProductQuantized requires codebook - not supported without context
             (EmbeddingStorage::ProductQuantized(_, _), _)
             | (_, EmbeddingStorage::ProductQuantized(_, _)) => {
+                Err(EmbeddingStorageError::ReconstructionFailed(
+                    "ProductQuantized requires codebook for distance computation".to_string(),
+                ))
+            },
+        }
+    }
+
+    /// Compute Poincare distance between two embeddings.
+    ///
+    /// Converts both to sparse representation and delegates to
+    /// [`SparseVector::poincare_distance`].
+    fn try_poincare_distance(
+        &self,
+        a: &EmbeddingStorage,
+        b: &EmbeddingStorage,
+    ) -> Result<f32, EmbeddingStorageError> {
+        let curvature = self.config.poincare_curvature;
+        let sa = Self::embedding_to_sparse(a)?;
+        let sb = Self::embedding_to_sparse(b)?;
+        Ok(sa.poincare_distance(&sb, curvature))
+    }
+
+    /// Convert an [`EmbeddingStorage`] to a [`SparseVector`] for Poincare computation.
+    fn embedding_to_sparse(e: &EmbeddingStorage) -> Result<SparseVector, EmbeddingStorageError> {
+        match e {
+            EmbeddingStorage::Dense(v) => Ok(SparseVector::from_dense(v)),
+            EmbeddingStorage::Sparse(s) => Ok(s.clone()),
+            EmbeddingStorage::TensorTrain(cached) => {
+                let dense = tt_reconstruct(&cached.tt);
+                Ok(SparseVector::from_dense(&dense))
+            },
+            EmbeddingStorage::Quantized(q) => {
+                let dense = q.dequantize();
+                Ok(SparseVector::from_dense(&dense))
+            },
+            EmbeddingStorage::Binary(b) => {
+                let dense = b.to_dense();
+                Ok(SparseVector::from_dense(&dense))
+            },
+            EmbeddingStorage::Delta(_) => Err(EmbeddingStorageError::DeltaNotSupported),
+            EmbeddingStorage::ProductQuantized(_, _) => {
                 Err(EmbeddingStorageError::ReconstructionFailed(
                     "ProductQuantized requires codebook for distance computation".to_string(),
                 ))
@@ -4956,15 +5064,15 @@ mod tests {
         let query = vec![1.0, 0.0, 0.0];
 
         // Cosine distance to same vector = 0
-        let cosine_dist = storage.distance_dense(&query, HNSWDistanceMetric::Cosine);
+        let cosine_dist = storage.distance_dense(&query, HNSWDistanceMetric::Cosine, 1.0);
         assert!(cosine_dist.abs() < 1e-6);
 
         // Euclidean distance to same vector = 0
-        let euclidean_dist = storage.distance_dense(&query, HNSWDistanceMetric::Euclidean);
+        let euclidean_dist = storage.distance_dense(&query, HNSWDistanceMetric::Euclidean, 1.0);
         assert!(euclidean_dist.abs() < 1e-6);
 
         // Dot product distance = -1 (since dot product = 1)
-        let dot_dist = storage.distance_dense(&query, HNSWDistanceMetric::DotProduct);
+        let dot_dist = storage.distance_dense(&query, HNSWDistanceMetric::DotProduct, 1.0);
         assert!((dot_dist - (-1.0)).abs() < 1e-6);
     }
 
@@ -4974,15 +5082,15 @@ mod tests {
         let query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
 
         // Cosine distance to same vector = 0
-        let cosine_dist = storage.distance_sparse(&query, HNSWDistanceMetric::Cosine);
+        let cosine_dist = storage.distance_sparse(&query, HNSWDistanceMetric::Cosine, 1.0);
         assert!(cosine_dist.abs() < 1e-6);
 
         // Euclidean distance to same vector = 0
-        let euclidean_dist = storage.distance_sparse(&query, HNSWDistanceMetric::Euclidean);
+        let euclidean_dist = storage.distance_sparse(&query, HNSWDistanceMetric::Euclidean, 1.0);
         assert!(euclidean_dist.abs() < 1e-6);
 
         // Dot product distance = -1
-        let dot_dist = storage.distance_sparse(&query, HNSWDistanceMetric::DotProduct);
+        let dot_dist = storage.distance_sparse(&query, HNSWDistanceMetric::DotProduct, 1.0);
         assert!((dot_dist - (-1.0)).abs() < 1e-6);
     }
 
@@ -6457,6 +6565,7 @@ mod tests {
             max_nodes: 0,
             sparsity_threshold: 0.9,
             distance_metric: HNSWDistanceMetric::Cosine,
+            poincare_curvature: 1.0,
         };
         let index = HNSWIndex::with_config(config);
 
@@ -6489,6 +6598,7 @@ mod tests {
             max_nodes: 0,
             sparsity_threshold: 0.9,
             distance_metric: HNSWDistanceMetric::Cosine,
+            poincare_curvature: 1.0,
         };
         let index = HNSWIndex::with_config(config);
 
@@ -6708,6 +6818,7 @@ mod tests {
             max_nodes: 0,
             sparsity_threshold: 0.9,
             distance_metric: HNSWDistanceMetric::Cosine,
+            poincare_curvature: 1.0,
         };
         let index = HNSWIndex::with_config(config);
 

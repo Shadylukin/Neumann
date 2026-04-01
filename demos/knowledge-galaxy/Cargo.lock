@@ -109,6 +109,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a07d1f37ff60921c83bdfc7407723bdefe89b44b98a9b772f225c8f9d67141a6"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -954,7 +963,7 @@ checksum = "34627c5158214743a374170fed714833fdf4e4b0cbcc1ea98417866a4c5d4441"
 
 [[package]]
 name = "graph_engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "parking_lot",
  "rayon",
@@ -1390,9 +1399,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lz4_flex"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
+checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
 dependencies = [
  "twox-hash",
 ]
@@ -1492,11 +1501,11 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "neumann_parser"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "neumann_server"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "axum",
  "bytes",
@@ -1516,6 +1525,7 @@ dependencies = [
  "tensor_blob",
  "tensor_cache",
  "tensor_checkpoint",
+ "tensor_learn",
  "tensor_spatial",
  "tensor_store",
  "tensor_unified",
@@ -1945,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "query_router"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64",
  "bitcode",
@@ -2126,7 +2136,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "relational_engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dashmap",
  "hex",
@@ -2257,9 +2267,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -2529,7 +2539,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_blob"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "graph_engine",
  "sha2",
@@ -2542,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_cache"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "dashmap",
@@ -2557,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_chain"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bitcode",
@@ -2590,20 +2600,19 @@ dependencies = [
 
 [[package]]
 name = "tensor_checkpoint"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
+ "parking_lot",
  "serde",
- "tensor_blob",
  "tensor_store",
  "thiserror",
- "tokio",
  "uuid",
 ]
 
 [[package]]
 name = "tensor_compress"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "rayon",
@@ -2612,8 +2621,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensor_learn"
+version = "0.4.0"
+dependencies = [
+ "graph_engine",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "tensor_store",
+ "thiserror",
+ "tracing",
+ "vector_engine",
+]
+
+[[package]]
 name = "tensor_spatial"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -2621,8 +2644,9 @@ dependencies = [
 
 [[package]]
 name = "tensor_store"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
+ "arc-swap",
  "bitcode",
  "bitvec",
  "blake3",
@@ -2641,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_unified"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "futures",
  "graph_engine",
@@ -2657,7 +2681,7 @@ dependencies = [
 
 [[package]]
 name = "tensor_vault"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3139,7 +3163,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector_engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcode",
  "parking_lot",

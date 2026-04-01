@@ -9,7 +9,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 use crate::web::assets::{ADMIN_CSS, MEMORIA_SCRIPT, TAILWIND_CONFIG};
 use crate::web::icons::{
     icon_blob, icon_cache, icon_chain, icon_checkpoint, icon_contraction, icon_database,
-    icon_graph, icon_key, icon_storage, icon_vector, icon_zap,
+    icon_graph, icon_key, icon_learn, icon_storage, icon_vector, icon_zap,
 };
 use crate::web::NavItem;
 
@@ -277,6 +277,7 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
                 case 'p': window.location.href = '/checkpoint'; break;
                 case 'i': window.location.href = '/storage'; break;
                 case 'n': window.location.href = '/chain'; break;
+                case 'l': window.location.href = '/learn'; break;
             }
             return;
         }
@@ -440,6 +441,7 @@ fn keyboard_help() -> Markup {
                                 div { span class="m-kbd mr-2" { "I" } span class="text-neutral-400" { "Storage" } }
                                 div { span class="m-kbd mr-2" { "T" } span class="text-neutral-400" { "Contraction" } }
                                 div { span class="m-kbd mr-2" { "N" } span class="text-neutral-400" { "Chain" } }
+                                div { span class="m-kbd mr-2" { "L" } span class="text-neutral-400" { "Learn" } }
                             }
                         }
                         // G-prefix navigation
@@ -562,6 +564,14 @@ fn sidebar(active: NavItem) -> Markup {
                 }
 
                 (nav_item("/contraction", "T", "CONTRACTION", &icon_contraction(), active == NavItem::Contraction))
+
+                div class="mt-4 mb-2 px-2" {
+                    span class="text-xs text-neutral-500 tracking-widest" {
+                        "INTELLIGENCE"
+                    }
+                }
+
+                (nav_item("/learn", "L", "LEARN", &icon_learn(), active == NavItem::Learn))
             }
 
             // Keyboard hints — clickable to open full help overlay
@@ -605,6 +615,7 @@ fn mobile_nav(active: NavItem) -> Markup {
                 (mobile_nav_item("/blob", "BLOB", &icon_blob(), active == NavItem::Blob))
                 (mobile_nav_item("/chain", "CHAIN", &icon_chain(), active == NavItem::Chain))
                 (mobile_nav_item("/contraction", "TENS", &icon_contraction(), active == NavItem::Contraction))
+                (mobile_nav_item("/learn", "LEARN", &icon_learn(), active == NavItem::Learn))
             }
         }
     }

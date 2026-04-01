@@ -1940,6 +1940,8 @@ impl<'a> Parser<'a> {
                     metric = Some(DistanceMetric::Euclidean);
                 } else if self.eat(&TokenKind::DotProduct) {
                     metric = Some(DistanceMetric::DotProduct);
+                } else if self.eat(&TokenKind::Poincare) {
+                    metric = Some(DistanceMetric::Poincare);
                 }
             }
         }

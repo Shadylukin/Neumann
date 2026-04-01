@@ -48,6 +48,14 @@ pub fn icon_contraction() -> Markup {
     )
 }
 
+/// Learning / brain icon (Poincare disk).
+#[must_use]
+pub fn icon_learn() -> Markup {
+    icon_svg(
+        r#"<circle cx="12" cy="12" r="9" stroke-dasharray="2 2"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>"#,
+    )
+}
+
 /// Search / magnifying glass icon.
 #[must_use]
 pub fn icon_search() -> Markup {

@@ -21,6 +21,7 @@ members = [
     "stress_tests",
     "examples",
     "tensor_spatial",
+    "tensor_learn",
 ]
 exclude = ["fuzz", "neumann-py/neumann-native", "experiments", "seed_model", "demos/knowledge-galaxy"]
 
@@ -101,6 +102,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 tensor_compress = { path = "tensor_compress", version = "=0.4.0" }
 neumann_parser = { path = "neumann_parser", version = "=0.4.0" }
 tensor_spatial = { path = "tensor_spatial", version = "=0.4.0" }
+tensor_learn = { path = "tensor_learn", version = "=0.4.0" }
 tensor_store = { path = "tensor_store", version = "=0.4.0" }
 relational_engine = { path = "relational_engine", version = "=0.4.0" }
 graph_engine = { path = "graph_engine", version = "=0.4.0" }
