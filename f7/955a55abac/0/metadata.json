@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "f7955a55abac",
+  "session_id": "2656886b-3145-4131-b0d8-8382fb17372d",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-01T00:37:04.621464Z",
+  "branch": "learn",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "neumann_server/src/lib.rs",
+    "neumann_server/src/main.rs",
+    "neumann_server/src/web/handlers/mod.rs",
+    "neumann_server/src/web/mod.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-6[1m]",
+  "turn_id": "709218c0474c",
+  "token_usage": {
+    "input_tokens": 3785,
+    "cache_creation_tokens": 592940,
+    "cache_read_tokens": 14912488,
+    "output_tokens": 78459,
+    "api_call_count": 134
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-01T00:37:02.306525Z",
+    "agent_lines": 82,
+    "human_added": 4011,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 4093,
+    "agent_percentage": 2.0034204739799657
+  }
+}

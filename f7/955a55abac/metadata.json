@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "f7955a55abac",
+  "strategy": "manual-commit",
+  "branch": "learn",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "neumann_server/src/lib.rs",
+    "neumann_server/src/main.rs",
+    "neumann_server/src/web/handlers/mod.rs",
+    "neumann_server/src/web/mod.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f7/955a55abac/0/metadata.json",
+      "transcript": "/f7/955a55abac/0/full.jsonl",
+      "content_hash": "/f7/955a55abac/0/content_hash.txt",
+      "prompt": "/f7/955a55abac/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3785,
+    "cache_creation_tokens": 592940,
+    "cache_read_tokens": 14912488,
+    "output_tokens": 78459,
+    "api_call_count": 134
+  }
+}
