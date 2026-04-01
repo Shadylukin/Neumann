@@ -1,0 +1,65 @@
+So now can I run this and watch it learn?
+
+---
+
+Can you start the dashboard for me?
+
+---
+
+sorry start it again
+
+---
+
+Ok firstly can we make sure we print some logs in an output box so I have something clean to feedback to you so we can review our algorith and what is happening. Also can we make steps configurable. Are we learning anything novel here or is this just noise? What am I learning for?
+
+---
+
+It is still hard capping at 200 and it looks ugly with the new interface you added remember we should be leading cutting edge research in to hyperbolic geometry and it's ability to learn patterns
+
+---
+
+I have done a few different runs. I am not seeing any patterns here and it never memorizes and begins to generalize? I see no shapes etc... This is basically a grok model for hyperbolic geometric space for the potential of using branching heriarichical codebook AI
+
+---
+
+Yeah of course we are meant to be researching novel information. Has anyone ever done a grokking model for hyperbolic space?
+
+---
+
+Well I want to build and observe a model memorize then generalize something. This is important for understanding AI and hyperbolic space. I want my tensor learn let me watch
+
+---
+
+The start button is doing nothing
+
+---
+
+It is running incredibly slow
+
+---
+
+It looks like it stales out very fast never generalizes or memorizes can you confirm?
+
+---
+
+resume
+
+---
+
+100k is train loss meant to be so high?
+
+---
+
+test loss is skyrocketing is that normal?
+
+---
+
+The visualisation isn't showing me the embedding shapes or way to see it generalizing I just see the numbers but I can't see it properly it just looks like 4 point of a square. But maybe the visual is bad?
+
+---
+
+So what take aways do I want from this? In terms of building on my understanding of hyperbolic geometry neurology and machine learning.
+
+---
+
+Commit and push this work for now
