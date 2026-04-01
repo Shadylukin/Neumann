@@ -3,10 +3,12 @@
   "checkpoint_id": "015cd242a806",
   "strategy": "manual-commit",
   "branch": "learn",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "Cargo.lock",
     "Cargo.toml",
+    "demos/knowledge-galaxy/Cargo.lock",
+    "neumann-py/neumann-native/Cargo.lock",
     "neumann_parser/src/ast.rs",
     "neumann_parser/src/parser.rs",
     "neumann_parser/src/token.rs",
@@ -34,13 +36,19 @@
       "transcript": "/01/5cd242a806/1/full.jsonl",
       "content_hash": "/01/5cd242a806/1/content_hash.txt",
       "prompt": "/01/5cd242a806/1/prompt.txt"
+    },
+    {
+      "metadata": "/01/5cd242a806/2/metadata.json",
+      "transcript": "/01/5cd242a806/2/full.jsonl",
+      "content_hash": "/01/5cd242a806/2/content_hash.txt",
+      "prompt": "/01/5cd242a806/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 4099,
-    "cache_creation_tokens": 2362896,
-    "cache_read_tokens": 60524990,
-    "output_tokens": 254435,
-    "api_call_count": 376
+    "input_tokens": 4815,
+    "cache_creation_tokens": 2385615,
+    "cache_read_tokens": 60648522,
+    "output_tokens": 258206,
+    "api_call_count": 381
   }
 }

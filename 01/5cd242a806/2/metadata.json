@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "015cd242a806",
+  "session_id": "974f889e-6d58-4df5-9473-b7f424f94a1a",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-01T00:38:07.813743Z",
+  "branch": "learn",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "demos/knowledge-galaxy/Cargo.lock",
+    "neumann-py/neumann-native/Cargo.lock",
+    "neumann_parser/src/ast.rs",
+    "neumann_parser/src/parser.rs",
+    "neumann_parser/src/token.rs",
+    "neumann_server/Cargo.toml",
+    "neumann_server/src/rest/collections.rs",
+    "neumann_server/src/service/collections.rs",
+    "neumann_server/src/web/icons.rs",
+    "neumann_server/src/web/templates/layout.rs",
+    "query_router/src/lib.rs",
+    "tensor_store/src/distance.rs",
+    "tensor_store/src/hnsw.rs",
+    "tensor_store/src/sparse_vector.rs",
+    "tensor_vault/src/similarity.rs",
+    "vector_engine/src/lib.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-6[1m]",
+  "turn_id": "3888c613d8da",
+  "token_usage": {
+    "input_tokens": 716,
+    "cache_creation_tokens": 22719,
+    "cache_read_tokens": 123532,
+    "output_tokens": 3771,
+    "api_call_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-01T00:38:07.753098Z",
+    "agent_lines": 481,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 481,
+    "agent_percentage": 100
+  }
+}
