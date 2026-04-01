@@ -1,0 +1,52 @@
+Fix these 
+Prototype Pollution via parse() in NodeJS flatted High Development
+#40 opened last week • Detected in flatted (npm) • neumann-ts/package-lock.json
+#86
+Select alert: lz4_flex's decompression can leak information from uninitialized memory or reused output buffer
+lz4_flex's decompression can leak information from uninitialized memory or reused output buffer High
+#30 opened 2 weeks ago • Detected in lz4_flex (Rust) • demos/knowledge-galaxy/Cargo.lock
+#76
+Select alert: lz4_flex's decompression can leak information from uninitialized memory or reused output buffer
+lz4_flex's decompression can leak information from uninitialized memory or reused output buffer High
+#29 opened 2 weeks ago • Detected in lz4_flex (Rust) • neumann-py/neumann-native/Cargo.lock
+Select alert: lz4_flex's decompression can leak information from uninitialized memory or reused output buffer
+lz4_flex's decompression can leak information from uninitialized memory or reused output buffer High
+#28 opened 2 weeks ago • Detected in lz4_flex (Rust) • Cargo.lock
+#75
+Select alert: AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN
+AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN High
+#33 opened 2 weeks ago • Detected in aws-lc-sys (Rust) • Cargo.lock
+Select alert: AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN
+AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN High
+#32 opened 2 weeks ago • Detected in aws-lc-sys (Rust) • neumann-py/neumann-native/Cargo.lock
+Select alert: AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN
+AWS-LC X.509 Name Constraints Bypass via Wildcard/Unicode CN High
+#31 opened 2 weeks ago • Detected in aws-lc-sys (Rust) • demos/knowledge-galaxy/Cargo.lock
+Select alert: CRL Distribution Point Scope Check Logic Error in AWS-LC
+CRL Distribution Point Scope Check Logic Error in AWS-LC High
+#36 opened 2 weeks ago • Detected in aws-lc-sys (Rust) • Cargo.lock
+Select alert: CRL Distribution Point Scope Check Logic Error in AWS-LC
+CRL Distribution Point Scope Check Logic Error in AWS-LC High
+#35 opened 2 weeks ago • Detected in aws-lc-sys (Rust) • neumann-py/neumann-native/Cargo.lock
+Select alert: CRL Distribution Point Scope Check Logic Error in AWS-LC
+CRL Distribution Point Scope Check Logic Error in AWS-LC High
+#34 opened 2 weeks ago • Detected in aws-lc-sys (Rust) • demos/knowledge-galaxy/Cargo.lock
+Select alert: Picomatch: Method Injection in POSIX Character Classes causes incorrect Glob Matching
+Picomatch: Method Injection in POSIX Character Classes causes incorrect Glob Matching Moderate Development
+#49 opened last week • Detected in picomatch (npm) • demos/knowledge-galaxy/frontend/package-lock.json
+#88
+Select alert: Picomatch: Method Injection in POSIX Character Classes causes incorrect Glob Matching
+Picomatch: Method Injection in POSIX Character Classes causes incorrect Glob Matching Moderate Development
+#48 opened last week • Detected in picomatch (npm) • neumann-ts/package-lock.json
+Select alert: Picomatch: Method Injection in POSIX Character Classes causes incorrect Glob Matching
+Picomatch: Method Injection in POSIX Character Classes causes incorrect Glob Matching Moderate Development
+#47 opened last week • Detected in picomatch (npm) • neumann-py/package-lock.json
+Select alert: webpki: CRLs not considered authoritative by Distribution Point due to faulty matching logic
+webpki: CRLs not considered authoritative by Distribution Point due to faulty matching logic Moderate
+#43 opened last week • Detected in rustls-webpki (Rust) • demos/knowledge-galaxy/Cargo.lock
+Select alert: webpki: CRLs not considered authoritative by Distribution Point due to faulty matching logic
+webpki: CRLs not considered authoritative by Distribution Point due to faulty matching logic Moderate
+#42 opened last week • Detected in rustls-webpki (Rust) • Cargo.lock
+Select alert: webpki: CRLs not considered authoritative by Distribution Point due to faulty matching logic
+webpki: CRLs not considered authoritative by Distribution Point due to faulty matching logic Moderate
+#41 opened last week • Detected in rustls-webpki (Rust) • neumann-py/neumann-native/Cargo.lock
