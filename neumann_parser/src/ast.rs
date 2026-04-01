@@ -748,6 +748,8 @@ pub enum DistanceMetric {
     Euclidean,
     /// Dot product similarity.
     DotProduct,
+    /// Poincare distance (hyperbolic).
+    Poincare,
 }
 
 // =============================================================================
@@ -2085,6 +2087,7 @@ impl fmt::Display for DistanceMetric {
             Self::Cosine => write!(f, "COSINE"),
             Self::Euclidean => write!(f, "EUCLIDEAN"),
             Self::DotProduct => write!(f, "DOT_PRODUCT"),
+            Self::Poincare => write!(f, "POINCARE"),
         }
     }
 }

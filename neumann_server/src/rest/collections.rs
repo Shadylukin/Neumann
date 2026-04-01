@@ -72,8 +72,9 @@ fn parse_distance_metric(distance: &str) -> Result<DistanceMetric, ApiError> {
         "cosine" | "" => Ok(DistanceMetric::Cosine),
         "euclidean" | "l2" => Ok(DistanceMetric::Euclidean),
         "dot" | "dot_product" | "inner_product" => Ok(DistanceMetric::DotProduct),
+        "poincare" | "hyperbolic" => Ok(DistanceMetric::Poincare),
         _ => Err(ApiError::bad_request(format!(
-            "unknown distance metric: {distance}. Expected: cosine, euclidean, or dot"
+            "unknown distance metric: {distance}. Expected: cosine, euclidean, dot, or poincare"
         ))),
     }
 }
@@ -83,6 +84,7 @@ const fn metric_to_string(metric: DistanceMetric) -> &'static str {
         DistanceMetric::Cosine => "cosine",
         DistanceMetric::Euclidean => "euclidean",
         DistanceMetric::DotProduct => "dot",
+        DistanceMetric::Poincare => "poincare",
     }
 }
 

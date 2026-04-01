@@ -120,6 +120,8 @@ pub struct NeumannServer {
     audit_logger: Option<Arc<AuditLogger>>,
     metrics: Option<Arc<ServerMetrics>>,
     spatial_3d: Option<Arc<RwLock<SpatialIndex3D<String>>>>,
+    training: Option<Arc<RwLock<tensor_learn::TrainingSession>>>,
+    grok: Option<Arc<RwLock<tensor_learn::GrokSession>>>,
 }
 
 impl NeumannServer {
@@ -150,6 +152,8 @@ impl NeumannServer {
             audit_logger,
             metrics: None,
             spatial_3d: None,
+            training: None,
+            grok: None,
         }
     }
 
@@ -193,6 +197,8 @@ impl NeumannServer {
             audit_logger,
             metrics: None,
             spatial_3d: None,
+            training: None,
+            grok: None,
         })
     }
 
@@ -256,6 +262,20 @@ impl NeumannServer {
     #[must_use]
     pub fn with_spatial_3d(mut self, spatial_3d: Arc<RwLock<SpatialIndex3D<String>>>) -> Self {
         self.spatial_3d = Some(spatial_3d);
+        self
+    }
+
+    /// Attach a training session for the learning dashboard.
+    #[must_use]
+    pub fn with_training(mut self, training: Arc<RwLock<tensor_learn::TrainingSession>>) -> Self {
+        self.training = Some(training);
+        self
+    }
+
+    /// Attach a grokking experiment session for the learning dashboard.
+    #[must_use]
+    pub fn with_grok(mut self, grok: Arc<RwLock<tensor_learn::GrokSession>>) -> Self {
+        self.grok = Some(grok);
         self
     }
 
@@ -482,7 +502,9 @@ impl NeumannServer {
                     .with_blob(self.blob_store.clone())
                     .with_auth(self.config.auth.clone())
                     .with_metrics(self.metrics.clone())
-                    .with_query_router(Some(Arc::clone(&self.router))),
+                    .with_query_router(Some(Arc::clone(&self.router)))
+                    .with_training(self.training.clone())
+                    .with_grok(self.grok.clone()),
                 );
                 let web_router = web::router(web_ctx);
                 let listener = TcpListener::bind(web_addr).await.map_err(|e| {
@@ -759,7 +781,9 @@ impl NeumannServer {
                     .with_blob(self.blob_store.clone())
                     .with_auth(self.config.auth.clone())
                     .with_metrics(self.metrics.clone())
-                    .with_query_router(Some(Arc::clone(&self.router))),
+                    .with_query_router(Some(Arc::clone(&self.router)))
+                    .with_training(self.training.clone())
+                    .with_grok(self.grok.clone()),
                 );
                 let web_router = web::router(web_ctx);
                 let listener = TcpListener::bind(web_addr).await.map_err(|e| {

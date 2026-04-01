@@ -5531,6 +5531,7 @@ impl QueryRouter {
             Some(ParsedDistanceMetric::Cosine) | None => VectorDistanceMetric::Cosine,
             Some(ParsedDistanceMetric::Euclidean) => VectorDistanceMetric::Euclidean,
             Some(ParsedDistanceMetric::DotProduct) => VectorDistanceMetric::DotProduct,
+            Some(ParsedDistanceMetric::Poincare) => VectorDistanceMetric::Poincare,
         };
 
         // Execute search based on collection and filter

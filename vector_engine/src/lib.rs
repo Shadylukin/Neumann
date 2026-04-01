@@ -88,6 +88,9 @@ pub use tensor_store::WalConfig;
 // Re-export distance metrics from tensor_store for extended metric support (9 variants + composite)
 pub use tensor_store::{DistanceMetric as ExtendedDistanceMetric, GeometricConfig};
 
+// Re-export HNSW distance metric for index configuration
+pub use tensor_store::HNSWDistanceMetric;
+
 // Re-export new quantization and index types
 pub use tensor_store::{
     BinaryThreshold, BinaryVector, IVFConfig, IVFIndex, IVFIndexState, IVFStorage, PQCodebook,
@@ -193,19 +196,21 @@ impl From<io::Error> for VectorError {
     }
 }
 
-/// Conversion from the simple `DistanceMetric` (3 variants) to the extended
-/// `ExtendedDistanceMetric` (10 variants) for HNSW-based search.
-impl From<DistanceMetric> for ExtendedDistanceMetric {
+impl DistanceMetric {
+    /// Convert to [`ExtendedDistanceMetric`] with Poincare curvature context.
+    ///
+    /// `DotProduct` has no direct equivalent in `ExtendedDistanceMetric`;
+    /// falls back to Cosine as the nearest angle-based metric.
+    #[must_use]
     #[allow(clippy::match_same_arms)] // DotProduct intentionally falls back to Cosine
-    fn from(metric: DistanceMetric) -> Self {
-        match metric {
-            DistanceMetric::Euclidean => Self::Euclidean,
-            DistanceMetric::Cosine => Self::Cosine,
-            // DotProduct has no direct equivalent in ExtendedDistanceMetric;
-            // fall back to Cosine as the nearest angle-based metric.
-            // For true dot-product scoring, use search_in_collection with
-            // the DistanceMetric::DotProduct configuration.
-            DistanceMetric::DotProduct => Self::Cosine,
+    pub const fn to_extended(self, poincare_curvature: f32) -> ExtendedDistanceMetric {
+        match self {
+            Self::Euclidean => ExtendedDistanceMetric::Euclidean,
+            Self::Cosine => ExtendedDistanceMetric::Cosine,
+            Self::DotProduct => ExtendedDistanceMetric::Cosine,
+            Self::Poincare => ExtendedDistanceMetric::Poincare {
+                curvature: poincare_curvature,
+            },
         }
     }
 }
@@ -286,6 +291,8 @@ pub enum DistanceMetric {
     Euclidean,
     /// Dot product: inner product of vectors.
     DotProduct,
+    /// Poincare distance in the hyperbolic disk model.
+    Poincare,
 }
 
 // ========== Filtered Search Types ==========
@@ -461,6 +468,8 @@ pub struct VectorCollectionConfig {
     pub auto_index: bool,
     /// Auto-index threshold (number of vectors before auto-building).
     pub auto_index_threshold: usize,
+    /// Curvature parameter for Poincare distance (only used when metric is `Poincare`).
+    pub poincare_curvature: f32,
 }
 
 impl Default for VectorCollectionConfig {
@@ -470,6 +479,7 @@ impl Default for VectorCollectionConfig {
             distance_metric: DistanceMetric::Cosine,
             auto_index: false,
             auto_index_threshold: 1000,
+            poincare_curvature: 1.0,
         }
     }
 }
@@ -494,6 +504,13 @@ impl VectorCollectionConfig {
     pub const fn with_auto_index(mut self, threshold: usize) -> Self {
         self.auto_index = true;
         self.auto_index_threshold = threshold;
+        self
+    }
+
+    /// Sets the Poincare curvature parameter.
+    #[must_use]
+    pub const fn with_poincare_curvature(mut self, curvature: f32) -> Self {
+        self.poincare_curvature = curvature;
         self
     }
 }
@@ -644,6 +661,8 @@ pub struct VectorEngineConfig {
     pub max_index_file_bytes: Option<usize>,
     /// Maximum entries in a loaded index (default: 1M).
     pub max_index_entries: Option<usize>,
+    /// Default Poincare curvature for the default-collection path.
+    pub default_poincare_curvature: f32,
 }
 
 impl Default for VectorEngineConfig {
@@ -659,6 +678,7 @@ impl Default for VectorEngineConfig {
             search_timeout: None,
             max_index_file_bytes: Some(100 * 1024 * 1024), // 100MB default
             max_index_entries: Some(1_000_000),            // 1M entries
+            default_poincare_curvature: 1.0,
         }
     }
 }
@@ -680,6 +700,7 @@ impl VectorEngineConfig {
             search_timeout: None,
             max_index_file_bytes: Some(100 * 1024 * 1024), // 100MB
             max_index_entries: Some(1_000_000),
+            default_poincare_curvature: 1.0,
         }
     }
 
@@ -699,6 +720,7 @@ impl VectorEngineConfig {
             search_timeout: Some(Duration::from_secs(30)),
             max_index_file_bytes: Some(10 * 1024 * 1024), // 10MB for low memory
             max_index_entries: Some(100_000),             // 100K entries
+            default_poincare_curvature: 1.0,
         }
     }
 
@@ -1333,6 +1355,66 @@ impl VectorEngine {
         Ok(())
     }
 
+    /// Build an HNSW index from a named collection's config and cache it.
+    ///
+    /// Derives metric, curvature, and dimension from the collection config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the collection has no vectors or index building fails.
+    pub fn build_and_cache_collection_index(&self, collection: &str) -> Result<()> {
+        let collection_config = self
+            .collections
+            .read()
+            .get(collection)
+            .cloned()
+            .unwrap_or_default();
+
+        let hnsw_metric = match collection_config.distance_metric {
+            DistanceMetric::Cosine => HNSWDistanceMetric::Cosine,
+            DistanceMetric::Euclidean => HNSWDistanceMetric::Euclidean,
+            DistanceMetric::DotProduct => HNSWDistanceMetric::DotProduct,
+            DistanceMetric::Poincare => HNSWDistanceMetric::Poincare,
+        };
+
+        let mut hnsw_config = HNSWConfig::default().with_distance_metric(hnsw_metric);
+        hnsw_config.poincare_curvature = collection_config.poincare_curvature;
+
+        let prefix = Self::collection_embedding_prefix(collection);
+        let keys: Vec<String> = self.store.scan(&prefix);
+
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        // Collect vectors
+        let mut vectors: Vec<(String, Vec<f32>)> = Vec::new();
+        for storage_key in &keys {
+            if let Ok(tensor) = self.store.get(storage_key) {
+                if let Some(vector_value) = tensor.get("vector") {
+                    if let Some(vec) = Self::extract_vector(vector_value) {
+                        vectors.push((storage_key.clone(), vec));
+                    }
+                }
+            }
+        }
+
+        if vectors.is_empty() {
+            return Ok(());
+        }
+
+        let index = HNSWIndex::with_config(hnsw_config);
+        let mut key_mapping = Vec::with_capacity(vectors.len());
+
+        for (key, vec) in vectors {
+            index.insert(vec);
+            key_mapping.push(key);
+        }
+
+        self.cache_hnsw_index(collection, Arc::new(index), key_mapping);
+        Ok(())
+    }
+
     /// Key prefix for embeddings.
     fn embedding_key(key: &str) -> String {
         format!("emb:{key}")
@@ -1478,6 +1560,20 @@ impl VectorEngine {
             }
         }
 
+        // Poincare metric requires points inside the unit disk (norm < 1)
+        let is_poincare = collection_config
+            .as_ref()
+            .is_some_and(|c| c.distance_metric == DistanceMetric::Poincare);
+        if is_poincare {
+            let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+            if norm_sq >= 1.0 {
+                return Err(VectorError::ConfigurationError(format!(
+                    "Poincare metric requires vectors inside the unit disk (norm < 1), got norm = {:.6}",
+                    norm_sq.sqrt()
+                )));
+            }
+        }
+
         let storage_key = Self::collection_embedding_key(collection, key);
         let mut tensor = TensorData::new();
 
@@ -1495,6 +1591,20 @@ impl VectorEngine {
 
         self.store.put(storage_key, tensor)?;
         self.invalidate_hnsw_cache(collection);
+
+        // Auto-rebuild HNSW index if configured and threshold met
+        if let Some(ref config) = collection_config {
+            if config.auto_index {
+                let prefix = Self::collection_embedding_prefix(collection);
+                let count = self.store.scan(&prefix).len();
+                if count >= config.auto_index_threshold
+                    && !self.hnsw_cache.read().contains_key(collection)
+                {
+                    let _ = self.build_and_cache_collection_index(collection);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1614,8 +1724,11 @@ impl VectorEngine {
         let metric = collection_config
             .as_ref()
             .map_or(DistanceMetric::Cosine, |c| c.distance_metric);
+        let curvature = collection_config
+            .as_ref()
+            .map_or(1.0, |c| c.poincare_curvature);
         let query_magnitude = Self::magnitude(query);
-        if query_magnitude == 0.0 && metric == DistanceMetric::Cosine {
+        if query_magnitude == 0.0 && matches!(metric, DistanceMetric::Cosine) {
             return Ok(Vec::new());
         }
 
@@ -1666,7 +1779,7 @@ impl VectorEngine {
                     return None;
                 }
 
-                let score = Self::compute_score(query, &vector, query_magnitude, metric);
+                let score = Self::compute_score(query, &vector, query_magnitude, metric, curvature);
                 Some(SearchResult::new(key.to_string(), score))
             })
             .collect();
@@ -1848,6 +1961,17 @@ impl VectorEngine {
                     expected: max_dim,
                     got: vector.len(),
                 });
+            }
+        }
+
+        // Poincare metric requires points inside the unit disk (norm < 1)
+        if self.config.default_metric == DistanceMetric::Poincare {
+            let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+            if norm_sq >= 1.0 {
+                return Err(VectorError::ConfigurationError(format!(
+                    "Poincare metric requires vectors inside the unit disk (norm < 1), got norm = {:.6}",
+                    norm_sq.sqrt()
+                )));
             }
         }
 
@@ -2062,11 +2186,14 @@ impl VectorEngine {
         }
 
         let query_magnitude = Self::magnitude(query);
-        // Zero-magnitude queries are invalid for cosine/dot product but valid for euclidean
-        if query_magnitude == 0.0 && !matches!(metric, DistanceMetric::Euclidean) {
+        // Zero-magnitude queries are invalid for cosine/dot product but valid for euclidean/poincare
+        if query_magnitude == 0.0
+            && !matches!(metric, DistanceMetric::Euclidean | DistanceMetric::Poincare)
+        {
             return Ok(Vec::new());
         }
 
+        let curvature = self.config.default_poincare_curvature;
         let keys = self.store.scan(Self::embedding_prefix());
 
         if deadline.is_expired() {
@@ -2077,9 +2204,23 @@ impl VectorEngine {
         }
 
         let mut results: Vec<SearchResult> = if keys.len() >= self.config.parallel_threshold {
-            Self::search_parallel_with_metric(&self.store, &keys, query, query_magnitude, metric)
+            Self::search_parallel_with_metric(
+                &self.store,
+                &keys,
+                query,
+                query_magnitude,
+                metric,
+                curvature,
+            )
         } else {
-            Self::search_sequential_with_metric(&self.store, &keys, query, query_magnitude, metric)
+            Self::search_sequential_with_metric(
+                &self.store,
+                &keys,
+                query,
+                query_magnitude,
+                metric,
+                curvature,
+            )
         };
 
         if deadline.is_expired() {
@@ -2176,6 +2317,7 @@ impl VectorEngine {
         query: &[f32],
         query_magnitude: f32,
         metric: DistanceMetric,
+        curvature: f32,
     ) -> Vec<SearchResult> {
         keys.iter()
             .filter_map(|storage_key| {
@@ -2186,7 +2328,8 @@ impl VectorEngine {
                     return None;
                 }
 
-                let score = Self::compute_score(query, &stored_vec, query_magnitude, metric);
+                let score =
+                    Self::compute_score(query, &stored_vec, query_magnitude, metric, curvature);
                 let key = storage_key
                     .strip_prefix(Self::embedding_prefix())
                     .unwrap_or(storage_key)
@@ -2206,6 +2349,7 @@ impl VectorEngine {
         query: &[f32],
         query_magnitude: f32,
         metric: DistanceMetric,
+        curvature: f32,
     ) -> Vec<SearchResult> {
         keys.par_iter()
             .filter_map(|storage_key| {
@@ -2216,7 +2360,8 @@ impl VectorEngine {
                     return None;
                 }
 
-                let score = Self::compute_score(query, &stored_vec, query_magnitude, metric);
+                let score =
+                    Self::compute_score(query, &stored_vec, query_magnitude, metric, curvature);
                 let key = storage_key
                     .strip_prefix(Self::embedding_prefix())
                     .unwrap_or(storage_key)
@@ -2233,6 +2378,7 @@ impl VectorEngine {
         stored: &[f32],
         query_magnitude: f32,
         metric: DistanceMetric,
+        poincare_curvature: f32,
     ) -> f32 {
         match metric {
             DistanceMetric::Cosine => Self::cosine_similarity(query, stored, query_magnitude),
@@ -2241,6 +2387,12 @@ impl VectorEngine {
                 // Convert distance to similarity: 1 / (1 + distance)
                 let dist = Self::euclidean_distance(query, stored);
                 1.0 / (1.0 + dist)
+            },
+            DistanceMetric::Poincare => {
+                let a = SparseVector::from_dense(query);
+                let b = SparseVector::from_dense(stored);
+                let dist = a.poincare_distance(&b, poincare_curvature);
+                (-dist).exp()
             },
         }
     }
@@ -5828,21 +5980,21 @@ mod tests {
     #[test]
     fn distance_metric_conversion_cosine() {
         let simple = DistanceMetric::Cosine;
-        let extended: ExtendedDistanceMetric = simple.into();
+        let extended = simple.to_extended(1.0);
         assert!(matches!(extended, ExtendedDistanceMetric::Cosine));
     }
 
     #[test]
     fn distance_metric_conversion_euclidean() {
         let simple = DistanceMetric::Euclidean;
-        let extended: ExtendedDistanceMetric = simple.into();
+        let extended = simple.to_extended(1.0);
         assert!(matches!(extended, ExtendedDistanceMetric::Euclidean));
     }
 
     #[test]
     fn distance_metric_conversion_dot_product() {
         let simple = DistanceMetric::DotProduct;
-        let extended: ExtendedDistanceMetric = simple.into();
+        let extended = simple.to_extended(1.0);
         // DotProduct maps to Cosine (closest equivalent)
         assert!(matches!(extended, ExtendedDistanceMetric::Cosine));
     }
@@ -9038,21 +9190,21 @@ mod tests {
     #[test]
     fn distance_metric_to_extended_euclidean() {
         let metric = DistanceMetric::Euclidean;
-        let extended: ExtendedDistanceMetric = metric.into();
+        let extended = metric.to_extended(1.0);
         assert!(matches!(extended, ExtendedDistanceMetric::Euclidean));
     }
 
     #[test]
     fn distance_metric_to_extended_cosine() {
         let metric = DistanceMetric::Cosine;
-        let extended: ExtendedDistanceMetric = metric.into();
+        let extended = metric.to_extended(1.0);
         assert!(matches!(extended, ExtendedDistanceMetric::Cosine));
     }
 
     #[test]
     fn distance_metric_to_extended_dot_product() {
         let metric = DistanceMetric::DotProduct;
-        let extended: ExtendedDistanceMetric = metric.into();
+        let extended = metric.to_extended(1.0);
         // DotProduct maps to Cosine as the closest equivalent
         assert!(matches!(extended, ExtendedDistanceMetric::Cosine));
     }

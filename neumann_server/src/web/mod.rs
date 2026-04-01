@@ -123,6 +123,10 @@ pub struct AdminContext {
     pub metrics: Option<Arc<ServerMetrics>>,
     /// Query router for executing parsed statements (optional).
     pub query_router: Option<Arc<RwLock<QueryRouter>>>,
+    /// Training session for geometric learning (optional).
+    pub training: Option<Arc<parking_lot::RwLock<tensor_learn::TrainingSession>>>,
+    /// Grokking experiment session.
+    pub grok: Option<Arc<parking_lot::RwLock<tensor_learn::GrokSession>>>,
 }
 
 impl AdminContext {
@@ -147,6 +151,8 @@ impl AdminContext {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         }
     }
 
@@ -219,6 +225,26 @@ impl AdminContext {
         self.query_router = router;
         self
     }
+
+    /// Add training session for geometric learning dashboard.
+    #[must_use]
+    pub fn with_training(
+        mut self,
+        training: Option<Arc<parking_lot::RwLock<tensor_learn::TrainingSession>>>,
+    ) -> Self {
+        self.training = training;
+        self
+    }
+
+    /// Attach a grokking experiment session.
+    #[must_use]
+    pub fn with_grok(
+        mut self,
+        grok: Option<Arc<parking_lot::RwLock<tensor_learn::GrokSession>>>,
+    ) -> Self {
+        self.grok = grok;
+        self
+    }
 }
 
 /// Navigation item for sidebar highlighting.
@@ -246,6 +272,8 @@ pub enum NavItem {
     Storage,
     /// Consensus / chain dashboard.
     Chain,
+    /// Geometric learning dashboard.
+    Learn,
 }
 
 /// Vector engine routes (default and named collections).
@@ -387,6 +415,13 @@ pub fn router(ctx: Arc<AdminContext>) -> Router {
         .route("/chain", get(handlers::chain::consensus))
         .route("/chain/transactions", get(handlers::chain::transactions))
         .route("/chain/deadlocks", get(handlers::chain::deadlocks))
+        .route("/learn", get(handlers::learn::dashboard))
+        .route("/learn/viz", get(handlers::learn::viz_data))
+        .route("/learn/status", get(handlers::learn::status))
+        .route("/learn/start", post(handlers::learn::start))
+        .route("/learn/pause", post(handlers::learn::pause))
+        .route("/learn/step", post(handlers::learn::step))
+        .route("/learn/reset", post(handlers::learn::reset))
         .route("/metrics", get(handlers::metrics::dashboard))
         .route("/api/metrics", get(handlers::metrics::api_snapshot))
         .route("/api/graph/subgraph", get(handlers::graph::api_subgraph))

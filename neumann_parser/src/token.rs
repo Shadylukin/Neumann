@@ -315,6 +315,8 @@ pub enum TokenKind {
     Euclidean,
     /// Vector `DOT_PRODUCT` keyword.
     DotProduct,
+    /// Vector `POINCARE` keyword.
+    Poincare,
     /// Vector `BUILD` keyword.
     Build,
     /// Vector `BATCH` keyword.
@@ -730,6 +732,7 @@ impl TokenKind {
                 | Cosine
                 | Euclidean
                 | DotProduct
+                | Poincare
                 | Build
                 | Batch
                 | Spatial
@@ -1019,6 +1022,7 @@ impl TokenKind {
             "COSINE" => Self::Cosine,
             "EUCLIDEAN" => Self::Euclidean,
             "DOT_PRODUCT" | "DOTPRODUCT" => Self::DotProduct,
+            "POINCARE" | "HYPERBOLIC" => Self::Poincare,
             "BUILD" => Self::Build,
             "BATCH" => Self::Batch,
 
@@ -1265,6 +1269,7 @@ impl TokenKind {
             Cosine => "COSINE",
             Euclidean => "EUCLIDEAN",
             DotProduct => "DOT_PRODUCT",
+            Poincare => "POINCARE",
             Build => "BUILD",
             Batch => "BATCH",
             Spatial => "SPATIAL",

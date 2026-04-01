@@ -1063,6 +1063,44 @@ impl SparseVector {
         }
     }
 
+    /// Poincare distance in the hyperbolic disk model.
+    ///
+    /// Computes `d(u,v) = (1/sqrt(c)) * arcosh(1 + 2||u-v||^2 / ((1-||u||^2)(1-||v||^2)))`.
+    /// Both points must lie strictly inside the unit disk (norm < 1).
+    /// Returns `f32::MAX` if either point has norm >= 1 (invalid hyperbolic point).
+    /// Returns `0.0` for identical points.
+    ///
+    /// # Arguments
+    /// * `other` - The other point in the Poincare disk
+    /// * `curvature` - Negative curvature parameter (typically 1.0)
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn poincare_distance(&self, other: &Self, curvature: f32) -> f32 {
+        let norm_sq_a = self.magnitude_f64().powi(2);
+        let norm_sq_b = other.magnitude_f64().powi(2);
+
+        // Points must be strictly inside the unit disk
+        if norm_sq_a >= 1.0 || norm_sq_b >= 1.0 {
+            return f32::MAX;
+        }
+
+        let diff_sq = self.euclidean_distance_squared_f64(other);
+        if diff_sq < 1e-30 {
+            return 0.0;
+        }
+
+        let denom = (1.0 - norm_sq_a) * (1.0 - norm_sq_b);
+        let arg = 1.0 + 2.0 * diff_sq / denom;
+        // arcosh(x) = ln(x + sqrt(x^2 - 1)), valid for x >= 1
+        let dist = arg.acosh() / f64::from(curvature).sqrt();
+
+        if dist > f64::from(f32::MAX) {
+            f32::MAX
+        } else {
+            dist as f32
+        }
+    }
+
     /// Memory usage in bytes (approximate).
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // Vec::capacity() is not const

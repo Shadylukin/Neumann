@@ -22,6 +22,7 @@ vector_engine.workspace = true
 graph_engine.workspace = true
 tensor_unified.workspace = true
 tensor_spatial.workspace = true
+tensor_learn.workspace = true
 tensor_vault.workspace = true
 tensor_cache.workspace = true
 tensor_checkpoint.workspace = true

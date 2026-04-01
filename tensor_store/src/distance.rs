@@ -46,6 +46,14 @@ pub enum DistanceMetric {
     /// Range: [0, inf) where 0 = identical.
     Manhattan,
 
+    /// Poincare distance in the hyperbolic disk model.
+    /// Range: [0, inf) where 0 = identical.
+    /// Points must lie strictly inside the unit disk (norm < 1).
+    Poincare {
+        /// Negative curvature parameter (typically 1.0).
+        curvature: f32,
+    },
+
     /// Composite metric with configurable weights.
     /// Combines cosine (angular), structural (jaccard), and magnitude (euclidean).
     Composite(GeometricConfig),
@@ -83,6 +91,7 @@ impl DistanceMetric {
             Self::WeightedJaccard => a.weighted_jaccard(b),
             Self::Euclidean => a.euclidean_distance(b),
             Self::Manhattan => a.manhattan_distance(b),
+            Self::Poincare { curvature } => a.poincare_distance(b, *curvature),
             Self::Composite(config) => config.compute(a, b),
         }
     }
@@ -102,6 +111,7 @@ impl DistanceMetric {
             Self::Euclidean | Self::Manhattan => {
                 1.0 / (1.0 + raw) // [0, inf) -> (0, 1]
             },
+            Self::Poincare { .. } => (-raw).exp(), // [0, inf) -> (0, 1]
         }
     }
 }

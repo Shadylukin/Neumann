@@ -79,6 +79,7 @@ impl SimilarityIndex {
             sparsity_threshold: 0.5,
             max_nodes: 100_000,
             distance_metric: HNSWDistanceMetric::Euclidean,
+            poincare_curvature: 1.0,
         };
         Self {
             index: RwLock::new(HNSWIndex::with_config(config)),

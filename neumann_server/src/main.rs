@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .init();
 
     // Load configuration from environment or defaults
-    let config = ServerConfig::from_env()?;
+    let mut config = ServerConfig::from_env()?;
 
     tracing::info!("Starting Neumann server on {}", config.bind_addr);
 
@@ -43,7 +43,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Create and run the server
-    let server = NeumannServer::new(router, config);
+    let mut server = NeumannServer::new(router, config.clone());
+
+    // Optionally attach a grokking experiment (NEUMANN_LEARN=1)
+    if std::env::var("NEUMANN_LEARN").is_ok() {
+        if config.web_addr.is_none() {
+            config.web_addr = Some("127.0.0.1:9000".parse()?);
+        }
+
+        server = NeumannServer::new(Arc::new(RwLock::new(QueryRouter::new())), config)
+            .with_relational_engine(Arc::new(relational_engine::RelationalEngine::new()))
+            .with_vector_engine(Arc::new(vector_engine::VectorEngine::new()))
+            .with_graph_engine(Arc::new(graph_engine::GraphEngine::new()));
+
+        let grok = tensor_learn::GrokSession::new(tensor_learn::GrokConfig::default());
+        server = server.with_grok(Arc::new(RwLock::new(grok)));
+
+        tracing::info!("Grokking dashboard at http://127.0.0.1:9000/learn");
+    }
+
     server.serve().await?;
 
     Ok(())
