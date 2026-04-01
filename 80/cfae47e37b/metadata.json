@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "80cfae47e37b",
+  "strategy": "manual-commit",
+  "branch": "learn",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "Cargo.lock",
+    "demos/knowledge-galaxy/Cargo.lock",
+    "demos/knowledge-galaxy/frontend/package-lock.json",
+    "neumann-py/neumann-native/Cargo.lock",
+    "neumann-py/package-lock.json",
+    "neumann-ts/package-lock.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/80/cfae47e37b/0/metadata.json",
+      "transcript": "/80/cfae47e37b/0/full.jsonl",
+      "content_hash": "/80/cfae47e37b/0/content_hash.txt",
+      "prompt": "/80/cfae47e37b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 7713,
+    "cache_read_tokens": 313950,
+    "output_tokens": 2298,
+    "api_call_count": 8
+  }
+}
