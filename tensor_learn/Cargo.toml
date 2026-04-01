@@ -1,0 +1,26 @@
+[package]
+name = "tensor_learn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Geometric intelligence model with hyperbolic codebook learning"
+readme = "../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tensor_store.workspace = true
+graph_engine.workspace = true
+vector_engine.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

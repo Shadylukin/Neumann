@@ -19,6 +19,7 @@ pub mod checkpoint;
 pub mod contraction;
 pub mod graph;
 pub mod graph_algorithms;
+pub mod learn;
 pub mod metrics;
 pub mod relational;
 pub mod storage;
