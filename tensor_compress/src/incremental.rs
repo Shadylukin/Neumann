@@ -180,8 +180,7 @@ impl DeltaBuilder {
                 change_count: self.entries.len() as u64,
                 created_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
+                    .map_or(0, |d| d.as_secs()),
             },
             entries: self.entries,
         }
@@ -263,8 +262,7 @@ pub fn merge_deltas(deltas: &[DeltaSnapshot]) -> Result<DeltaSnapshot, DeltaErro
             change_count: entries.len() as u64,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_secs()),
         },
         entries,
     })
