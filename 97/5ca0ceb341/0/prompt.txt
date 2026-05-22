@@ -1,0 +1,5 @@
+Enter plan mode: Server surfaces bypass the router. REST vector endpoints call VectorEngine directly through VectorApiContext at neumann_server/src/rest/mod.rs (line 37), while query gRPC goes through QueryRouter. That creates different auth, cache, durability, and consistency paths. Route all mutations through a shared service layer, even if REST keeps Qdrant-compatible DTOs.
+
+---
+
+Enter plan mode: Server surfaces bypass the router. REST vector endpoints call VectorEngine directly through VectorApiContext at neumann_server/src/rest/mod.rs (line 37), while query gRPC goes through QueryRouter. That creates different auth, cache, durability, and consistency paths. Route all mutations through a shared service layer, even if REST keeps Qdrant-compatible DTOs.
