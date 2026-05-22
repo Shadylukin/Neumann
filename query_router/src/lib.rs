@@ -2665,8 +2665,7 @@ impl QueryRouter {
                         let blob_guard = blob.lock().await;
                         blob_guard.metadata(&id).await
                     })
-                    .map(|m| m.size)
-                    .unwrap_or(0);
+                    .map_or(0, |m| m.size);
 
                 // Check for auto-checkpoint protection
                 let op = DestructiveOp::BlobDelete {
@@ -4989,8 +4988,7 @@ impl QueryRouter {
         let edge_count = self
             .graph
             .neighbors(node_id, None, Direction::Both, None)
-            .map(|nodes| nodes.len())
-            .unwrap_or(0);
+            .map_or(0, |nodes| nodes.len());
 
         // Get node label and properties for sample
         let sample = match self.graph.get_node(node_id) {
