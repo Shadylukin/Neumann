@@ -1,0 +1,5 @@
+Enter plan mode for this: query_router is the main architectural bottleneck. query_router/src/lib.rs (line 952) owns routing, execution, cache policy, blob/checkpoint/chain/cluster init, distributed dispatch, result shaping, and 17k+ lines of inline tests starting at line 7199 (line 7199). Split it into result, error, policy, exec/sql, exec/graph, exec/vector, exec/blob, exec/chain, etc. Keep QueryRouter as a thin coordinator.
+
+---
+
+Enter plan mode for this: query_router is the main architectural bottleneck. query_router/src/lib.rs (line 952) owns routing, execution, cache policy, blob/checkpoint/chain/cluster init, distributed dispatch, result shaping, and 17k+ lines of inline tests starting at line 7199 (line 7199). Split it into result, error, policy, exec/sql, exec/graph, exec/vector, exec/blob, exec/chain, etc. Keep QueryRouter as a thin coordinator.
