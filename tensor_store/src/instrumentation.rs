@@ -137,7 +137,7 @@ impl ShardAccessTracker {
                 (i, total)
             })
             .collect();
-        shard_counts.sort_by(|a, b| b.1.cmp(&a.1));
+        shard_counts.sort_by_key(|b| std::cmp::Reverse(b.1));
         shard_counts.truncate(limit);
         shard_counts
     }

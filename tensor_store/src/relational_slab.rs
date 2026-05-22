@@ -240,52 +240,34 @@ impl ColumnStorage {
     #[allow(clippy::match_same_arms)]
     fn set(&mut self, idx: usize, value: &ColumnValue) {
         match (self, value) {
-            (Self::Int(v), ColumnValue::Int(i)) => {
-                if idx < v.len() {
-                    v[idx] = *i;
-                }
+            (Self::Int(v), ColumnValue::Int(i)) if idx < v.len() => {
+                v[idx] = *i;
             },
-            (Self::Float(v), ColumnValue::Float(f)) => {
-                if idx < v.len() {
-                    v[idx] = *f;
-                }
+            (Self::Float(v), ColumnValue::Float(f)) if idx < v.len() => {
+                v[idx] = *f;
             },
-            (Self::String(v), ColumnValue::String(s)) => {
-                if idx < v.len() {
-                    v[idx] = Some(s.clone());
-                }
+            (Self::String(v), ColumnValue::String(s)) if idx < v.len() => {
+                v[idx] = Some(s.clone());
             },
-            (Self::String(v), ColumnValue::Null) => {
-                if idx < v.len() {
-                    v[idx] = None;
-                }
+            (Self::String(v), ColumnValue::Null) if idx < v.len() => {
+                v[idx] = None;
             },
-            (Self::Bool(v), ColumnValue::Bool(b)) => {
-                if idx < v.len() {
-                    v.set(idx, *b);
-                }
+            (Self::Bool(v), ColumnValue::Bool(b)) if idx < v.len() => {
+                v.set(idx, *b);
             },
-            (Self::Bytes(v), ColumnValue::Bytes(b)) => {
-                if idx < v.len() {
-                    v[idx] = Some(b.clone());
-                }
+            (Self::Bytes(v), ColumnValue::Bytes(b)) if idx < v.len() => {
+                v[idx] = Some(b.clone());
             },
-            (Self::Bytes(v), ColumnValue::Null) => {
-                if idx < v.len() {
-                    v[idx] = None;
-                }
+            (Self::Bytes(v), ColumnValue::Null) if idx < v.len() => {
+                v[idx] = None;
             },
-            (Self::Json(v), ColumnValue::Json(j)) => {
-                if idx < v.len() {
-                    v[idx] = Some(j.clone());
-                }
+            (Self::Json(v), ColumnValue::Json(j)) if idx < v.len() => {
+                v[idx] = Some(j.clone());
             },
-            (Self::Json(v), ColumnValue::Null) => {
-                if idx < v.len() {
-                    v[idx] = None;
-                }
+            (Self::Json(v), ColumnValue::Null) if idx < v.len() => {
+                v[idx] = None;
             },
-            _ => {}, // Type mismatch - should be validated before
+            _ => {}, // Type mismatch or out-of-bounds index
         }
     }
 }

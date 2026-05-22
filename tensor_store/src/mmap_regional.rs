@@ -868,7 +868,7 @@ impl RegionalMmapStore {
         }
 
         // Add new run
-        let new_size = fs::metadata(&new_run.path).map(|m| m.len()).unwrap_or(0);
+        let new_size = fs::metadata(&new_run.path).map_or(0, |m| m.len());
         self.runs.write().push(new_run);
 
         Ok(CompactionStats {
