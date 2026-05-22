@@ -111,3 +111,7 @@ Footer navigation
     Community
     Docs
     Contact
+
+---
+
+Commit and push once done
