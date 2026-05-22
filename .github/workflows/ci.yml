@@ -897,7 +897,7 @@ jobs:
             tensor_unified
             query_router
             neumann_server neumann_client
-            neumann
+            neumann-db
           )
           for crate in "${ALL_CRATES[@]}"; do
             echo "Checking package contents for $crate..."
