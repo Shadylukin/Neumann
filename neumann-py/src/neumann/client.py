@@ -383,7 +383,9 @@ class NeumannClient:
         if result is None:
             return QueryResult(QueryResultType.EMPTY)
 
-        result_dict = dict(result) if hasattr(result, "items") else {"type": "empty"}
+        result_dict: dict[str, Any] = (
+            dict(result) if hasattr(result, "items") else {"type": "empty"}
+        )
         result_type = result_dict.get("type", "empty")
 
         if result_type == "empty":
