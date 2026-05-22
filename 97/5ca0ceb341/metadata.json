@@ -3,7 +3,7 @@
   "checkpoint_id": "975ca0ceb341",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 0,
+  "checkpoints_count": 4,
   "files_touched": [
     "neumann_server/src/rate_limit.rs",
     "neumann_server/src/rest/collections.rs",
@@ -24,13 +24,19 @@
       "transcript": "/97/5ca0ceb341/1/full.jsonl",
       "content_hash": "/97/5ca0ceb341/1/content_hash.txt",
       "prompt": "/97/5ca0ceb341/1/prompt.txt"
+    },
+    {
+      "metadata": "/97/5ca0ceb341/2/metadata.json",
+      "transcript": "/97/5ca0ceb341/2/full.jsonl",
+      "content_hash": "/97/5ca0ceb341/2/content_hash.txt",
+      "prompt": "/97/5ca0ceb341/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 35,
-    "cache_creation_tokens": 182778,
-    "cache_read_tokens": 375199,
-    "output_tokens": 42084,
-    "api_call_count": 10
+    "input_tokens": 120,
+    "cache_creation_tokens": 355707,
+    "cache_read_tokens": 5879079,
+    "output_tokens": 99307,
+    "api_call_count": 62
   }
 }
