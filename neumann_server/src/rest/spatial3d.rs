@@ -13,60 +13,10 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::config::AuthConfig;
-use crate::rate_limit::{Operation, RateLimiter};
+use crate::rate_limit::Operation;
+use crate::rest::auth::{check_rate_limit, validate_auth};
 use crate::rest::error::{ApiError, ApiResult};
 use crate::rest::VectorApiContext;
-
-// ---------------------------------------------------------------------------
-// Auth helpers (same pattern as spatial.rs)
-// ---------------------------------------------------------------------------
-
-fn extract_api_key(headers: &HeaderMap, auth_config: Option<&AuthConfig>) -> Option<String> {
-    let header_name = auth_config.map_or("x-api-key", |c| c.api_key_header.as_str());
-    headers
-        .get(header_name)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-}
-
-fn validate_auth(
-    headers: &HeaderMap,
-    auth_config: Option<&AuthConfig>,
-) -> Result<Option<String>, ApiError> {
-    let api_key = extract_api_key(headers, auth_config);
-
-    match (auth_config, api_key) {
-        (None, _) => Ok(None),
-        (Some(config), None) => {
-            if config.allow_anonymous {
-                Ok(None)
-            } else {
-                Err(ApiError::unauthorized("API key required"))
-            }
-        },
-        (Some(config), Some(key)) => config.validate_key(&key).map_or_else(
-            || Err(ApiError::unauthorized("Invalid API key")),
-            |identity| Ok(Some(identity.to_string())),
-        ),
-    }
-}
-
-fn check_rate_limit(
-    identity: Option<&String>,
-    rate_limiter: Option<&Arc<RateLimiter>>,
-    operation: &str,
-) -> Result<(), ApiError> {
-    if let Some(limiter) = rate_limiter {
-        if let Some(id) = identity {
-            if let Err(msg) = limiter.check_and_record(id, Operation::VectorOp) {
-                tracing::warn!("Rate limited: {id} for {operation}");
-                return Err(ApiError::rate_limited(msg));
-            }
-        }
-    }
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -193,9 +143,9 @@ pub async fn insert_3d(
 ) -> ApiResult<serde_json::Value> {
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "spatial3d_insert",
+        Operation::VectorOp,
     )?;
 
     let spatial = ctx
@@ -228,9 +178,9 @@ pub async fn query_3d(
 ) -> ApiResult<Spatial3DQueryResponse> {
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "spatial3d_query",
+        Operation::VectorOp,
     )?;
 
     let spatial = ctx
@@ -282,9 +232,9 @@ pub async fn nearest_3d(
 ) -> ApiResult<Spatial3DQueryResponse> {
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "spatial3d_nearest",
+        Operation::VectorOp,
     )?;
 
     let spatial = ctx
@@ -335,9 +285,9 @@ pub async fn region_3d(
 ) -> ApiResult<Spatial3DQueryResponse> {
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "spatial3d_region",
+        Operation::VectorOp,
     )?;
 
     let spatial = ctx
@@ -397,9 +347,9 @@ pub async fn delete_3d(
 ) -> ApiResult<serde_json::Value> {
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "spatial3d_delete",
+        Operation::VectorOp,
     )?;
 
     let spatial = ctx
@@ -431,9 +381,9 @@ pub async fn count_3d(
 ) -> ApiResult<Spatial3DCountResponse> {
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "spatial3d_count",
+        Operation::VectorOp,
     )?;
 
     let spatial = ctx

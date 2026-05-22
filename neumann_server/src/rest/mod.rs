@@ -19,6 +19,7 @@ use crate::config::AuthConfig;
 use crate::metrics::ServerMetrics;
 use crate::rate_limit::RateLimiter;
 
+pub mod auth;
 pub mod collections;
 pub mod error;
 pub mod points;

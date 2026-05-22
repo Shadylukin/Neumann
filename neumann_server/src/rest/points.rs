@@ -11,61 +11,14 @@ use axum::Json;
 use tensor_store::{ScalarValue, TensorValue};
 
 use crate::audit::AuditEvent;
-use crate::config::AuthConfig;
-use crate::rate_limit::{Operation, RateLimiter};
+use crate::rate_limit::Operation;
+use crate::rest::auth::{check_rate_limit, validate_auth};
 use crate::rest::error::{ApiError, ApiResult};
 use crate::rest::types::{
     DeleteRequest, DeleteResponse, GetRequest, GetResponse, PointStruct, QueryRequest,
     QueryResponse, ScoredPoint, ScrollRequest, ScrollResponse, UpsertRequest, UpsertResponse,
 };
 use crate::rest::VectorApiContext;
-
-fn extract_api_key(headers: &HeaderMap, auth_config: Option<&AuthConfig>) -> Option<String> {
-    let header_name = auth_config.map_or("x-api-key", |c| c.api_key_header.as_str());
-
-    headers
-        .get(header_name)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-}
-
-fn validate_auth(
-    headers: &HeaderMap,
-    auth_config: Option<&AuthConfig>,
-) -> Result<Option<String>, ApiError> {
-    let api_key = extract_api_key(headers, auth_config);
-
-    match (auth_config, api_key) {
-        (None, _) => Ok(None),
-        (Some(config), None) => {
-            if config.allow_anonymous {
-                Ok(None)
-            } else {
-                Err(ApiError::unauthorized("API key required"))
-            }
-        },
-        (Some(config), Some(key)) => config.validate_key(&key).map_or_else(
-            || Err(ApiError::unauthorized("Invalid API key")),
-            |identity| Ok(Some(identity.to_string())),
-        ),
-    }
-}
-
-fn check_rate_limit(
-    identity: Option<&String>,
-    rate_limiter: Option<&Arc<RateLimiter>>,
-    operation: &str,
-) -> Result<(), ApiError> {
-    if let Some(limiter) = rate_limiter {
-        if let Some(id) = identity {
-            if let Err(msg) = limiter.check_and_record(id, Operation::VectorOp) {
-                tracing::warn!("Rate limited: {id} for {operation}");
-                return Err(ApiError::rate_limited(msg));
-            }
-        }
-    }
-    Ok(())
-}
 
 /// Converts a `TensorValue` back to a JSON value for payload retrieval.
 fn tensor_value_to_json(value: &TensorValue) -> serde_json::Value {
@@ -150,9 +103,9 @@ pub async fn upsert(
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "vector_upsert",
+        Operation::VectorOp,
     )?;
 
     let mut count = 0usize;
@@ -219,7 +172,11 @@ pub async fn get(
     let start = Instant::now();
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
-    check_rate_limit(identity.as_ref(), ctx.rate_limiter.as_ref(), "vector_get")?;
+    check_rate_limit(
+        identity.as_deref(),
+        ctx.rate_limiter.as_ref(),
+        Operation::VectorOp,
+    )?;
 
     let mut points = Vec::with_capacity(request.ids.len());
 
@@ -262,9 +219,9 @@ pub async fn delete(
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "vector_delete",
+        Operation::VectorOp,
     )?;
 
     let mut count = 0usize;
@@ -314,7 +271,11 @@ pub async fn query(
     let start = Instant::now();
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
-    check_rate_limit(identity.as_ref(), ctx.rate_limiter.as_ref(), "vector_query")?;
+    check_rate_limit(
+        identity.as_deref(),
+        ctx.rate_limiter.as_ref(),
+        Operation::VectorOp,
+    )?;
 
     let limit = request.limit.max(1);
     let search_result =
@@ -404,9 +365,9 @@ pub async fn scroll(
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "vector_scroll",
+        Operation::VectorOp,
     )?;
 
     let limit = request.limit.max(1);
@@ -563,15 +524,14 @@ mod tests {
 
     #[test]
     fn test_check_rate_limit_no_limiter() {
-        let identity = "test".to_string();
-        let result = check_rate_limit(Some(&identity), None, "test_op");
+        let result = check_rate_limit(Some("test"), None, Operation::VectorOp);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_rate_limit_no_identity() {
         let limiter = Arc::new(RateLimiter::default());
-        let result = check_rate_limit(None, Some(&limiter), "test_op");
+        let result = check_rate_limit(None, Some(&limiter), Operation::VectorOp);
         assert!(result.is_ok());
     }
 
@@ -584,14 +544,13 @@ mod tests {
             .with_max_vector_ops(1)
             .with_window(Duration::from_secs(60));
         let limiter = Arc::new(RateLimiter::new(config));
-        let identity = "test-user".to_string();
 
         // First request should succeed
-        let result = check_rate_limit(Some(&identity), Some(&limiter), "vector_op");
+        let result = check_rate_limit(Some("test-user"), Some(&limiter), Operation::VectorOp);
         assert!(result.is_ok());
 
         // Second request should fail (rate limited)
-        let result = check_rate_limit(Some(&identity), Some(&limiter), "vector_op");
+        let result = check_rate_limit(Some("test-user"), Some(&limiter), Operation::VectorOp);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, 429);
     }

@@ -11,61 +11,16 @@ use axum::Json;
 use vector_engine::{DistanceMetric, VectorCollectionConfig};
 
 use crate::audit::AuditEvent;
-use crate::config::AuthConfig;
-use crate::rate_limit::{Operation, RateLimiter};
+use crate::rate_limit::Operation;
+#[cfg(test)]
+use crate::rest::auth::extract_api_key;
+use crate::rest::auth::{check_rate_limit, validate_auth};
 use crate::rest::error::{ApiError, ApiResult};
 use crate::rest::types::{
     CollectionInfo, CreateCollectionRequest, CreateCollectionResponse, DeleteCollectionResponse,
     ListCollectionsResponse,
 };
 use crate::rest::VectorApiContext;
-
-fn extract_api_key(headers: &HeaderMap, auth_config: Option<&AuthConfig>) -> Option<String> {
-    let header_name = auth_config.map_or("x-api-key", |c| c.api_key_header.as_str());
-
-    headers
-        .get(header_name)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-}
-
-fn validate_auth(
-    headers: &HeaderMap,
-    auth_config: Option<&AuthConfig>,
-) -> Result<Option<String>, ApiError> {
-    let api_key = extract_api_key(headers, auth_config);
-
-    match (auth_config, api_key) {
-        (None, _) => Ok(None),
-        (Some(config), None) => {
-            if config.allow_anonymous {
-                Ok(None)
-            } else {
-                Err(ApiError::unauthorized("API key required"))
-            }
-        },
-        (Some(config), Some(key)) => config.validate_key(&key).map_or_else(
-            || Err(ApiError::unauthorized("Invalid API key")),
-            |identity| Ok(Some(identity.to_string())),
-        ),
-    }
-}
-
-fn check_rate_limit(
-    identity: Option<&String>,
-    rate_limiter: Option<&Arc<RateLimiter>>,
-    operation: &str,
-) -> Result<(), ApiError> {
-    if let Some(limiter) = rate_limiter {
-        if let Some(id) = identity {
-            if let Err(msg) = limiter.check_and_record(id, Operation::VectorOp) {
-                tracing::warn!("Rate limited: {id} for {operation}");
-                return Err(ApiError::rate_limited(msg));
-            }
-        }
-    }
-    Ok(())
-}
 
 fn parse_distance_metric(distance: &str) -> Result<DistanceMetric, ApiError> {
     match distance.to_lowercase().as_str() {
@@ -103,9 +58,9 @@ pub async fn create(
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "create_collection",
+        Operation::VectorOp,
     )?;
 
     let metric = parse_distance_metric(&request.distance)?;
@@ -196,9 +151,9 @@ pub async fn delete(
 
     let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
     check_rate_limit(
-        identity.as_ref(),
+        identity.as_deref(),
         ctx.rate_limiter.as_ref(),
-        "delete_collection",
+        Operation::VectorOp,
     )?;
 
     match ctx.engine.delete_collection(&name) {
@@ -420,8 +375,7 @@ mod tests {
 
     #[test]
     fn test_check_rate_limit_no_limiter() {
-        let identity = Some("user:test".to_string());
-        let result = check_rate_limit(identity.as_ref(), None, "test_op");
+        let result = check_rate_limit(Some("user:test"), None, Operation::VectorOp);
         assert!(result.is_ok());
     }
 
@@ -430,7 +384,7 @@ mod tests {
         use crate::rate_limit::RateLimiter;
 
         let rate_limiter = Arc::new(RateLimiter::default());
-        let result = check_rate_limit(None, Some(&rate_limiter), "test_op");
+        let result = check_rate_limit(None, Some(&rate_limiter), Operation::VectorOp);
         assert!(result.is_ok());
     }
 
@@ -441,14 +395,21 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::new(
             RateLimitConfig::new().with_max_vector_ops(1),
         ));
-        let identity = Some("user:rate_test".to_string());
 
         // First call should pass
-        let result = check_rate_limit(identity.as_ref(), Some(&rate_limiter), "op1");
+        let result = check_rate_limit(
+            Some("user:rate_test"),
+            Some(&rate_limiter),
+            Operation::VectorOp,
+        );
         assert!(result.is_ok());
 
         // Second call should be rate limited
-        let result = check_rate_limit(identity.as_ref(), Some(&rate_limiter), "op2");
+        let result = check_rate_limit(
+            Some("user:rate_test"),
+            Some(&rate_limiter),
+            Operation::VectorOp,
+        );
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, 429);
     }

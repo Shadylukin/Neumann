@@ -134,7 +134,9 @@ pub enum Operation {
 }
 
 impl Operation {
-    const fn as_str(self) -> &'static str {
+    /// Returns the string representation of the operation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Request => "request",
             Self::Query => "query",
