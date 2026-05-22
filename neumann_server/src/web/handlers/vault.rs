@@ -777,6 +777,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         })
     }
 
@@ -806,6 +808,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         })
     }
 
@@ -841,6 +845,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         })
     }
 

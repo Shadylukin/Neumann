@@ -883,6 +883,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -920,6 +922,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -952,6 +956,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -1154,6 +1160,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let req = QueryRequest {
@@ -1197,6 +1205,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let req = QueryRequest {
@@ -1287,6 +1297,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let result = dashboard(State(ctx)).await;
@@ -1315,6 +1327,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -1367,6 +1381,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let stats = DashboardStats::gather(&ctx);
@@ -1398,6 +1414,8 @@ mod tests {
             auth_config: None,
             metrics: None,
             query_router: None,
+            training: None,
+            grok: None,
         });
 
         let stats = DashboardStats::gather(&ctx);

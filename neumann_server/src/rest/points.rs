@@ -431,7 +431,9 @@ pub async fn scroll(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApiKey;
+    use crate::config::{ApiKey, AuthConfig};
+    use crate::rate_limit::RateLimiter;
+    use crate::rest::auth::extract_api_key;
     use axum::http::HeaderValue;
 
     #[test]

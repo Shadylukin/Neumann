@@ -398,6 +398,8 @@ pub async fn count_3d(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rate_limit::RateLimiter;
+    use crate::rest::auth::extract_api_key;
 
     // ========== Serde Round-Trip Tests ==========
 
@@ -864,14 +866,14 @@ mod tests {
 
     #[test]
     fn test_check_rate_limit_no_limiter() {
-        let result = check_rate_limit(None, None, "test");
+        let result = check_rate_limit(None, None, Operation::Query);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_rate_limit_no_identity() {
         let limiter = Arc::new(RateLimiter::default());
-        let result = check_rate_limit(None, Some(&limiter), "test");
+        let result = check_rate_limit(None, Some(&limiter), Operation::Query);
         assert!(result.is_ok());
     }
 
