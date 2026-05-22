@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.5.0",
+  "checkpoint_id": "975ca0ceb341",
+  "session_id": "e70b1df0-af89-45ca-97a5-1006af8756dc",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-22T02:04:45.535868Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "neumann_server/src/rate_limit.rs",
+    "neumann_server/src/rest/collections.rs",
+    "neumann_server/src/rest/mod.rs",
+    "neumann_server/src/rest/points.rs",
+    "neumann_server/src/rest/spatial.rs",
+    "neumann_server/src/rest/spatial3d.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "ca29a865c329",
+  "token_usage": {
+    "input_tokens": 17,
+    "cache_creation_tokens": 108226,
+    "cache_read_tokens": 325171,
+    "output_tokens": 38770,
+    "api_call_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-22T02:04:45.455471Z",
+    "agent_lines": 70,
+    "human_added": 128,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 198,
+    "agent_percentage": 35.35353535353536
+  }
+}
