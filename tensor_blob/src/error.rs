@@ -1,61 +1,65 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use std::fmt;
+use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Errors returned by the blob storage layer.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BlobError {
     /// Artifact not found.
+    #[error("artifact not found: {0}")]
     NotFound(String),
     /// Chunk missing from storage.
+    #[error("chunk missing: {0}")]
     ChunkMissing(String),
     /// Checksum verification failed.
+    #[error("checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
     /// Storage error from `TensorStore`.
+    #[error("storage error: {0}")]
     StorageError(String),
     /// Graph engine error.
+    #[error("graph error: {0}")]
     GraphError(String),
     /// Vector engine error.
+    #[error("vector error: {0}")]
     VectorError(String),
     /// Invalid artifact ID format.
+    #[error("invalid artifact id: {0}")]
     InvalidArtifactId(String),
     /// Invalid configuration.
+    #[error("invalid config: {0}")]
     InvalidConfig(String),
     /// IO error during streaming.
-    IoError(String),
+    #[error("io error: {message}")]
+    IoError {
+        /// The kind of IO error that occurred.
+        kind: std::io::ErrorKind,
+        /// Human-readable error message.
+        message: String,
+    },
     /// GC error.
+    #[error("gc error: {0}")]
     GcError(String),
     /// Artifact already exists.
+    #[error("artifact already exists: {0}")]
     AlreadyExists(String),
     /// Empty data provided.
+    #[error("empty data provided")]
     EmptyData,
     /// Dimension mismatch for embeddings.
+    #[error("dimension mismatch: expected {expected}, got {got}")]
     DimensionMismatch { expected: usize, got: usize },
 }
 
-impl fmt::Display for BlobError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl BlobError {
+    /// Returns the `io::ErrorKind` if this is an IO error.
+    #[must_use]
+    pub const fn io_error_kind(&self) -> Option<std::io::ErrorKind> {
         match self {
-            Self::NotFound(id) => write!(f, "artifact not found: {id}"),
-            Self::ChunkMissing(hash) => write!(f, "chunk missing: {hash}"),
-            Self::ChecksumMismatch { expected, actual } => {
-                write!(f, "checksum mismatch: expected {expected}, got {actual}")
-            },
-            Self::StorageError(msg) => write!(f, "storage error: {msg}"),
-            Self::GraphError(msg) => write!(f, "graph error: {msg}"),
-            Self::VectorError(msg) => write!(f, "vector error: {msg}"),
-            Self::InvalidArtifactId(id) => write!(f, "invalid artifact id: {id}"),
-            Self::InvalidConfig(msg) => write!(f, "invalid config: {msg}"),
-            Self::IoError(msg) => write!(f, "io error: {msg}"),
-            Self::GcError(msg) => write!(f, "gc error: {msg}"),
-            Self::AlreadyExists(id) => write!(f, "artifact already exists: {id}"),
-            Self::EmptyData => write!(f, "empty data provided"),
-            Self::DimensionMismatch { expected, got } => {
-                write!(f, "dimension mismatch: expected {expected}, got {got}")
-            },
+            Self::IoError { kind, .. } => Some(*kind),
+            _ => None,
         }
     }
 }
-
-impl std::error::Error for BlobError {}
 
 impl From<tensor_store::TensorStoreError> for BlobError {
     fn from(e: tensor_store::TensorStoreError) -> Self {
@@ -79,7 +83,10 @@ impl From<vector_engine::VectorError> for BlobError {
 
 impl From<std::io::Error> for BlobError {
     fn from(e: std::io::Error) -> Self {
-        Self::IoError(e.to_string())
+        Self::IoError {
+            kind: e.kind(),
+            message: e.to_string(),
+        }
     }
 }
 
@@ -137,7 +144,7 @@ mod tests {
     fn test_from_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let blob_err: BlobError = io_err.into();
-        assert!(matches!(blob_err, BlobError::IoError(_)));
+        assert!(matches!(blob_err, BlobError::IoError { .. }));
     }
 
     #[test]
@@ -164,7 +171,10 @@ mod tests {
                 "invalid config: bad chunk size",
             ),
             (
-                BlobError::IoError("permission denied".to_string()),
+                BlobError::IoError {
+                    kind: std::io::ErrorKind::Other,
+                    message: "permission denied".to_string(),
+                },
                 "io error: permission denied",
             ),
             (
@@ -203,5 +213,18 @@ mod tests {
         let err = BlobError::EmptyData;
         let debug = format!("{err:?}");
         assert!(debug.contains("EmptyData"));
+    }
+
+    #[test]
+    fn test_io_error_kind_preservation() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let blob_err: BlobError = io_err.into();
+        assert_eq!(blob_err.io_error_kind(), Some(std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn test_io_error_kind_none_for_other_variants() {
+        let err = BlobError::NotFound("test".to_string());
+        assert_eq!(err.io_error_kind(), None);
     }
 }

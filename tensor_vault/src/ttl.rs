@@ -9,12 +9,15 @@
 use std::{
     cmp::Ordering,
     collections::BinaryHeap,
-    sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use parking_lot::Mutex;
+
 use serde::{Deserialize, Serialize};
 use tensor_store::TensorStore;
+
+use tracing::debug;
 
 use crate::{Result, VaultError};
 
@@ -87,7 +90,7 @@ impl GrantTTLTracker {
             entity: entity.to_string(),
             secret_key: secret_key.to_string(),
         };
-        self.heap.lock().unwrap().push(entry);
+        self.heap.lock().push(entry);
     }
 
     /// Add a grant with an explicit expiration time.
@@ -97,7 +100,7 @@ impl GrantTTLTracker {
             entity: entity.to_string(),
             secret_key: secret_key.to_string(),
         };
-        self.heap.lock().unwrap().push(entry);
+        self.heap.lock().push(entry);
     }
 
     /// Get all expired grants.
@@ -107,7 +110,7 @@ impl GrantTTLTracker {
     pub fn get_expired(&self) -> Vec<(String, String)> {
         let now = Instant::now();
         let mut expired = Vec::new();
-        let mut heap = self.heap.lock().unwrap();
+        let mut heap = self.heap.lock();
 
         while let Some(entry) = heap.peek() {
             if entry.expires_at <= now {
@@ -119,27 +122,30 @@ impl GrantTTLTracker {
             }
         }
 
+        if !expired.is_empty() {
+            debug!(count = expired.len(), "expired secrets collected");
+        }
         expired
     }
 
     /// Get the number of grants being tracked.
     pub fn len(&self) -> usize {
-        self.heap.lock().unwrap().len()
+        self.heap.lock().len()
     }
 
     /// Check if the tracker is empty.
     pub fn is_empty(&self) -> bool {
-        self.heap.lock().unwrap().is_empty()
+        self.heap.lock().is_empty()
     }
 
     /// Clear all entries.
     pub fn clear(&self) {
-        self.heap.lock().unwrap().clear();
+        self.heap.lock().clear();
     }
 
     /// Get the next expiration time, if any.
     pub fn next_expiration(&self) -> Option<Instant> {
-        self.heap.lock().unwrap().peek().map(|e| e.expires_at)
+        self.heap.lock().peek().map(|e| e.expires_at)
     }
 
     /// Check if a specific grant is expired.
@@ -149,7 +155,7 @@ impl GrantTTLTracker {
     #[allow(clippy::significant_drop_tightening)]
     pub fn is_expired(&self, entity: &str, secret_key: &str) -> bool {
         let now = Instant::now();
-        let heap = self.heap.lock().unwrap();
+        let heap = self.heap.lock();
 
         for entry in heap.iter() {
             if entry.entity == entity && entry.secret_key == secret_key {
@@ -165,7 +171,7 @@ impl GrantTTLTracker {
     ///
     /// Returns true if the grant was found and removed.
     pub fn remove(&self, entity: &str, secret_key: &str) -> bool {
-        let mut heap = self.heap.lock().unwrap();
+        let mut heap = self.heap.lock();
         let original_len = heap.len();
 
         let entries: Vec<GrantTTLEntry> = heap
@@ -222,7 +228,7 @@ impl GrantTTLTracker {
     pub fn persist(&self, store: &TensorStore) -> Result<()> {
         // Collect grants while holding the lock, then release it
         let grants: Vec<PersistedGrant> = {
-            let heap = self.heap.lock().unwrap();
+            let heap = self.heap.lock();
             heap.iter()
                 .map(|e| PersistedGrant {
                     expires_at_ms: Self::instant_to_unix_ms(e.expires_at),
@@ -273,7 +279,7 @@ impl GrantTTLTracker {
         })?;
 
         {
-            let mut heap = tracker.heap.lock().unwrap();
+            let mut heap = tracker.heap.lock();
             for grant in grants {
                 heap.push(GrantTTLEntry {
                     expires_at: Self::unix_ms_to_instant(grant.expires_at_ms),
@@ -288,7 +294,7 @@ impl GrantTTLTracker {
 
     /// Get all grants as serializable format for persistence.
     pub fn to_persisted(&self) -> Vec<PersistedGrant> {
-        let heap = self.heap.lock().unwrap();
+        let heap = self.heap.lock();
         heap.iter()
             .map(|e| PersistedGrant {
                 expires_at_ms: Self::instant_to_unix_ms(e.expires_at),

@@ -639,19 +639,19 @@ impl Transport for TcpTransport {
         // Check rate limit before sending
         if !self.rate_limiter.check(to) {
             let available = self.rate_limiter.available_tokens(to);
-            return Err(ChainError::NetworkError(format!(
-                "rate limited: peer {to} (available tokens: {available})"
-            )));
+            return Err(TcpError::RateLimited {
+                peer: to.clone(),
+                available,
+            }
+            .into());
         }
 
         let pool = self
             .connections
             .get_pool(to)
-            .ok_or_else(|| ChainError::NetworkError(format!("peer not found: {to}")))?;
+            .ok_or_else(|| TcpError::PeerNotFound(to.clone()))?;
 
-        self.send_direct(&pool, &msg)
-            .await
-            .map_err(|e| ChainError::NetworkError(e.to_string()))
+        self.send_direct(&pool, &msg).await.map_err(Into::into)
     }
 
     async fn broadcast(&self, msg: Message) -> Result<()> {
@@ -688,7 +688,7 @@ impl Transport for TcpTransport {
 
         self.connect_to_peer(&peer.node_id, address)
             .await
-            .map_err(|e| ChainError::NetworkError(e.to_string()))
+            .map_err(Into::into)
     }
 
     async fn disconnect(&self, peer_id: &NodeId) -> Result<()> {

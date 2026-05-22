@@ -26,19 +26,25 @@ pub use contraction::{
 };
 
 /// Error types for unified operations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum UnifiedError {
     /// Error from relational engine.
+    #[error("Relational error: {0}")]
     RelationalError(String),
     /// Error from graph engine.
+    #[error("Graph error: {0}")]
     GraphError(String),
     /// Error from vector engine.
+    #[error("Vector error: {0}")]
     VectorError(String),
     /// Entity not found.
+    #[error("Entity not found: {0}")]
     NotFound(String),
     /// Invalid operation.
+    #[error("Invalid operation: {0}")]
     InvalidOperation(String),
     /// Batch operation failed at specific index.
+    #[error("Batch operation failed at index {index} (key: {key}): {cause}")]
     BatchOperationFailed {
         /// Index of the failed item in the batch.
         index: usize,
@@ -48,29 +54,9 @@ pub enum UnifiedError {
         cause: String,
     },
     /// Error from spatial engine.
+    #[error("Spatial error: {0}")]
     SpatialError(String),
 }
-
-impl std::fmt::Display for UnifiedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RelationalError(msg) => write!(f, "Relational error: {msg}"),
-            Self::GraphError(msg) => write!(f, "Graph error: {msg}"),
-            Self::VectorError(msg) => write!(f, "Vector error: {msg}"),
-            Self::NotFound(key) => write!(f, "Entity not found: {key}"),
-            Self::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
-            Self::BatchOperationFailed { index, key, cause } => {
-                write!(
-                    f,
-                    "Batch operation failed at index {index} (key: {key}): {cause}"
-                )
-            },
-            Self::SpatialError(msg) => write!(f, "Spatial error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for UnifiedError {}
 
 impl From<graph_engine::GraphError> for UnifiedError {
     fn from(e: graph_engine::GraphError) -> Self {

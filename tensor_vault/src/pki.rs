@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! PKI/Certificate engine for internal CA and certificate issuance.
 
-use std::{
-    sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use parking_lot::Mutex;
 
 use blake2::digest::Mac;
 
 use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, SanType};
 use serde::{Deserialize, Serialize};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
+
+use tracing::{debug, info, instrument, warn};
 
 use crate::{engine::SecretEngine, Result, VaultError};
 
@@ -95,6 +96,7 @@ impl PkiEngine {
     }
 
     /// Initialize the CA by generating a self-signed root certificate.
+    #[instrument(skip(store))]
     pub fn init_ca(store: &TensorStore) -> Result<Vec<u8>> {
         let mut params = CertificateParams::default();
         let mut dn = DistinguishedName::new();
@@ -126,6 +128,7 @@ impl PkiEngine {
             .put(CA_KEY, tensor)
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
+        info!("CA initialized");
         Ok(ca_pem.into_bytes())
     }
 
@@ -160,6 +163,7 @@ impl PkiEngine {
     }
 
     /// Issue a certificate signed by the CA.
+    #[instrument(skip(store, request), fields(common_name = %request.common_name))]
     pub fn issue_certificate(
         store: &TensorStore,
         request: &CertificateRequest,
@@ -264,22 +268,29 @@ impl PkiEngine {
             .put(&storage_key, tensor)
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
+        debug!(serial = %serial, "certificate issued");
         Ok((serial, cert_info.issuer.into_bytes()))
     }
 
     /// Check whether a certificate is revoked by serial number.
+    #[instrument(skip(store))]
     pub fn is_revoked(store: &TensorStore, serial: &str) -> bool {
         let storage_key = format!("{PKI_PREFIX}{serial}");
-        store.get(&storage_key).ok().is_some_and(|tensor| {
+        let revoked = store.get(&storage_key).ok().is_some_and(|tensor| {
             matches!(
                 tensor.get("_revoked"),
                 Some(TensorValue::Scalar(ScalarValue::Bool(true)))
             )
-        })
+        });
+        if revoked {
+            warn!("certificate is revoked");
+        }
+        revoked
     }
 
     /// Generate a CRL by scanning all certificates, persisting at `CRL_KEY`.
     #[allow(clippy::missing_panics_doc)] // Blake2b MAC with fixed key never fails
+    #[instrument(skip(store))]
     pub fn generate_crl(store: &TensorStore) -> Result<RevocationList> {
         let mut entries = Vec::new();
 
@@ -352,6 +363,7 @@ impl PkiEngine {
             .put(CRL_KEY, tensor)
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
+        debug!(revoked_count = crl.entries.len(), "CRL generated");
         Ok(crl)
     }
 
@@ -369,6 +381,7 @@ impl PkiEngine {
     }
 
     /// Revoke a certificate by serial number.
+    #[instrument(skip(store))]
     pub fn revoke_certificate(store: &TensorStore, serial: &str) -> Result<()> {
         let storage_key = format!("{PKI_PREFIX}{serial}");
         let mut tensor = store
@@ -388,6 +401,7 @@ impl PkiEngine {
 
         // Auto-regenerate CRL after revocation
         Self::generate_crl(store)?;
+        warn!("certificate revoked");
         Ok(())
     }
 
@@ -437,7 +451,7 @@ impl SecretEngine for PkiEngine {
     }
 
     fn revoke(&self, secret_id: &str) -> Result<()> {
-        let mut certs = self.certs.lock().unwrap();
+        let mut certs = self.certs.lock();
         if let Some(cert) = certs.iter_mut().find(|c| c.serial == secret_id) {
             cert.revoked = true;
         }
@@ -446,7 +460,7 @@ impl SecretEngine for PkiEngine {
     }
 
     fn list(&self) -> Result<Vec<String>> {
-        let certs = self.certs.lock().unwrap();
+        let certs = self.certs.lock();
         Ok(certs.iter().map(|c| c.serial.clone()).collect())
     }
 }

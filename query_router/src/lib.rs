@@ -110,71 +110,57 @@ enum ProtectedOpResult {
 }
 
 /// Error types for query routing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum RouterError {
     /// Failed to parse the command.
+    #[error("Parse error: {0}")]
     ParseError(String),
     /// Unknown command or keyword.
+    #[error("Unknown command: {0}")]
     UnknownCommand(String),
     /// Error from relational engine.
+    #[error("Relational error: {0}")]
     RelationalError(String),
     /// Error from graph engine.
+    #[error("Graph error: {0}")]
     GraphError(String),
     /// Error from vector engine.
+    #[error("Vector error: {0}")]
     VectorError(String),
     /// Error from vault.
+    #[error("Vault error: {0}")]
     VaultError(String),
     /// Error from cache.
+    #[error("Cache error: {0}")]
     CacheError(String),
     /// Error from blob storage.
+    #[error("Blob error: {0}")]
     BlobError(String),
     /// Error from checkpoint system.
+    #[error("Checkpoint error: {0}")]
     CheckpointError(String),
     /// Error from chain system.
+    #[error("Chain error: {0}")]
     ChainError(String),
     /// Invalid argument provided.
+    #[error("Invalid argument: {0}")]
     InvalidArgument(String),
     /// Missing required argument.
+    #[error("Missing argument: {0}")]
     MissingArgument(String),
     /// Type mismatch in query.
+    #[error("Type mismatch: {0}")]
     TypeMismatch(String),
     /// Authentication required for vault operations.
+    #[error("Authentication required: call SET IDENTITY before vault operations")]
     AuthenticationRequired,
     /// Entity or resource not found.
+    #[error("Not found: {0}")]
     NotFound(String),
     /// Cursor operation error.
+    #[error("Cursor error: {0}")]
     CursorError(String),
 }
-
-impl std::fmt::Display for RouterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ParseError(msg) => write!(f, "Parse error: {msg}"),
-            Self::UnknownCommand(cmd) => write!(f, "Unknown command: {cmd}"),
-            Self::RelationalError(msg) => write!(f, "Relational error: {msg}"),
-            Self::GraphError(msg) => write!(f, "Graph error: {msg}"),
-            Self::VectorError(msg) => write!(f, "Vector error: {msg}"),
-            Self::VaultError(msg) => write!(f, "Vault error: {msg}"),
-            Self::CacheError(msg) => write!(f, "Cache error: {msg}"),
-            Self::BlobError(msg) => write!(f, "Blob error: {msg}"),
-            Self::CheckpointError(msg) => write!(f, "Checkpoint error: {msg}"),
-            Self::ChainError(msg) => write!(f, "Chain error: {msg}"),
-            Self::InvalidArgument(msg) => write!(f, "Invalid argument: {msg}"),
-            Self::TypeMismatch(msg) => write!(f, "Type mismatch: {msg}"),
-            Self::MissingArgument(msg) => write!(f, "Missing argument: {msg}"),
-            Self::AuthenticationRequired => {
-                write!(
-                    f,
-                    "Authentication required: call SET IDENTITY before vault operations"
-                )
-            },
-            Self::NotFound(msg) => write!(f, "Not found: {msg}"),
-            Self::CursorError(msg) => write!(f, "Cursor error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for RouterError {}
 
 impl From<CursorError> for RouterError {
     fn from(e: CursorError) -> Self {

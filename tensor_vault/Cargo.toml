@@ -15,7 +15,10 @@ graph_engine.workspace = true
 tensor_compress.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 dashmap.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
 
 # Cryptography
 aes-gcm = "0.10"

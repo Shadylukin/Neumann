@@ -101,11 +101,13 @@ pub use tensor_store::{
 type HnswCacheEntry = (Arc<HNSWIndex>, Vec<String>);
 
 /// Error types for vector operations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum VectorError {
     /// The requested embedding was not found.
+    #[error("Embedding not found: {0}")]
     NotFound(String),
     /// Vector dimension mismatch.
+    #[error("Dimension mismatch: expected {expected}, got {got}")]
     DimensionMismatch {
         /// The expected dimension.
         expected: usize,
@@ -113,12 +115,16 @@ pub enum VectorError {
         got: usize,
     },
     /// Empty vector provided.
+    #[error("Empty vector provided")]
     EmptyVector,
     /// Invalid `top_k` value.
+    #[error("Invalid top_k value (must be > 0)")]
     InvalidTopK,
     /// Storage error from underlying tensor store.
+    #[error("Storage error: {0}")]
     StorageError(String),
     /// Validation error during batch operation.
+    #[error("Batch validation error at index {index}: {cause}")]
     BatchValidationError {
         /// Index of the failing input.
         index: usize,
@@ -126,6 +132,7 @@ pub enum VectorError {
         cause: String,
     },
     /// Operation error during batch operation.
+    #[error("Batch operation error at index {index}: {cause}")]
     BatchOperationError {
         /// Index of the failing operation.
         index: usize,
@@ -133,16 +140,22 @@ pub enum VectorError {
         cause: String,
     },
     /// Configuration error.
+    #[error("Configuration error: {0}")]
     ConfigurationError(String),
     /// Collection already exists.
+    #[error("Collection already exists: {0}")]
     CollectionExists(String),
     /// Collection not found.
+    #[error("Collection not found: {0}")]
     CollectionNotFound(String),
     /// IO error during persistence operations.
+    #[error("IO error: {0}")]
     IoError(String),
     /// Serialization error during persistence operations.
+    #[error("Serialization error: {0}")]
     SerializationError(String),
     /// Search operation timed out.
+    #[error("search timeout: {operation} exceeded {timeout_ms}ms")]
     SearchTimeout {
         /// Operation that timed out.
         operation: String,
@@ -150,39 +163,6 @@ pub enum VectorError {
         timeout_ms: u64,
     },
 }
-
-impl std::fmt::Display for VectorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(key) => write!(f, "Embedding not found: {key}"),
-            Self::DimensionMismatch { expected, got } => {
-                write!(f, "Dimension mismatch: expected {expected}, got {got}")
-            },
-            Self::EmptyVector => write!(f, "Empty vector provided"),
-            Self::InvalidTopK => write!(f, "Invalid top_k value (must be > 0)"),
-            Self::StorageError(e) => write!(f, "Storage error: {e}"),
-            Self::BatchValidationError { index, cause } => {
-                write!(f, "Batch validation error at index {index}: {cause}")
-            },
-            Self::BatchOperationError { index, cause } => {
-                write!(f, "Batch operation error at index {index}: {cause}")
-            },
-            Self::ConfigurationError(msg) => write!(f, "Configuration error: {msg}"),
-            Self::CollectionExists(name) => write!(f, "Collection already exists: {name}"),
-            Self::CollectionNotFound(name) => write!(f, "Collection not found: {name}"),
-            Self::IoError(msg) => write!(f, "IO error: {msg}"),
-            Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
-            Self::SearchTimeout {
-                operation,
-                timeout_ms,
-            } => {
-                write!(f, "search timeout: {operation} exceeded {timeout_ms}ms")
-            },
-        }
-    }
-}
-
-impl std::error::Error for VectorError {}
 
 impl From<TensorStoreError> for VectorError {
     fn from(e: TensorStoreError) -> Self {

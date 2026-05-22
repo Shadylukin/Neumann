@@ -25,6 +25,7 @@ tensor_spatial.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "fs"] }
 futures.workspace = true
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bitcode.workspace = true
