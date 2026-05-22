@@ -1,0 +1,117 @@
+Please review Neumann tell me what it is. Is anything unique about it?
+
+---
+
+Please review Neumann tell me what it is. Is anything unique about it?
+
+---
+
+Please review Neumann tell me what it is. Is anything unique about it?
+
+---
+
+It is open source now actually can you remove any mention of BSL 1.1?
+
+---
+
+Wait first can you see the apache MIT?
+
+---
+
+Yes
+
+---
+
+Address these : 
+    Select alert: Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket
+    Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket High Development Direct
+    #58 opened last month • Detected in vite (npm) • demos/knowledge-galaxy/frontend/package-lock.json
+    Select alert: Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket
+    Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket High Development
+    #55 opened last month • Detected in vite (npm) • neumann-ts/package-lock.json
+    Select alert: Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket
+    Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket High Development
+    #54 opened last month • Detected in vite (npm) • neumann-py/package-lock.json
+    Select alert: Vite: `server.fs.deny` bypassed with queries
+    Vite: `server.fs.deny` bypassed with queries High Development
+    #53 opened last month • Detected in vite (npm) • neumann-ts/package-lock.json
+    Select alert: Vite: `server.fs.deny` bypassed with queries
+    Vite: `server.fs.deny` bypassed with queries High Development
+    #52 opened last month • Detected in vite (npm) • neumann-py/package-lock.json
+    Select alert: Arbitrary code execution in protobufjs
+    Arbitrary code execution in protobufjs Critical
+    #72 opened last month • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: protobuf.js: Code generation gadget after prototype pollution
+    protobuf.js: Code generation gadget after prototype pollution High
+    #84 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling
+    Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling Moderate Development Direct
+    #59 opened last month • Detected in vite (npm) • demos/knowledge-galaxy/frontend/package-lock.json
+    Select alert: Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling
+    Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling Moderate Development
+    #57 opened last month • Detected in vite (npm) • neumann-ts/package-lock.json
+    Select alert: Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling
+    Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling Moderate Development
+    #56 opened last month • Detected in vite (npm) • neumann-py/package-lock.json
+    Select alert: protobuf.js: Code injection through bytes field defaults in generated toObject code
+    protobuf.js: Code injection through bytes field defaults in generated toObject code High
+    #88 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: protobuf.js: Process-wide denial of service through unsafe option paths
+    protobuf.js: Process-wide denial of service through unsafe option paths High
+    #85 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: protobuf.js: Denial of service through unbounded protobuf recursion
+    protobuf.js: Denial of service through unbounded protobuf recursion High
+    #89 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: rustls-webpki: Denial of service via panic on malformed CRL BIT STRING
+    rustls-webpki: Denial of service via panic on malformed CRL BIT STRING High
+    #81 opened last month • Detected in rustls-webpki (Rust) • Cargo.lock
+    Select alert: rustls-webpki: Denial of service via panic on malformed CRL BIT STRING
+    rustls-webpki: Denial of service via panic on malformed CRL BIT STRING High
+    #80 opened last month • Detected in rustls-webpki (Rust) • demos/knowledge-galaxy/Cargo.lock
+    Select alert: rustls-webpki: Denial of service via panic on malformed CRL BIT STRING
+    rustls-webpki: Denial of service via panic on malformed CRL BIT STRING High
+    #79 opened last month • Detected in rustls-webpki (Rust) • neumann-py/neumann-native/Cargo.lock
+    Select alert: protobuf.js: Denial of service from crafted field names in generated code
+    protobuf.js: Denial of service from crafted field names in generated code Moderate
+    #87 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: protobuf.js: Prototype injection in generated message constructors
+    protobuf.js: Prototype injection in generated message constructors Moderate
+    #86 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: protobufjs has overlong UTF-8 decoding
+    protobufjs has overlong UTF-8 decoding Moderate
+    #83 opened last week • Detected in protobufjs (npm) • neumann-ts/package-lock.json
+    Select alert: protobufjs has overlong UTF-8 decoding
+    protobufjs has overlong UTF-8 decoding Moderate
+    #82 opened last week • Detected in @protobufjs/utf8 (npm) • neumann-ts/package-lock.json
+    Select alert: webpki: Name constraints were accepted for certificates asserting a wildcard name
+    webpki: Name constraints were accepted for certificates asserting a wildcard name Low
+    #71 opened last month • Detected in rustls-webpki (Rust) • Cargo.lock
+    Select alert: webpki: Name constraints were accepted for certificates asserting a wildcard name
+    webpki: Name constraints were accepted for certificates asserting a wildcard name Low
+    #70 opened last month • Detected in rustls-webpki (Rust) • demos/knowledge-galaxy/Cargo.lock
+    Select alert: webpki: Name constraints were accepted for certificates asserting a wildcard name
+    webpki: Name constraints were accepted for certificates asserting a wildcard name Low
+    #69 opened last month • Detected in rustls-webpki (Rust) • neumann-py/neumann-native/Cargo.lock
+    Select alert: webpki: Name constraints for URI names were incorrectly accepted
+    webpki: Name constraints for URI names were incorrectly accepted Low
+    #68 opened last month • Detected in rustls-webpki (Rust) • Cargo.lock
+    Select alert: webpki: Name constraints for URI names were incorrectly accepted
+    webpki: Name constraints for URI names were incorrectly accepted Low
+    #67 opened last month • Detected in rustls-webpki (Rust) • demos/knowledge-galaxy/Cargo.lock
+
+ProTip! Add -has:patch to see alerts without an available fix.
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+
+    Terms
+    Privacy
+    Security
+    Status
+    Community
+    Docs
+    Contact
+
+---
+
+Commit and push once done
