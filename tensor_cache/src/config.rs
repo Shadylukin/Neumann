@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Duration::from_hours / from_mins are stable only since Rust 1.95;
+// the workspace MSRV is 1.75, so we keep from_secs and silence the lint.
+#![allow(clippy::duration_suboptimal_units)]
+
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};

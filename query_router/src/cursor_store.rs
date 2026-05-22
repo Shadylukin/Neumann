@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Duration::from_mins is stable only since Rust 1.95; workspace MSRV is 1.75.
+#![allow(clippy::duration_suboptimal_units)]
+
 //! Thread-safe cursor storage with TTL-based expiration.
 //!
 //! This module provides a cursor store for managing pagination cursors
@@ -281,8 +284,7 @@ impl Default for CursorStore {
 fn current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().cast_signed())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs().cast_signed())
 }
 
 #[cfg(test)]

@@ -1859,8 +1859,7 @@ impl VectorEngine {
                         .filter(|k| {
                             self.store
                                 .get(k)
-                                .map(|t| Self::evaluate_filter(&t, filter))
-                                .unwrap_or(false)
+                                .is_ok_and(|t| Self::evaluate_filter(&t, filter))
                         })
                         .count();
                     // Safe: selectivity ratio only needs approximate precision
@@ -1917,8 +1916,7 @@ impl VectorEngine {
                         let storage_key = Self::collection_embedding_key(collection, &r.key);
                         self.store
                             .get(&storage_key)
-                            .map(|t| Self::evaluate_filter(&t, filter))
-                            .unwrap_or(false)
+                            .is_ok_and(|t| Self::evaluate_filter(&t, filter))
                     })
                     .collect()
             },
@@ -3275,8 +3273,7 @@ impl VectorEngine {
     pub fn entity_has_embedding(&self, entity_key: &str) -> bool {
         self.store
             .get(entity_key)
-            .map(|t| t.has(fields::EMBEDDING))
-            .unwrap_or(false)
+            .is_ok_and(|t| t.has(fields::EMBEDDING))
     }
 
     /// Remove embedding from an entity (keeps other entity data).
@@ -3539,8 +3536,7 @@ impl VectorEngine {
         let storage_key = Self::embedding_key(key);
         self.store
             .get(&storage_key)
-            .map(|t| t.has(&Self::metadata_field_key(field)))
-            .unwrap_or(false)
+            .is_ok_and(|t| t.has(&Self::metadata_field_key(field)))
     }
 
     /// Get a single metadata field value.

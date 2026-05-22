@@ -218,8 +218,7 @@ impl AuditLogger {
     fn now_millis() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as i64)
     }
 
     const fn should_log(&self, event: &AuditEvent) -> bool {
@@ -340,7 +339,7 @@ impl AuditLogger {
     #[must_use]
     pub fn recent(&self, limit: usize) -> Vec<AuditEntry> {
         let mut entries: Vec<_> = self.entries.iter().map(|e| e.clone()).collect();
-        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         entries.truncate(limit);
         entries
     }

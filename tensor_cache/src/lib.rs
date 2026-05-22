@@ -663,8 +663,7 @@ impl Cache {
     pub fn is_background_eviction_running(&self) -> bool {
         self.eviction_handle
             .lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(false)
+            .is_ok_and(|guard| guard.is_some())
     }
 
     /// Manually run eviction using the configured strategy (LRU, LFU, Cost, Hybrid).

@@ -59,8 +59,7 @@ use std::{
 fn current_timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 use parking_lot::RwLock;
@@ -1655,7 +1654,7 @@ impl CommunityResult {
     #[must_use]
     pub fn communities_by_size(&self) -> Vec<(u64, usize)> {
         let mut sizes: Vec<_> = self.members.iter().map(|(&c, m)| (c, m.len())).collect();
-        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        sizes.sort_by_key(|b| std::cmp::Reverse(b.1));
         sizes
     }
 }
@@ -3885,8 +3884,7 @@ impl GraphEngine {
             .into_iter()
             .filter(|&edge_id| {
                 self.get_edge(edge_id)
-                    .map(|e| e.edge_type == edge_type)
-                    .unwrap_or(false)
+                    .is_ok_and(|e| e.edge_type == edge_type)
             })
             .count();
         Ok(count)
@@ -3907,8 +3905,7 @@ impl GraphEngine {
             .into_iter()
             .filter(|&edge_id| {
                 self.get_edge(edge_id)
-                    .map(|e| e.edge_type == edge_type)
-                    .unwrap_or(false)
+                    .is_ok_and(|e| e.edge_type == edge_type)
             })
             .count();
         Ok(count)
@@ -6801,7 +6798,7 @@ impl GraphEngine {
     /// Check if an entity has graph edges.
     #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
     pub fn entity_has_edges(&self, key: &str) -> bool {
-        self.store.get(key).map(|e| e.has_edges()).unwrap_or(false)
+        self.store.get(key).is_ok_and(|e| e.has_edges())
     }
 
     /// Delete an edge by key, updating connected entities.

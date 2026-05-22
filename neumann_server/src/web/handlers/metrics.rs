@@ -117,8 +117,7 @@ impl MetricsSnapshot {
     pub fn gather(ctx: &AdminContext) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
 
         // Gather relational stats
         let table_count = ctx.relational.list_tables().len();
@@ -424,8 +423,7 @@ fn format_timestamp(ts: u64) -> String {
     // Simple relative time for now
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
     let diff = now.saturating_sub(ts);
     if diff < 60 {

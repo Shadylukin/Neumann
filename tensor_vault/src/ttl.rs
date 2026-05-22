@@ -186,8 +186,7 @@ impl GrantTTLTracker {
         let now = Instant::now();
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as i64);
 
         // Calculate the difference and apply to current Unix time
         if instant > now {
@@ -204,8 +203,7 @@ impl GrantTTLTracker {
         let now = Instant::now();
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as i64);
 
         let delta = unix_ms - now_unix;
         if delta >= 0 {

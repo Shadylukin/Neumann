@@ -239,13 +239,11 @@ impl CheckpointStore for FileCheckpointStore {
 
         for path in &files {
             if let Ok(header) = Self::read_header(path) {
-                let file_size = fs::metadata(path)
-                    .map(|m| {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let size = m.len() as usize;
-                        size
-                    })
-                    .unwrap_or(0);
+                let file_size = fs::metadata(path).map_or(0, |m| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let size = m.len() as usize;
+                    size
+                });
 
                 infos.push(CheckpointInfo {
                     id: header.id.clone(),

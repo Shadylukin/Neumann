@@ -329,8 +329,7 @@ impl PendingTxState {
         #[allow(clippy::cast_possible_truncation)]
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as u64);
 
         Self {
             tx_id,
@@ -358,8 +357,7 @@ impl PendingTxState {
         #[allow(clippy::cast_possible_truncation)]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as u64);
 
         now.saturating_sub(self.started_at) > timeout_ms
     }

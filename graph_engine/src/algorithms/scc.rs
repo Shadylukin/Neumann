@@ -88,7 +88,7 @@ impl SccResult {
             .enumerate()
             .map(|(i, m)| (i, m.len()))
             .collect();
-        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        sizes.sort_by_key(|b| std::cmp::Reverse(b.1));
         sizes
     }
 }

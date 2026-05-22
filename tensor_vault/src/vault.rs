@@ -1581,21 +1581,17 @@ impl Vault {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as i64);
 
         let age_days = ((now - created_at) as f32) / 86_400_000.0;
 
         // Access frequency from audit log
-        let access_count = self
-            .audit_log(key)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|e| matches!(e.operation, AuditOperation::Get))
-                    .count()
-            })
-            .unwrap_or(0);
+        let access_count = self.audit_log(key).map_or(0, |entries| {
+            entries
+                .iter()
+                .filter(|e| matches!(e.operation, AuditOperation::Get))
+                .count()
+        });
 
         // Days since last rotation
         let last_rotation = versions
@@ -2257,7 +2253,7 @@ impl Vault {
 
         // Sort by vault_key for deadlock prevention
         let mut sorted: Vec<_> = entries.to_vec();
-        sorted.sort_by(|a, b| self.vault_key(a.0).cmp(&self.vault_key(b.0)));
+        sorted.sort_by_key(|a| self.vault_key(a.0));
 
         for (key, value) in &sorted {
             self.set_inner(requester, key, value, None)?;
@@ -2292,7 +2288,7 @@ impl Vault {
         self.check_rate_limit(requester, Operation::Set)?;
 
         let mut sorted: Vec<_> = entries.to_vec();
-        sorted.sort_by(|a, b| self.vault_key(a.0).cmp(&self.vault_key(b.0)));
+        sorted.sort_by_key(|a| self.vault_key(a.0));
 
         let mut succeeded = 0;
         let mut failed = Vec::new();

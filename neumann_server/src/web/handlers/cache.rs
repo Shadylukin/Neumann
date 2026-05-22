@@ -322,7 +322,7 @@ fn render_layers_content(cache: &Cache) -> Markup {
                         }
 
                         div class="w-full bg-neutral-800 rounded-sm overflow-hidden" style="height: 4px;" {
-                            @let width_pct = if max_size > 0 { size * 100 / max_size } else { 0 };
+                            @let width_pct = (size * 100).checked_div(max_size).unwrap_or(0);
                             div class="bg-neutral-400 h-full transition-all" style=(format!("width: {width_pct}%")) {}
                         }
 

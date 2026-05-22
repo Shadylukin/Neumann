@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Duration::from_mins is stable only since Rust 1.95; workspace MSRV is 1.75.
+#![allow(clippy::duration_suboptimal_units)]
+
 use std::time::Duration;
 
 use crate::error::{BlobError, Result};

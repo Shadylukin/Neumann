@@ -467,8 +467,7 @@ impl<'a> AuditLog<'a> {
     fn now_millis() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as i64)
     }
 
     /// AEAD-encrypt a plaintext field. Returns `nonce || ciphertext`.
@@ -813,7 +812,7 @@ impl<'a> AuditLog<'a> {
     /// Get recent audit entries (last N).
     pub fn recent(&self, limit: usize) -> Vec<AuditEntry> {
         let mut entries = self.scan();
-        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         entries.truncate(limit);
         entries
     }

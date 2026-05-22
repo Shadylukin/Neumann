@@ -137,17 +137,15 @@ impl DockerCluster {
                 interval.tick().await;
 
                 let connect_result = tokio::time::timeout(
-                    Duration::from_millis(1000),
+                    Duration::from_secs(1),
                     neumann_client::NeumannClient::connect(addr).build(),
                 )
                 .await;
 
                 if let Ok(Ok(client)) = connect_result {
-                    let query_result = tokio::time::timeout(
-                        Duration::from_millis(1000),
-                        client.execute("SELECT 1"),
-                    )
-                    .await;
+                    let query_result =
+                        tokio::time::timeout(Duration::from_secs(1), client.execute("SELECT 1"))
+                            .await;
                     if query_result.is_ok() {
                         eprintln!("[docker] node-{idx} healthy");
                         break;
@@ -260,15 +258,14 @@ impl DockerCluster {
             interval.tick().await;
 
             let connect_result = tokio::time::timeout(
-                Duration::from_millis(1000),
+                Duration::from_secs(1),
                 neumann_client::NeumannClient::connect(addr).build(),
             )
             .await;
 
             if let Ok(Ok(client)) = connect_result {
                 let query_result =
-                    tokio::time::timeout(Duration::from_millis(1000), client.execute("SELECT 1"))
-                        .await;
+                    tokio::time::timeout(Duration::from_secs(1), client.execute("SELECT 1")).await;
                 if query_result.is_ok() {
                     return Ok(());
                 }

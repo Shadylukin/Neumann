@@ -6152,10 +6152,8 @@ impl RelationalEngine {
                 for (idx, (row_id, row)) in slab_rows.iter().enumerate() {
                     row_ids.push(row_id.as_u64() + 1);
                     match &row[col_idx] {
-                        SlabColumnValue::Bool(b) => {
-                            if *b {
-                                bitmap[idx / 64] |= 1u64 << (idx % 64);
-                            }
+                        SlabColumnValue::Bool(b) if *b => {
+                            bitmap[idx / 64] |= 1u64 << (idx % 64);
                         },
                         SlabColumnValue::Null => {
                             null_positions.push(idx as u64);

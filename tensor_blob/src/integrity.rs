@@ -240,8 +240,7 @@ pub fn update_artifact_field(
     // Update modified timestamp
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
     tensor.set("_modified", TensorValue::Scalar(ScalarValue::Int(now)));
 
     store.put(&meta_key, tensor)?;

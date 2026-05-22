@@ -80,8 +80,7 @@ impl AccessTensor {
     pub fn from_vault(vault: &Vault, config: AccessTensorConfig) -> Result<Self> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as i64);
 
         let start = config
             .start_time_ms
@@ -268,7 +267,7 @@ impl AccessTensor {
             });
         }
 
-        profiles.sort_by(|a, b| b.total_accesses.cmp(&a.total_accesses));
+        profiles.sort_by_key(|b| std::cmp::Reverse(b.total_accesses));
         profiles
     }
 
@@ -322,7 +321,7 @@ impl AccessTensor {
             });
         }
 
-        profiles.sort_by(|a, b| b.unique_accessors.cmp(&a.unique_accessors));
+        profiles.sort_by_key(|b| std::cmp::Reverse(b.unique_accessors));
         profiles
     }
 

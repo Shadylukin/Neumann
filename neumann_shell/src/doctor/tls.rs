@@ -48,8 +48,7 @@ fn check_certificate_expiry(path: &Path) -> std::result::Result<u64, String> {
     let not_after = cert.validity().not_after.timestamp();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
     // Handle expired certificates (negative timestamp or past expiration)
     let Some(not_after_secs) = u64::try_from(not_after).ok() else {

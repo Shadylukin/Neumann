@@ -1523,10 +1523,7 @@ impl UnifiedEngine {
                             // Filter by edge type if specified
                             if let Some(et) = edge {
                                 let edges_match = path.edges.iter().all(|eid| {
-                                    self.graph
-                                        .get_edge(*eid)
-                                        .map(|e| e.edge_type == et)
-                                        .unwrap_or(false)
+                                    self.graph.get_edge(*eid).is_ok_and(|e| e.edge_type == et)
                                 });
                                 if !edges_match {
                                     continue;

@@ -355,7 +355,7 @@ impl LWWMembershipState {
     pub fn states_for_gossip(&self, max_count: usize) -> Vec<GossipNodeState> {
         let mut states: Vec<_> = self.states.values().cloned().collect();
         // Sort by timestamp descending (most recent first)
-        states.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        states.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         states.truncate(max_count);
         states
     }

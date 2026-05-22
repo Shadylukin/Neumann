@@ -121,7 +121,7 @@ impl TxWal {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
 
         // Get current file size
-        let current_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let current_size = file.metadata().map_or(0, |m| m.len());
 
         let entry_count = Self::count_entries(&path)?;
 

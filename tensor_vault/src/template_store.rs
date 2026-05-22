@@ -70,8 +70,7 @@ impl TemplateManager {
     ) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as i64);
 
         let stored = StoredTemplate {
             name: name.to_string(),

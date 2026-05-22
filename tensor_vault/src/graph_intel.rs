@@ -1027,7 +1027,7 @@ fn detect_spofs(
         });
     }
 
-    spofs.sort_by(|a, b| b.secrets_affected.cmp(&a.secrets_affected));
+    spofs.sort_by_key(|b| std::cmp::Reverse(b.secrets_affected));
     spofs
 }
 
@@ -1330,7 +1330,7 @@ pub fn infer_roles(vault: &Vault) -> RoleInferenceResult {
     }
 
     // Sort roles by member count descending
-    roles.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+    roles.sort_by_key(|b| std::cmp::Reverse(b.members.len()));
 
     RoleInferenceResult {
         roles,

@@ -212,7 +212,7 @@ impl RaftWal<FileWriter> {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
 
         // Get current file size
-        let current_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let current_size = file.metadata().map_or(0, |m| m.len());
 
         // Count existing entries
         let entry_count = Self::count_entries(&path)?;
@@ -437,7 +437,7 @@ impl<W: WalWriter> RaftWal<W> {
     pub fn with_writer(path: impl AsRef<Path>, config: WalConfig, writer: W) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let current_size = if path.exists() {
-            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            std::fs::metadata(&path).map_or(0, |m| m.len())
         } else {
             0
         };
