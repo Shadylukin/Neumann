@@ -87,7 +87,7 @@ crc32fast = "1.4"
 
 # TLS / Certificates
 x509-parser = "0.18"
-rcgen = "0.13"
+rcgen = "0.14"
 
 # Misc
 hex = "0.4"
