@@ -207,7 +207,7 @@ pub fn matmul(a: &Matrix, b: &Matrix) -> Result<Matrix, DecomposeError> {
         for j in 0..b.cols {
             let mut sum = 0.0;
             for k in 0..a.cols {
-                sum += a.get(i, k) * b.get(k, j);
+                sum = a.get(i, k).mul_add(b.get(k, j), sum);
             }
             c.set(i, j, sum);
         }
@@ -310,7 +310,7 @@ fn qr_orthonormalize(y: &Matrix) -> Matrix {
         for q_col in &q_cols {
             let proj = dot(&col, q_col);
             for (i, val) in col.iter_mut().enumerate() {
-                *val -= proj * q_col[i];
+                *val = proj.mul_add(-q_col[i], *val);
             }
         }
 
@@ -507,7 +507,7 @@ fn svd_power_iteration(
         for (i, &u_val) in u.iter().enumerate() {
             for (j, &v_val) in v.iter().enumerate() {
                 let idx = i * a.cols + j;
-                a_data[idx] -= sigma * u_val * v_val;
+                a_data[idx] = (sigma * u_val).mul_add(-v_val, a_data[idx]);
             }
         }
         a = Matrix::new(a_data.clone(), matrix.rows, matrix.cols)?;

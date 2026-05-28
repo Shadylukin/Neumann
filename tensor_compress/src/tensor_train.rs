@@ -423,7 +423,7 @@ pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
             let mut new_vec = vec![0.0; core.right_rank()];
             for (r, new_val) in new_vec.iter_mut().enumerate() {
                 for (l, &left_val) in left_vec.iter().enumerate().take(core.left_rank()) {
-                    *new_val += left_val * slice.get(l, r);
+                    *new_val = left_val.mul_add(slice.get(l, r), *new_val);
                 }
             }
             left_vec = new_vec;
@@ -459,7 +459,7 @@ pub fn tt_norm(tt: &TTVector) -> f32 {
                             } else {
                                 gram.get(i * r1 + j).copied().unwrap_or(0.0)
                             };
-                            sum += gram_ij * core.get(i, k, a) * core.get(j, k, b);
+                            sum = (gram_ij * core.get(i, k, a)).mul_add(core.get(j, k, b), sum);
                         }
                     }
                 }
@@ -501,7 +501,8 @@ pub fn tt_dot_product(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
                         for ib in 0..r1b {
                             let gram_idx = if gram.len() == 1 { 0 } else { ia * r1b + ib };
                             let g = gram.get(gram_idx).copied().unwrap_or(0.0);
-                            sum += g * core_a.get(ia, k, a_idx) * core_b.get(ib, k, b_idx);
+                            sum = (g * core_a.get(ia, k, a_idx))
+                                .mul_add(core_b.get(ib, k, b_idx), sum);
                         }
                     }
                 }
