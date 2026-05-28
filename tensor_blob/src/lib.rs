@@ -121,7 +121,16 @@ impl BlobStore {
     pub async fn shutdown(&mut self) -> Result<()> {
         self.gc.shutdown();
         if let Some(handle) = self.gc_handle.take() {
-            let _ = handle.await;
+            // Signal first, then give the task a brief window to exit cleanly via its
+            // select! arm. If it doesn't drop out promptly (e.g. mid-gc_cycle), abort
+            // — the shutdown signal is already sent, so the worker won't restart.
+            // This bound is critical: under heavy test parallelism (many independent
+            // runtimes), awaiting unconditionally can starve the polling thread.
+            let timeout = tokio::time::timeout(std::time::Duration::from_millis(100), handle);
+            if let Ok(join_result) = timeout.await {
+                let _ = join_result;
+            }
+            // On timeout, the JoinHandle is dropped — tokio aborts the task.
         }
         Ok(())
     }

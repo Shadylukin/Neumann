@@ -10,10 +10,10 @@ Technology professional with 7+ years delivering enterprise solutions across ban
 government, defense, and energy sectors. I design and build systems that solve real
 operational problems—from military asset management to nationwide access control systems.
 
-Currently building Neumann, a 353K-line Rust distributed database with semantic consensus—
-developed in 5 weeks by orchestrating multiple AI coding agents under strict quality gates.
-This demonstrates both systems architecture depth and practical AI-augmented development
-at scale.
+Currently building Neumann, a 460K-line Rust distributed database with a novel geometric
+consensus layer — transactions encoded as vectors, conflicts classified by cosine similarity,
+enabling automatic merging of safe concurrent edits. 21 crates, 11,700+ tests, 139 fuzz
+targets, 95%+ enforced coverage.
 
 Strong track record in ITSM platforms (ServiceNow, Cherwell, Ivanti, Jira), cloud migrations,
 and security implementations. Calm communicator who delivers in both small agile teams
@@ -44,54 +44,48 @@ parallelism | Automated quality gates | Comment-based logic auditing
 
 ## Highlight Project
 
-### Neumann — Unified Tensor-Native Distributed Database (Dec 2024–Present)
+### Neumann — Unified Tensor-Native Distributed Database (Dec 2025–Present)
 
-A production-grade distributed database runtime in Rust (353K lines, 25 crates, 9,500+ tests)
-unifying relational, graph, and vector storage with semantic consensus. Built in 5 weeks
-using AI-augmented development: architecting modular systems, directing 4-5 coding agents
-in parallel sprints, and integrating outputs under strict automated quality gates (clippy
-pedantic, 95%+ coverage, 108 fuzz targets).
+Distributed database in Rust (460K lines, 21 crates, 11,700+ tests) unifying relational
+tables, graph traversal, and vector similarity search in a single query engine. Novel
+contribution: a geometric consensus layer that encodes transactions as vectors and classifies
+conflicts by cosine similarity, enabling automatic merging of non-conflicting concurrent edits.
 
-**Distributed Consensus (tensor_chain — 63K lines):**
+**Distributed Consensus** *(tensor_chain — 79K lines):*
 
-- Implemented Tensor-Raft: modified Raft consensus with geometric optimization where
-  blocks with >95% cosine similarity bypass full validation (40-60% latency reduction)
-- Built 2-Phase Commit coordinator with DFS-based deadlock detection
-- Designed 6-way semantic conflict classification (Orthogonal, Identical, Opposite,
-  Conflicting, etc.) enabling automatic merge of safe concurrent edits
-- Created delta-compressed replication achieving 4-6x bandwidth savings using Tensor Train decomposition
-- Implemented SWIM-based gossip protocol with LWW-CRDT semantics for cluster membership
+- Designed Tensor-Raft: transactions encoded as vectors; semantically similar operations
+  (>95% cosine similarity) take a fast-path that bypasses full conflict resolution
+- 6-way conflict classification — Orthogonal (auto-merge), LowConflict (merge with validation),
+  Identical (deduplicate), Opposite (cancel), Ambiguous/Conflicting (reject) — replacing
+  coarse-grained locking with fine-grained semantic analysis
+- 2-Phase Commit coordinator with DFS-based deadlock detection on a wait-for graph
+- Delta-compressed replication using Tensor Train decomposition for bandwidth reduction
+- SWIM gossip protocol with LWW-CRDT semantics for cluster membership
 
 **Storage & Indexing:**
 
-- Built HNSW approximate nearest neighbor search with 9 distance metrics (Cosine, Angular,
-  Geodesic, Jaccard, Euclidean, etc.)
-- Implemented sparse vector support, delta encoding with k-means clustering, and product quantization
-- Designed tiered hot/cold storage with automatic migration based on access patterns
-- Created Voronoi and k-means semantic partitioning for vector-aware sharding
+- HNSW approximate nearest neighbor with 10 distance metrics including Poincare hyperbolic
+  distance; product quantization and IVF for memory-efficient search at scale
+- Sparse vector support with delta encoding and k-means clustering
+- Tiered hot/cold storage with access-pattern-driven migration; Voronoi-based semantic
+  partitioning for vector-aware sharding
 
 **Query Engines:**
 
-- Relational engine with SIMD-accelerated filtering, B-tree/hash indexing, and MVCC
-  transactions
-- Graph engine with BFS/DFS traversal, shortest path, PageRank, betweenness centrality, A-star
-- Hand-written recursive descent parser (1.9M queries/sec) supporting SQL, Cypher-like, and unified syntax
+- Relational engine with SIMD-accelerated filtering (wide crate), B-tree and hash indexes
+- Graph engine: BFS/DFS, Dijkstra shortest path, A*, PageRank, betweenness centrality
+- Hand-written recursive descent parser benchmarked at 1.9M queries/sec (Criterion);
+  supports SQL, Cypher-like graph syntax, and unified multi-engine queries
 
 **Security & Caching:**
 
 - AES-256-GCM encrypted vault with Argon2id key derivation and graph-based access control
-- Three-layer LLM response cache (exact + semantic + embedding) with tiktoken token counting
+- Three-layer LLM response cache: exact match, semantic similarity, embedding proximity
 
-**Performance:** 3.2M PUT ops/sec | 5M GET ops/sec | 7.5M concurrent writes/sec @ 8 threads
+**Quality:** 95%+ line coverage enforced per crate | 139 fuzz targets | clippy pedantic |
+mandatory doc coverage thresholds
 
-**Quality Gates:** 95%+ coverage enforced | 108 fuzz targets | Clippy pedantic + nursery |
-Mandatory doc comments for logic auditing
-
-**Methodology:** Modular architecture enabling parallel agent development. Kanban per module,
-1-2 day sprints, real-time observation. Comments as human-readable audit trail; linters
-and coverage as automated verification. Integration once modules pass gates.
-
-**Technologies:** Rust | async/await | SIMD (wide crate) | gRPC/tonic | DashMap/parking_lot | PyO3 bindings
+**Technologies:** Rust | async/await | SIMD | gRPC (tonic) | DashMap/parking_lot | PyO3 Python bindings
 
 ---
 

@@ -1143,7 +1143,7 @@ mod tests {
         let plan = planner.plan("NODE GET user:123");
         match plan {
             QueryPlan::Local { .. } | QueryPlan::Remote { .. } => {},
-            _ => panic!("Expected Local or Remote plan"),
+            QueryPlan::ScatterGather { .. } => panic!("Expected Local or Remote plan"),
         }
     }
 
@@ -1155,7 +1155,7 @@ mod tests {
         let plan = planner.plan("ENTITY GET entity:456");
         match plan {
             QueryPlan::Local { .. } | QueryPlan::Remote { .. } => {},
-            _ => panic!("Expected Local or Remote plan"),
+            QueryPlan::ScatterGather { .. } => panic!("Expected Local or Remote plan"),
         }
     }
 
@@ -1263,7 +1263,7 @@ mod tests {
         // Falls back to plan() which returns Local for unknown query when no shards
         match plan {
             QueryPlan::Local { .. } | QueryPlan::ScatterGather { .. } => {},
-            _ => panic!("Expected Local or ScatterGather plan"),
+            QueryPlan::Remote { .. } => panic!("Expected Local or ScatterGather plan"),
         }
     }
 
@@ -1343,7 +1343,7 @@ mod tests {
     fn test_debug_impls() {
         // Test Debug implementations for coverage
         let config = DistributedQueryConfig::default();
-        let _ = format!("{:?}", config);
+        let _ = format!("{config:?}");
 
         let plan_local = QueryPlan::Local {
             query: "test".to_string(),
@@ -1357,9 +1357,9 @@ mod tests {
             query: "test".to_string(),
             merge: MergeStrategy::Union,
         };
-        let _ = format!("{:?}", plan_local);
-        let _ = format!("{:?}", plan_remote);
-        let _ = format!("{:?}", plan_scatter);
+        let _ = format!("{plan_local:?}");
+        let _ = format!("{plan_remote:?}");
+        let _ = format!("{plan_scatter:?}");
 
         let _ = format!("{:?}", MergeStrategy::TopK(10));
         let _ = format!("{:?}", MergeStrategy::Aggregate(AggregateFunction::Count));
@@ -1370,10 +1370,10 @@ mod tests {
         let _ = format!("{:?}", AggregateFunction::Min);
 
         let result = ShardResult::success(0, QueryResult::Empty, 100);
-        let _ = format!("{:?}", result);
+        let _ = format!("{result:?}");
 
         let stats = DistributedQueryStats::default();
-        let _ = format!("{:?}", stats);
+        let _ = format!("{stats:?}");
     }
 
     #[test]
@@ -1392,16 +1392,18 @@ mod tests {
 
     #[test]
     fn test_stats_clone() {
-        let mut stats = DistributedQueryStats::default();
-        stats.queries_executed = 10;
-        let cloned = stats.clone();
+        let stats = DistributedQueryStats {
+            queries_executed: 10,
+            ..Default::default()
+        };
+        let cloned = stats;
         assert_eq!(cloned.queries_executed, 10);
     }
 
     #[test]
     fn test_merge_strategy_clone() {
         let strategy = MergeStrategy::TopK(5);
-        let cloned = strategy.clone();
+        let cloned = strategy;
         assert!(matches!(cloned, MergeStrategy::TopK(5)));
     }
 
@@ -1417,7 +1419,7 @@ mod tests {
         let plan = QueryPlan::Local {
             query: "test".to_string(),
         };
-        let cloned = plan.clone();
+        let cloned = plan;
         assert!(matches!(cloned, QueryPlan::Local { .. }));
     }
 }

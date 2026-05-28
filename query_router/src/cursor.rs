@@ -265,7 +265,7 @@ mod tests {
         let cursor = create_test_cursor();
         assert!(cursor.has_more());
 
-        let mut last_page = cursor.clone();
+        let mut last_page = cursor;
         last_page.offset = 400;
         assert!(!last_page.has_more());
     }

@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(missing_docs)]
+#![allow(
+    missing_docs,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::unreadable_literal,
+    reason = "benchmark uses small loop counters with synthetic test data"
+)]
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use query_router::QueryRouter;
 use std::hint::black_box;
@@ -16,8 +22,7 @@ fn bench_relational_execute(c: &mut Criterion) {
     for i in 0..100 {
         router
             .execute_parsed(&format!(
-                "INSERT INTO users VALUES ({}, 'user{}', 'user{}@example.com')",
-                i, i, i
+                "INSERT INTO users VALUES ({i}, 'user{i}', 'user{i}@example.com')"
             ))
             .unwrap();
     }
@@ -43,10 +48,7 @@ fn bench_relational_execute(c: &mut Criterion) {
     group.bench_function("insert", |b| {
         let mut i = 1000;
         b.iter(|| {
-            let query = format!(
-                "INSERT INTO users VALUES ({}, 'user{}', 'user{}@example.com')",
-                i, i, i
-            );
+            let query = format!("INSERT INTO users VALUES ({i}, 'user{i}', 'user{i}@example.com')");
             let result = router.execute_parsed(black_box(&query)).unwrap();
             i += 1;
             black_box(result);
@@ -74,8 +76,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     for i in 0..100 {
         router
             .execute_parsed(&format!(
-                "NODE CREATE person {{id: {}, name: 'person{}'}}",
-                i, i
+                "NODE CREATE person {{id: {i}, name: 'person{i}'}}"
             ))
             .unwrap();
     }
@@ -90,7 +91,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     group.bench_function("node_create", |b| {
         let mut i = 1000;
         b.iter(|| {
-            let query = format!("NODE CREATE person {{id: {}, name: 'person{}'}}", i, i);
+            let query = format!("NODE CREATE person {{id: {i}, name: 'person{i}'}}");
             let result = router.execute_parsed(black_box(&query)).unwrap();
             i += 1;
             black_box(result);
@@ -129,8 +130,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     for i in 0..100 {
         find_router
             .execute_parsed(&format!(
-                "NODE CREATE person {{id: {}, name: 'person{}'}}",
-                i, i
+                "NODE CREATE person {{id: {i}, name: 'person{i}'}}"
             ))
             .unwrap();
     }
@@ -154,27 +154,27 @@ fn bench_vector_execute(c: &mut Criterion) {
 
     // Store embeddings
     for i in 0..100 {
-        let vector: Vec<f64> = (0..128).map(|j| (i * 128 + j) as f64 / 10000.0).collect();
+        let vector: Vec<f64> = (0..128).map(|j| f64::from(i * 128 + j) / 10000.0).collect();
         let vector_str = vector
             .iter()
-            .map(|v| format!("{:.4}", v))
+            .map(|v| format!("{v:.4}"))
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute_parsed(&format!("EMBED STORE 'doc{}' [{}]", i, vector_str))
+            .execute_parsed(&format!("EMBED STORE 'doc{i}' [{vector_str}]"))
             .unwrap();
     }
 
     group.bench_function("embed_store", |b| {
         let mut i = 1000;
         b.iter(|| {
-            let vector: Vec<f64> = (0..128).map(|j| (i * 128 + j) as f64 / 10000.0).collect();
+            let vector: Vec<f64> = (0..128).map(|j| f64::from(i * 128 + j) / 10000.0).collect();
             let vector_str = vector
                 .iter()
-                .map(|v| format!("{:.4}", v))
+                .map(|v| format!("{v:.4}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let query = format!("EMBED STORE 'doc{}' [{}]", i, vector_str);
+            let query = format!("EMBED STORE 'doc{i}' [{vector_str}]");
             let result = router.execute_parsed(black_box(&query)).unwrap();
             i += 1;
             black_box(result);
@@ -222,19 +222,19 @@ fn bench_mixed_workload(c: &mut Criterion) {
         .unwrap();
     for i in 0..50 {
         router
-            .execute_parsed(&format!("INSERT INTO users VALUES ({}, 'user{}')", i, i))
+            .execute_parsed(&format!("INSERT INTO users VALUES ({i}, 'user{i}')"))
             .unwrap();
         router
-            .execute_parsed(&format!("NODE CREATE person {{id: {}}}", i))
+            .execute_parsed(&format!("NODE CREATE person {{id: {i}}}"))
             .unwrap();
-        let vector: Vec<f64> = (0..64).map(|j| (i * 64 + j) as f64 / 1000.0).collect();
+        let vector: Vec<f64> = (0..64).map(|j| f64::from(i * 64 + j) / 1000.0).collect();
         let vector_str = vector
             .iter()
-            .map(|v| format!("{:.4}", v))
+            .map(|v| format!("{v:.4}"))
             .collect::<Vec<_>>()
             .join(", ");
         router
-            .execute_parsed(&format!("EMBED STORE 'doc{}' [{}]", i, vector_str))
+            .execute_parsed(&format!("EMBED STORE 'doc{i}' [{vector_str}]"))
             .unwrap();
     }
 
@@ -249,7 +249,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
     group.throughput(Throughput::Elements(queries.len() as u64));
     group.bench_function("mixed_5_queries", |b| {
         b.iter(|| {
-            for query in queries.iter() {
+            for query in &queries {
                 let result = router.execute_parsed(black_box(query)).unwrap();
                 black_box(result);
             }
@@ -268,7 +268,7 @@ fn bench_parse_vs_execute(c: &mut Criterion) {
         .unwrap();
     for i in 0..100 {
         router
-            .execute_parsed(&format!("INSERT INTO users VALUES ({}, 'user{}')", i, i))
+            .execute_parsed(&format!("INSERT INTO users VALUES ({i}, 'user{i}')"))
             .unwrap();
     }
 
@@ -295,7 +295,7 @@ fn bench_parse_vs_execute(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
 
-    for count in [100, 500, 1000].iter() {
+    for count in &[100, 500, 1000] {
         let router = QueryRouter::new();
         router
             .execute_parsed("CREATE TABLE bench (id INT, value TEXT)")
@@ -305,7 +305,7 @@ fn bench_throughput(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("insert", count), count, |b, &count| {
             b.iter(|| {
                 for i in 0..count {
-                    let query = format!("INSERT INTO bench VALUES ({}, 'value{}')", i, i);
+                    let query = format!("INSERT INTO bench VALUES ({i}, 'value{i}')");
                     router.execute_parsed(black_box(&query)).unwrap();
                 }
             });
@@ -329,7 +329,7 @@ fn bench_cross_engine(c: &mut Criterion) {
             .collect();
         router
             .vector()
-            .set_entity_embedding(&format!("user:{}", i), embedding)
+            .set_entity_embedding(&format!("user:{i}"), embedding)
             .unwrap();
     }
 
@@ -338,11 +338,7 @@ fn bench_cross_engine(c: &mut Criterion) {
         for offset in 1..=5 {
             let target = (i + offset) % 200;
             router
-                .connect_entities(
-                    &format!("user:{}", i),
-                    &format!("user:{}", target),
-                    "follows",
-                )
+                .connect_entities(&format!("user:{i}"), &format!("user:{target}"), "follows")
                 .unwrap();
         }
     }
@@ -355,7 +351,7 @@ fn bench_cross_engine(c: &mut Criterion) {
     group.bench_function("connect_entities", |b| {
         let mut i = 2000;
         b.iter(|| {
-            let from = format!("user:{}", i);
+            let from = format!("user:{i}");
             let to = format!("user:{}", i + 1);
             // First create entities with embeddings
             let embedding: Vec<f32> = (0..128)
@@ -399,7 +395,7 @@ fn bench_cross_engine(c: &mut Criterion) {
     });
 
     // Benchmark with varying top_k values
-    for k in [5, 10, 20, 50].iter() {
+    for k in &[5, 10, 20, 50] {
         group.bench_with_input(
             BenchmarkId::new("find_neighbors_by_similarity_k", k),
             k,
@@ -423,7 +419,7 @@ fn bench_cross_engine_scale(c: &mut Criterion) {
     let mut group = c.benchmark_group("cross_engine_scale");
     group.sample_size(50); // Fewer samples for expensive benchmarks
 
-    for entity_count in [100, 500, 1000].iter() {
+    for entity_count in &[100, 500, 1000] {
         let store = tensor_store::TensorStore::new();
         let mut router = QueryRouter::with_shared_store(store);
 
@@ -434,7 +430,7 @@ fn bench_cross_engine_scale(c: &mut Criterion) {
                 .collect();
             router
                 .vector()
-                .set_entity_embedding(&format!("user:{}", i), embedding)
+                .set_entity_embedding(&format!("user:{i}"), embedding)
                 .unwrap();
         }
 
@@ -443,11 +439,7 @@ fn bench_cross_engine_scale(c: &mut Criterion) {
             for offset in 1..=5 {
                 let target = (i + offset) % entity_count;
                 router
-                    .connect_entities(
-                        &format!("user:{}", i),
-                        &format!("user:{}", target),
-                        "follows",
-                    )
+                    .connect_entities(&format!("user:{i}"), &format!("user:{target}"), "follows")
                     .unwrap();
             }
         }

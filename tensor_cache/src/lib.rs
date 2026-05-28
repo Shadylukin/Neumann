@@ -479,13 +479,23 @@ impl Cache {
     #[must_use]
     pub fn get_simple(&self, key: &str) -> Option<String> {
         let cache_key = Self::exact_key(key);
-        let data = self.store.get(&cache_key).ok()?;
+        let Ok(data) = self.store.get(&cache_key) else {
+            self.stats.record_miss(CacheLayer::Exact);
+            return None;
+        };
 
         if Self::is_expired(&data) {
+            self.stats.record_miss(CacheLayer::Exact);
             return None;
         }
 
-        Self::get_string_field(&data, fields::RESPONSE)
+        let response = Self::get_string_field(&data, fields::RESPONSE);
+        if response.is_some() {
+            self.stats.record_hit(CacheLayer::Exact);
+        } else {
+            self.stats.record_miss(CacheLayer::Exact);
+        }
+        response
     }
 
     /// Simple key-value put for CLI interface.

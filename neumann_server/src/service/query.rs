@@ -171,21 +171,27 @@ impl QueryServiceImpl {
     /// and a write lock only when identity must be set for vault access.
     fn execute_query(&self, query: &str, identity: Option<&str>) -> Result<QueryResult, Status> {
         if let Some(id) = identity {
-            let mut router = self.router.write();
-            router.set_identity(id);
-            match router.execute(query) {
-                Ok(result) => {
+            let result = {
+                let mut router = self.router.write();
+                router.set_identity(id);
+                let r = router.execute(query);
+                router.clear_identity();
+                r
+            };
+            return match result {
+                Ok(r) => {
                     self.record_success();
-                    return Ok(result);
+                    Ok(r)
                 },
                 Err(e) => {
                     self.record_failure();
                     tracing::error!("Query execution error: {}", e);
-                    return Err(crate::error::sanitize_internal_error(e));
+                    Err(crate::error::sanitize_internal_error(e))
                 },
-            }
+            };
         }
 
+        // Anonymous path: read lock only (preserves throughput)
         let router = self.router.read();
         match router.execute(query) {
             Ok(result) => {
@@ -685,14 +691,17 @@ impl QueryService for QueryServiceImpl {
             }
         }
 
-        let result = {
+        let result = if identity.is_some() {
             let mut router = self.router.write();
-
-            // Set identity for vault access if provided
             if let Some(id) = identity.as_deref() {
                 router.set_identity(id);
             }
-
+            let r = router.execute_paginated(query, options);
+            router.clear_identity();
+            r
+        } else {
+            // Anonymous path: read lock only (preserves throughput)
+            let router = self.router.read();
             router.execute_paginated(query, options)
         };
 

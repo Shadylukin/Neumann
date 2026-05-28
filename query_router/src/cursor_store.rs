@@ -338,7 +338,7 @@ mod tests {
         let store = CursorStore::new();
         let cursor = create_test_cursor("cursor-1");
 
-        store.insert(cursor.clone()).unwrap();
+        store.insert(cursor).unwrap();
         assert_eq!(store.len(), 1);
 
         let retrieved = store.get("cursor-1").unwrap();

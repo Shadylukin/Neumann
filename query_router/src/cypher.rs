@@ -903,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // arbitrary test value, not PI
     fn test_literal_conversion_float() {
         let result = literal_to_property_value(&Literal::Float(3.14));
         assert!(matches!(result, PropertyValue::Float(f) if (f - 3.14).abs() < 0.001));
@@ -928,6 +929,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // arbitrary test value, not PI
     fn test_property_value_to_string_float() {
         let result = property_value_to_string(&PropertyValue::Float(3.14));
         assert!(result.starts_with("3.14"));
@@ -953,7 +955,7 @@ mod tests {
 
     #[test]
     fn test_property_value_to_string_datetime() {
-        let val = PropertyValue::DateTime(1234567890);
+        let val = PropertyValue::DateTime(1_234_567_890);
         assert_eq!(property_value_to_string(&val), "1234567890");
     }
 

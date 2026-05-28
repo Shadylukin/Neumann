@@ -25,7 +25,7 @@ relational_engine = { path = "../relational_engine", features = ["test-internals
 graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
 query_router = { path = "../query_router" }
-neumann_shell = { path = "../neumann_shell", package = "neumann" }
+neumann_shell = { path = "../neumann_shell", package = "neumann-db" }
 tensor_blob = { path = "../tensor_blob" }
 tensor_unified = { path = "../tensor_unified" }
 tokio = { version = "1", features = ["rt", "macros"] }
