@@ -27,6 +27,7 @@ COPY tensor_vault/Cargo.toml tensor_vault/
 COPY tensor_checkpoint/Cargo.toml tensor_checkpoint/
 COPY tensor_chain/Cargo.toml tensor_chain/
 COPY tensor_unified/Cargo.toml tensor_unified/
+COPY tensor_learn/Cargo.toml tensor_learn/
 COPY relational_engine/Cargo.toml relational_engine/
 COPY graph_engine/Cargo.toml graph_engine/
 COPY vector_engine/Cargo.toml vector_engine/
@@ -49,6 +50,7 @@ RUN mkdir -p tensor_store/src && echo "pub fn dummy() {}" > tensor_store/src/lib
     mkdir -p tensor_checkpoint/src && echo "pub fn dummy() {}" > tensor_checkpoint/src/lib.rs && \
     mkdir -p tensor_chain/src && echo "pub fn dummy() {}" > tensor_chain/src/lib.rs && \
     mkdir -p tensor_unified/src && echo "pub fn dummy() {}" > tensor_unified/src/lib.rs && \
+    mkdir -p tensor_learn/src && echo "pub fn dummy() {}" > tensor_learn/src/lib.rs && \
     mkdir -p relational_engine/src && echo "pub fn dummy() {}" > relational_engine/src/lib.rs && \
     mkdir -p graph_engine/src && echo "pub fn dummy() {}" > graph_engine/src/lib.rs && \
     mkdir -p vector_engine/src && echo "pub fn dummy() {}" > vector_engine/src/lib.rs && \
@@ -78,6 +80,7 @@ COPY tensor_vault/src tensor_vault/src
 COPY tensor_checkpoint/src tensor_checkpoint/src
 COPY tensor_chain/src tensor_chain/src
 COPY tensor_unified/src tensor_unified/src
+COPY tensor_learn/src tensor_learn/src
 COPY relational_engine/src relational_engine/src
 COPY graph_engine/src graph_engine/src
 COPY vector_engine/src vector_engine/src
