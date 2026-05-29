@@ -101,7 +101,7 @@ impl Matrix8x8 {
             for j in 0..8 {
                 let mut sum = 0.0;
                 for k in 0..8 {
-                    sum += self.data[i * 8 + k] * other.data[k * 8 + j];
+                    sum = self.data[i * 8 + k].mul_add(other.data[k * 8 + j], sum);
                 }
                 result[i * 8 + j] = sum;
             }

@@ -359,7 +359,7 @@ impl DeltaVector {
                 std::cmp::Ordering::Less => i += 1,
                 std::cmp::Ordering::Greater => j += 1,
                 std::cmp::Ordering::Equal => {
-                    result += self.deltas[i] * other.deltas[j];
+                    result = self.deltas[i].mul_add(other.deltas[j], result);
                     i += 1;
                     j += 1;
                 },

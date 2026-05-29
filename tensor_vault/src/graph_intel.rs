@@ -1777,14 +1777,14 @@ fn euclidean_distance(a: &[f32], b: &[f32]) -> f64 {
     let mut sum = 0.0_f64;
     for i in 0..min_len {
         let diff = f64::from(a[i]) - f64::from(b[i]);
-        sum += diff * diff;
+        sum = diff.mul_add(diff, sum);
     }
     // Handle dimension mismatch: treat missing dimensions as 0
     for v in a.iter().skip(min_len) {
-        sum += f64::from(*v) * f64::from(*v);
+        sum = f64::from(*v).mul_add(f64::from(*v), sum);
     }
     for v in b.iter().skip(min_len) {
-        sum += f64::from(*v) * f64::from(*v);
+        sum = f64::from(*v).mul_add(f64::from(*v), sum);
     }
     sum.sqrt()
 }

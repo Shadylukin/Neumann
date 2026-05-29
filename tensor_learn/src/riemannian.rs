@@ -48,7 +48,7 @@ pub fn euclidean_grad_distance(x: &[f64], y: &[f64], curvature: f64) -> Vec<f64>
 
     (0..dim)
         .map(|i| {
-            let d_gamma = (4.0 / alpha_sq_beta) * (alpha * (x[i] - y[i]) + diff_sq * x[i]);
+            let d_gamma = (4.0 / alpha_sq_beta) * diff_sq.mul_add(x[i], alpha * (x[i] - y[i]));
             d_gamma / denom
         })
         .collect()

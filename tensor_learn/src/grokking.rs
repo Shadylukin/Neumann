@@ -514,8 +514,9 @@ impl GrokSession {
         let b2_off = b2_slice(prime, hidden, input_dim).start;
         for row in 0..prime {
             wg[b2_off + row] += dl[row];
-            for col in 0..hidden {
-                wg[w2_off + row * hidden + col] += dl[row] * h_act[col];
+            for (col, &h) in h_act.iter().enumerate().take(hidden) {
+                let idx = w2_off + row * hidden + col;
+                wg[idx] = dl[row].mul_add(h, wg[idx]);
             }
         }
 
@@ -523,7 +524,7 @@ impl GrokSession {
         let mut dh = vec![0.0; hidden];
         for col in 0..hidden {
             for row in 0..prime {
-                dh[col] += w2[row * hidden + col] * dl[row];
+                dh[col] = w2[row * hidden + col].mul_add(dl[row], dh[col]);
             }
         }
 
@@ -539,8 +540,9 @@ impl GrokSession {
         let b1_off = b1_slice(hidden, input_dim).start;
         for row in 0..hidden {
             wg[b1_off + row] += dph[row];
-            for col in 0..input_dim {
-                wg[w1_off + row * input_dim + col] += dph[row] * input[col];
+            for (col, &x) in input.iter().enumerate().take(input_dim) {
+                let idx = w1_off + row * input_dim + col;
+                wg[idx] = dph[row].mul_add(x, wg[idx]);
             }
         }
 
@@ -548,7 +550,7 @@ impl GrokSession {
         let mut di = vec![0.0; input_dim];
         for col in 0..input_dim {
             for row in 0..hidden {
-                di[col] += w1[row * input_dim + col] * dph[row];
+                di[col] = w1[row * input_dim + col].mul_add(dph[row], di[col]);
             }
         }
 
@@ -665,7 +667,8 @@ fn pca_project_2d(data: &[f64], n_points: usize, dims: usize) -> Vec<(f64, f64)>
     };
     for row in 0..dims {
         for col in 0..dims {
-            cov[row * dims + col] -= lam1 * v1[row] * v1[col];
+            let idx = row * dims + col;
+            cov[idx] = (lam1 * v1[row]).mul_add(-v1[col], cov[idx]);
         }
     }
 
@@ -709,7 +712,7 @@ fn mat_vec_mul(mat: &[f64], dim: usize, vec: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0; dim];
     for row in 0..dim {
         for col in 0..dim {
-            out[row] += mat[row * dim + col] * vec[col];
+            out[row] = mat[row * dim + col].mul_add(vec[col], out[row]);
         }
     }
     out
@@ -750,7 +753,7 @@ fn adamw_update(
         let m_hat = first_moment[idx] / bc1;
         let v_hat = second_moment[idx] / bc2;
         let adam_step = m_hat / (v_hat.sqrt() + eps);
-        params[idx] -= lr * wd.mul_add(params[idx], adam_step);
+        params[idx] = lr.mul_add(-wd.mul_add(params[idx], adam_step), params[idx]);
     }
 }
 

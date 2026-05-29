@@ -297,7 +297,7 @@ impl TrainingSession {
         // a. Edge-attraction loss: minimize squared distance between connected nodes
         for &(fi, ti) in &self.training_edges {
             let dist = self.embeddings[fi].distance(&self.embeddings[ti], curvature);
-            edge_loss += edge_w * dist * dist;
+            edge_loss = (edge_w * dist).mul_add(dist, edge_loss);
 
             let g_from = euclidean_grad_distance(
                 self.embeddings[fi].coords(),
@@ -332,7 +332,7 @@ impl TrainingSession {
                 let violation = (margin - dist).max(0.0);
 
                 if violation > 0.0 {
-                    negative_loss += edge_w * violation * violation;
+                    negative_loss = (edge_w * violation).mul_add(violation, negative_loss);
 
                     let g_a = euclidean_grad_distance(
                         self.embeddings[ai].coords(),
@@ -358,7 +358,7 @@ impl TrainingSession {
             let target = f64::from(level) * 0.4;
             let actual = self.embeddings[i].distance(&origin, curvature);
             let diff = actual - target;
-            radial_loss += level_w * diff * diff;
+            radial_loss = (level_w * diff).mul_add(diff, radial_loss);
 
             if actual > 1e-10 {
                 let g = euclidean_grad_distance(
@@ -469,7 +469,7 @@ impl TrainingSession {
 /// Accumulate `coeff * src[i]` into `dst[i]` for all dimensions.
 fn accumulate(dst: &mut [f64], src: &[f64], coeff: f64) {
     for (d, &s) in dst.iter_mut().zip(src.iter()) {
-        *d += coeff * s;
+        *d = coeff.mul_add(s, *d);
     }
 }
 

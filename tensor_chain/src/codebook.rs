@@ -547,8 +547,10 @@ impl LocalCodebook {
                         let age_secs = (now.saturating_sub(e.last_access)) / 1000;
                         let recency_score = 1.0 / (1.0 + age_secs as f64 / 60.0);
                         let frequency_score = (e.access_count as f64).ln_1p();
-                        recency_score * f64::from(recency_weight)
-                            + frequency_score * f64::from(frequency_weight)
+                        frequency_score.mul_add(
+                            f64::from(frequency_weight),
+                            recency_score * f64::from(recency_weight),
+                        )
                     },
                 };
                 (i, score)

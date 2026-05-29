@@ -431,7 +431,7 @@ impl SparseVector {
         while i < self.positions.len() && j < other.positions.len() {
             match self.positions[i].cmp(&other.positions[j]) {
                 std::cmp::Ordering::Equal => {
-                    result += f64::from(self.values[i]) * f64::from(other.values[j]);
+                    result = f64::from(self.values[i]).mul_add(f64::from(other.values[j]), result);
                     i += 1;
                     j += 1;
                 },
@@ -1002,7 +1002,7 @@ impl SparseVector {
                 }
             };
 
-            sum_sq += diff * diff;
+            sum_sq = diff.mul_add(diff, sum_sq);
         }
 
         sum_sq

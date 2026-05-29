@@ -318,7 +318,7 @@ pub fn find_dominant_period(time_series: &[f32]) -> usize {
     for lag in 2..=max_lag {
         let mut corr = 0.0_f32;
         for i in 0..n - lag {
-            corr += centered[i] * centered[i + lag];
+            corr = centered[i].mul_add(centered[i + lag], corr);
         }
         corr /= variance;
 

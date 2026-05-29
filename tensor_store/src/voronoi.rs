@@ -160,7 +160,7 @@ impl VoronoiRegion {
         let mut sum = 0.0;
         for (a, b) in self.centroid.iter().zip(point.iter()) {
             let diff = a - b;
-            sum += diff * diff;
+            sum = diff.mul_add(diff, sum);
         }
         sum.sqrt()
     }
@@ -342,7 +342,7 @@ impl VoronoiPartitioner {
             let mut dist = 0.0;
             for (a, b) in centroid.iter().zip(point.iter()) {
                 let diff = a - b;
-                dist += diff * diff;
+                dist = diff.mul_add(diff, dist);
             }
 
             if dist < best_dist {

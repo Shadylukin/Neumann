@@ -189,7 +189,7 @@ pub mod simd {
         // Handle remainder with scalar operations
         let start = chunks * 8;
         for i in 0..remainder {
-            result += a[start + i] * b[start + i];
+            result = a[start + i].mul_add(b[start + i], result);
         }
 
         result
@@ -218,7 +218,7 @@ pub mod simd {
         // Handle remainder with scalar operations
         let start = chunks * 8;
         for i in 0..remainder {
-            result += v[start + i] * v[start + i];
+            result = v[start + i].mul_add(v[start + i], result);
         }
 
         result
@@ -257,7 +257,7 @@ pub mod simd {
         let start = chunks * 8;
         for i in 0..remainder {
             let diff = a[start + i] - b[start + i];
-            result += diff * diff;
+            result = diff.mul_add(diff, result);
         }
 
         result.sqrt()
@@ -457,7 +457,7 @@ impl ScalarQuantizedVector {
         for i in 0..remainder {
             let q = f32::from(self.data[rem_start + i]);
             let y = other[rem_start + i];
-            q_dot_y_scalar += q * y;
+            q_dot_y_scalar = q.mul_add(y, q_dot_y_scalar);
             sum_y_scalar += y;
         }
 
@@ -504,7 +504,7 @@ impl ScalarQuantizedVector {
         let rem_start = chunks * 8;
         for i in 0..remainder {
             let q = f32::from(self.data[rem_start + i]);
-            sum_q_sq_scalar += q * q;
+            sum_q_sq_scalar = q.mul_add(q, sum_q_sq_scalar);
             sum_q_scalar += q;
         }
 
