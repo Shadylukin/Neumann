@@ -111,6 +111,38 @@ pub fn sanitize_internal_error<E: std::fmt::Display>(error: E) -> Status {
     Status::internal(INTERNAL_ERROR_MESSAGE)
 }
 
+/// Map a [`query_router::RouterError`] to a gRPC [`Status`].
+///
+/// Preserves the observable codes (`already_exists`, `not_found`,
+/// `invalid_argument`, `unauthenticated`, `failed_precondition`) and falls
+/// back through [`sanitize_internal_error`] for the catch-all.
+#[must_use]
+pub fn router_error_to_status(error: query_router::RouterError) -> Status {
+    use query_router::RouterError;
+    match &error {
+        RouterError::AuthenticationRequired => Status::unauthenticated(error.to_string()),
+        RouterError::NotFound(_) => Status::not_found(error.to_string()),
+        RouterError::InvalidArgument(msg) if msg.to_lowercase().contains("not configured") => {
+            Status::failed_precondition(error.to_string())
+        },
+        RouterError::ParseError(_)
+        | RouterError::UnknownCommand(_)
+        | RouterError::InvalidArgument(_)
+        | RouterError::MissingArgument(_)
+        | RouterError::TypeMismatch(_) => Status::invalid_argument(error.to_string()),
+        RouterError::VectorError(m) if m.to_lowercase().contains("not found") => {
+            Status::not_found(error.to_string())
+        },
+        RouterError::VectorError(m)
+            if m.to_lowercase().contains("already exists")
+                || m.to_lowercase().contains("duplicate") =>
+        {
+            Status::already_exists(error.to_string())
+        },
+        _ => sanitize_internal_error(error),
+    }
+}
+
 /// Sanitize any error that should not expose details to clients.
 ///
 /// This logs the full error and returns an appropriate generic response.
@@ -292,6 +324,67 @@ mod tests {
         let blob_err = tensor_blob::BlobError::NotFound("x".to_string());
         let server_err: ServerError = blob_err.into();
         let status: Status = server_err.into();
+        assert_eq!(status.code(), tonic::Code::Internal);
+    }
+
+    // ===== Phase 1.5: router_error_to_status =====
+
+    #[test]
+    fn router_error_to_status_authentication_required_is_unauthenticated() {
+        let status = router_error_to_status(query_router::RouterError::AuthenticationRequired);
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn router_error_to_status_not_found_is_not_found() {
+        let status = router_error_to_status(query_router::RouterError::NotFound("x".to_string()));
+        assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn router_error_to_status_not_configured_is_failed_precondition() {
+        let status = router_error_to_status(query_router::RouterError::InvalidArgument(
+            "3D spatial index not configured".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn router_error_to_status_invalid_argument_general_is_invalid_argument() {
+        let status = router_error_to_status(query_router::RouterError::InvalidArgument(
+            "negative radius".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn router_error_to_status_vector_already_exists_is_already_exists() {
+        let status = router_error_to_status(query_router::RouterError::VectorError(
+            "collection already exists".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::AlreadyExists);
+    }
+
+    #[test]
+    fn router_error_to_status_vector_not_found_is_not_found() {
+        let status = router_error_to_status(query_router::RouterError::VectorError(
+            "key 'a' not found".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn router_error_to_status_unknown_command_is_invalid_argument() {
+        let status =
+            router_error_to_status(query_router::RouterError::UnknownCommand("X".to_string()));
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn router_error_to_status_other_is_internal() {
+        let status = router_error_to_status(query_router::RouterError::ChainError(
+            "raft down".to_string(),
+        ));
         assert_eq!(status.code(), tonic::Code::Internal);
     }
 }

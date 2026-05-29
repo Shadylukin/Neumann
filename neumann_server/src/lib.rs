@@ -41,6 +41,7 @@ pub mod memory;
 pub mod metrics;
 pub mod rate_limit;
 pub mod rest;
+pub mod router_dispatch;
 pub mod service;
 pub mod shutdown;
 pub mod signals;
@@ -84,7 +85,9 @@ use tensor_vault::Vault;
 pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
 pub use config::{AuthConfig, ClusterConfig, ServerConfig, TlsConfig};
 pub use correlation::{extract_or_generate, request_span, RequestSpan, TRACE_ID_HEADER};
-pub use error::{sanitize_error, sanitize_internal_error, Result, ServerError};
+pub use error::{
+    router_error_to_status, sanitize_error, sanitize_internal_error, Result, ServerError,
+};
 pub use memory::{MemoryBudgetConfig, MemoryTracker};
 pub use metrics::{init_metrics, MetricsConfig, MetricsHandle, ServerMetrics};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
@@ -119,7 +122,6 @@ pub struct NeumannServer {
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
     metrics: Option<Arc<ServerMetrics>>,
-    spatial_3d: Option<Arc<RwLock<SpatialIndex3D<String>>>>,
     training: Option<Arc<RwLock<tensor_learn::TrainingSession>>>,
     grok: Option<Arc<RwLock<tensor_learn::GrokSession>>>,
 }
@@ -151,7 +153,6 @@ impl NeumannServer {
             rate_limiter,
             audit_logger,
             metrics: None,
-            spatial_3d: None,
             training: None,
             grok: None,
         }
@@ -196,7 +197,6 @@ impl NeumannServer {
             rate_limiter,
             audit_logger,
             metrics: None,
-            spatial_3d: None,
             training: None,
             grok: None,
         })
@@ -210,8 +210,18 @@ impl NeumannServer {
     }
 
     /// Set the vector engine for vector services.
+    ///
+    /// Beyond setting the outer field (which still gates whether the gRPC
+    /// vector services are mounted), this also calls
+    /// [`QueryRouter::replace_vector_engine`] so the router and any service
+    /// that later reads through it observe the same engine. Any vector data
+    /// already in the router (typically empty after `with_shared_storage`) is
+    /// reset, and the query cache is cleared.
     #[must_use]
     pub fn with_vector_engine(mut self, vector_engine: Arc<VectorEngine>) -> Self {
+        self.router
+            .write()
+            .replace_vector_engine(Arc::clone(&vector_engine));
         self.vector_engine = Some(vector_engine);
         self
     }
@@ -259,9 +269,13 @@ impl NeumannServer {
     }
 
     /// Set the 3D spatial index for REST spatial endpoints.
+    ///
+    /// The index is owned by the underlying [`QueryRouter`] (since the router
+    /// became authoritative for the vector dispatch surface); this builder
+    /// proxies the assignment through.
     #[must_use]
-    pub fn with_spatial_3d(mut self, spatial_3d: Arc<RwLock<SpatialIndex3D<String>>>) -> Self {
-        self.spatial_3d = Some(spatial_3d);
+    pub fn with_spatial_3d(self, spatial_3d: Arc<RwLock<SpatialIndex3D<String>>>) -> Self {
+        self.router.write().set_spatial_3d(Some(spatial_3d));
         self
     }
 
@@ -430,9 +444,9 @@ impl NeumannServer {
         });
 
         // Build vector services if engine is available
-        let (points_svc, collections_svc) = if let Some(ref engine) = self.vector_engine {
+        let (points_svc, collections_svc) = if let Some(ref _engine) = self.vector_engine {
             let points_service = PointsServiceImpl::with_full_config(
-                Arc::clone(engine),
+                Arc::clone(&self.router),
                 self.config.auth.clone(),
                 Some(Arc::clone(&health_state)),
                 self.rate_limiter.clone(),
@@ -440,7 +454,7 @@ impl NeumannServer {
                 self.metrics.clone(),
             );
             let collections_service = CollectionsServiceImpl::with_full_config(
-                Arc::clone(engine),
+                Arc::clone(&self.router),
                 self.config.auth.clone(),
                 self.rate_limiter.clone(),
                 self.audit_logger.clone(),
@@ -456,17 +470,15 @@ impl NeumannServer {
         };
 
         // Build REST server if configured
-        let rest_handle = if let (Some(rest_addr), Some(ref engine)) =
+        let rest_handle = if let (Some(rest_addr), Some(ref _engine)) =
             (self.config.rest_addr, &self.vector_engine)
         {
             let rest_ctx = Arc::new(
-                VectorApiContext::new(Arc::clone(engine))
+                VectorApiContext::new(Arc::clone(&self.router))
                     .with_auth(self.config.auth.clone())
                     .with_rate_limiter(self.rate_limiter.clone())
                     .with_audit_logger(self.audit_logger.clone())
-                    .with_metrics(self.metrics.clone())
-                    .with_spatial(Some(self.router.read().spatial().clone()))
-                    .with_spatial_3d(self.spatial_3d.clone()),
+                    .with_metrics(self.metrics.clone()),
             );
             let rest_router = rest::router_with_config(rest_ctx, &self.config.rest_config);
             let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
@@ -713,9 +725,9 @@ impl NeumannServer {
         });
 
         // Build vector services if engine is available
-        let (points_svc, collections_svc) = if let Some(ref engine) = self.vector_engine {
+        let (points_svc, collections_svc) = if let Some(ref _engine) = self.vector_engine {
             let points_service = PointsServiceImpl::with_full_config(
-                Arc::clone(engine),
+                Arc::clone(&self.router),
                 self.config.auth.clone(),
                 Some(Arc::clone(&health_state)),
                 self.rate_limiter.clone(),
@@ -723,7 +735,7 @@ impl NeumannServer {
                 self.metrics.clone(),
             );
             let collections_service = CollectionsServiceImpl::with_full_config(
-                Arc::clone(engine),
+                Arc::clone(&self.router),
                 self.config.auth.clone(),
                 self.rate_limiter.clone(),
                 self.audit_logger.clone(),
@@ -739,17 +751,15 @@ impl NeumannServer {
         };
 
         // Build REST server if configured
-        let rest_handle = if let (Some(rest_addr), Some(ref engine)) =
+        let rest_handle = if let (Some(rest_addr), Some(ref _engine)) =
             (self.config.rest_addr, &self.vector_engine)
         {
             let rest_ctx = Arc::new(
-                VectorApiContext::new(Arc::clone(engine))
+                VectorApiContext::new(Arc::clone(&self.router))
                     .with_auth(self.config.auth.clone())
                     .with_rate_limiter(self.rate_limiter.clone())
                     .with_audit_logger(self.audit_logger.clone())
-                    .with_metrics(self.metrics.clone())
-                    .with_spatial(Some(self.router.read().spatial().clone()))
-                    .with_spatial_3d(self.spatial_3d.clone()),
+                    .with_metrics(self.metrics.clone()),
             );
             let rest_router = rest::router_with_config(rest_ctx, &self.config.rest_config);
             let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
@@ -1866,7 +1876,12 @@ mod tests {
 
         let server = NeumannServer::new(router, config).with_spatial_3d(Arc::clone(&spatial));
 
-        assert!(server.spatial_3d.is_some());
-        assert!(Arc::ptr_eq(server.spatial_3d.as_ref().unwrap(), &spatial));
+        let installed_matches = {
+            let router_guard = server.router().read();
+            router_guard
+                .spatial_3d()
+                .is_some_and(|installed| Arc::ptr_eq(installed, &spatial))
+        };
+        assert!(installed_matches, "3D index should be installed and match");
     }
 }

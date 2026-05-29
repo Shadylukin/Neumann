@@ -115,6 +115,18 @@ pub enum DestructiveOp {
         /// Key of the embedding to delete.
         key: String,
     },
+    /// Delete a batch of vector embeddings.
+    ///
+    /// Used when REST or gRPC clients submit a points-delete request with
+    /// multiple IDs that all exist. Distinct from `EmbedDelete` because
+    /// `affected_count` must reflect the full batch size, not 1.
+    EmbedDeleteBatch {
+        /// Collection name when the batch targets a named collection, or
+        /// `None` for the default namespace.
+        collection: Option<String>,
+        /// Keys of the embeddings to delete.
+        keys: Vec<String>,
+    },
     /// Delete a vault secret.
     VaultDelete {
         /// Key of the secret to delete.
@@ -145,6 +157,7 @@ impl DestructiveOp {
             Self::NodeDelete { .. } => "NODE DELETE",
             Self::EdgeDelete { .. } => "EDGE DELETE",
             Self::EmbedDelete { .. } => "EMBED DELETE",
+            Self::EmbedDeleteBatch { .. } => "EMBED DELETE (batch)",
             Self::VaultDelete { .. } => "VAULT DELETE",
             Self::BlobDelete { .. } => "BLOB DELETE",
             Self::CacheClear { .. } => "CACHE CLEAR",
@@ -162,6 +175,7 @@ impl DestructiveOp {
             | Self::EmbedDelete { .. }
             | Self::VaultDelete { .. }
             | Self::BlobDelete { .. } => 1,
+            Self::EmbedDeleteBatch { keys, .. } => keys.len(),
             Self::CacheClear { entry_count } => *entry_count,
         }
     }
@@ -348,6 +362,14 @@ mod tests {
             "EMBED DELETE"
         );
         assert_eq!(
+            DestructiveOp::EmbedDeleteBatch {
+                collection: Some("coll".into()),
+                keys: vec!["a".into(), "b".into()],
+            }
+            .operation_name(),
+            "EMBED DELETE (batch)"
+        );
+        assert_eq!(
             DestructiveOp::VaultDelete { key: "k".into() }.operation_name(),
             "VAULT DELETE"
         );
@@ -403,6 +425,22 @@ mod tests {
         assert_eq!(
             DestructiveOp::EmbedDelete { key: "k".into() }.affected_count(),
             1
+        );
+        assert_eq!(
+            DestructiveOp::EmbedDeleteBatch {
+                collection: None,
+                keys: vec!["a".into(), "b".into(), "c".into()],
+            }
+            .affected_count(),
+            3
+        );
+        assert_eq!(
+            DestructiveOp::EmbedDeleteBatch {
+                collection: Some("c".into()),
+                keys: vec![],
+            }
+            .affected_count(),
+            0
         );
         assert_eq!(
             DestructiveOp::VaultDelete { key: "k".into() }.affected_count(),

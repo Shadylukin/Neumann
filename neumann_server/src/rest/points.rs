@@ -10,6 +10,8 @@ use axum::Json;
 
 use tensor_store::{ScalarValue, TensorValue};
 
+use query_router::{ScrollOptions, SearchOptions, VectorPoint};
+
 use crate::audit::AuditEvent;
 use crate::rate_limit::Operation;
 use crate::rest::auth::{check_rate_limit, validate_auth};
@@ -19,6 +21,7 @@ use crate::rest::types::{
     QueryResponse, ScoredPoint, ScrollRequest, ScrollResponse, UpsertRequest, UpsertResponse,
 };
 use crate::rest::VectorApiContext;
+use crate::router_dispatch::dispatch_with_identity;
 
 /// Converts a `TensorValue` back to a JSON value for payload retrieval.
 fn tensor_value_to_json(value: &TensorValue) -> serde_json::Value {
@@ -41,13 +44,10 @@ fn tensor_value_to_json(value: &TensorValue) -> serde_json::Value {
     }
 }
 
-/// Retrieves stored metadata for a point as a JSON payload map.
-fn retrieve_payload_json(
-    engine: &vector_engine::VectorEngine,
-    collection: &str,
-    key: &str,
+/// Convert engine-side metadata into the JSON payload shape returned by REST.
+fn metadata_to_payload_json(
+    metadata: std::collections::HashMap<String, TensorValue>,
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    let metadata = engine.get_collection_metadata(collection, key).ok()?;
     if metadata.is_empty() {
         return None;
     }
@@ -108,39 +108,36 @@ pub async fn upsert(
         Operation::VectorOp,
     )?;
 
-    let mut count = 0usize;
+    let points: Vec<VectorPoint> = request
+        .points
+        .into_iter()
+        .map(|p| VectorPoint {
+            id: p.id,
+            vector: p.vector,
+            metadata: p.payload.as_ref().map(convert_metadata),
+        })
+        .collect();
 
-    for point in request.points {
-        let result = if let Some(ref metadata) = point.payload {
-            ctx.engine.store_in_collection_with_metadata(
-                &collection,
-                &point.id,
-                point.vector,
-                convert_metadata(metadata),
-            )
-        } else {
-            ctx.engine
-                .store_in_collection(&collection, &point.id, point.vector)
-        };
-
-        if let Err(e) = result {
+    let count_result = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.upsert_points(Some(&collection), points)
+    });
+    let count = match count_result {
+        Ok(n) => n,
+        Err(e) => {
             if let Some(ref m) = ctx.metrics {
                 let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                 m.record_request("vector", "upsert", false, latency_ms);
             }
-            return Err(ApiError::internal(e.to_string()));
-        }
-        count += 1;
-    }
+            return Err(ApiError::from(e));
+        },
+    };
 
-    // Record metrics
     if let Some(ref m) = ctx.metrics {
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         m.record_vector_latency("upsert", latency_ms);
         m.record_request("vector", "upsert", true, latency_ms);
     }
 
-    // Audit log
     if let Some(ref logger) = ctx.audit_logger {
         logger.record(
             AuditEvent::VectorUpsert {
@@ -178,23 +175,31 @@ pub async fn get(
         Operation::VectorOp,
     )?;
 
-    let mut points = Vec::with_capacity(request.ids.len());
-
-    for id in &request.ids {
-        if let Ok(vector) = ctx.engine.get_from_collection(&collection, id) {
-            points.push(PointStruct {
+    let with_vector = request.with_vector;
+    let with_payload = request.with_payload;
+    let ids = request.ids;
+    let points = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        let mut acc = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let Some(vector) = r.get_point(Some(&collection), id)? else {
+                // REST semantic: silently skip missing IDs.
+                continue;
+            };
+            let payload = if with_payload {
+                metadata_to_payload_json(r.get_point_metadata(&collection, id).unwrap_or_default())
+            } else {
+                None
+            };
+            acc.push(PointStruct {
                 id: id.clone(),
-                vector: if request.with_vector { vector } else { vec![] },
-                payload: if request.with_payload {
-                    retrieve_payload_json(&ctx.engine, &collection, id)
-                } else {
-                    None
-                },
+                vector: if with_vector { vector } else { vec![] },
+                payload,
             });
         }
-    }
+        Ok(acc)
+    })
+    .map_err(ApiError::from)?;
 
-    // Record metrics
     if let Some(ref m) = ctx.metrics {
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         m.record_vector_latency("get", latency_ms);
@@ -224,22 +229,18 @@ pub async fn delete(
         Operation::VectorOp,
     )?;
 
-    let mut count = 0usize;
+    let outcome = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.delete_points(Some(&collection), &request.ids)
+    })
+    .map_err(ApiError::from)?;
+    let count = outcome.deleted;
 
-    for id in &request.ids {
-        if ctx.engine.delete_from_collection(&collection, id).is_ok() {
-            count += 1;
-        }
-    }
-
-    // Record metrics
     if let Some(ref m) = ctx.metrics {
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         m.record_vector_latency("delete", latency_ms);
         m.record_request("vector", "delete", true, latency_ms);
     }
 
-    // Audit log
     if let Some(ref logger) = ctx.audit_logger {
         logger.record(
             AuditEvent::VectorDelete {
@@ -278,61 +279,49 @@ pub async fn query(
     )?;
 
     let limit = request.limit.max(1);
-    let search_result =
-        ctx.engine
-            .search_in_collection(&collection, &request.vector, limit + request.offset);
+    let opts = SearchOptions {
+        limit,
+        offset: request.offset,
+        filter: None,
+        metric: None,
+        score_threshold: request.score_threshold,
+        with_vector: request.with_vector,
+        with_payload: request.with_payload,
+    };
 
-    let results = match search_result {
-        Ok(items) => {
-            let mut results = Vec::new();
-            for item in items.into_iter().skip(request.offset).take(limit) {
-                // Apply score threshold if specified
-                if let Some(threshold) = request.score_threshold {
-                    if item.score < threshold {
-                        continue;
-                    }
-                }
+    let hits_result = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.search_points(Some(&collection), &request.vector, &opts)
+    });
 
-                let vector = if request.with_vector {
-                    ctx.engine.get_from_collection(&collection, &item.key).ok()
-                } else {
-                    None
-                };
-
-                let point_id = item.key;
-                let payload = if request.with_payload {
-                    retrieve_payload_json(&ctx.engine, &collection, &point_id)
-                } else {
-                    None
-                };
-                results.push(ScoredPoint {
-                    id: point_id,
-                    score: item.score,
-                    payload,
-                    vector,
-                });
-            }
-            results
-        },
+    let hits = match hits_result {
+        Ok(h) => h,
         Err(e) => {
             if let Some(ref m) = ctx.metrics {
                 let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                 m.record_request("vector", "query", false, latency_ms);
             }
-            return Err(ApiError::internal(e.to_string()));
+            return Err(ApiError::from(e));
         },
     };
 
+    let results: Vec<ScoredPoint> = hits
+        .into_iter()
+        .map(|hit| ScoredPoint {
+            id: hit.id,
+            score: hit.score,
+            payload: hit.metadata.and_then(metadata_to_payload_json),
+            vector: hit.vector,
+        })
+        .collect();
+
     let elapsed = start.elapsed().as_secs_f64();
 
-    // Record metrics
     if let Some(ref m) = ctx.metrics {
         let latency_ms = elapsed * 1000.0;
         m.record_vector_latency("query", latency_ms);
         m.record_request("vector", "query", true, latency_ms);
     }
 
-    // Audit log
     if let Some(ref logger) = ctx.audit_logger {
         logger.record(
             AuditEvent::VectorQuery {
@@ -370,50 +359,28 @@ pub async fn scroll(
         Operation::VectorOp,
     )?;
 
-    let limit = request.limit.max(1);
-    let keys = ctx.engine.list_collection_keys(&collection);
-
-    // Find the starting position
-    let start_idx = request.offset_id.as_ref().map_or(0, |offset_id| {
-        keys.iter()
-            .position(|k| k > offset_id)
-            .unwrap_or(keys.len())
-    });
-
-    // Get the page of keys
-    let page_keys: Vec<_> = keys.iter().skip(start_idx).take(limit + 1).collect();
-    let has_more = page_keys.len() > limit;
-    let keys_to_fetch: Vec<_> = page_keys.into_iter().take(limit).collect();
-
-    let mut points = Vec::with_capacity(keys_to_fetch.len());
-    for key in &keys_to_fetch {
-        let vector = if request.with_vector {
-            ctx.engine
-                .get_from_collection(&collection, key)
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
-
-        let payload = if request.with_payload {
-            retrieve_payload_json(&ctx.engine, &collection, key)
-        } else {
-            None
-        };
-        points.push(PointStruct {
-            id: (*key).clone(),
-            vector,
-            payload,
-        });
-    }
-
-    let next_offset = if has_more {
-        keys_to_fetch.last().copied().cloned()
-    } else {
-        None
+    let opts = ScrollOptions {
+        limit: request.limit.max(1),
+        offset_id: request.offset_id,
+        with_vector: request.with_vector,
+        with_payload: request.with_payload,
     };
 
-    // Record metrics
+    let scrolled = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.scroll_points(&collection, &opts)
+    })
+    .map_err(ApiError::from)?;
+
+    let points: Vec<PointStruct> = scrolled
+        .hits
+        .into_iter()
+        .map(|hit| PointStruct {
+            id: hit.id,
+            vector: hit.vector.unwrap_or_default(),
+            payload: hit.metadata.and_then(metadata_to_payload_json),
+        })
+        .collect();
+
     if let Some(ref m) = ctx.metrics {
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         m.record_vector_latency("scroll", latency_ms);
@@ -424,7 +391,7 @@ pub async fn scroll(
 
     Ok(Json(ScrollResponse {
         points,
-        next_offset,
+        next_offset: scrolled.next_offset_id,
     }))
 }
 
@@ -758,15 +725,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = UpsertRequest {
@@ -803,15 +762,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let mut payload = std::collections::HashMap::new();
         payload.insert("category".to_string(), serde_json::json!("documents"));
@@ -851,15 +802,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = UpsertRequest {
@@ -909,15 +852,8 @@ mod tests {
 
         let auth_config = AuthConfig::new().with_anonymous(false);
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: Some(auth_config),
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx =
+            Arc::new(VectorApiContext::from_engine(Arc::new(engine)).with_auth(Some(auth_config)));
 
         let headers = HeaderMap::new();
         let request = UpsertRequest {
@@ -960,15 +896,9 @@ mod tests {
         let meter = provider.meter("test");
         let metrics = Arc::new(ServerMetrics::new(meter));
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: Some(metrics.clone()),
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(
+            VectorApiContext::from_engine(Arc::new(engine)).with_metrics(Some(metrics.clone())),
+        );
 
         let headers = HeaderMap::new();
         let request = UpsertRequest {
@@ -1006,15 +936,9 @@ mod tests {
 
         let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: Some(audit_logger),
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(
+            VectorApiContext::from_engine(Arc::new(engine)).with_audit_logger(Some(audit_logger)),
+        );
 
         let headers = HeaderMap::new();
         let request = UpsertRequest {
@@ -1052,15 +976,7 @@ mod tests {
             .store_in_collection("test_coll", "point1", vec![1.0, 0.5, 0.25])
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = GetRequest {
@@ -1099,15 +1015,7 @@ mod tests {
             .store_in_collection("test_coll", "point1", vec![1.0, 0.5, 0.25])
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = GetRequest {
@@ -1142,15 +1050,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = GetRequest {
@@ -1188,15 +1088,7 @@ mod tests {
             .unwrap();
 
         let engine = Arc::new(engine);
-        let ctx = Arc::new(VectorApiContext {
-            engine: engine.clone(),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(engine.clone()));
 
         let headers = HeaderMap::new();
         let request = DeleteRequest {
@@ -1232,15 +1124,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = DeleteRequest {
@@ -1281,15 +1165,7 @@ mod tests {
             .store_in_collection("test_coll", "p3", vec![0.0, 1.0, 0.0])
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = QueryRequest {
@@ -1333,15 +1209,7 @@ mod tests {
             .store_in_collection("test_coll", "p2", vec![0.0, 1.0, 0.0])
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = QueryRequest {
@@ -1387,15 +1255,7 @@ mod tests {
                 .unwrap();
         }
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = QueryRequest {
@@ -1435,15 +1295,7 @@ mod tests {
             .store_in_collection("test_coll", "p1", vec![1.0, 0.0, 0.0])
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = QueryRequest {
@@ -1486,15 +1338,7 @@ mod tests {
                 .unwrap();
         }
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = ScrollRequest {
@@ -1534,15 +1378,7 @@ mod tests {
                 .unwrap();
         }
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = ScrollRequest {
@@ -1585,15 +1421,7 @@ mod tests {
                 .unwrap();
         }
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         // First page
         let headers = HeaderMap::new();
@@ -1648,15 +1476,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = ScrollRequest {
@@ -1738,7 +1558,11 @@ mod tests {
             )
             .unwrap();
 
-        let payload = retrieve_payload_json(&engine, "test_payload", "point1");
+        let payload = metadata_to_payload_json(
+            engine
+                .get_collection_metadata("test_payload", "point1")
+                .unwrap_or_default(),
+        );
         assert!(payload.is_some());
         let payload = payload.unwrap();
         assert_eq!(payload.get("category"), Some(&serde_json::json!("docs")));
@@ -1761,7 +1585,11 @@ mod tests {
             .store_in_collection("test_empty", "point1", vec![1.0, 0.0, 0.0])
             .unwrap();
 
-        let payload = retrieve_payload_json(&engine, "test_empty", "point1");
+        let payload = metadata_to_payload_json(
+            engine
+                .get_collection_metadata("test_empty", "point1")
+                .unwrap_or_default(),
+        );
         assert!(payload.is_none());
     }
 
@@ -1789,15 +1617,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = GetRequest {
@@ -1845,15 +1665,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = GetRequest {
@@ -1900,15 +1712,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = QueryRequest {
@@ -1959,15 +1763,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext {
-            engine: Arc::new(engine),
-            auth_config: None,
-            rate_limiter: None,
-            metrics: None,
-            audit_logger: None,
-            spatial: None,
-            spatial_3d: None,
-        });
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::new(engine)));
 
         let headers = HeaderMap::new();
         let request = ScrollRequest {

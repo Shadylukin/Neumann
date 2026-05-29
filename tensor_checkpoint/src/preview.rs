@@ -48,6 +48,22 @@ impl PreviewGenerator {
             DestructiveOp::EmbedDelete { key } => {
                 format!("Will delete embedding with key '{key}'")
             },
+            DestructiveOp::EmbedDeleteBatch { collection, keys } => {
+                collection.as_ref().map_or_else(
+                    || {
+                        format!(
+                            "Will delete {} embedding(s) from the default namespace",
+                            keys.len()
+                        )
+                    },
+                    |coll| {
+                        format!(
+                            "Will delete {} embedding(s) from collection '{coll}'",
+                            keys.len()
+                        )
+                    },
+                )
+            },
             DestructiveOp::VaultDelete { key } => {
                 format!("Will delete vault secret with key '{key}'")
             },
@@ -110,6 +126,20 @@ pub fn format_warning(op: &DestructiveOp) -> String {
         DestructiveOp::EmbedDelete { key } => {
             format!("WARNING: About to delete embedding '{key}'")
         },
+        DestructiveOp::EmbedDeleteBatch { collection, keys } => collection.as_ref().map_or_else(
+            || {
+                format!(
+                    "WARNING: About to delete {} embedding(s) from the default namespace",
+                    keys.len()
+                )
+            },
+            |coll| {
+                format!(
+                    "WARNING: About to delete {} embedding(s) from collection '{coll}'",
+                    keys.len()
+                )
+            },
+        ),
         DestructiveOp::VaultDelete { key } => {
             format!("WARNING: About to delete vault secret '{key}'")
         },
@@ -162,8 +192,8 @@ mod tests {
         assert_eq!(format_bytes(500), "500 bytes");
         assert_eq!(format_bytes(1024), "1.00 KB");
         assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes(1048576), "1.00 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
+        assert_eq!(format_bytes(1_048_576), "1.00 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
     }
 
     #[test]
@@ -290,6 +320,14 @@ mod tests {
             DestructiveOp::EmbedDelete {
                 key: "k".to_string(),
             },
+            DestructiveOp::EmbedDeleteBatch {
+                collection: Some("coll".to_string()),
+                keys: vec!["a".to_string(), "b".to_string()],
+            },
+            DestructiveOp::EmbedDeleteBatch {
+                collection: None,
+                keys: vec!["x".to_string()],
+            },
             DestructiveOp::VaultDelete {
                 key: "k".to_string(),
             },
@@ -323,12 +361,20 @@ mod tests {
             DestructiveOp::EmbedDelete {
                 key: "doc1".to_string(),
             },
+            DestructiveOp::EmbedDeleteBatch {
+                collection: Some("docs".to_string()),
+                keys: vec!["d1".to_string(), "d2".to_string()],
+            },
+            DestructiveOp::EmbedDeleteBatch {
+                collection: None,
+                keys: vec!["k1".to_string()],
+            },
             DestructiveOp::VaultDelete {
                 key: "api_key".to_string(),
             },
             DestructiveOp::BlobDelete {
                 artifact_id: "blob-123".to_string(),
-                size: 1073741824, // 1 GB
+                size: 1_073_741_824, // 1 GB
             },
             DestructiveOp::CacheClear { entry_count: 100 },
         ];
@@ -337,6 +383,56 @@ mod tests {
             let preview = gen.generate(&op, vec![]);
             assert!(!preview.summary.is_empty());
         }
+    }
+
+    #[test]
+    fn test_embed_delete_batch_preview_named_collection() {
+        let gen = PreviewGenerator::new(5);
+        let op = DestructiveOp::EmbedDeleteBatch {
+            collection: Some("docs".to_string()),
+            keys: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        };
+        let preview = gen.generate(&op, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            preview.summary,
+            "Will delete 3 embedding(s) from collection 'docs'"
+        );
+        assert_eq!(preview.affected_count, 3);
+    }
+
+    #[test]
+    fn test_embed_delete_batch_preview_default_namespace() {
+        let gen = PreviewGenerator::new(5);
+        let op = DestructiveOp::EmbedDeleteBatch {
+            collection: None,
+            keys: vec!["k1".to_string(), "k2".to_string()],
+        };
+        let preview = gen.generate(&op, vec!["k1".to_string(), "k2".to_string()]);
+        assert_eq!(
+            preview.summary,
+            "Will delete 2 embedding(s) from the default namespace"
+        );
+        assert_eq!(preview.affected_count, 2);
+    }
+
+    #[test]
+    fn test_embed_delete_batch_warning() {
+        let op = DestructiveOp::EmbedDeleteBatch {
+            collection: Some("c".to_string()),
+            keys: vec!["a".to_string()],
+        };
+        let warning = format_warning(&op);
+        assert!(warning.contains("WARNING"));
+        assert!(warning.contains("1 embedding(s)"));
+        assert!(warning.contains("'c'"));
+
+        let op_default = DestructiveOp::EmbedDeleteBatch {
+            collection: None,
+            keys: vec![],
+        };
+        let warning_default = format_warning(&op_default);
+        assert!(warning_default.contains("default namespace"));
+        assert!(warning_default.contains("0 embedding(s)"));
     }
 
     #[test]

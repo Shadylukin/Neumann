@@ -17,6 +17,7 @@ use crate::rate_limit::Operation;
 use crate::rest::auth::{check_rate_limit, validate_auth};
 use crate::rest::error::{ApiError, ApiResult};
 use crate::rest::VectorApiContext;
+use crate::router_dispatch::dispatch_with_identity;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -121,18 +122,11 @@ pub async fn insert(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("Spatial index not configured"))?;
-
-    let bounds = tensor_spatial::BoundingBox::new(body.x, body.y, body.width, body.height)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let entry = tensor_spatial::SpatialEntry {
-        data: body.key,
-        bounds,
-    };
-    spatial.write().insert(entry);
+    let key = body.key;
+    dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial_insert(key.clone(), body.x, body.y, body.width, body.height)
+    })
+    .map_err(ApiError::from)?;
 
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
@@ -156,31 +150,22 @@ pub async fn query(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("Spatial index not configured"))?;
-
     let start = Instant::now();
-    let guard = spatial.read();
-    let mut results: Vec<SpatialResultItem> = guard
-        .query_within_radius_with_distances(body.x, body.y, body.radius)
+    let hits = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial_query_radius(body.x, body.y, body.radius, body.limit)
+    })
+    .map_err(ApiError::from)?;
+    let results: Vec<SpatialResultItem> = hits
         .into_iter()
-        .map(|(e, dist)| SpatialResultItem {
-            key: e.data.clone(),
-            distance: dist,
-            x: e.bounds.x(),
-            y: e.bounds.y(),
-            width: e.bounds.width(),
-            height: e.bounds.height(),
+        .map(|h| SpatialResultItem {
+            key: h.id,
+            distance: h.distance,
+            x: h.x,
+            y: h.y,
+            width: h.width,
+            height: h.height,
         })
         .collect();
-    drop(guard);
-
-    if let Some(max) = body.limit {
-        results.truncate(max);
-    }
-
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     Ok(Json(SpatialQueryResponse {
         result: results,
@@ -207,18 +192,16 @@ pub async fn delete(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("Spatial index not configured"))?;
-
-    let bounds = tensor_spatial::BoundingBox::new(body.x, body.y, body.width, body.height)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let key = body.key;
-    spatial
-        .write()
-        .remove(bounds, |e| e.data == key && e.bounds == bounds)
-        .map_err(|e| ApiError::not_found(e.to_string()))?;
+    let removed = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial_delete(&body.key, body.x, body.y, body.width, body.height)
+    })
+    .map_err(ApiError::from)?;
+    if !removed {
+        return Err(ApiError::not_found(format!(
+            "spatial entry '{}' not found",
+            body.key
+        )));
+    }
 
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
@@ -241,12 +224,8 @@ pub async fn count(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("Spatial index not configured"))?;
-
-    let count = spatial.read().len();
+    let count = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| Ok(r.spatial_count()))
+        .map_err(ApiError::from)?;
     Ok(Json(SpatialCountResponse { count }))
 }
 
@@ -350,35 +329,9 @@ mod tests {
     // ========== Handler Unit Tests ==========
 
     #[tokio::test]
-    async fn test_insert_no_spatial_configured() {
-        let engine = Arc::new(vector_engine::VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
-
-        let body = SpatialInsertRequest {
-            key: "test".to_string(),
-            x: 1.0,
-            y: 2.0,
-            width: 3.0,
-            height: 4.0,
-        };
-
-        let result = insert(
-            State(ctx),
-            HeaderMap::new(),
-            Path("default".to_string()),
-            Json(body),
-        )
-        .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
     async fn test_insert_and_count() {
         let engine = Arc::new(vector_engine::VectorEngine::new());
-        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::<
-            String,
-        >::new()));
-        let ctx = Arc::new(VectorApiContext::new(engine).with_spatial(Some(Arc::clone(&spatial))));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
 
         let body = SpatialInsertRequest {
             key: "obj1".to_string(),
@@ -409,10 +362,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_within_radius() {
         let engine = Arc::new(vector_engine::VectorEngine::new());
-        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::<
-            String,
-        >::new()));
-        let ctx = Arc::new(VectorApiContext::new(engine).with_spatial(Some(Arc::clone(&spatial))));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
 
         // Insert two entries
         for (key, x, y) in [("near", 1.0_f32, 1.0_f32), ("far", 100.0, 100.0)] {
@@ -454,10 +404,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_entry() {
         let engine = Arc::new(vector_engine::VectorEngine::new());
-        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::<
-            String,
-        >::new()));
-        let ctx = Arc::new(VectorApiContext::new(engine).with_spatial(Some(Arc::clone(&spatial))));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
 
         // Insert
         let body = SpatialInsertRequest {
@@ -475,7 +422,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(spatial.read().len(), 1);
+        // The 2D spatial index lives on the router; the test reads it through
+        // the typed accessor instead of holding a standalone Arc.
+        assert_eq!(ctx.router.read().spatial().read().len(), 1);
 
         // Delete
         let del = SpatialDeleteRequest {
@@ -493,16 +442,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(spatial.read().len(), 0);
+        assert_eq!(ctx.router.read().spatial().read().len(), 0);
     }
 
     #[tokio::test]
     async fn test_insert_invalid_bounds() {
         let engine = Arc::new(vector_engine::VectorEngine::new());
-        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::<
-            String,
-        >::new()));
-        let ctx = Arc::new(VectorApiContext::new(engine).with_spatial(Some(spatial)));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
 
         let body = SpatialInsertRequest {
             key: "bad".to_string(),
@@ -521,40 +467,16 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn test_count_no_spatial_configured() {
-        let engine = Arc::new(vector_engine::VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
-
-        let result = count(State(ctx), HeaderMap::new(), Path("default".to_string())).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_query_no_spatial_configured() {
-        let engine = Arc::new(vector_engine::VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
-
-        let body = SpatialQueryRequest {
-            x: 0.0,
-            y: 0.0,
-            radius: 10.0,
-            limit: None,
-        };
-        let result = query(
-            State(ctx),
-            HeaderMap::new(),
-            Path("default".to_string()),
-            Json(body),
-        )
-        .await;
-        assert!(result.is_err());
-    }
+    // The 2D spatial index is always present on the router post-Phase 0
+    // (`QueryRouter` constructs it during `new`/`with_shared_store`). The
+    // pre-unification `*_no_spatial_configured` tests checked the legacy
+    // VectorApiContext.spatial = None branch; that branch no longer exists.
+    // Removed deliberately to reflect the post-unification invariant.
 
     #[tokio::test]
     async fn test_delete_no_spatial_configured() {
         let engine = Arc::new(vector_engine::VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
 
         let body = SpatialDeleteRequest {
             key: "missing".to_string(),

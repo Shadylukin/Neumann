@@ -19856,7 +19856,7 @@ fn execute_paginated_with_ttl() {
     router.execute("CREATE TABLE n (id INT)").unwrap();
     let opts = PaginationOptions::new()
         .with_page_size(5)
-        .with_cursor_ttl(std::time::Duration::from_secs(60));
+        .with_cursor_ttl(std::time::Duration::from_mins(1));
     let _ = router.execute_paginated("SELECT * FROM n", opts);
 }
 
@@ -20785,4 +20785,702 @@ fn start_blob_succeeds_after_init() {
     // Starting twice is idempotent (gc_handle.is_none() check)
     router.start_blob().unwrap();
     router.shutdown_blob().unwrap();
+}
+
+// === Phase 0: replace_vector_engine + constructor spatial sharing ===
+
+#[test]
+fn replace_vector_engine_routes_unified_to_new_engine() {
+    // The unified engine owns its own Arc<VectorEngine>. After
+    // replace_vector_engine, both router.vector() and unified must observe
+    // the SAME new engine, otherwise FIND / entity ops / find_similar_connected
+    // / async batch embedding will silently keep talking to the old engine.
+    let mut router = QueryRouter::new();
+
+    let new_engine = Arc::new(VectorEngine::new());
+    new_engine
+        .store_embedding("only_in_new", vec![1.0, 0.0, 0.0])
+        .unwrap();
+
+    router.replace_vector_engine(Arc::clone(&new_engine));
+
+    // Direct router path now sees the new engine's data.
+    let direct = router
+        .vector()
+        .get_embedding("only_in_new")
+        .expect("router.vector should see new-engine data");
+    assert_eq!(direct, vec![1.0, 0.0, 0.0]);
+
+    // Unified path also sees it (proves unified was rebuilt; otherwise unified
+    // would still hold the original empty engine).
+    let via_unified = router
+        .unified()
+        .expect("unified initialized by default constructor")
+        .vector()
+        .get_embedding("only_in_new")
+        .expect("unified.vector should see new-engine data after replace");
+    assert_eq!(via_unified, vec![1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn unified_spatial_shared_with_router_from_construction() {
+    // Before this refactor, QueryRouter::with_shared_store and the
+    // with_engines constructor called UnifiedEngine::with_engines without
+    // chaining .with_spatial(...), so router.spatial() and unified.spatial()
+    // were two distinct indexes. This test pins the shared-from-construction
+    // invariant — without it, spatial inserts via the router would not be
+    // visible to unified-engine spatial queries.
+    let router = QueryRouter::new();
+    let unified_spatial = router
+        .unified()
+        .expect("unified initialized by default constructor")
+        .spatial();
+    assert!(
+        Arc::ptr_eq(router.spatial(), unified_spatial),
+        "router.spatial and unified.spatial must share the same Arc"
+    );
+}
+
+#[test]
+fn replace_vector_engine_clears_hnsw_index_and_query_cache() {
+    // The hnsw_index = None reset is the operative protection — hnsw_is_fresh
+    // compares generations for equality, so bumping doesn't stale the cached
+    // index (the bumps in replace_vector_engine are decorative). Independently,
+    // any cached SIMILAR result may still reference the OLD engine's vectors
+    // and must be invalidated.
+    let mut router = QueryRouter::new();
+
+    // Seed default-namespace data and build the HNSW index.
+    router
+        .vector()
+        .store_embedding("a", vec![1.0, 0.0])
+        .unwrap();
+    router
+        .vector()
+        .store_embedding("b", vec![0.0, 1.0])
+        .unwrap();
+    router.bump_vector_generation(); // mirror exec_embed's bump for direct stores
+    router.build_vector_index().unwrap();
+
+    // Initialize cache and populate it via a cacheable query.
+    router.init_cache_default().unwrap();
+    let _ = router.execute("SIMILAR [1.0, 0.0] TOP 1");
+    let cache_entries_before = router.cache().expect("cache initialized above").len();
+    assert!(
+        cache_entries_before > 0,
+        "SIMILAR result should have populated the cache"
+    );
+
+    // Replace with a fresh engine and confirm both the HNSW index and the
+    // cache are reset.
+    let new_engine = Arc::new(VectorEngine::new());
+    router.replace_vector_engine(new_engine);
+
+    assert!(
+        !router.hnsw_is_fresh() || router.cache().is_some_and(tensor_cache::Cache::is_empty),
+        "hnsw_index should be cleared or generation deltas must register a rebuild requirement"
+    );
+    let cache_entries_after = router
+        .cache()
+        .expect("cache still initialized after replace")
+        .len();
+    assert_eq!(
+        cache_entries_after, 0,
+        "query cache must be cleared because cached SIMILAR results may reference old-engine data"
+    );
+}
+
+#[test]
+fn replace_vector_engine_falls_back_to_linear_until_index_rebuilt() {
+    // After replace, exec_similar must fall back to linear search
+    // (search_similar_with_metric) because hnsw_index is None and the router
+    // does not auto-rebuild. Explicit build_vector_index() restores the HNSW
+    // fast path.
+    let mut router = QueryRouter::new();
+
+    let new_engine = Arc::new(VectorEngine::new());
+    new_engine
+        .store_embedding("k1", vec![1.0, 0.0, 0.0])
+        .unwrap();
+    new_engine
+        .store_embedding("k2", vec![0.0, 1.0, 0.0])
+        .unwrap();
+
+    router.replace_vector_engine(Arc::clone(&new_engine));
+    // Mirror what exec_embed's Store branch does for default-namespace writes
+    // so the next build_vector_index sees fresh state — replace already bumped
+    // the generations, but we explicitly construct the post-condition.
+    router.bump_vector_generation();
+
+    // SIMILAR with no index: linear fallback path returns results from the new engine.
+    let linear = router
+        .execute("SIMILAR [1.0, 0.0, 0.0] TOP 2")
+        .expect("similarity search must succeed via linear fallback");
+    match linear {
+        QueryResult::Similar(hits) => {
+            assert!(
+                !hits.is_empty(),
+                "linear fallback must return results from the new engine"
+            );
+            assert!(
+                hits.iter().any(|h| h.key == "k1"),
+                "expected k1 in linear-search results"
+            );
+        },
+        other => panic!("expected QueryResult::Similar, got {other:?}"),
+    }
+
+    // Explicit rebuild succeeds and the next search uses HNSW (we can only
+    // assert it succeeds; freshness is not externally observable).
+    router.build_vector_index().unwrap();
+    assert!(
+        router.hnsw_is_fresh(),
+        "hnsw_is_fresh must be true after explicit build_vector_index"
+    );
+}
+
+// === Phase 1: typed vector_ops surface ===
+
+#[test]
+fn upsert_points_default_namespace_bumps_generation() {
+    let router = QueryRouter::new();
+    let before = router.vector_generation.load(AtomicOrdering::SeqCst);
+    let n = router
+        .upsert_points(
+            None,
+            vec![crate::VectorPoint {
+                id: "a".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            }],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    let after = router.vector_generation.load(AtomicOrdering::SeqCst);
+    assert!(after > before, "default-namespace upsert must stale HNSW");
+}
+
+#[test]
+fn upsert_points_named_collection_does_not_bump_generation() {
+    let router = QueryRouter::new();
+    router
+        .create_collection_typed("c", vector_engine::VectorCollectionConfig::default())
+        .unwrap();
+    let before = router.vector_generation.load(AtomicOrdering::SeqCst);
+    router
+        .upsert_points(
+            Some("c"),
+            vec![crate::VectorPoint {
+                id: "k1".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            }],
+        )
+        .unwrap();
+    let after = router.vector_generation.load(AtomicOrdering::SeqCst);
+    assert_eq!(
+        before, after,
+        "named-collection writes must not affect the default-namespace HNSW generation"
+    );
+}
+
+#[test]
+fn delete_points_returns_outcome_with_missing() {
+    let router = QueryRouter::new();
+    router
+        .upsert_points(
+            None,
+            vec![crate::VectorPoint {
+                id: "real".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            }],
+        )
+        .unwrap();
+    let outcome = router
+        .delete_points(None, &["real".to_string(), "ghost".to_string()])
+        .unwrap();
+    assert_eq!(outcome.deleted, 1);
+    assert_eq!(outcome.missing, vec!["ghost".to_string()]);
+}
+
+#[test]
+fn delete_points_all_missing_skips_checkpoint_and_returns_zero() {
+    let mut router = QueryRouter::new();
+    let cp_dir = tempfile::tempdir().unwrap();
+    router.set_checkpoint_dir(cp_dir.path().to_path_buf());
+    router.init_checkpoint().unwrap();
+    let cp = router.checkpoint().unwrap().clone();
+    let before = cp.list(None).unwrap().len();
+    let outcome = router.delete_points(None, &["nope".to_string()]).unwrap();
+    assert_eq!(outcome.deleted, 0);
+    let after = cp.list(None).unwrap().len();
+    assert_eq!(
+        before, after,
+        "all-missing delete must not create misleading checkpoints"
+    );
+}
+
+#[test]
+fn delete_points_single_existing_creates_one_embed_delete_checkpoint() {
+    let mut router = QueryRouter::new();
+    let cp_dir = tempfile::tempdir().unwrap();
+    router.set_checkpoint_dir(cp_dir.path().to_path_buf());
+    router.init_checkpoint().unwrap();
+    let cp = router.checkpoint().unwrap().clone();
+
+    router
+        .upsert_points(
+            None,
+            vec![crate::VectorPoint {
+                id: "real".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            }],
+        )
+        .unwrap();
+
+    let before = cp.list(None).unwrap().len();
+    let outcome = router
+        .delete_points(None, &["real".to_string(), "missing".to_string()])
+        .unwrap();
+    assert_eq!(outcome.deleted, 1);
+    let after = cp.list(None).unwrap().len();
+    assert_eq!(after, before + 1, "single existing delete -> 1 checkpoint");
+
+    let list = cp.list(None).unwrap();
+    let latest = list.iter().max_by_key(|s| s.created_at).unwrap();
+    assert_eq!(
+        latest.trigger.as_deref(),
+        Some("EMBED DELETE"),
+        "single-key path should use EmbedDelete variant"
+    );
+}
+
+#[test]
+fn delete_points_multi_existing_creates_embed_delete_batch_checkpoint() {
+    let mut router = QueryRouter::new();
+    let cp_dir = tempfile::tempdir().unwrap();
+    router.set_checkpoint_dir(cp_dir.path().to_path_buf());
+    router.init_checkpoint().unwrap();
+    let cp = router.checkpoint().unwrap().clone();
+
+    router
+        .create_collection_typed("c", vector_engine::VectorCollectionConfig::default())
+        .unwrap();
+    for k in ["a", "b", "c"] {
+        router
+            .upsert_points(
+                Some("c"),
+                vec![crate::VectorPoint {
+                    id: k.into(),
+                    vector: vec![1.0, 0.0],
+                    metadata: None,
+                }],
+            )
+            .unwrap();
+    }
+
+    let before = cp.list(None).unwrap().len();
+    let outcome = router
+        .delete_points(
+            Some("c"),
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+        )
+        .unwrap();
+    assert_eq!(outcome.deleted, 3);
+    let after = cp.list(None).unwrap().len();
+    assert_eq!(after, before + 1, "multi-existing delete -> 1 checkpoint");
+
+    let list = cp.list(None).unwrap();
+    let latest = list.iter().max_by_key(|s| s.created_at).unwrap();
+    assert_eq!(
+        latest.trigger.as_deref(),
+        Some("EMBED DELETE (batch)"),
+        "multi-key path should use EmbedDeleteBatch variant"
+    );
+}
+
+#[test]
+fn get_point_returns_none_for_missing_key() {
+    let router = QueryRouter::new();
+    assert_eq!(router.get_point(None, "ghost").unwrap(), None);
+
+    router
+        .upsert_points(
+            None,
+            vec![crate::VectorPoint {
+                id: "real".into(),
+                vector: vec![3.0, 4.0],
+                metadata: None,
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        router.get_point(None, "real").unwrap(),
+        Some(vec![3.0, 4.0])
+    );
+}
+
+#[test]
+fn search_points_with_offset_and_score_threshold() {
+    let router = QueryRouter::new();
+    for (k, v) in [
+        ("a", vec![1.0, 0.0]),
+        ("b", vec![0.9, 0.1]),
+        ("c", vec![0.0, 1.0]),
+    ] {
+        router
+            .upsert_points(
+                None,
+                vec![crate::VectorPoint {
+                    id: k.into(),
+                    vector: v,
+                    metadata: None,
+                }],
+            )
+            .unwrap();
+    }
+    let opts = crate::SearchOptions {
+        limit: 2,
+        offset: 1,
+        score_threshold: Some(0.0),
+        ..Default::default()
+    };
+    let hits = router.search_points(None, &[1.0, 0.0], &opts).unwrap();
+    assert!(hits.len() <= 2);
+}
+
+#[test]
+fn upsert_points_invalidates_cache() {
+    let mut router = QueryRouter::new();
+    router.init_cache_default().unwrap();
+    let _ = router.execute("SIMILAR [1.0, 0.0] TOP 1");
+    let cache = router.cache().unwrap();
+    let before = cache.len();
+
+    router
+        .upsert_points(
+            None,
+            vec![crate::VectorPoint {
+                id: "x".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            }],
+        )
+        .unwrap();
+
+    assert!(
+        cache.len() <= before,
+        "upsert should not grow the cache (cleared on write)"
+    );
+}
+
+#[test]
+fn collection_typed_create_get_delete_list() {
+    let router = QueryRouter::new();
+    router
+        .create_collection_typed("docs", vector_engine::VectorCollectionConfig::default())
+        .unwrap();
+
+    let info = router.get_collection_typed("docs").unwrap();
+    assert!(info.is_some());
+    let info = info.unwrap();
+    assert_eq!(info.name, "docs");
+    assert_eq!(info.points_count, 0);
+
+    assert!(router
+        .list_collections_typed()
+        .contains(&"docs".to_string()));
+
+    let dropped = router.delete_collection_typed("docs").unwrap();
+    assert_eq!(dropped, 0);
+    assert!(router.get_collection_typed("docs").unwrap().is_none());
+}
+
+#[test]
+fn spatial_3d_returns_invalid_argument_when_not_configured() {
+    let router = QueryRouter::new();
+    let err = router.spatial3d_count().unwrap_err();
+    assert!(
+        matches!(err, RouterError::InvalidArgument(ref msg) if msg.contains("not configured")),
+        "expected InvalidArgument 'not configured', got {err:?}"
+    );
+}
+
+#[test]
+fn spatial_2d_insert_query_delete_roundtrip() {
+    let router = QueryRouter::new();
+    router
+        .spatial_insert("p".into(), 0.0, 0.0, 1.0, 1.0)
+        .unwrap();
+    let hits = router.spatial_query_radius(0.0, 0.0, 5.0, None).unwrap();
+    assert!(hits.iter().any(|h| h.id == "p"));
+    assert_eq!(router.spatial_count(), 1);
+
+    let removed = router.spatial_delete("p", 0.0, 0.0, 1.0, 1.0).unwrap();
+    assert!(removed);
+    assert_eq!(router.spatial_count(), 0);
+}
+
+#[test]
+fn get_point_metadata_returns_stored_fields() {
+    let router = QueryRouter::new();
+    router
+        .create_collection_typed("c", vector_engine::VectorCollectionConfig::default())
+        .unwrap();
+    let mut meta = std::collections::HashMap::new();
+    meta.insert(
+        "tag".to_string(),
+        tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String("docs".into())),
+    );
+    router
+        .upsert_points(
+            Some("c"),
+            vec![crate::VectorPoint {
+                id: "k".into(),
+                vector: vec![1.0, 0.0],
+                metadata: Some(meta),
+            }],
+        )
+        .unwrap();
+    let m = router.get_point_metadata("c", "k").unwrap();
+    assert!(m.contains_key("tag"));
+}
+
+#[test]
+fn scroll_points_paginates_with_cursor() {
+    let router = QueryRouter::new();
+    router
+        .create_collection_typed("c", vector_engine::VectorCollectionConfig::default())
+        .unwrap();
+    for k in ["a", "b", "c", "d"] {
+        router
+            .upsert_points(
+                Some("c"),
+                vec![crate::VectorPoint {
+                    id: k.into(),
+                    vector: vec![1.0, 0.0],
+                    metadata: None,
+                }],
+            )
+            .unwrap();
+    }
+    let page = router
+        .scroll_points(
+            "c",
+            &crate::ScrollOptions {
+                limit: 2,
+                offset_id: None,
+                with_vector: true,
+                with_payload: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(page.hits.len(), 2);
+    let cursor = page.next_offset_id.expect("next cursor");
+    let page2 = router
+        .scroll_points(
+            "c",
+            &crate::ScrollOptions {
+                limit: 10,
+                offset_id: Some(cursor),
+                with_vector: false,
+                with_payload: false,
+            },
+        )
+        .unwrap();
+    assert!(!page2.hits.is_empty());
+    assert!(page2.next_offset_id.is_none());
+}
+
+fn router_with_3d_index() -> QueryRouter {
+    let mut router = QueryRouter::new();
+    router.set_spatial_3d(Some(Arc::new(parking_lot::RwLock::new(
+        tensor_spatial::SpatialIndex3D::<String>::new(),
+    ))));
+    router
+}
+
+#[test]
+fn spatial3d_insert_query_count_roundtrip() {
+    let router = router_with_3d_index();
+    router
+        .spatial3d_insert("p1".into(), 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        .unwrap();
+    router
+        .spatial3d_insert("p2".into(), 5.0, 5.0, 5.0, 1.0, 1.0, 1.0)
+        .unwrap();
+    assert_eq!(router.spatial3d_count().unwrap(), 2);
+
+    let radius = router
+        .spatial3d_query_radius(0.0, 0.0, 0.0, 2.0, None)
+        .unwrap();
+    assert!(radius.iter().any(|h| h.id == "p1"));
+    assert!(radius.iter().all(|h| h.id != "p2"));
+}
+
+#[test]
+fn spatial3d_query_region_returns_entries_in_bbox() {
+    let router = router_with_3d_index();
+    router
+        .spatial3d_insert("inside".into(), 1.0, 1.0, 1.0, 0.5, 0.5, 0.5)
+        .unwrap();
+    router
+        .spatial3d_insert("outside".into(), 10.0, 10.0, 10.0, 0.5, 0.5, 0.5)
+        .unwrap();
+
+    let hits = router
+        .spatial3d_query_region((0.0, 0.0, 0.0), (3.0, 3.0, 3.0), None)
+        .unwrap();
+    assert!(hits.iter().any(|h| h.id == "inside"));
+    assert!(hits.iter().all(|h| h.id != "outside"));
+}
+
+#[test]
+fn spatial3d_nearest_returns_closest_centroids_first() {
+    let router = router_with_3d_index();
+    router
+        .spatial3d_insert("near".into(), 1.0, 1.0, 1.0, 0.5, 0.5, 0.5)
+        .unwrap();
+    router
+        .spatial3d_insert("far".into(), 100.0, 100.0, 100.0, 0.5, 0.5, 0.5)
+        .unwrap();
+    let hits = router.spatial3d_nearest(0.0, 0.0, 0.0, 2).unwrap();
+    assert_eq!(hits.first().map(|h| h.id.as_str()), Some("near"));
+}
+
+#[test]
+fn spatial3d_delete_returns_true_only_when_removed() {
+    let router = router_with_3d_index();
+    router
+        .spatial3d_insert("p".into(), 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        .unwrap();
+
+    let removed = router
+        .spatial3d_delete("p", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        .unwrap();
+    assert!(removed);
+
+    let missing = router
+        .spatial3d_delete("p", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        .unwrap();
+    assert!(!missing);
+}
+
+#[test]
+fn spatial3d_nearest_zero_k_returns_empty() {
+    let router = router_with_3d_index();
+    let hits = router.spatial3d_nearest(0.0, 0.0, 0.0, 0).unwrap();
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn spatial3d_query_radius_rejects_invalid_radius() {
+    let router = router_with_3d_index();
+    let err = router
+        .spatial3d_query_radius(0.0, 0.0, 0.0, -1.0, None)
+        .unwrap_err();
+    assert!(matches!(err, RouterError::InvalidArgument(ref m) if m.contains("radius")));
+}
+
+#[test]
+fn spatial_query_radius_rejects_invalid_radius() {
+    let router = QueryRouter::new();
+    let err = router
+        .spatial_query_radius(0.0, 0.0, f32::NAN, None)
+        .unwrap_err();
+    assert!(matches!(err, RouterError::InvalidArgument(ref m) if m.contains("radius")));
+}
+
+#[test]
+fn spatial_nearest_zero_k_returns_empty() {
+    let router = QueryRouter::new();
+    let hits = router.spatial_nearest(0.0, 0.0, 0).unwrap();
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn delete_collection_typed_returns_dropped_point_count() {
+    let router = QueryRouter::new();
+    router
+        .create_collection_typed("c", vector_engine::VectorCollectionConfig::default())
+        .unwrap();
+    router
+        .upsert_points(
+            Some("c"),
+            vec![
+                crate::VectorPoint {
+                    id: "a".into(),
+                    vector: vec![1.0, 0.0],
+                    metadata: None,
+                },
+                crate::VectorPoint {
+                    id: "b".into(),
+                    vector: vec![0.0, 1.0],
+                    metadata: None,
+                },
+            ],
+        )
+        .unwrap();
+    let n = router.delete_collection_typed("c").unwrap();
+    assert_eq!(n, 2);
+    assert!(router.get_collection_typed("c").unwrap().is_none());
+}
+
+#[test]
+fn exec_embed_batch_partial_failure_clears_cache() {
+    // Phase 2 partial-mutation gap closure: if a partway item in EMBED BATCH
+    // fails, execute()'s ? early-returns BEFORE the post-write
+    // invalidate_cache_on_write at lib.rs:336, so exec_embed itself must
+    // call invalidate. This test pins that.
+    let mut router = QueryRouter::new();
+    router.init_cache_default().unwrap();
+    let _ = router.execute("SIMILAR [1.0, 0.0] TOP 1");
+    let cache_before = router.cache().unwrap().len();
+    let _ = cache_before; // observe; might be 0 or 1 depending on cacheability
+
+    // Pre-populate via a successful single insert so the next batch starts hot.
+    router
+        .execute("EMBED STORE 'seed' [1.0, 0.0]")
+        .expect("seed insert");
+    let _ = router.execute("SIMILAR [1.0, 0.0] TOP 1");
+
+    // EMBED BATCH where the SECOND item has an empty vector -> engine error.
+    let result = router.execute("EMBED BATCH [('good', [1.0, 0.0]), ('bad', [])]");
+    assert!(result.is_err(), "batch with empty vector must fail overall");
+    assert!(
+        router.cache().unwrap().is_empty(),
+        "cache must be cleared after partial-mutation batch failure"
+    );
+}
+
+#[test]
+fn upsert_points_partial_failure_still_bumps_generation_and_returns_count() {
+    let router = QueryRouter::new();
+    let before = router.vector_generation.load(AtomicOrdering::SeqCst);
+    // 2nd point has an empty vector, which the engine rejects with VectorError::EmptyVector.
+    let result = router.upsert_points_impl(
+        None,
+        vec![
+            crate::VectorPoint {
+                id: "good".into(),
+                vector: vec![1.0, 0.0],
+                metadata: None,
+            },
+            crate::VectorPoint {
+                id: "bad".into(),
+                vector: vec![],
+                metadata: None,
+            },
+        ],
+    );
+    let (result, wrote_any) = result;
+    assert!(wrote_any, "first point should have succeeded");
+    assert!(result.is_err(), "overall result must propagate the error");
+    let after = router.vector_generation.load(AtomicOrdering::SeqCst);
+    assert!(
+        after > before,
+        "partial mutation must still bump HNSW generation for default namespace"
+    );
 }

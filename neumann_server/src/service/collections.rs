@@ -4,13 +4,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use parking_lot::RwLock;
 use tonic::{Request, Response, Status};
 
+use query_router::QueryRouter;
 use vector_engine::{DistanceMetric, VectorCollectionConfig, VectorEngine};
 
 use crate::audit::{AuditEvent, AuditLogger};
 use crate::auth;
 use crate::config::AuthConfig;
+use crate::error::router_error_to_status;
 use crate::metrics::ServerMetrics;
 use crate::proto::vector::{
     collections_service_server::CollectionsService, CreateCollectionRequest,
@@ -18,10 +21,11 @@ use crate::proto::vector::{
     GetCollectionRequest, GetCollectionResponse, ListCollectionsRequest, ListCollectionsResponse,
 };
 use crate::rate_limit::{Operation, RateLimiter};
+use crate::router_dispatch::dispatch_with_identity;
 
 /// Implementation of the `CollectionsService` gRPC service.
 pub struct CollectionsServiceImpl {
-    engine: Arc<VectorEngine>,
+    router: Arc<RwLock<QueryRouter>>,
     auth_config: Option<AuthConfig>,
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
@@ -31,9 +35,9 @@ pub struct CollectionsServiceImpl {
 impl CollectionsServiceImpl {
     /// Create a new collections service.
     #[must_use]
-    pub const fn new(engine: Arc<VectorEngine>) -> Self {
+    pub const fn new(router: Arc<RwLock<QueryRouter>>) -> Self {
         Self {
-            engine,
+            router,
             auth_config: None,
             rate_limiter: None,
             audit_logger: None,
@@ -41,11 +45,22 @@ impl CollectionsServiceImpl {
         }
     }
 
+    /// Convenience constructor that wraps a [`VectorEngine`] in a fresh
+    /// router. Mirrors `PointsServiceImpl::from_engine` and the REST
+    /// `VectorApiContext::from_engine` so unit tests can keep their existing
+    /// `Arc<VectorEngine>` setup with one line.
+    #[must_use]
+    pub fn from_engine(engine: Arc<VectorEngine>) -> Self {
+        let mut router = QueryRouter::new();
+        router.replace_vector_engine(engine);
+        Self::new(Arc::new(RwLock::new(router)))
+    }
+
     /// Create a new collections service with authentication.
     #[must_use]
-    pub const fn with_auth(engine: Arc<VectorEngine>, auth_config: AuthConfig) -> Self {
+    pub const fn with_auth(router: Arc<RwLock<QueryRouter>>, auth_config: AuthConfig) -> Self {
         Self {
-            engine,
+            router,
             auth_config: Some(auth_config),
             rate_limiter: None,
             audit_logger: None,
@@ -56,12 +71,12 @@ impl CollectionsServiceImpl {
     /// Create a new collections service with rate limiting.
     #[must_use]
     pub const fn with_config(
-        engine: Arc<VectorEngine>,
+        router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         rate_limiter: Option<Arc<RateLimiter>>,
     ) -> Self {
         Self {
-            engine,
+            router,
             auth_config,
             rate_limiter,
             audit_logger: None,
@@ -72,14 +87,14 @@ impl CollectionsServiceImpl {
     /// Create a new collections service with all options.
     #[must_use]
     pub const fn with_full_config(
-        engine: Arc<VectorEngine>,
+        router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         rate_limiter: Option<Arc<RateLimiter>>,
         audit_logger: Option<Arc<AuditLogger>>,
         metrics: Option<Arc<ServerMetrics>>,
     ) -> Self {
         Self {
-            engine,
+            router,
             auth_config,
             rate_limiter,
             audit_logger,
@@ -117,7 +132,6 @@ impl CollectionsService for CollectionsServiceImpl {
     ) -> Result<Response<CreateCollectionResponse>, Status> {
         let start = Instant::now();
 
-        // Validate authentication
         let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
@@ -134,7 +148,6 @@ impl CollectionsService for CollectionsServiceImpl {
             },
         };
 
-        // Check rate limit
         if let Some(ref limiter) = self.rate_limiter {
             if let Some(ref id) = identity {
                 if let Err(msg) = limiter.check_and_record(id, Operation::VectorOp) {
@@ -155,16 +168,16 @@ impl CollectionsService for CollectionsServiceImpl {
             .with_dimension(req.dimension as usize)
             .with_metric(metric);
 
-        match self.engine.create_collection(&req.name, config) {
+        let result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.create_collection_typed(&req.name, config)
+        });
+        match result {
             Ok(()) => {
-                // Record metrics
                 if let Some(ref m) = self.metrics {
                     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                     m.record_vector_latency("create_collection", latency_ms);
                     m.record_request("vector", "create_collection", true, latency_ms);
                 }
-
-                // Audit log
                 if let Some(ref logger) = self.audit_logger {
                     logger.record(
                         AuditEvent::CollectionCreated {
@@ -174,7 +187,6 @@ impl CollectionsService for CollectionsServiceImpl {
                         None,
                     );
                 }
-
                 Ok(Response::new(CreateCollectionResponse { created: true }))
             },
             Err(e) => {
@@ -182,7 +194,7 @@ impl CollectionsService for CollectionsServiceImpl {
                     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                     m.record_request("vector", "create_collection", false, latency_ms);
                 }
-                Err(Status::already_exists(e.to_string()))
+                Err(router_error_to_status(e))
             },
         }
     }
@@ -193,8 +205,7 @@ impl CollectionsService for CollectionsServiceImpl {
     ) -> Result<Response<GetCollectionResponse>, Status> {
         let start = Instant::now();
 
-        // Validate authentication
-        let _identity = match auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
@@ -212,14 +223,12 @@ impl CollectionsService for CollectionsServiceImpl {
 
         let req = request.into_inner();
 
-        let config = self
-            .engine
-            .get_collection_config(&req.name)
-            .ok_or_else(|| Status::not_found(format!("collection not found: {}", req.name)))?;
+        let info = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.get_collection_typed(&req.name)
+        })
+        .map_err(router_error_to_status)?
+        .ok_or_else(|| Status::not_found(format!("collection not found: {}", req.name)))?;
 
-        let points_count = self.engine.collection_count(&req.name) as u64;
-
-        // Record metrics
         if let Some(ref m) = self.metrics {
             let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
             m.record_vector_latency("get_collection", latency_ms);
@@ -228,9 +237,9 @@ impl CollectionsService for CollectionsServiceImpl {
 
         Ok(Response::new(GetCollectionResponse {
             name: req.name,
-            points_count,
-            dimension: u32::try_from(config.dimension.unwrap_or(0)).unwrap_or(u32::MAX),
-            distance: metric_to_string(config.distance_metric).to_string(),
+            points_count: u64::try_from(info.points_count).unwrap_or(u64::MAX),
+            dimension: u32::try_from(info.config.dimension.unwrap_or(0)).unwrap_or(u32::MAX),
+            distance: metric_to_string(info.config.distance_metric).to_string(),
         }))
     }
 
@@ -240,7 +249,6 @@ impl CollectionsService for CollectionsServiceImpl {
     ) -> Result<Response<DeleteCollectionResponse>, Status> {
         let start = Instant::now();
 
-        // Validate authentication
         let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
@@ -257,7 +265,6 @@ impl CollectionsService for CollectionsServiceImpl {
             },
         };
 
-        // Check rate limit
         if let Some(ref limiter) = self.rate_limiter {
             if let Some(ref id) = identity {
                 if let Err(msg) = limiter.check_and_record(id, Operation::VectorOp) {
@@ -273,16 +280,16 @@ impl CollectionsService for CollectionsServiceImpl {
 
         let req = request.into_inner();
 
-        match self.engine.delete_collection(&req.name) {
-            Ok(()) => {
-                // Record metrics
+        let result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.delete_collection_typed(&req.name)
+        });
+        match result {
+            Ok(_count) => {
                 if let Some(ref m) = self.metrics {
                     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                     m.record_vector_latency("delete_collection", latency_ms);
                     m.record_request("vector", "delete_collection", true, latency_ms);
                 }
-
-                // Audit log
                 if let Some(ref logger) = self.audit_logger {
                     logger.record(
                         AuditEvent::CollectionDeleted {
@@ -292,7 +299,6 @@ impl CollectionsService for CollectionsServiceImpl {
                         None,
                     );
                 }
-
                 Ok(Response::new(DeleteCollectionResponse { deleted: true }))
             },
             Err(e) => {
@@ -300,7 +306,7 @@ impl CollectionsService for CollectionsServiceImpl {
                     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                     m.record_request("vector", "delete_collection", false, latency_ms);
                 }
-                Err(Status::not_found(e.to_string()))
+                Err(router_error_to_status(e))
             },
         }
     }
@@ -311,8 +317,7 @@ impl CollectionsService for CollectionsServiceImpl {
     ) -> Result<Response<ListCollectionsResponse>, Status> {
         let start = Instant::now();
 
-        // Validate authentication
-        let _identity = match auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
@@ -328,9 +333,11 @@ impl CollectionsService for CollectionsServiceImpl {
             },
         };
 
-        let collections = self.engine.list_collections();
+        let collections = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            Ok(r.list_collections_typed())
+        })
+        .map_err(router_error_to_status)?;
 
-        // Record metrics
         if let Some(ref m) = self.metrics {
             let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
             m.record_vector_latency("list_collections", latency_ms);
@@ -348,7 +355,7 @@ mod tests {
     #[test]
     fn test_collections_service_new() {
         let engine = Arc::new(VectorEngine::new());
-        let service = CollectionsServiceImpl::new(engine);
+        let service = CollectionsServiceImpl::from_engine(engine);
         assert!(service.auth_config.is_none());
     }
 
@@ -357,30 +364,33 @@ mod tests {
         use crate::config::ApiKey;
 
         let engine = Arc::new(VectorEngine::new());
+        let service_for_router = CollectionsServiceImpl::from_engine(engine);
         let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
             "test-api-key-12345678".to_string(),
             "user:test".to_string(),
         ));
-        let service = CollectionsServiceImpl::with_auth(engine, auth_config);
+        let service = CollectionsServiceImpl::with_auth(service_for_router.router, auth_config);
         assert!(service.auth_config.is_some());
     }
 
     #[test]
     fn test_collections_service_with_config() {
         let engine = Arc::new(VectorEngine::new());
+        let svc = CollectionsServiceImpl::from_engine(engine);
         let rate_limiter = Arc::new(RateLimiter::default());
-        let service = CollectionsServiceImpl::with_config(engine, None, Some(rate_limiter));
+        let service = CollectionsServiceImpl::with_config(svc.router, None, Some(rate_limiter));
         assert!(service.rate_limiter.is_some());
     }
 
     #[test]
     fn test_collections_service_with_full_config() {
         let engine = Arc::new(VectorEngine::new());
+        let svc = CollectionsServiceImpl::from_engine(engine);
         let rate_limiter = Arc::new(RateLimiter::default());
         let audit_logger = Arc::new(AuditLogger::default());
 
         let service = CollectionsServiceImpl::with_full_config(
-            engine,
+            svc.router,
             None,
             Some(rate_limiter),
             Some(audit_logger),

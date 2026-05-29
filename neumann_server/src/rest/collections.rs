@@ -21,6 +21,7 @@ use crate::rest::types::{
     ListCollectionsResponse,
 };
 use crate::rest::VectorApiContext;
+use crate::router_dispatch::dispatch_with_identity;
 
 fn parse_distance_metric(distance: &str) -> Result<DistanceMetric, ApiError> {
     match distance.to_lowercase().as_str() {
@@ -69,16 +70,16 @@ pub async fn create(
         .with_dimension(request.dimension)
         .with_metric(metric);
 
-    match ctx.engine.create_collection(&name, config) {
+    let result = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.create_collection_typed(&name, config)
+    });
+    match result {
         Ok(()) => {
-            // Record metrics
             if let Some(ref m) = ctx.metrics {
                 let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                 m.record_vector_latency("create_collection", latency_ms);
                 m.record_request("vector", "create_collection", true, latency_ms);
             }
-
-            // Audit log
             if let Some(ref logger) = ctx.audit_logger {
                 logger.record(
                     AuditEvent::CollectionCreated {
@@ -88,7 +89,6 @@ pub async fn create(
                     None,
                 );
             }
-
             Ok(Json(CreateCollectionResponse { created: true }))
         },
         Err(e) => {
@@ -96,7 +96,10 @@ pub async fn create(
                 let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                 m.record_request("vector", "create_collection", false, latency_ms);
             }
-            Err(ApiError::conflict(e.to_string()))
+            // create_collection_typed returns RouterError::VectorError with
+            // "already exists" wording; ApiError::from maps to 409 via the
+            // typed mapping installed in Phase 1.5.
+            Err(ApiError::from(e))
         },
     }
 }
@@ -113,16 +116,14 @@ pub async fn get(
 ) -> ApiResult<CollectionInfo> {
     let start = Instant::now();
 
-    let _identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
+    let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
 
-    let config = ctx
-        .engine
-        .get_collection_config(&name)
-        .ok_or_else(|| ApiError::not_found(format!("collection not found: {name}")))?;
+    let info = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.get_collection_typed(&name)
+    })
+    .map_err(ApiError::from)?
+    .ok_or_else(|| ApiError::not_found(format!("collection not found: {name}")))?;
 
-    let points_count = ctx.engine.collection_count(&name);
-
-    // Record metrics
     if let Some(ref m) = ctx.metrics {
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         m.record_vector_latency("get_collection", latency_ms);
@@ -131,9 +132,9 @@ pub async fn get(
 
     Ok(Json(CollectionInfo {
         name,
-        points_count,
-        dimension: config.dimension.unwrap_or(0),
-        distance: metric_to_string(config.distance_metric).to_string(),
+        points_count: info.points_count,
+        dimension: info.config.dimension.unwrap_or(0),
+        distance: metric_to_string(info.config.distance_metric).to_string(),
     }))
 }
 
@@ -156,16 +157,16 @@ pub async fn delete(
         Operation::VectorOp,
     )?;
 
-    match ctx.engine.delete_collection(&name) {
-        Ok(()) => {
-            // Record metrics
+    let result = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.delete_collection_typed(&name)
+    });
+    match result {
+        Ok(_count) => {
             if let Some(ref m) = ctx.metrics {
                 let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                 m.record_vector_latency("delete_collection", latency_ms);
                 m.record_request("vector", "delete_collection", true, latency_ms);
             }
-
-            // Audit log
             if let Some(ref logger) = ctx.audit_logger {
                 logger.record(
                     AuditEvent::CollectionDeleted {
@@ -175,7 +176,6 @@ pub async fn delete(
                     None,
                 );
             }
-
             Ok(Json(DeleteCollectionResponse { deleted: true }))
         },
         Err(e) => {
@@ -183,7 +183,7 @@ pub async fn delete(
                 let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                 m.record_request("vector", "delete_collection", false, latency_ms);
             }
-            Err(ApiError::not_found(e.to_string()))
+            Err(ApiError::from(e))
         },
     }
 }
@@ -199,11 +199,13 @@ pub async fn list(
 ) -> ApiResult<ListCollectionsResponse> {
     let start = Instant::now();
 
-    let _identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
+    let identity = validate_auth(&headers, ctx.auth_config.as_ref())?;
 
-    let collections = ctx.engine.list_collections();
+    let collections = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        Ok(r.list_collections_typed())
+    })
+    .map_err(ApiError::from)?;
 
-    // Record metrics
     if let Some(ref m) = ctx.metrics {
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         m.record_vector_latency("list_collections", latency_ms);
@@ -422,7 +424,7 @@ mod tests {
         use vector_engine::VectorEngine;
 
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(Arc::clone(&engine)));
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::clone(&engine)));
 
         let headers = HeaderMap::new();
         let request = CreateCollectionRequest {
@@ -455,7 +457,7 @@ mod tests {
             .create_collection("existing", VectorCollectionConfig::default())
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
         let request = CreateCollectionRequest {
             dimension: 128,
@@ -479,7 +481,7 @@ mod tests {
         use vector_engine::VectorEngine;
 
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
         let request = CreateCollectionRequest {
             dimension: 128,
@@ -506,7 +508,7 @@ mod tests {
             )
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
 
         let result = get(State(ctx), Path("test_get".to_string()), headers).await;
@@ -523,7 +525,7 @@ mod tests {
         use vector_engine::VectorEngine;
 
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
 
         let result = get(State(ctx), Path("nonexistent".to_string()), headers).await;
@@ -541,7 +543,7 @@ mod tests {
             .create_collection("to_delete", VectorCollectionConfig::default())
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext::new(Arc::clone(&engine)));
+        let ctx = Arc::new(VectorApiContext::from_engine(Arc::clone(&engine)));
         let headers = HeaderMap::new();
 
         let result = delete(State(ctx), Path("to_delete".to_string()), headers).await;
@@ -558,7 +560,7 @@ mod tests {
         use vector_engine::VectorEngine;
 
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
 
         let result = delete(State(ctx), Path("nonexistent".to_string()), headers).await;
@@ -572,7 +574,7 @@ mod tests {
         use vector_engine::VectorEngine;
 
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
 
         let result = list(State(ctx), headers).await;
@@ -596,7 +598,7 @@ mod tests {
             .create_collection("coll_c", VectorCollectionConfig::default())
             .unwrap();
 
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let headers = HeaderMap::new();
 
         let result = list(State(ctx), headers).await;
@@ -621,7 +623,7 @@ mod tests {
             ))
             .with_anonymous(false);
 
-        let ctx = Arc::new(VectorApiContext::new(engine).with_auth(Some(auth_config)));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine).with_auth(Some(auth_config)));
         let headers = HeaderMap::new(); // No API key
         let request = CreateCollectionRequest {
             dimension: 128,
@@ -645,7 +647,7 @@ mod tests {
             "user:admin".to_string(),
         ));
 
-        let ctx = Arc::new(VectorApiContext::new(engine).with_auth(Some(auth_config)));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine).with_auth(Some(auth_config)));
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", "secret-key-123456".parse().unwrap());
 
@@ -679,7 +681,7 @@ mod tests {
         let meter = provider.meter("test");
         let metrics = Arc::new(ServerMetrics::new(meter));
 
-        let ctx = Arc::new(VectorApiContext::new(engine).with_metrics(Some(metrics)));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine).with_metrics(Some(metrics)));
         let headers = HeaderMap::new();
         let request = CreateCollectionRequest {
             dimension: 128,
@@ -713,7 +715,7 @@ mod tests {
         let meter = provider.meter("test");
         let metrics = Arc::new(ServerMetrics::new(meter));
 
-        let ctx = Arc::new(VectorApiContext::new(engine).with_metrics(Some(metrics)));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine).with_metrics(Some(metrics)));
         let headers = HeaderMap::new();
 
         let result = get(State(ctx), Path("metrics_get".to_string()), headers).await;
@@ -731,7 +733,8 @@ mod tests {
         let engine = Arc::new(VectorEngine::new());
         let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
 
-        let ctx = Arc::new(VectorApiContext::new(engine).with_audit_logger(Some(audit_logger)));
+        let ctx =
+            Arc::new(VectorApiContext::from_engine(engine).with_audit_logger(Some(audit_logger)));
         let headers = HeaderMap::new();
         let request = CreateCollectionRequest {
             dimension: 128,
@@ -760,7 +763,8 @@ mod tests {
             .unwrap();
 
         let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
-        let ctx = Arc::new(VectorApiContext::new(engine).with_audit_logger(Some(audit_logger)));
+        let ctx =
+            Arc::new(VectorApiContext::from_engine(engine).with_audit_logger(Some(audit_logger)));
         let headers = HeaderMap::new();
 
         let result = delete(State(ctx), Path("audit_delete".to_string()), headers).await;

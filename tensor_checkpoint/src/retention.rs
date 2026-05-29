@@ -61,10 +61,11 @@ mod tests {
     }
 
     fn make_state(id: &str, name: &str, ts: u64) -> CheckpointState {
+        let byte = u8::try_from(id.len()).unwrap_or(u8::MAX);
         let mut s = CheckpointState::new(
             id.to_string(),
             name.to_string(),
-            vec![id.len() as u8],
+            vec![byte],
             CheckpointMetadata::default(),
         );
         s.created_at = ts;

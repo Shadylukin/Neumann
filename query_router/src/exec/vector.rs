@@ -19,8 +19,10 @@ use tensor_checkpoint::DestructiveOp;
 use tensor_unified::UnifiedItem;
 use vector_engine::{DistanceMetric as VectorDistanceMetric, FilterCondition, FilterValue};
 
+use crate::exec::cache::invalidate_cache_on_write;
 use crate::policy::ProtectedOpResult;
 use crate::result::{SimilarResult, SpatialResult};
+use crate::vector_ops::{SearchOptions, VectorPoint};
 use crate::{exec, QueryResult, QueryRouter, Result, RouterError};
 
 impl QueryRouter {
@@ -122,27 +124,36 @@ impl QueryRouter {
                     .map(|e| self.expr_to_f32(e))
                     .collect::<Result<_>>()?;
 
-                if let Some(coll) = collection {
-                    self.vector.store_in_collection(coll, &key_str, vec)?;
-                } else {
-                    self.vector.store_embedding(&key_str, vec)?;
-                    self.bump_vector_generation();
+                let (result, wrote_any) = self.upsert_points_impl(
+                    collection,
+                    vec![VectorPoint {
+                        id: key_str,
+                        vector: vec,
+                        metadata: None,
+                    }],
+                );
+                if wrote_any && result.is_err() {
+                    // Partial mutation on failure — `execute()` won't invalidate
+                    // on Err, so close the gap explicitly here. See vector_ops
+                    // module docs.
+                    invalidate_cache_on_write(self);
                 }
+                result?;
                 Ok(QueryResult::Empty)
             },
             EmbedOp::Get { key } => {
                 let key_str = self.expr_to_string(key)?;
-                let vec = if let Some(coll) = collection {
-                    self.vector.get_from_collection(coll, &key_str)?
-                } else {
-                    self.vector.get_embedding(&key_str)?
-                };
+                let vec = self
+                    .get_point(collection, &key_str)?
+                    .ok_or_else(|| RouterError::VectorError(format!("not found: {key_str}")))?;
                 Ok(QueryResult::Value(format!("{vec:?}")))
             },
             EmbedOp::Delete { key } => {
                 let key_str = self.expr_to_string(key)?;
 
-                // Check for auto-checkpoint protection
+                // Single-key checkpoint protection stays here so the
+                // `protect_destructive_op` call shape matches today's exec
+                // behavior exactly (sample data, command string, op kind).
                 let op = DestructiveOp::EmbedDelete {
                     key: key_str.clone(),
                 };
@@ -160,13 +171,17 @@ impl QueryRouter {
                     },
                 }
 
-                if let Some(coll) = collection {
-                    self.vector.delete_from_collection(coll, &key_str)?;
-                } else {
-                    self.vector.delete_embedding(&key_str)?;
-                    self.bump_vector_generation();
+                let ids = [key_str];
+                let (result, _mutated) = self.delete_points_impl(collection, &ids);
+                let outcome = result?;
+                if !outcome.missing.is_empty() {
+                    // EMBED DELETE strict semantic: error on missing key.
+                    return Err(RouterError::VectorError(format!(
+                        "not found: {}",
+                        outcome.missing[0]
+                    )));
                 }
-                Ok(QueryResult::Count(1))
+                Ok(QueryResult::Count(outcome.deleted))
             },
             EmbedOp::BuildIndex => {
                 // Building the index requires mutable access to the router
@@ -180,30 +195,28 @@ impl QueryRouter {
                 }
             },
             EmbedOp::Batch { items } => {
-                let mut count = 0;
+                let mut points: Vec<VectorPoint> = Vec::with_capacity(items.len());
                 for (key_expr, vector_exprs) in items {
                     let key_str = self.expr_to_string(key_expr)?;
                     let vec: Vec<f32> = vector_exprs
                         .iter()
                         .map(|e| self.expr_to_f32(e))
                         .collect::<Result<_>>()?;
-
-                    if let Some(coll) = collection {
-                        self.vector.store_in_collection(coll, &key_str, vec)?;
-                    } else {
-                        self.vector.store_embedding(&key_str, vec)?;
-                    }
-                    count += 1;
+                    points.push(VectorPoint {
+                        id: key_str,
+                        vector: vec,
+                        metadata: None,
+                    });
                 }
-                if collection.is_none() && count > 0 {
-                    self.bump_vector_generation();
+                let (result, wrote_any) = self.upsert_points_impl(collection, points);
+                if wrote_any && result.is_err() {
+                    invalidate_cache_on_write(self);
                 }
-                Ok(QueryResult::Count(count))
+                Ok(QueryResult::Count(result?))
             },
         }
     }
 
-    #[allow(clippy::too_many_lines)] // Similarity search requires handling multiple query types and filters
     pub(crate) fn exec_similar(&self, similar: &SimilarStmt) -> Result<QueryResult> {
         let top_k = similar
             .limit
@@ -214,7 +227,9 @@ impl QueryRouter {
 
         let collection = similar.collection.as_deref();
 
-        // Handle SIMILAR...CONNECTED TO cross-engine query
+        // SIMILAR...CONNECTED TO is a cross-engine path that combines vector
+        // similarity with graph connectivity. It must short-circuit BEFORE the
+        // standard delegation below.
         if let Some(ref connected_to_expr) = similar.connected_to {
             let query_key = match &similar.query {
                 SimilarQuery::Key(key) => self.expr_to_string(key)?,
@@ -226,7 +241,6 @@ impl QueryRouter {
             };
             let connected_to = self.expr_to_string(connected_to_expr)?;
 
-            // Use the cross-engine find_similar_connected method
             let items = self.find_similar_connected(&query_key, &connected_to, top_k)?;
 
             let results: Vec<SimilarResult> = items
@@ -240,7 +254,8 @@ impl QueryRouter {
             return Ok(QueryResult::Similar(results));
         }
 
-        // Standard similarity search
+        // Standard similarity search: resolve query, filter, metric, then
+        // delegate to the typed surface.
         let query_vec = match &similar.query {
             SimilarQuery::Key(key) => {
                 let key_str = self.expr_to_string(key)?;
@@ -256,14 +271,12 @@ impl QueryRouter {
                 .collect::<Result<_>>()?,
         };
 
-        // Convert WHERE clause to filter condition if present
         let filter = if let Some(ref where_expr) = similar.where_clause {
             Some(self.expr_to_filter_condition(where_expr)?)
         } else {
             None
         };
 
-        // Convert parser metric to vector engine metric
         let metric = match similar.metric {
             Some(ParsedDistanceMetric::Cosine) | None => VectorDistanceMetric::Cosine,
             Some(ParsedDistanceMetric::Euclidean) => VectorDistanceMetric::Euclidean,
@@ -271,75 +284,24 @@ impl QueryRouter {
             Some(ParsedDistanceMetric::Poincare) => VectorDistanceMetric::Poincare,
         };
 
-        // Execute search based on collection and filter
-        let results = match (collection, &filter) {
-            // Collection + filter: filtered search in collection
-            (Some(coll), Some(f)) => self
-                .vector
-                .search_filtered_in_collection(coll, &query_vec, top_k, f, None)?
-                .into_iter()
-                .map(|r| SimilarResult {
-                    key: r.key,
-                    score: r.score,
-                })
-                .collect(),
-            // Collection only: search in collection
-            (Some(coll), None) => self
-                .vector
-                .search_in_collection(coll, &query_vec, top_k)?
-                .into_iter()
-                .map(|r| SimilarResult {
-                    key: r.key,
-                    score: r.score,
-                })
-                .collect(),
-            // Filter only (default collection): filtered search
-            (None, Some(f)) => self
-                .vector
-                .search_similar_filtered(&query_vec, top_k, f, None)?
-                .into_iter()
-                .map(|r| SimilarResult {
-                    key: r.key,
-                    score: r.score,
-                })
-                .collect(),
-            // No collection, no filter: use HNSW if available and fresh
-            (None, None) => {
-                if let Some((ref index, ref keys)) =
-                    self.hnsw_index.as_ref().filter(|_| self.hnsw_is_fresh())
-                {
-                    // HNSW currently only supports cosine
-                    if matches!(metric, VectorDistanceMetric::Cosine) {
-                        self.vector
-                            .search_with_hnsw(index, keys, &query_vec, top_k)?
-                            .into_iter()
-                            .map(|r| SimilarResult {
-                                key: r.key,
-                                score: r.score,
-                            })
-                            .collect()
-                    } else {
-                        self.vector
-                            .search_similar_with_metric(&query_vec, top_k, metric)?
-                            .into_iter()
-                            .map(|r| SimilarResult {
-                                key: r.key,
-                                score: r.score,
-                            })
-                            .collect()
-                    }
-                } else {
-                    self.vector
-                        .search_similar_with_metric(&query_vec, top_k, metric)?
-                        .into_iter()
-                        .map(|r| SimilarResult {
-                            key: r.key,
-                            score: r.score,
-                        })
-                        .collect()
-                }
-            },
+        let opts = SearchOptions {
+            limit: top_k,
+            offset: 0,
+            filter: filter.as_ref(),
+            metric: Some(metric),
+            score_threshold: None,
+            with_vector: false,
+            with_payload: false,
         };
+        let hits = self.search_points(collection, &query_vec, &opts)?;
+
+        let results: Vec<SimilarResult> = hits
+            .into_iter()
+            .map(|h| SimilarResult {
+                key: h.id,
+                score: h.score,
+            })
+            .collect();
 
         Ok(QueryResult::Similar(results))
     }
@@ -457,13 +419,7 @@ impl QueryRouter {
                 let y_val = self.expr_to_f32(y)?;
                 let w_val = self.expr_to_f32(width)?;
                 let h_val = self.expr_to_f32(height)?;
-                let bounds = tensor_spatial::BoundingBox::new(x_val, y_val, w_val, h_val)
-                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-                let entry = tensor_spatial::SpatialEntry {
-                    bounds,
-                    data: key_str,
-                };
-                self.spatial.write().insert(entry);
+                self.spatial_insert_impl(key_str, x_val, y_val, w_val, h_val)?;
                 Ok(QueryResult::Empty)
             },
             SpatialOp::WithinRadius {
@@ -477,31 +433,18 @@ impl QueryRouter {
                 let r = self.expr_to_f32(radius)?;
                 let max_results = limit.as_ref().map(|e| self.expr_to_usize(e)).transpose()?;
 
-                if !r.is_finite() || r < 0.0 {
-                    return Err(RouterError::InvalidArgument(
-                        "invalid radius: must be non-negative and finite".to_string(),
-                    ));
-                }
-
-                let mut results: Vec<SpatialResult> = self
-                    .spatial
-                    .read()
-                    .query_within_radius_with_distances(cx, cy, r)
+                let hits = self.spatial_query_radius(cx, cy, r, max_results)?;
+                let results: Vec<SpatialResult> = hits
                     .into_iter()
-                    .map(|(e, dist)| SpatialResult {
-                        key: e.data.clone(),
-                        distance: dist,
-                        x: e.bounds.x(),
-                        y: e.bounds.y(),
-                        width: e.bounds.width(),
-                        height: e.bounds.height(),
+                    .map(|h| SpatialResult {
+                        key: h.id,
+                        distance: h.distance,
+                        x: h.x,
+                        y: h.y,
+                        width: h.width,
+                        height: h.height,
                     })
                     .collect();
-
-                if let Some(max) = max_results {
-                    results.truncate(max);
-                }
-
                 Ok(QueryResult::Spatial(results))
             },
             SpatialOp::Delete {
@@ -516,23 +459,27 @@ impl QueryRouter {
                 let y_val = self.expr_to_f32(y)?;
                 let w_val = self.expr_to_f32(width)?;
                 let h_val = self.expr_to_f32(height)?;
-                let bounds = tensor_spatial::BoundingBox::new(x_val, y_val, w_val, h_val)
-                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-                self.spatial
-                    .write()
-                    .remove(bounds, |e| e.data == key_str && e.bounds == bounds)
-                    .map_err(|e| RouterError::NotFound(e.to_string()))?;
+                let removed = self.spatial_delete_impl(&key_str, x_val, y_val, w_val, h_val)?;
+                if !removed {
+                    // Preserve the strict NotFound semantic the string-dispatch
+                    // path had before — the typed surface returns Ok(false) when
+                    // the entry is missing.
+                    return Err(RouterError::NotFound(format!(
+                        "spatial entry '{key_str}' not found"
+                    )));
+                }
                 Ok(QueryResult::Empty)
             },
             SpatialOp::Nearest { x, y, limit } => self.exec_spatial_nearest(x, y, limit.as_ref()),
             SpatialOp::Count => {
-                let count = self.spatial.read().len();
+                let count = self.spatial_count();
                 Ok(QueryResult::Count(count))
             },
         }
     }
 
-    /// Executes a `SPATIAL NEAREST` centroid-distance query.
+    /// Executes a `SPATIAL NEAREST` centroid-distance query by delegating to
+    /// the typed `spatial_nearest`.
     pub(crate) fn exec_spatial_nearest(
         &self,
         x: &Expr,
@@ -545,18 +492,16 @@ impl QueryRouter {
             .map(|e| self.expr_to_usize(e))
             .transpose()?
             .unwrap_or(1);
-        let results: Vec<SpatialResult> = self
-            .spatial
-            .read()
-            .query_nearest_by_centroid(cx, cy, k)
+        let hits = self.spatial_nearest(cx, cy, k)?;
+        let results: Vec<SpatialResult> = hits
             .into_iter()
-            .map(|e| SpatialResult {
-                key: e.data.clone(),
-                distance: e.bounds.center_dist_sq(cx, cy).sqrt(),
-                x: e.bounds.x(),
-                y: e.bounds.y(),
-                width: e.bounds.width(),
-                height: e.bounds.height(),
+            .map(|h| SpatialResult {
+                key: h.id,
+                distance: h.distance,
+                x: h.x,
+                y: h.y,
+                width: h.width,
+                height: h.height,
             })
             .collect();
         Ok(QueryResult::Spatial(results))

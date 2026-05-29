@@ -14,6 +14,8 @@ use tower_http::trace::TraceLayer;
 
 use vector_engine::VectorEngine;
 
+use query_router::QueryRouter;
+
 use crate::audit::AuditLogger;
 use crate::config::AuthConfig;
 use crate::metrics::ServerMetrics;
@@ -34,9 +36,16 @@ pub use types::*;
 const DEFAULT_MAX_BODY_SIZE: usize = 16 * 1024 * 1024;
 
 /// Context shared across REST handlers.
+///
+/// Carries an [`Arc<parking_lot::RwLock<QueryRouter>>`] (the post-unification
+/// dispatch entry point) plus the auth/rate-limit/audit/metrics state that
+/// each handler may consult before delegating to the router. The spatial
+/// indexes live on the router itself (`QueryRouter::spatial()` /
+/// `QueryRouter::spatial_3d()`); the handlers read them through the router
+/// rather than through this context.
 pub struct VectorApiContext {
-    /// Vector engine for operations.
-    pub engine: Arc<VectorEngine>,
+    /// Query router for typed vector dispatch.
+    pub router: Arc<parking_lot::RwLock<QueryRouter>>,
     /// Authentication configuration.
     pub auth_config: Option<AuthConfig>,
     /// Rate limiter.
@@ -45,25 +54,31 @@ pub struct VectorApiContext {
     pub audit_logger: Option<Arc<AuditLogger>>,
     /// Server metrics.
     pub metrics: Option<Arc<ServerMetrics>>,
-    /// Shared spatial index (None if spatial not configured).
-    pub spatial: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>>,
-    /// 3D spatial index for R-tree queries (None if not configured).
-    pub spatial_3d: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>>,
 }
 
 impl VectorApiContext {
-    /// Create a new context with a vector engine.
+    /// Create a new context with a query router.
     #[must_use]
-    pub const fn new(engine: Arc<VectorEngine>) -> Self {
+    pub const fn new(router: Arc<parking_lot::RwLock<QueryRouter>>) -> Self {
         Self {
-            engine,
+            router,
             auth_config: None,
             rate_limiter: None,
             audit_logger: None,
             metrics: None,
-            spatial: None,
-            spatial_3d: None,
         }
+    }
+
+    /// Convenience constructor for tests and callers that have only a
+    /// [`VectorEngine`] (the pre-unification handle). Builds an isolated
+    /// [`QueryRouter`], installs the engine via
+    /// [`QueryRouter::replace_vector_engine`], and wraps it in the standard
+    /// `Arc<RwLock<...>>` shape.
+    #[must_use]
+    pub fn from_engine(engine: Arc<VectorEngine>) -> Self {
+        let mut router = QueryRouter::new();
+        router.replace_vector_engine(engine);
+        Self::new(Arc::new(parking_lot::RwLock::new(router)))
     }
 
     /// Add authentication configuration.
@@ -94,23 +109,17 @@ impl VectorApiContext {
         self
     }
 
-    /// Add shared spatial index.
-    #[must_use]
-    pub fn with_spatial(
-        mut self,
-        spatial: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>>,
-    ) -> Self {
-        self.spatial = spatial;
-        self
-    }
-
-    /// Add 3D spatial index.
+    /// Install (or clear) the 3D spatial index on the underlying router.
+    ///
+    /// 3D spatial is `Option` on [`QueryRouter`] because it remains
+    /// optionally-configured (REST returns "not configured" when `None`). 2D
+    /// spatial is always present on the router and does not need a setter.
     #[must_use]
     pub fn with_spatial_3d(
-        mut self,
+        self,
         spatial_3d: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>>,
     ) -> Self {
-        self.spatial_3d = spatial_3d;
+        self.router.write().set_spatial_3d(spatial_3d);
         self
     }
 }
@@ -252,7 +261,7 @@ mod tests {
     #[test]
     fn test_vector_api_context_new() {
         let engine = Arc::new(VectorEngine::new());
-        let ctx = VectorApiContext::new(engine);
+        let ctx = VectorApiContext::from_engine(engine);
 
         assert!(ctx.auth_config.is_none());
         assert!(ctx.rate_limiter.is_none());
@@ -269,7 +278,7 @@ mod tests {
             "test-api-key-12345678".to_string(),
             "user:test".to_string(),
         ));
-        let ctx = VectorApiContext::new(engine).with_auth(Some(auth_config));
+        let ctx = VectorApiContext::from_engine(engine).with_auth(Some(auth_config));
 
         assert!(ctx.auth_config.is_some());
     }
@@ -278,7 +287,7 @@ mod tests {
     fn test_vector_api_context_with_rate_limiter() {
         let engine = Arc::new(VectorEngine::new());
         let rate_limiter = Arc::new(RateLimiter::default());
-        let ctx = VectorApiContext::new(engine).with_rate_limiter(Some(rate_limiter));
+        let ctx = VectorApiContext::from_engine(engine).with_rate_limiter(Some(rate_limiter));
 
         assert!(ctx.rate_limiter.is_some());
     }
@@ -287,7 +296,7 @@ mod tests {
     fn test_vector_api_context_with_audit_logger() {
         let engine = Arc::new(VectorEngine::new());
         let audit_logger = Arc::new(AuditLogger::default());
-        let ctx = VectorApiContext::new(engine).with_audit_logger(Some(audit_logger));
+        let ctx = VectorApiContext::from_engine(engine).with_audit_logger(Some(audit_logger));
 
         assert!(ctx.audit_logger.is_some());
     }
@@ -316,14 +325,14 @@ mod tests {
     #[test]
     fn test_router_creation() {
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let _router = router(ctx);
     }
 
     #[test]
     fn test_router_with_config_creation() {
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let config = RestConfig::new().with_max_body_size(8 * 1024 * 1024);
         let _router = router_with_config(ctx, &config);
     }
@@ -334,9 +343,17 @@ mod tests {
         let spatial_3d = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex3D::<
             String,
         >::new()));
-        let ctx = VectorApiContext::new(engine).with_spatial_3d(Some(spatial_3d));
+        let ctx =
+            VectorApiContext::from_engine(engine).with_spatial_3d(Some(Arc::clone(&spatial_3d)));
 
-        assert!(ctx.spatial_3d.is_some());
+        // `with_spatial_3d` proxies the index to the underlying router; verify
+        // the router observes the same Arc.
+        let installed = {
+            let guard = ctx.router.read();
+            guard.spatial_3d().map(Arc::clone)
+        };
+        assert!(installed.is_some());
+        assert!(Arc::ptr_eq(&installed.unwrap(), &spatial_3d));
     }
 
     #[test]
@@ -348,7 +365,7 @@ mod tests {
         let provider = SdkMeterProvider::builder().build();
         let meter = provider.meter("test");
         let metrics = Arc::new(ServerMetrics::new(meter));
-        let ctx = VectorApiContext::new(engine).with_metrics(Some(metrics));
+        let ctx = VectorApiContext::from_engine(engine).with_metrics(Some(metrics));
 
         assert!(ctx.metrics.is_some());
     }
@@ -356,7 +373,7 @@ mod tests {
     #[test]
     fn test_router_with_cors_enabled() {
         let engine = Arc::new(VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
         let config = RestConfig::new()
             .with_cors(true)
             .with_cors_origins(vec!["http://localhost:3000".to_string()]);

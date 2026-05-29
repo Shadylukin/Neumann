@@ -352,7 +352,8 @@ mod tests {
         let store = FileCheckpointStore::new(dir.path()).unwrap();
 
         for i in 0u32..5 {
-            let mut s = make_state(&format!("id-{i}"), &format!("cp-{i}"), &[i as u8]);
+            let byte = u8::try_from(i).expect("loop bound 5 fits in u8");
+            let mut s = make_state(&format!("id-{i}"), &format!("cp-{i}"), &[byte]);
             s.created_at = u64::from(i) * 1000;
             store.store(&s).unwrap();
         }
@@ -454,7 +455,7 @@ mod tests {
         // No temp file should remain
         let temps: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok())
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("tmp"))
             .collect();
         assert!(temps.is_empty(), "temp file should not remain after store");

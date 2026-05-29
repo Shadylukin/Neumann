@@ -37,6 +37,11 @@ mod init;
 mod policy;
 mod protection;
 mod result;
+pub mod vector_ops;
+pub use vector_ops::{
+    CollectionInfoResult, DeleteOutcome, ScrollHit, ScrollOptions, ScrolledPoints, SearchHit,
+    SearchOptions, Spatial3DHit, SpatialHit, VectorDistanceMetric, VectorPoint,
+};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -140,6 +145,10 @@ pub struct QueryRouter {
     cursor_store: Arc<CursorStore>,
     /// Spatial index for 2D range queries (always initialized, zero cost when empty)
     spatial: Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>>,
+    /// Optional 3D spatial index for R-tree queries. `None` means the surface
+    /// returns "3D spatial index not configured" — preserved from the prior
+    /// NeumannServer-owned location.
+    spatial_3d: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>>,
 }
 
 impl QueryRouter {
@@ -158,12 +167,14 @@ impl QueryRouter {
         vector: Arc<VectorEngine>,
     ) -> Self {
         let store = vector.store().clone();
+        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new()));
         let unified = UnifiedEngine::with_engines(
             store,
             Arc::clone(&relational),
             Arc::clone(&graph),
             Arc::clone(&vector),
-        );
+        )
+        .with_spatial(Arc::clone(&spatial));
         Self {
             relational,
             graph,
@@ -186,7 +197,8 @@ impl QueryRouter {
             distributed_config: DistributedQueryConfig::default(),
             local_shard_id: 0,
             cursor_store: Arc::new(CursorStore::new()),
-            spatial: Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new())),
+            spatial,
+            spatial_3d: None,
         }
     }
 
@@ -199,12 +211,14 @@ impl QueryRouter {
         let relational = Arc::new(RelationalEngine::with_store(store.clone()));
         let graph = Arc::new(GraphEngine::with_store(store.clone()));
         let vector = Arc::new(VectorEngine::with_store(store.clone()));
+        let spatial = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new()));
         let unified = UnifiedEngine::with_engines(
             store,
             Arc::clone(&relational),
             Arc::clone(&graph),
             Arc::clone(&vector),
-        );
+        )
+        .with_spatial(Arc::clone(&spatial));
         Self {
             relational,
             graph,
@@ -227,7 +241,8 @@ impl QueryRouter {
             distributed_config: DistributedQueryConfig::default(),
             local_shard_id: 0,
             cursor_store: Arc::new(CursorStore::new()),
-            spatial: Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex::new())),
+            spatial,
+            spatial_3d: None,
         }
     }
 
@@ -249,6 +264,51 @@ impl QueryRouter {
     /// Get reference to the spatial index.
     pub const fn spatial(&self) -> &Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex<String>>> {
         &self.spatial
+    }
+
+    /// Get reference to the optional 3D spatial index.
+    pub const fn spatial_3d(
+        &self,
+    ) -> Option<&Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>> {
+        self.spatial_3d.as_ref()
+    }
+
+    /// Install (or clear) the optional 3D spatial index.
+    pub fn set_spatial_3d(
+        &mut self,
+        idx: Option<Arc<parking_lot::RwLock<tensor_spatial::SpatialIndex3D<String>>>>,
+    ) {
+        self.spatial_3d = idx;
+    }
+
+    /// Replace the vector engine and rebuild dependent state.
+    ///
+    /// `hnsw_index = None` is the operative reset — `hnsw_is_fresh` compares
+    /// generations for equality so the bumps below are decorative for any
+    /// external snapshot consumer. Clears the query cache because cached
+    /// SIMILAR results may reference the old engine's data. If a unified
+    /// engine is initialized, it is rebuilt with the new vector engine and
+    /// the existing shared spatial index.
+    pub fn replace_vector_engine(&mut self, engine: Arc<VectorEngine>) {
+        self.vector = engine;
+        self.hnsw_index = None;
+        self.hnsw_generation.fetch_add(1, AtomicOrdering::SeqCst);
+        self.vector_generation.fetch_add(1, AtomicOrdering::SeqCst);
+        if let Some(cache) = self.cache.as_ref() {
+            cache.clear();
+        }
+        if self.unified.is_some() {
+            let store = self.vector.store().clone();
+            self.unified = Some(
+                UnifiedEngine::with_engines(
+                    store,
+                    Arc::clone(&self.relational),
+                    Arc::clone(&self.graph),
+                    Arc::clone(&self.vector),
+                )
+                .with_spatial(Arc::clone(&self.spatial)),
+            );
+        }
     }
 
     /// Get reference to unified engine (if initialized).

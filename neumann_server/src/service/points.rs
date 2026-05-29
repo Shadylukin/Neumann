@@ -5,10 +5,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use parking_lot::RwLock;
 use tensor_store::{ScalarValue, TensorValue};
 use tonic::{Request, Response, Status};
 
+use query_router::{QueryRouter, ScrollOptions, SearchOptions, VectorPoint};
 use vector_engine::VectorEngine;
+
+use crate::error::router_error_to_status;
+use crate::router_dispatch::dispatch_with_identity;
 
 /// Converts a `TensorValue` back to a JSON value for payload retrieval.
 ///
@@ -35,15 +40,11 @@ fn tensor_value_to_json(value: &TensorValue) -> serde_json::Value {
     }
 }
 
-/// Retrieves stored metadata for a point and serializes it as JSON bytes for gRPC.
-fn retrieve_payload(
-    engine: &VectorEngine,
-    collection: &str,
-    key: &str,
+/// Convert engine-side metadata into the gRPC byte map.
+fn metadata_to_proto(
+    metadata: std::collections::HashMap<String, TensorValue>,
 ) -> std::collections::HashMap<String, Vec<u8>> {
-    engine
-        .get_collection_metadata(collection, key)
-        .unwrap_or_default()
+    metadata
         .into_iter()
         .filter_map(|(k, v)| {
             serde_json::to_vec(&tensor_value_to_json(&v))
@@ -100,7 +101,7 @@ const FAILURE_THRESHOLD: u32 = 5;
 
 /// Implementation of the `PointsService` gRPC service.
 pub struct PointsServiceImpl {
-    engine: Arc<VectorEngine>,
+    router: Arc<RwLock<QueryRouter>>,
     auth_config: Option<AuthConfig>,
     health_state: Option<Arc<HealthState>>,
     consecutive_failures: AtomicU32,
@@ -112,9 +113,9 @@ pub struct PointsServiceImpl {
 impl PointsServiceImpl {
     /// Create a new points service.
     #[must_use]
-    pub const fn new(engine: Arc<VectorEngine>) -> Self {
+    pub const fn new(router: Arc<RwLock<QueryRouter>>) -> Self {
         Self {
-            engine,
+            router,
             auth_config: None,
             health_state: None,
             consecutive_failures: AtomicU32::new(0),
@@ -124,11 +125,21 @@ impl PointsServiceImpl {
         }
     }
 
+    /// Convenience constructor for tests that already have a [`VectorEngine`].
+    /// Wraps it in a fresh [`QueryRouter`] (matching the REST helper of the
+    /// same name on [`crate::rest::VectorApiContext`]).
+    #[must_use]
+    pub fn from_engine(engine: Arc<VectorEngine>) -> Self {
+        let mut router = QueryRouter::new();
+        router.replace_vector_engine(engine);
+        Self::new(Arc::new(RwLock::new(router)))
+    }
+
     /// Create a new points service with authentication.
     #[must_use]
-    pub const fn with_auth(engine: Arc<VectorEngine>, auth_config: AuthConfig) -> Self {
+    pub const fn with_auth(router: Arc<RwLock<QueryRouter>>, auth_config: AuthConfig) -> Self {
         Self {
-            engine,
+            router,
             auth_config: Some(auth_config),
             health_state: None,
             consecutive_failures: AtomicU32::new(0),
@@ -141,12 +152,12 @@ impl PointsServiceImpl {
     /// Create a new points service with health state monitoring.
     #[must_use]
     pub const fn with_config(
-        engine: Arc<VectorEngine>,
+        router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         health_state: Arc<HealthState>,
     ) -> Self {
         Self {
-            engine,
+            router,
             auth_config,
             health_state: Some(health_state),
             consecutive_failures: AtomicU32::new(0),
@@ -159,7 +170,7 @@ impl PointsServiceImpl {
     /// Create a new points service with all options.
     #[must_use]
     pub const fn with_full_config(
-        engine: Arc<VectorEngine>,
+        router: Arc<RwLock<QueryRouter>>,
         auth_config: Option<AuthConfig>,
         health_state: Option<Arc<HealthState>>,
         rate_limiter: Option<Arc<RateLimiter>>,
@@ -167,7 +178,7 @@ impl PointsServiceImpl {
         metrics: Option<Arc<ServerMetrics>>,
     ) -> Self {
         Self {
-            engine,
+            router,
             auth_config,
             health_state,
             consecutive_failures: AtomicU32::new(0),
@@ -251,46 +262,45 @@ impl PointsService for PointsServiceImpl {
 
         let req = request.into_inner();
         let collection = req.collection.clone();
-        let mut count = 0u64;
 
-        for point in req.points {
-            let payload: Option<std::collections::HashMap<String, serde_json::Value>> =
-                if point.payload.is_empty() {
+        let points: Vec<VectorPoint> = req
+            .points
+            .into_iter()
+            .map(|point| {
+                let metadata = if point.payload.is_empty() {
                     None
                 } else {
-                    let mut map = std::collections::HashMap::new();
+                    let mut map: std::collections::HashMap<String, serde_json::Value> =
+                        std::collections::HashMap::new();
                     for (k, v) in point.payload {
                         if let Ok(val) = serde_json::from_slice(&v) {
                             map.insert(k, val);
                         }
                     }
-                    Some(map)
+                    Some(convert_metadata(&map))
                 };
+                VectorPoint {
+                    id: point.id,
+                    vector: point.vector,
+                    metadata,
+                }
+            })
+            .collect();
 
-            let result = if let Some(ref metadata) = payload {
-                self.engine.store_in_collection_with_metadata(
-                    &collection,
-                    &point.id,
-                    point.vector,
-                    convert_metadata(metadata),
-                )
-            } else {
-                self.engine
-                    .store_in_collection(&collection, &point.id, point.vector)
-            };
-
-            match result {
-                Ok(()) => count += 1,
-                Err(e) => {
-                    self.record_failure();
-                    if let Some(ref m) = self.metrics {
-                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
-                        m.record_request("vector", "upsert", false, latency_ms);
-                    }
-                    return Err(Status::internal(e.to_string()));
-                },
-            }
-        }
+        let count_result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.upsert_points(Some(&collection), points)
+        });
+        let count = match count_result {
+            Ok(n) => u64::try_from(n).unwrap_or(u64::MAX),
+            Err(e) => {
+                self.record_failure();
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("vector", "upsert", false, latency_ms);
+                }
+                return Err(router_error_to_status(e));
+            },
+        };
 
         self.record_success();
 
@@ -354,22 +364,40 @@ impl PointsService for PointsServiceImpl {
         }
 
         let req = request.into_inner();
-        let mut points = Vec::with_capacity(req.ids.len());
-
-        for id in &req.ids {
-            if let Ok(vector) = self.engine.get_from_collection(&req.collection, id) {
-                let point = Point {
-                    id: id.clone(),
-                    vector: if req.with_vector { vector } else { vec![] },
-                    payload: if req.with_payload {
-                        retrieve_payload(&self.engine, &req.collection, id)
-                    } else {
-                        std::collections::HashMap::new()
-                    },
+        let coll = req.collection;
+        let ids = req.ids;
+        let with_vector = req.with_vector;
+        let with_payload = req.with_payload;
+        let points_result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            let mut acc = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let Some(vector) = r.get_point(Some(&coll), id)? else {
+                    continue;
                 };
-                points.push(point);
+                let payload = if with_payload {
+                    metadata_to_proto(r.get_point_metadata(&coll, id).unwrap_or_default())
+                } else {
+                    std::collections::HashMap::new()
+                };
+                acc.push(Point {
+                    id: id.clone(),
+                    vector: if with_vector { vector } else { vec![] },
+                    payload,
+                });
             }
-        }
+            Ok(acc)
+        });
+        let points = match points_result {
+            Ok(p) => p,
+            Err(e) => {
+                self.record_failure();
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("vector", "get", false, latency_ms);
+                }
+                return Err(router_error_to_status(e));
+            },
+        };
 
         self.record_success();
 
@@ -422,13 +450,21 @@ impl PointsService for PointsServiceImpl {
 
         let req = request.into_inner();
         let collection = req.collection.clone();
-        let mut count = 0u64;
-
-        for id in &req.ids {
-            if self.engine.delete_from_collection(&collection, id).is_ok() {
-                count += 1;
-            }
-        }
+        let ids = req.ids;
+        let outcome_result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.delete_points(Some(&collection), &ids)
+        });
+        let count = match outcome_result {
+            Ok(o) => u64::try_from(o.deleted).unwrap_or(u64::MAX),
+            Err(e) => {
+                self.record_failure();
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("vector", "delete", false, latency_ms);
+                }
+                return Err(router_error_to_status(e));
+            },
+        };
 
         self.record_success();
 
@@ -495,47 +531,30 @@ impl PointsService for PointsServiceImpl {
         let collection = req.collection.clone();
         let limit = usize::try_from(req.limit.max(1)).unwrap_or(usize::MAX);
         let offset = usize::try_from(req.offset).unwrap_or(0);
+        let opts = SearchOptions {
+            limit,
+            offset,
+            filter: None,
+            metric: None,
+            score_threshold: req.score_threshold,
+            with_vector: req.with_vector,
+            with_payload: req.with_payload,
+        };
 
-        let search_result = self.engine.search_in_collection(
-            &collection,
-            &req.vector,
-            limit.saturating_add(offset),
-        );
-
-        let results = match search_result {
-            Ok(items) => {
+        let hits_result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.search_points(Some(&collection), &req.vector, &opts)
+        });
+        let results = match hits_result {
+            Ok(hits) => {
                 self.record_success();
-                let mut results = Vec::new();
-                for item in items.into_iter().skip(offset).take(limit) {
-                    // Apply score threshold if specified
-                    if let Some(threshold) = req.score_threshold {
-                        if item.score < threshold {
-                            continue;
-                        }
-                    }
-
-                    let vector = if req.with_vector {
-                        self.engine
-                            .get_from_collection(&collection, &item.key)
-                            .unwrap_or_default()
-                    } else {
-                        vec![]
-                    };
-
-                    let point_id = item.key;
-                    let payload = if req.with_payload {
-                        retrieve_payload(&self.engine, &collection, &point_id)
-                    } else {
-                        std::collections::HashMap::new()
-                    };
-                    results.push(ScoredPoint {
-                        id: point_id,
-                        score: item.score,
-                        payload,
-                        vector,
-                    });
-                }
-                results
+                hits.into_iter()
+                    .map(|h| ScoredPoint {
+                        id: h.id,
+                        score: h.score,
+                        payload: h.metadata.map(metadata_to_proto).unwrap_or_default(),
+                        vector: h.vector.unwrap_or_default(),
+                    })
+                    .collect()
             },
             Err(e) => {
                 self.record_failure();
@@ -543,7 +562,7 @@ impl PointsService for PointsServiceImpl {
                     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
                     m.record_request("vector", "query", false, latency_ms);
                 }
-                return Err(Status::internal(e.to_string()));
+                return Err(router_error_to_status(e));
             },
         };
 
@@ -607,49 +626,37 @@ impl PointsService for PointsServiceImpl {
         }
 
         let req = request.into_inner();
-        let limit = usize::try_from(req.limit.max(1)).unwrap_or(usize::MAX);
+        let opts = ScrollOptions {
+            limit: usize::try_from(req.limit.max(1)).unwrap_or(usize::MAX),
+            offset_id: req.offset_id,
+            with_vector: req.with_vector,
+            with_payload: req.with_payload,
+        };
 
-        let mut keys = self.engine.list_collection_keys(&req.collection);
-        keys.sort();
-
-        // Find the starting position
-        let start_idx = req.offset_id.as_ref().map_or(0, |offset_id| {
-            keys.iter()
-                .position(|k| k > offset_id)
-                .unwrap_or(keys.len())
+        let scrolled_result = dispatch_with_identity(&self.router, identity.as_deref(), |r| {
+            r.scroll_points(&req.collection, &opts)
         });
-
-        // Get the page of keys
-        let page_keys: Vec<_> = keys.iter().skip(start_idx).take(limit + 1).collect();
-        let has_more = page_keys.len() > limit;
-        let keys_to_fetch: Vec<_> = page_keys.into_iter().take(limit).collect();
-
-        let mut points = Vec::with_capacity(keys_to_fetch.len());
-        for key in &keys_to_fetch {
-            let vector = if req.with_vector {
-                self.engine
-                    .get_from_collection(&req.collection, key)
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
-
-            let payload = if req.with_payload {
-                retrieve_payload(&self.engine, &req.collection, key)
-            } else {
-                std::collections::HashMap::new()
-            };
-            points.push(Point {
-                id: (*key).clone(),
-                vector,
-                payload,
-            });
-        }
-
-        let next_offset = if has_more {
-            keys_to_fetch.last().copied().cloned()
-        } else {
-            None
+        let (points, next_offset) = match scrolled_result {
+            Ok(s) => {
+                let pts: Vec<Point> = s
+                    .hits
+                    .into_iter()
+                    .map(|hit| Point {
+                        id: hit.id,
+                        vector: hit.vector.unwrap_or_default(),
+                        payload: hit.metadata.map(metadata_to_proto).unwrap_or_default(),
+                    })
+                    .collect();
+                (pts, s.next_offset_id)
+            },
+            Err(e) => {
+                self.record_failure();
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("vector", "scroll", false, latency_ms);
+                }
+                return Err(router_error_to_status(e));
+            },
         };
 
         self.record_success();
@@ -677,7 +684,7 @@ mod tests {
     #[test]
     fn test_points_service_new() {
         let engine = Arc::new(VectorEngine::new());
-        let service = PointsServiceImpl::new(engine);
+        let service = PointsServiceImpl::from_engine(engine);
         assert!(service.auth_config.is_none());
         assert!(service.health_state.is_none());
     }
@@ -691,7 +698,8 @@ mod tests {
             "test-api-key-12345678".to_string(),
             "user:test".to_string(),
         ));
-        let service = PointsServiceImpl::with_auth(engine, auth_config);
+        let svc = PointsServiceImpl::from_engine(engine);
+        let service = PointsServiceImpl::with_auth(svc.router, auth_config);
         assert!(service.auth_config.is_some());
     }
 
@@ -699,7 +707,8 @@ mod tests {
     fn test_points_service_with_config() {
         let engine = Arc::new(VectorEngine::new());
         let health_state = Arc::new(HealthState::new());
-        let service = PointsServiceImpl::with_config(engine, None, health_state);
+        let svc = PointsServiceImpl::from_engine(engine);
+        let service = PointsServiceImpl::with_config(svc.router, None, health_state);
         assert!(service.health_state.is_some());
     }
 
@@ -710,8 +719,9 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::default());
         let audit_logger = Arc::new(AuditLogger::default());
 
+        let svc = PointsServiceImpl::from_engine(engine);
         let service = PointsServiceImpl::with_full_config(
-            engine,
+            svc.router,
             None,
             Some(health_state),
             Some(rate_limiter),
@@ -726,7 +736,7 @@ mod tests {
     #[test]
     fn test_record_success() {
         let engine = Arc::new(VectorEngine::new());
-        let service = PointsServiceImpl::new(engine);
+        let service = PointsServiceImpl::from_engine(engine);
 
         service.consecutive_failures.store(3, Ordering::SeqCst);
         service.record_success();
@@ -736,7 +746,7 @@ mod tests {
     #[test]
     fn test_record_failure() {
         let engine = Arc::new(VectorEngine::new());
-        let service = PointsServiceImpl::new(engine);
+        let service = PointsServiceImpl::from_engine(engine);
 
         service.record_failure();
         assert_eq!(service.consecutive_failures.load(Ordering::SeqCst), 1);
@@ -835,7 +845,11 @@ mod tests {
             )
             .unwrap();
 
-        let payload = retrieve_payload(&engine, "test_payload", "point1");
+        let payload = metadata_to_proto(
+            engine
+                .get_collection_metadata("test_payload", "point1")
+                .unwrap_or_default(),
+        );
         assert!(!payload.is_empty());
 
         // Verify category
@@ -862,7 +876,11 @@ mod tests {
             .store_in_collection("test_empty", "point1", vec![1.0, 0.0, 0.0])
             .unwrap();
 
-        let payload = retrieve_payload(&engine, "test_empty", "point1");
+        let payload = metadata_to_proto(
+            engine
+                .get_collection_metadata("test_empty", "point1")
+                .unwrap_or_default(),
+        );
         assert!(payload.is_empty());
     }
 }

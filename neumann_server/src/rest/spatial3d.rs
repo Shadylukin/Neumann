@@ -13,10 +13,13 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use query_router::QueryRouter;
+
 use crate::rate_limit::Operation;
 use crate::rest::auth::{check_rate_limit, validate_auth};
 use crate::rest::error::{ApiError, ApiResult};
 use crate::rest::VectorApiContext;
+use crate::router_dispatch::dispatch_with_identity;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -148,18 +151,11 @@ pub async fn insert_3d(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial_3d
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("3D spatial index not configured"))?;
-
-    let bounds = tensor_spatial::BoundingBox3D::new(body.x, body.y, body.z, body.w, body.h, body.d)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let entry = tensor_spatial::SpatialEntry3D {
-        data: body.key,
-        bounds,
-    };
-    spatial.write().insert(entry);
+    let key = body.key;
+    dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial3d_insert(key.clone(), body.x, body.y, body.z, body.w, body.h, body.d)
+    })
+    .map_err(ApiError::from)?;
 
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
@@ -183,34 +179,22 @@ pub async fn query_3d(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial_3d
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("3D spatial index not configured"))?;
-
     let radius = body.radius.unwrap_or(100.0);
     let start = Instant::now();
-    let guard = spatial.read();
-    let mut results: Vec<Spatial3DResultItem> = guard
-        .query_within_radius_with_distances(body.x, body.y, body.z, radius)
+    let hits = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial3d_query_radius(body.x, body.y, body.z, radius, body.limit)
+    })
+    .map_err(ApiError::from)?;
+    let results: Vec<Spatial3DResultItem> = hits
         .into_iter()
-        .map(|(e, dist)| {
-            let (cx, cy, cz) = e.bounds.center();
-            Spatial3DResultItem {
-                key: e.data.clone(),
-                distance: dist,
-                x: cx,
-                y: cy,
-                z: cz,
-            }
+        .map(|h| Spatial3DResultItem {
+            key: h.id,
+            distance: h.distance,
+            x: h.x,
+            y: h.y,
+            z: h.z,
         })
         .collect();
-    drop(guard);
-
-    if let Some(max) = body.limit {
-        results.truncate(max);
-    }
-
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     Ok(Json(Spatial3DQueryResponse {
         results,
@@ -237,33 +221,22 @@ pub async fn nearest_3d(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial_3d
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("3D spatial index not configured"))?;
-
     let k = body.limit.unwrap_or(10);
     let start = Instant::now();
-    let guard = spatial.read();
-    let results: Vec<Spatial3DResultItem> = guard
-        .query_nearest_by_centroid(body.x, body.y, body.z, k)
+    let hits = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial3d_nearest(body.x, body.y, body.z, k)
+    })
+    .map_err(ApiError::from)?;
+    let results: Vec<Spatial3DResultItem> = hits
         .into_iter()
-        .map(|e| {
-            let (cx, cy, cz) = e.bounds.center();
-            let dx = body.x - cx;
-            let dy = body.y - cy;
-            let dz = body.z - cz;
-            Spatial3DResultItem {
-                key: e.data.clone(),
-                distance: dz.mul_add(dz, dx.mul_add(dx, dy * dy)).sqrt(),
-                x: cx,
-                y: cy,
-                z: cz,
-            }
+        .map(|h| Spatial3DResultItem {
+            key: h.id,
+            distance: h.distance,
+            x: h.x,
+            y: h.y,
+            z: h.z,
         })
         .collect();
-    drop(guard);
-
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     Ok(Json(Spatial3DQueryResponse {
         results,
@@ -290,42 +263,25 @@ pub async fn region_3d(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial_3d
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("3D spatial index not configured"))?;
-
-    let width = body.max[0] - body.min[0];
-    let height = body.max[1] - body.min[1];
-    let depth = body.max[2] - body.min[2];
-    let region = tensor_spatial::BoundingBox3D::new(
-        body.min[0],
-        body.min[1],
-        body.min[2],
-        width,
-        height,
-        depth,
-    )
-    .map_err(|e| ApiError::bad_request(e.to_string()))?;
-
     let start = Instant::now();
-    let guard = spatial.read();
-    let results: Vec<Spatial3DResultItem> = guard
-        .query_region(region)
+    let hits = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial3d_query_region(
+            (body.min[0], body.min[1], body.min[2]),
+            (body.max[0], body.max[1], body.max[2]),
+            None,
+        )
+    })
+    .map_err(ApiError::from)?;
+    let results: Vec<Spatial3DResultItem> = hits
         .into_iter()
-        .map(|e| {
-            let (cx, cy, cz) = e.bounds.center();
-            Spatial3DResultItem {
-                key: e.data.clone(),
-                distance: 0.0,
-                x: cx,
-                y: cy,
-                z: cz,
-            }
+        .map(|h| Spatial3DResultItem {
+            key: h.id,
+            distance: h.distance,
+            x: h.x,
+            y: h.y,
+            z: h.z,
         })
         .collect();
-    drop(guard);
-
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     Ok(Json(Spatial3DQueryResponse {
         results,
@@ -352,18 +308,16 @@ pub async fn delete_3d(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial_3d
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("3D spatial index not configured"))?;
-
-    let bounds = tensor_spatial::BoundingBox3D::new(body.x, body.y, body.z, body.w, body.h, body.d)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let key = body.key;
-    spatial
-        .write()
-        .remove(bounds, |e| e.data == key && e.bounds == bounds)
-        .map_err(|e| ApiError::not_found(e.to_string()))?;
+    let removed = dispatch_with_identity(&ctx.router, identity.as_deref(), |r| {
+        r.spatial3d_delete(&body.key, body.x, body.y, body.z, body.w, body.h, body.d)
+    })
+    .map_err(ApiError::from)?;
+    if !removed {
+        return Err(ApiError::not_found(format!(
+            "3D spatial entry '{}' not found",
+            body.key
+        )));
+    }
 
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
@@ -386,12 +340,12 @@ pub async fn count_3d(
         Operation::VectorOp,
     )?;
 
-    let spatial = ctx
-        .spatial_3d
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("3D spatial index not configured"))?;
-
-    let count = spatial.read().len();
+    let count = dispatch_with_identity(
+        &ctx.router,
+        identity.as_deref(),
+        QueryRouter::spatial3d_count,
+    )
+    .map_err(ApiError::from)?;
     Ok(Json(Spatial3DCountResponse { count }))
 }
 
@@ -485,13 +439,13 @@ mod tests {
         let spatial_3d = Arc::new(parking_lot::RwLock::new(tensor_spatial::SpatialIndex3D::<
             String,
         >::new()));
-        Arc::new(VectorApiContext::new(engine).with_spatial_3d(Some(spatial_3d)))
+        Arc::new(VectorApiContext::from_engine(engine).with_spatial_3d(Some(spatial_3d)))
     }
 
     #[tokio::test]
     async fn test_insert_3d_no_spatial() {
         let engine = Arc::new(vector_engine::VectorEngine::new());
-        let ctx = Arc::new(VectorApiContext::new(engine));
+        let ctx = Arc::new(VectorApiContext::from_engine(engine));
 
         let body = Spatial3DInsertRequest {
             key: "test".to_string(),
