@@ -126,7 +126,10 @@ jobs:
   bench-run:
     name: Bench ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45m was occasionally insufficient on cold-cache runners — release builds
+    # of the specialized group (4 crates + transitive deps) eat most of the
+    # budget before bench iterations start.
+    timeout-minutes: 60
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     strategy:
       fail-fast: false
