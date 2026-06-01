@@ -126,7 +126,10 @@ RUN cargo build --release --package neumann_server
 # ==============================================================================
 FROM debian:bookworm-slim AS cli
 
-RUN apt-get update && apt-get install -y \
+# `upgrade` pulls in the current Debian security patches for whatever
+# transitive packages the base image ships (e.g. libgnutls30) so Trivy's
+# fail-on-CRITICAL/HIGH gate stays green between base-image refreshes.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -145,7 +148,7 @@ ENTRYPOINT ["neumann"]
 # ==============================================================================
 FROM debian:bookworm-slim AS server
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -175,7 +178,7 @@ ENTRYPOINT ["neumann_server"]
 # ==============================================================================
 FROM debian:bookworm-slim AS jepsen
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     ca-certificates \
     iproute2 \
     iptables \
