@@ -60,7 +60,7 @@ tonic-prost-build = "0.14"
 arc-swap = "1"
 parking_lot = "0.12"
 dashmap = "6"
-rayon = "1.10"
+rayon = "1.12"
 crossbeam-channel = "0.5"
 
 # Crypto
