@@ -86,7 +86,7 @@ jobs:
       - name: Download bench-docs
         # v4.3.0
         uses: >-
-          actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+          actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         continue-on-error: true
         with:
           name: bench-docs
@@ -240,7 +240,7 @@ jobs:
       - name: Download all Criterion outputs
         # v4.3.0
         uses: >-
-          actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+          actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: criterion-*
           path: target/criterion
@@ -299,7 +299,7 @@ jobs:
       - name: Download book
         # v4.3.0
         uses: >-
-          actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+          actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: book
           path: public/
@@ -307,7 +307,7 @@ jobs:
       - name: Download rustdoc
         # v4.3.0
         uses: >-
-          actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+          actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: rustdoc
           path: public/api/
@@ -315,7 +315,7 @@ jobs:
       - name: Download Criterion HTML reports
         # v4.3.0
         uses: >-
-          actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+          actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         continue-on-error: true
         with:
           name: criterion-reports
