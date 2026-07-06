@@ -50,7 +50,7 @@ libc.workspace = true
 
 # TCP transport
 bytes.workspace = true
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 lz4_flex = "0.12"
 
 # Optional TLS support
